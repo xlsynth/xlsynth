@@ -21,27 +21,26 @@ workspace(name = "com_google_xls")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 # Commit on  2024-02-13, current as of 2024-02-13.
-http_archive(
-    name = "toolchains_llvm",
-    sha256 = "916ee9a85287058dbd00fdc3659ab92176d9019590f8e8b763cd49d85476e253",
-    strip_prefix = "toolchains_llvm-1ca11e2755544e5305d442d72018234eca914604",
-    url = "https://github.com/bazel-contrib/toolchains_llvm/archive/1ca11e2755544e5305d442d72018234eca914604.tar.gz",
-)
+#http_archive(
+#    name = "toolchains_llvm",
+#    sha256 = "916ee9a85287058dbd00fdc3659ab92176d9019590f8e8b763cd49d85476e253",
+#    strip_prefix = "toolchains_llvm-1ca11e2755544e5305d442d72018234eca914604",
+#    url = "https://github.com/bazel-contrib/toolchains_llvm/archive/1ca11e2755544e5305d442d72018234eca914604.tar.gz",
+#)
 
-load("@toolchains_llvm//toolchain:deps.bzl", "bazel_toolchain_dependencies")
+#load("@toolchains_llvm//toolchain:deps.bzl", "bazel_toolchain_dependencies")
+#
+#bazel_toolchain_dependencies()
 
-bazel_toolchain_dependencies()
+#load("@toolchains_llvm//toolchain:rules.bzl", "llvm_toolchain")
+#
+#llvm_toolchain(
+#    name = "llvm_toolchain",
+#    llvm_version = "17.0.2",
+#)
 
-load("@toolchains_llvm//toolchain:rules.bzl", "llvm_toolchain")
-
-llvm_toolchain(
-    name = "llvm_toolchain",
-    llvm_version = "17.0.2",
-)
-
-load("@llvm_toolchain//:toolchains.bzl", "llvm_register_toolchains")
-
-llvm_register_toolchains()
+#load("@llvm_toolchain//:toolchains.bzl", "llvm_register_toolchains")
+#llvm_register_toolchains()
 
 load("//dependency_support:load_external.bzl", "load_external_repositories")
 

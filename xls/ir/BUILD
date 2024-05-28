@@ -1162,11 +1162,9 @@ genrule(
     srcs = ["op_header.tmpl"],
     outs = ["op.h"],
     cmd = "$(location :render_specification_against_template) $(location :op_header.tmpl)" +
-          " | $(location @llvm_toolchain//:clang-format)" +
           " > $(OUTS)",
     tools = [
         ":render_specification_against_template",
-        "@llvm_toolchain//:clang-format",
     ],
 )
 
@@ -1200,11 +1198,9 @@ genrule(
     srcs = ["op_source.tmpl"],
     outs = ["op.cc"],
     cmd = "$(location :render_specification_against_template) $(location :op_source.tmpl)" +
-          " | $(location @llvm_toolchain//:clang-format)" +
           " > $(OUTS)",
     tools = [
         ":render_specification_against_template",
-        "@llvm_toolchain//:clang-format",
     ],
 )
 
@@ -1213,11 +1209,9 @@ genrule(
     srcs = ["nodes_header.tmpl"],
     outs = ["nodes.h"],
     cmd = "$(location :render_specification_against_template) $(location :nodes_header.tmpl)" +
-          " | $(location @llvm_toolchain//:clang-format)" +
           " > $(OUTS)",
     tools = [
         ":render_specification_against_template",
-        "@llvm_toolchain//:clang-format",
     ],
 )
 
@@ -1226,11 +1220,9 @@ genrule(
     srcs = ["nodes_source.tmpl"],
     outs = ["nodes.cc"],
     cmd = "$(location :render_specification_against_template) $(location :nodes_source.tmpl)" +
-          " | $(location @llvm_toolchain//:clang-format)" +
           " > $(OUTS)",
     tools = [
         ":render_specification_against_template",
-        "@llvm_toolchain//:clang-format",
     ],
 )
 

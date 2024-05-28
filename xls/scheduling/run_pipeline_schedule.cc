@@ -42,7 +42,7 @@
 #include "xls/data_structures/binary_search.h"
 #include "xls/delay_model/delay_estimator.h"
 #include "xls/fdo/delay_manager.h"
-#include "xls/fdo/iterative_sdc_scheduler.h"
+//#include "xls/fdo/iterative_sdc_scheduler.h"
 #include "xls/fdo/synthesizer.h"
 #include "xls/ir/function.h"
 #include "xls/ir/function_base.h"
@@ -409,6 +409,7 @@ absl::StatusOr<PipelineSchedule> RunPipelineSchedule(
   }
 
   ScheduleCycleMap cycle_map;
+#if 0
   if (options.strategy() == SchedulingStrategy::SDC) {
     // Enable iterative SDC scheduling when use_fdo is true
     if (options.use_fdo()) {
@@ -542,6 +543,7 @@ absl::StatusOr<PipelineSchedule> RunPipelineSchedule(
     }
     cycle_map = *std::move(schedule_cycle_map);
   } else {
+#endif
     // Run an initial ASAP/ALAP scheduling pass, which we'll refine with the
     // chosen scheduler.
     sched::ScheduleBounds bounds(f, TopoSort(f), clock_period_ps,
@@ -580,7 +582,9 @@ absl::StatusOr<PipelineSchedule> RunPipelineSchedule(
         cycle_map[node] = bounds.lb(node);
       }
     }
+#if 0
   }
+#endif
 
   auto schedule = PipelineSchedule(f, cycle_map, options.pipeline_stages());
   XLS_RETURN_IF_ERROR(schedule.Verify());
