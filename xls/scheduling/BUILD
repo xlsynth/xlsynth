@@ -208,7 +208,7 @@ cc_library(
         "//xls/data_structures:binary_search",
         "//xls/delay_model:delay_estimator",
         "//xls/fdo:delay_manager",
-        "//xls/fdo:iterative_sdc_scheduler",
+        #"//xls/fdo:iterative_sdc_scheduler",
         "//xls/fdo:synthesizer",
         "//xls/ir",
         "//xls/ir:op",

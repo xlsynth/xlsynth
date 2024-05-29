@@ -188,3 +188,11 @@ cc_test(
         "@com_google_googletest//:gtest",
     ],
 )
+
+cc_binary(
+    name = "libxls.dylib",
+    srcs = ["c_api.cc", "c_api.h"],
+    linkshared = True,
+    deps = [":runtime_build_actions"],
+    copts = ["-fvisibility=hidden"],
+)

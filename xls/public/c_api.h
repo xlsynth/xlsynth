@@ -18,6 +18,10 @@
 #include <stddef.h>  // NOLINT(modernize-deprecated-headers)
 #include <stdint.h>  // NOLINT(modernize-deprecated-headers)
 
+#ifndef XLS_DLL_EXPORT
+#define XLS_DLL_EXPORT __attribute__((visibility("default")))
+#endif  // XLS_DLL_EXPORT
+
 // C API that exposes the functionality in various public headers in a way that
 // C-based FFI facilities can easily wrap.
 //
@@ -47,6 +51,7 @@ struct xls_function_type;
 
 void xls_init_xls(const char* usage, int argc, char* argv[]);
 
+XLS_DLL_EXPORT
 bool xls_convert_dslx_to_ir(const char* dslx, const char* path,
                             const char* module_name,
                             const char* dslx_stdlib_path,
@@ -54,6 +59,7 @@ bool xls_convert_dslx_to_ir(const char* dslx, const char* path,
                             size_t additional_search_paths_count,
                             char** error_out, char** ir_out);
 
+XLS_DLL_EXPORT
 bool xls_convert_dslx_path_to_ir(const char* path, const char* dslx_stdlib_path,
                                  const char* additional_search_paths[],
                                  size_t additional_search_paths_count,
@@ -66,6 +72,7 @@ bool xls_mangle_dslx_name(const char* module_name, const char* function_name,
                           char** error_out, char** mangled_out);
 
 // Parses a string that represents a typed XLS value; e.g. `bits[32]:0x42`.
+XLS_DLL_EXPORT
 bool xls_parse_typed_value(const char* input, char** error_out,
                            struct xls_value** xls_value_out);
 
@@ -79,9 +86,11 @@ struct xls_value* xls_value_make_true();
 struct xls_value* xls_value_make_false();
 
 // Returns a string representation of the given value `v`.
+XLS_DLL_EXPORT
 bool xls_value_to_string(const struct xls_value* v, char** string_out);
 
 // Returns whether `v` is equal to `w`.
+XLS_DLL_EXPORT
 bool xls_value_eq(const struct xls_value* v, const struct xls_value* w);
 
 // Note: We define the format preference enum with a fixed width integer type
@@ -111,8 +120,10 @@ bool xls_value_to_string_format_preference(
     char** error_out, char** result_out);
 
 // Deallocates a value, e.g. one as created by `xls_parse_typed_value`.
+XLS_DLL_EXPORT
 void xls_value_free(struct xls_value* v);
 
+XLS_DLL_EXPORT
 void xls_package_free(struct xls_package* p);
 
 // Frees the given `c_str` -- the C string should have been allocated by the
@@ -132,8 +143,9 @@ void xls_c_str_free(char* c_str);
 bool xls_package_to_string(const struct xls_package* p, char** string_out);
 
 // Parses IR text to a package.
-
+//
 // Note: `filename` may be nullptr.
+XLS_DLL_EXPORT
 bool xls_parse_ir_package(const char* ir, const char* filename,
                           char** error_out,
                           struct xls_package** xls_package_out);
@@ -142,6 +154,7 @@ bool xls_parse_ir_package(const char* ir, const char* filename,
 //
 // Note: the returned function does not need to be freed, it is tied to the
 // package's lifetime.
+XLS_DLL_EXPORT
 bool xls_package_get_function(struct xls_package* package,
                               const char* function_name, char** error_out,
                               struct xls_function** result_out);
@@ -177,6 +190,7 @@ bool xls_function_type_to_string(struct xls_function_type* xls_function_type,
 // Interprets the given `function` using the given `args` (an array of size
 // `argc`) -- interpretation runs to a function result placed in `result_out`,
 // or `error_out` is populated and false is returned in the event of an error.
+XLS_DLL_EXPORT
 bool xls_interpret_function(struct xls_function* function, size_t argc,
                             const struct xls_value** args, char** error_out,
                             struct xls_value** result_out);
