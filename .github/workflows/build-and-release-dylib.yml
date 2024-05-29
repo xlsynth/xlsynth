@@ -13,10 +13,9 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v2
 
-    - name: Set up Bazel
-      uses: actions/setup-bazel@v1
-      with:
-        bazel-version: '6.5.0' # Specify the Bazel version you need
+    - name: Install Bazel
+      run: |
+        brew install bazel
 
     - name: Build Bazel target
       run: |
