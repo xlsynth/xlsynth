@@ -2,8 +2,6 @@ name: Build and Release Bazel Target
 
 on:
   push:
-    branches:
-      - 'cdleary/2024-05-28-crate-dso-branch'
     tags:
       - '*'
 
