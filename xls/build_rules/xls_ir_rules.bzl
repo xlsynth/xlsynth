@@ -1138,31 +1138,31 @@ def _xls_ir_cc_library_impl(ctx):
         toolchain = None,
     )
 
-    ctx.actions.run_shell(
-        inputs = [unformatted_header_file],
-        outputs = [header_file],
-        tools = [ctx.executable._clang_format],
-        progress_message = "Formatting %s" % header_file.basename,
-        command = "{clang_format} {unformatted} > {formatted}".format(
-            clang_format = ctx.executable._clang_format.path,
-            unformatted = unformatted_header_file.path,
-            formatted = header_file.path,
-        ),
-        toolchain = None,
-    )
+    #ctx.actions.run_shell(
+    #    inputs = [unformatted_header_file],
+    #    outputs = [header_file],
+    #    tools = [ctx.executable._clang_format],
+    #    progress_message = "Formatting %s" % header_file.basename,
+    #    command = "{clang_format} {unformatted} > {formatted}".format(
+    #        clang_format = ctx.executable._clang_format.path,
+    #        unformatted = unformatted_header_file.path,
+    #        formatted = header_file.path,
+    #    ),
+    #    toolchain = None,
+    #)
 
-    ctx.actions.run_shell(
-        inputs = [unformatted_source_file],
-        outputs = [source_file],
-        tools = [ctx.executable._clang_format],
-        progress_message = "Formatting %s" % source_file.basename,
-        command = "{clang_format} {unformatted} > {formatted}".format(
-            clang_format = ctx.executable._clang_format.path,
-            unformatted = unformatted_source_file.path,
-            formatted = source_file.path,
-        ),
-        toolchain = None,
-    )
+    #ctx.actions.run_shell(
+    #    inputs = [unformatted_source_file],
+    #    outputs = [source_file],
+    #    tools = [ctx.executable._clang_format],
+    #    progress_message = "Formatting %s" % source_file.basename,
+    #    command = "{clang_format} {unformatted} > {formatted}".format(
+    #        clang_format = ctx.executable._clang_format.path,
+    #        unformatted = unformatted_source_file.path,
+    #        formatted = source_file.path,
+    #    ),
+    #    toolchain = None,
+    #)
 
     return [
         DefaultInfo(
@@ -1205,12 +1205,12 @@ xls_ir_cc_library = rule(
                 doc = "Comma-separated list of nested namespaces in which to " +
                       "place the generated function.",
             ),
-            "_clang_format": attr.label(
-                executable = True,
-                allow_files = True,
-                cfg = "exec",
-                default = Label("@llvm_toolchain//:clang-format"),
-            ),
+            #"_clang_format": attr.label(
+            #    executable = True,
+            #    allow_files = True,
+            #    cfg = "exec",
+            #    default = Label("@llvm_toolchain//:clang-format"),
+            #),
         },
     ),
 )
