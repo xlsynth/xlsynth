@@ -17,6 +17,10 @@
 
 #include <stddef.h>
 
+#ifndef XLS_DLL_EXPORT
+#define XLS_DLL_EXPORT __attribute__((visibility("default")))
+#endif  // XLS_DLL_EXPORT
+
 // C API that exposes the functionality in various public headers in a way that
 // C-based FFI facilities can easily wrap.
 //
@@ -37,6 +41,7 @@
 
 extern "C" {
 
+XLS_DLL_EXPORT
 bool xls_convert_dslx_to_ir(const char* dslx, const char* path,
                             const char* module_name,
                             const char* dslx_stdlib_path,
@@ -44,6 +49,7 @@ bool xls_convert_dslx_to_ir(const char* dslx, const char* path,
                             size_t additional_search_paths_count,
                             char** error_out, char** ir_out);
 
+XLS_DLL_EXPORT
 bool xls_convert_dslx_path_to_ir(const char* path, const char* dslx_stdlib_path,
                                  const char* additional_search_paths[],
                                  size_t additional_search_paths_count,
