@@ -63,21 +63,18 @@ jobs:
     - name: Create GitHub Release
       id: create_release
       uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: ${{ env.TAG_NAME }}
         release_name: ${{ env.TAG_NAME }}
         draft: false
         prerelease: false
+        token: ${{ secrets.GITHUB_TOKEN }} # Use the built-in GitHub token directly
 
     - name: Upload Release Asset
       uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./artifacts/libxls.dylib
         asset_name: libxls.dylib
         asset_content_type: application/x-sharedlib
-
+        token: ${{ secrets.GITHUB_TOKEN }} # Use the built-in GitHub token directly
