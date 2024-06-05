@@ -65,9 +65,11 @@ bool xls_convert_dslx_path_to_ir(const char* path, const char* dslx_stdlib_path,
                                  size_t additional_search_paths_count,
                                  char** error_out, char** ir_out);
 
+XLS_DLL_EXPORT
 bool xls_optimize_ir(const char* ir, const char* top, char** error_out,
                      char** ir_out);
 
+XLS_DLL_EXPORT
 bool xls_mangle_dslx_name(const char* module_name, const char* function_name,
                           char** error_out, char** mangled_out);
 
@@ -140,6 +142,7 @@ void xls_package_free(struct xls_package* p);
 void xls_c_str_free(char* c_str);
 
 // Returns a string representation of the given IR package `p`.
+XLS_DLL_EXPORT
 bool xls_package_to_string(const struct xls_package* p, char** string_out);
 
 // Parses IR text to a package.
