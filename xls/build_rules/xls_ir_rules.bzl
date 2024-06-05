@@ -1205,12 +1205,12 @@ xls_ir_cc_library = rule(
                 doc = "Comma-separated list of nested namespaces in which to " +
                       "place the generated function.",
             ),
-            "_clang_format": attr.label(
-                executable = True,
-                allow_files = True,
-                cfg = "exec",
-                default = Label("@llvm_toolchain//:clang-format"),
-            ),
+            #"_clang_format": attr.label(
+            #    executable = True,
+            #    allow_files = True,
+            #    cfg = "exec",
+            #    default = Label("@llvm_toolchain//:clang-format"),
+            #),
         },
     ),
 )

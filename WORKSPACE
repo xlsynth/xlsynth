@@ -32,12 +32,12 @@ load("@toolchains_llvm//toolchain:deps.bzl", "bazel_toolchain_dependencies")
 
 bazel_toolchain_dependencies()
 
-load("@toolchains_llvm//toolchain:rules.bzl", "llvm_toolchain")
+#load("@toolchains_llvm//toolchain:rules.bzl", "llvm_toolchain")
 
-llvm_toolchain(
-    name = "llvm_toolchain",
-    llvm_version = "17.0.2",
-)
+#llvm_toolchain(
+#    name = "llvm_toolchain",
+#    llvm_version = "17.0.2",
+#)
 
 #load("@llvm_toolchain//:toolchains.bzl", "llvm_register_toolchains")
 #llvm_register_toolchains()
