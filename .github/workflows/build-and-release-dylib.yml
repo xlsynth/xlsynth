@@ -41,7 +41,7 @@ jobs:
     #    path: artifacts-dylib/libxls.dylib
 
     - name: Create tarball of stdlib .x files
-      run: cd xls/dslx && tar -czvf ../../artifacts-stdlib/stdlib.tar.gz stdlib/*.x
+      run: cd xls/dslx && tar -czvf ../../artifacts/stdlib.tar.gz stdlib/*.x
 
     - name: Upload artifact
       uses: actions/upload-artifact@v2
