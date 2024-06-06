@@ -53,8 +53,6 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
 
     #- name: Download artifact
     #  uses: actions/download-artifact@v2
@@ -68,6 +66,11 @@ jobs:
         name: stdlib-tarball
         path: artifacts/
 
+    - name: Print Token Scope
+      run: |
+        echo "Token: ${{ secrets.GITHUB_TOKEN }}"
+        curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://api.github.com
+
     - name: Extract tag name
       id: extract_tag
       run: |
@@ -79,12 +82,14 @@ jobs:
       id: create_release
       uses: actions/create-release@v1
       env:
+        ACTIONS_STEP_DEBUG: true
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: ${{ env.TAG_NAME }}
         release_name: ${{ env.TAG_NAME }}
         draft: false
         prerelease: false
+        token: ${{ secrets.GITHUB_TOKEN }}
 
     #- name: Upload Release Asset
     #  uses: actions/upload-release-asset@v1
