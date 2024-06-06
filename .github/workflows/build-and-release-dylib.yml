@@ -34,12 +34,6 @@ jobs:
     - name: Copy Bazel target to artifacts
       run: cp -r bazel-bin/xls/public/libxls.dylib artifacts/
 
-    - name: Copy stdlib files to artifacts
-      run: cp -r xls/dslx/stdlib/*.x artifacts/
-
-    - name: Copy modules files to artifacts
-      run: cp -r xls/modules artifacts/modules
-
     - name: Upload artifact
       uses: actions/upload-artifact@v2
       with:
@@ -53,7 +47,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v2
 
-    - name: Download artifacts
+    - name: Download artifact
       uses: actions/download-artifact@v2
       with:
         name: bazel-target
@@ -76,9 +70,8 @@ jobs:
         release_name: ${{ env.TAG_NAME }}
         draft: false
         prerelease: false
-        body: "Automated release by GitHub Actions."
 
-    - name: Upload Release Asset (dylib)
+    - name: Upload Release Asset
       uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -87,23 +80,3 @@ jobs:
         asset_path: ./artifacts/libxls.dylib
         asset_name: libxls.dylib
         asset_content_type: application/x-sharedlib
-
-    - name: Upload Stdlib Files
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./artifacts/*.x
-        asset_name: stdlib-files
-        asset_content_type: text/plain
-
-    - name: Upload Modules Files
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./artifacts/modules/**/*.x
-        asset_name: modules-files
-        asset_content_type: text/plain
