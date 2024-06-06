@@ -29,19 +29,25 @@ jobs:
         bazelisk build -c opt //xls/public:libxls.dylib
 
     - name: Create artifact directory
-      run: mkdir -p artifacts
+      run: mkdir -p artifacts-dylib artifacts-stdlib
 
     - name: Copy Bazel target to artifacts
-      run: cp -r bazel-bin/xls/public/libxls.dylib artifacts/
-
-    - name: Create tarball of stdlib .x files
-      run: cd xls/dslx && tar -czvf ../../artifacts/stdlib.tar.gz stdlib/*.x
+      run: cp -r bazel-bin/xls/public/libxls.dylib artifacts-dylib/
 
     - name: Upload artifact
       uses: actions/upload-artifact@v2
       with:
         name: bazel-target
-        path: artifacts/
+        path: artifacts-dylib/libxls.dylib
+
+    - name: Create tarball of stdlib .x files
+      run: cd xls/dslx && tar -czvf ../../artifacts-stdlib/stdlib.tar.gz stdlib/*.x
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: stdlib-tarball
+        path: artifacts-stdlib/stdlib.tar.gz
 
   release:
     needs: build
@@ -54,7 +60,13 @@ jobs:
       uses: actions/download-artifact@v2
       with:
         name: bazel-target
-        path: artifacts
+        path: artifacts-dylib/
+
+    - name: Download artifact
+      uses: actions/download-artifact@v2
+      with:
+        name: stdlib-tarball
+        path: artifacts-stdlib/
 
     - name: Extract tag name
       id: extract_tag
@@ -80,7 +92,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./artifacts/libxls.dylib
+        asset_path: ./artifacts-dylib/libxls.dylib
         asset_name: libxls.dylib
         asset_content_type: application/x-sharedlib
 
@@ -90,6 +102,6 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./artifacts/stdlib.tar.gz
+        asset_path: ./artifacts-stdlib/stdlib.tar.gz
         asset_name: stdlib.tar.gz
         asset_content_type: application/gzip
