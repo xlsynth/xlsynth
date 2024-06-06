@@ -35,7 +35,7 @@ jobs:
       run: cp -r bazel-bin/xls/public/libxls.dylib artifacts/
 
     - name: Create tarball of stdlib .x files
-      run: tar -czvf artifacts/stdlib.tar.gz -C xls/dslx stdlib/*.x
+      run: cd xls/dslx && tar -czvf ../../artifacts/stdlib.tar.gz stdlib/*.x
 
     - name: Upload artifact
       uses: actions/upload-artifact@v2
