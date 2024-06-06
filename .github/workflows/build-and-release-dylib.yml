@@ -34,8 +34,8 @@ jobs:
     - name: Copy Bazel target to artifacts
       run: cp -r bazel-bin/xls/public/libxls.dylib artifacts/
 
-    - name: Copy source files to artifacts
-      run: cp xls/dslx/stdlib/*.x artifacts/
+    - name: Create tarball of stdlib .x files
+      run: tar -czvf artifacts/stdlib.tar.gz -C xls/dslx stdlib/*.x
 
     - name: Upload artifact
       uses: actions/upload-artifact@v2
@@ -80,6 +80,16 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./artifacts
-        asset_name: ""
+        asset_path: ./artifacts/libxls.dylib
+        asset_name: libxls.dylib
         asset_content_type: application/x-sharedlib
+
+    - name: Upload stdlib tarball
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./artifacts/stdlib.tar.gz
+        asset_name: stdlib.tar.gz
+        asset_content_type: application/gzip
