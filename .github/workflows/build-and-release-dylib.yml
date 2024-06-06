@@ -24,15 +24,18 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-bazel-
 
-    - name: Build Bazel target
-      run: |
-        bazelisk build -c opt //xls/public:libxls.dylib
+    #- name: Build Bazel target
+    #  run: |
+    #    bazelisk build -c opt //xls/public:libxls.dylib
 
     - name: Create artifact directory
       run: mkdir -p artifacts
 
-    - name: Copy Bazel target to artifacts
-      run: cp -r bazel-bin/xls/public/libxls.dylib artifacts/
+    #- name: Copy Bazel target to artifacts
+    #  run: cp -r bazel-bin/xls/public/libxls.dylib artifacts/
+
+    - name: Fake dylib artifact creation
+      run: touch artifacts/libxls.dylib
 
     - name: Upload artifact
       uses: actions/upload-artifact@v2
