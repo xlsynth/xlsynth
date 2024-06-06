@@ -41,8 +41,9 @@ load("@toolchains_llvm//toolchain:deps.bzl", "bazel_toolchain_dependencies")
 
 bazel_toolchain_dependencies()
 
+# We disable the use of hermetic LLVM toolchain as it does not work on OS X.
 #load("@toolchains_llvm//toolchain:rules.bzl", "llvm_toolchain")
-
+#
 #llvm_toolchain(
 #    name = "llvm_toolchain",
 #    llvm_version = "17.0.6",
