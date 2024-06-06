@@ -70,7 +70,7 @@ jobs:
       id: create_release
       uses: actions/create-release@v1
       env:
-        RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: ${{ env.TAG_NAME }}
         release_name: ${{ env.TAG_NAME }}
@@ -81,7 +81,7 @@ jobs:
     - name: Upload Release Asset (dylib)
       uses: actions/upload-release-asset@v1
       env:
-        RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./artifacts/libxls.dylib
@@ -91,7 +91,7 @@ jobs:
     - name: Upload Stdlib Files
       uses: actions/upload-release-asset@v1
       env:
-        RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./artifacts/*.x
@@ -101,7 +101,7 @@ jobs:
     - name: Upload Modules Files
       uses: actions/upload-release-asset@v1
       env:
-        RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./artifacts/modules/**/*.x
