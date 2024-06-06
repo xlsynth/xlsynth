@@ -29,7 +29,7 @@ jobs:
     #    bazelisk build -c opt //xls/public:libxls.dylib
 
     - name: Create artifact directory
-      run: mkdir -p artifacts-dylib artifacts-stdlib
+      run: mkdir -p artifacts
 
     #- name: Copy Bazel target to artifacts
     #  run: cp -r bazel-bin/xls/public/libxls.dylib artifacts-dylib/
@@ -47,7 +47,7 @@ jobs:
       uses: actions/upload-artifact@v2
       with:
         name: stdlib-tarball
-        path: artifacts-stdlib/stdlib.tar.gz
+        path: artifacts/stdlib.tar.gz
 
   release:
     needs: build
@@ -62,11 +62,11 @@ jobs:
     #    name: bazel-target
     #    path: artifacts-dylib/
 
-    - name: Download artifact
+    - name: Download artifacts
       uses: actions/download-artifact@v2
       with:
-        name: stdlib-tarball
-        path: artifacts-stdlib/
+        name: all-artifacts
+        path: artifacts/
 
     - name: Extract tag name
       id: extract_tag
@@ -102,6 +102,6 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./artifacts-stdlib/stdlib.tar.gz
+        asset_path: ./artifacts/stdlib.tar.gz
         asset_name: stdlib.tar.gz
         asset_content_type: application/gzip
