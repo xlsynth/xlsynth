@@ -53,7 +53,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v2
 
-    - name: Download artifact
+    - name: Download artifacts
       uses: actions/download-artifact@v2
       with:
         name: bazel-target
@@ -66,6 +66,9 @@ jobs:
         echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
         echo "Extracted tag name: $TAG_NAME"
 
+    - name: Debug Extracted Tag Name
+      run: echo "Tag Name is: ${{ env.TAG_NAME }}"
+
     - name: Create GitHub Release
       id: create_release
       uses: actions/create-release@v1
@@ -76,8 +79,12 @@ jobs:
         release_name: ${{ env.TAG_NAME }}
         draft: false
         prerelease: false
+        body: "Automated release by GitHub Actions."
 
-    - name: Upload Release Asset
+    - name: Debug Release Output
+      run: echo "Release URL: ${{ steps.create_release.outputs.upload_url }}"
+
+    - name: Upload Release Asset (dylib)
       uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
