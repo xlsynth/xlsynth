@@ -62,10 +62,10 @@ jobs:
     #    name: bazel-target
     #    path: artifacts-dylib/
 
-    - name: Download artifacts
+    - name: Download artifact
       uses: actions/download-artifact@v2
       with:
-        name: all-artifacts
+        name: stdlib-tarball
         path: artifacts/
 
     - name: Extract tag name
