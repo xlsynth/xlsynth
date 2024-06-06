@@ -24,21 +24,21 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-bazel-
 
-    - name: Build Bazel target
-      run: |
-        bazelisk build -c opt //xls/public:libxls.dylib
+    #- name: Build Bazel target
+    #  run: |
+    #    bazelisk build -c opt //xls/public:libxls.dylib
 
     - name: Create artifact directory
       run: mkdir -p artifacts-dylib artifacts-stdlib
 
-    - name: Copy Bazel target to artifacts
-      run: cp -r bazel-bin/xls/public/libxls.dylib artifacts-dylib/
+    #- name: Copy Bazel target to artifacts
+    #  run: cp -r bazel-bin/xls/public/libxls.dylib artifacts-dylib/
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: bazel-target
-        path: artifacts-dylib/libxls.dylib
+    #- name: Upload artifact
+    #  uses: actions/upload-artifact@v2
+    #  with:
+    #    name: bazel-target
+    #    path: artifacts-dylib/libxls.dylib
 
     - name: Create tarball of stdlib .x files
       run: cd xls/dslx && tar -czvf ../../artifacts-stdlib/stdlib.tar.gz stdlib/*.x
@@ -56,11 +56,11 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v2
 
-    - name: Download artifact
-      uses: actions/download-artifact@v2
-      with:
-        name: bazel-target
-        path: artifacts-dylib/
+    #- name: Download artifact
+    #  uses: actions/download-artifact@v2
+    #  with:
+    #    name: bazel-target
+    #    path: artifacts-dylib/
 
     - name: Download artifact
       uses: actions/download-artifact@v2
@@ -86,15 +86,15 @@ jobs:
         draft: false
         prerelease: false
 
-    - name: Upload Release Asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./artifacts-dylib/libxls.dylib
-        asset_name: libxls.dylib
-        asset_content_type: application/x-sharedlib
+    #- name: Upload Release Asset
+    #  uses: actions/upload-release-asset@v1
+    #  env:
+    #    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    #  with:
+    #    upload_url: ${{ steps.create_release.outputs.upload_url }}
+    #    asset_path: ./artifacts-dylib/libxls.dylib
+    #    asset_name: libxls.dylib
+    #    asset_content_type: application/x-sharedlib
 
     - name: Upload stdlib tarball
       uses: actions/upload-release-asset@v1
