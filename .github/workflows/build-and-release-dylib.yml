@@ -37,10 +37,13 @@ jobs:
     - name: Copy Bazel target to artifacts
       run: cp -r bazel-bin/xls/public/libxls.dylib artifacts/
 
-    - name: Upload artifact
+    - name: Tarball stdlib files to artifacts
+      run: tar -czvvf artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
+
+    - name: Upload artifacts
       uses: actions/upload-artifact@v2
       with:
-        name: bazel-target
+        name: artifacts
         path: artifacts/
 
   release:
@@ -52,7 +55,7 @@ jobs:
     - name: Download artifact
       uses: actions/download-artifact@v2
       with:
-        name: bazel-target
+        name: artifacts
         path: artifacts
 
     - name: Extract tag name
@@ -74,4 +77,4 @@ jobs:
         TAG_NAME: ${{ env.TAG_NAME }}
       run: |
         export GH_TOKEN=${{ secrets.GITHUB_TOKEN }}
-        gh release create "$TAG_NAME" artifacts/libxls.dylib --title "Release $TAG_NAME" --notes "Automated release of $TAG_NAME"
+        gh release create "$TAG_NAME" artifacts/libxls.dylib artifacts/dslx_stdlib.tar.gz --title "Release $TAG_NAME" --notes "Automated release of $TAG_NAME"
