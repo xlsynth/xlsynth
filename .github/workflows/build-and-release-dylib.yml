@@ -80,8 +80,9 @@ jobs:
         path: linux-artifacts/
 
   release:
-    needs: build-osx
-    needs: build-linux
+    needs:
+      - build-osx
+      - build-linux
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
