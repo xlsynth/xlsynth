@@ -196,3 +196,11 @@ cc_binary(
     deps = [":runtime_build_actions"],
     copts = ["-fvisibility=hidden"],
 )
+
+cc_binary(
+    name = "libxls.so",
+    srcs = ["c_api.cc", "c_api.h"],
+    linkshared = True,
+    deps = [":runtime_build_actions"],
+    copts = ["-fvisibility=hidden"],
+)
