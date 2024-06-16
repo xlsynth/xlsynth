@@ -189,6 +189,10 @@ cc_binary(
     name = "libxls.so",
     srcs = ["c_api.cc", "c_api.h"],
     linkshared = True,
-    deps = [":runtime_build_actions"],
+    deps = [
+        ":runtime_build_actions",
+        "//xls/interpreter:ir_interpreter",
+        "//xls/ir:ir_parser",
+    ],
     copts = ["-fvisibility=hidden"],
 )
