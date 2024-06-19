@@ -43,6 +43,7 @@ cc_library(
         "//xls/dslx:parse_and_typecheck",
         "//xls/dslx:warning_kind",
         "//xls/dslx/frontend:ast",
+        "//xls/dslx/ir_convert:conversion_info",
         "//xls/dslx/ir_convert:ir_converter",
         "//xls/interpreter:serial_proc_runtime",
         "//xls/ir",
@@ -61,6 +62,7 @@ cc_test(
     data = glob(["testdata/*.ir"]),
     deps = [
         ":ir_wrapper",
+        "@com_google_googletest//:gtest",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
@@ -77,6 +79,5 @@ cc_test(
         "//xls/ir:value",
         "//xls/ir:value_view",
         "//xls/jit:function_jit",
-        "@com_google_googletest//:gtest",
     ],
 )

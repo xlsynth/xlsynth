@@ -22,7 +22,7 @@ package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//xls:xls_internal"],
     features = [
-        #"layering_check",  TODO(google/xls#1411)
+        "layering_check",
         "parse_headers",
     ],
     licenses = ["notice"],  # Apache 2.0
@@ -129,6 +129,9 @@ cc_library(
 cc_binary(
     name = "extract_interface_main",
     srcs = ["extract_interface_main.cc"],
+    features = [
+        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
+    ],
     deps = [
         ":extract_interface",
         "//xls/common:exit_status",
@@ -157,6 +160,75 @@ cc_test(
         "//xls/ir:function_builder",
         "//xls/ir:ir_test_base",
         "//xls/ir:source_location",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
+cc_library(
+    name = "extract_segment",
+    srcs = ["extract_segment.cc"],
+    hdrs = ["extract_segment.h"],
+    deps = [
+        "//xls/common/status:ret_check",
+        "//xls/common/status:status_macros",
+        "//xls/ir",
+        "//xls/ir:bits",
+        "//xls/ir:function_builder",
+        "//xls/ir:type",
+        "//xls/passes:node_dependency_analysis",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_binary(
+    name = "extract_segment_main",
+    srcs = ["extract_segment_main.cc"],
+    deps = [
+        ":extract_segment",
+        "//xls/common:exit_status",
+        "//xls/common:init_xls",
+        "//xls/common/file:filesystem",
+        "//xls/common/status:ret_check",
+        "//xls/common/status:status_macros",
+        "//xls/ir",
+        "//xls/public:ir_parser",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+py_test(
+    name = "extract_segment_main_test",
+    srcs = ["extract_segment_main_test.py"],
+    data = [":extract_segment_main"],
+    python_version = "PY3",
+    srcs_version = "PY3",
+    deps = [
+        "//xls/common:runfiles",
+        "@com_google_absl_py//absl/testing:absltest",
+    ],
+)
+
+cc_test(
+    name = "extract_segment_test",
+    srcs = ["extract_segment_test.cc"],
+    deps = [
+        ":extract_segment",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/common/status:status_macros",
+        "//xls/ir:bits",
+        "//xls/ir:function_builder",
+        "//xls/ir:ir_matcher",
+        "//xls/ir:ir_test_base",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -400,6 +472,9 @@ cc_library(
     name = "proto_to_dslx",
     srcs = ["proto_to_dslx.cc"],
     hdrs = ["proto_to_dslx.h"],
+    features = [
+        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
+    ],
     deps = [
         "//xls/common:math_util",
         "//xls/common:proto_adaptor_utils",
@@ -445,6 +520,9 @@ cc_binary(
 cc_test(
     name = "proto_to_dslx_test",
     srcs = ["proto_to_dslx_test.cc"],
+    features = [
+        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
+    ],
     deps = [
         ":proto_to_dslx",
         "//xls/common:xls_gunit_main",
@@ -601,6 +679,7 @@ cc_binary(
         "//xls/dslx:mangle",
         "//xls/dslx:parse_and_typecheck",
         "//xls/dslx:warning_kind",
+        "//xls/dslx/ir_convert:conversion_info",
         "//xls/dslx/ir_convert:ir_converter",
         "//xls/interpreter:ir_interpreter",
         "//xls/interpreter:random_value",
@@ -670,6 +749,9 @@ cc_library(
 cc_test(
     name = "eval_utils_test",
     srcs = ["eval_utils_test.cc"],
+    features = [
+        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
+    ],
     deps = [
         ":eval_utils",
         ":proc_channel_values_cc_proto",
@@ -797,6 +879,7 @@ cc_binary(
         ":opt_main",
     ],
     deps = [
+        ":extract_segment",
         "//xls/common:exit_status",
         "//xls/common:init_xls",
         "//xls/common:subprocess",
@@ -1015,6 +1098,7 @@ proto_library(
     name = "codegen_flags_proto",
     srcs = ["codegen_flags.proto"],
     visibility = ["//xls:xls_users"],
+    deps = ["//xls/ir:xls_ir_interface_proto"],
 )
 
 py_proto_library(
@@ -1036,7 +1120,9 @@ cc_library(
     deps = [
         ":codegen_flags_cc_proto",
         "//xls/common/file:filesystem",
+        "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
+        "//xls/ir:xls_ir_interface_cc_proto",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -1452,6 +1538,7 @@ cc_binary(
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:parser",
         "//xls/dslx/frontend:scanner",
+        "//xls/dslx/ir_convert:conversion_info",
         "//xls/dslx/ir_convert:convert_options",
         "//xls/dslx/ir_convert:ir_converter",
         "//xls/dslx/type_system:type",
@@ -1603,6 +1690,7 @@ proto_library(
 
 py_proto_library(
     name = "design_stats_py_pb2",
+    visibility = ["//xls:xls_utility_users"],
     deps = [":design_stats_proto"],
 )
 

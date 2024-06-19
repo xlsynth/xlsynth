@@ -23,6 +23,7 @@ load(
     "get_output_filename_value",
     "get_runfiles_for_xls",
     "get_src_ir_for_xls",
+    "get_src_like_ir_file_for_xls",
     "get_transitive_built_files_for_xls",
     "is_args_valid",
 )
@@ -37,9 +38,10 @@ load(
     "//xls/build_rules:xls_providers.bzl",
     "AotCompileInfo",
     "CODEGEN_FIELDS",
-    "ConvIRInfo",
+    "ConvIrInfo",
     "DslxInfo",
-    "OptIRInfo",
+    "IrFileInfo",
+    "OptIrArgInfo",
     "SCHEDULING_FIELDS",
 )
 load(
@@ -128,6 +130,7 @@ def _convert_to_ir(ctx, src):
       A tuple with the following elements in the order presented:
         1. The runfiles to convert the IR file.
         1. The converted IR file.
+        1. The binary ir-interface proto
     """
     ir_converter_tool = ctx.executable._xls_ir_converter_tool
     IR_CONV_FLAGS = (
@@ -160,7 +163,11 @@ def _convert_to_ir(ctx, src):
     is_args_valid(ir_conv_args, IR_CONV_FLAGS)
 
     ir_conv_args["top"] = ctx.attr.dslx_top
-    my_args = args_to_string(ir_conv_args)
+    my_args = ctx.actions.args()
+    for flag, value in ir_conv_args.items():
+        # NB Using format because some of the values are 'true/false' which
+        # don't mix well with short-flags.
+        my_args.add("--{}={}".format(flag, value))
 
     ir_filename = get_output_filename_value(
         ctx,
@@ -168,27 +175,27 @@ def _convert_to_ir(ctx, src):
         ctx.attr.name + _IR_FILE_EXTENSION,
     )
     ir_file = ctx.actions.declare_file(ir_filename)
+    interface_proto = ctx.actions.declare_file(ctx.attr.name + ".interface.binpb")
+    my_args.add("-interface_proto_file", interface_proto.path)
+    my_args.add("-output_file", ir_file.path)
+    my_args.add(src.path)
 
     # Get runfiles
     runfiles = get_runfiles_for_xls(ctx, [], [src])
 
-    ctx.actions.run_shell(
-        outputs = [ir_file],
+    ctx.actions.run(
+        outputs = [ir_file, interface_proto],
         # The IR converter executable is a tool needed by the action.
         tools = [ir_converter_tool],
         # The files required for converting the DSLX source file.
         inputs = runfiles.files,
-        command = "{} {} {} > {}".format(
-            ir_converter_tool.path,
-            my_args,
-            src.path,
-            ir_file.path,
-        ),
+        arguments = [my_args],
+        executable = ir_converter_tool,
         mnemonic = "ConvertDSLX",
         progress_message = "Converting DSLX file to XLS IR: %s" % (src.path),
         toolchain = None,
     )
-    return runfiles, ir_file
+    return runfiles, ir_file, interface_proto
 
 def _optimize_ir(ctx, src, original_input_files):
     """Returns the runfiles and a File referencing the optimized IR file.
@@ -223,10 +230,12 @@ def _optimize_ir(ctx, src, original_input_files):
         opt_ir_args.setdefault("top", ctx.attr.top)
 
     args = ctx.actions.args()
-    args.add(src)
+    args.add(src.ir_file)
 
     for flag, value in opt_ir_args.items():
-        args.add("--" + flag, value)
+        # Need to handle that some flag values are things like 'true' and
+        # 'false' that need to be handled carefully.
+        args.add("--{}={}".format(flag, value))
 
     if ctx.attr.ram_rewrites:
         ram_rewrites = []
@@ -259,7 +268,7 @@ def _optimize_ir(ctx, src, original_input_files):
     log_file = ctx.actions.declare_file(opt_log_filename)
     args.add("--alsologto", log_file)
 
-    runfiles = get_runfiles_for_xls(ctx, [], [src] + ram_rewrite_files + debug_src_files + original_input_files)
+    runfiles = get_runfiles_for_xls(ctx, [], [src.ir_file] + ram_rewrite_files + debug_src_files + original_input_files)
     ctx.actions.run(
         outputs = [opt_ir_file, log_file],
         executable = ctx.executable._xls_opt_ir_tool,
@@ -267,7 +276,7 @@ def _optimize_ir(ctx, src, original_input_files):
         inputs = runfiles.files,
         arguments = [args],
         mnemonic = "OptimizeIR",
-        progress_message = "Optimizing IR file: %s" % (src.path),
+        progress_message = "Optimizing IR file: %s" % (src.ir_file.path),
         toolchain = None,
     )
     return runfiles, opt_ir_file
@@ -307,8 +316,8 @@ def get_ir_equivalence_test_cmd(
 
     cmd = "{} {} {} {}\n".format(
         ir_equivalence_tool.short_path,
-        src_0.short_path,
-        src_1.short_path,
+        src_0.ir_file.short_path,
+        src_1.ir_file.short_path,
         my_args,
     )
 
@@ -321,7 +330,7 @@ def get_ir_equivalence_test_cmd(
     runfiles = get_runfiles_for_xls(
         ctx,
         [ir_equivalence_tool_runfiles],
-        [src_0, src_1],
+        [src_0.ir_file, src_1.ir_file],
     )
     return runfiles, cmd
 
@@ -365,7 +374,7 @@ def get_eval_ir_test_cmd(ctx, src, append_cmd_line_args = True):
     wsroot_dslx_path = ":{}".format(wsroot) if wsroot != "" else ""
 
     # Get workspaces for the source as well.
-    dslx_srcs = [src]
+    dslx_srcs = [src.ir_file]
     dslx_srcs_wsroot = ":".join([s.owner.workspace_root for s in dslx_srcs] +
                                 [ctx.genfiles_dir.path + "/" + s.owner.workspace_root for s in dslx_srcs])
     dslx_srcs_wsroot_path = ":{}".format(dslx_srcs_wsroot) if dslx_srcs_wsroot != "" else ""
@@ -403,7 +412,7 @@ def get_eval_ir_test_cmd(ctx, src, append_cmd_line_args = True):
 
     cmd = "{} {} {}".format(
         ir_eval_tool.short_path,
-        src.short_path,
+        src.ir_file.short_path,
         my_args,
     )
 
@@ -416,7 +425,7 @@ def get_eval_ir_test_cmd(ctx, src, append_cmd_line_args = True):
     runfiles = get_runfiles_for_xls(
         ctx,
         [ir_eval_tool_runfiles],
-        my_runfiles + [src] + [ir_eval_tool],
+        my_runfiles + [src.ir_file] + [ir_eval_tool],
     )
 
     return runfiles, cmd
@@ -461,7 +470,7 @@ def get_benchmark_ir_cmd(ctx, src, append_cmd_line_args = True):
     # benchmark_main, such as `--compare_delay_to_synthesis=true`.
     cmd = "{} {} {} $@".format(
         benchmark_ir_tool.short_path,
-        src.short_path,
+        src.ir_file.short_path,
         my_args,
     )
 
@@ -471,7 +480,7 @@ def get_benchmark_ir_cmd(ctx, src, append_cmd_line_args = True):
 
     # Get runfiles
     benchmark_ir_tool_runfiles = ctx.attr._xls_benchmark_ir_tool[DefaultInfo].default_runfiles
-    runfiles = get_runfiles_for_xls(ctx, [benchmark_ir_tool_runfiles], [src])
+    runfiles = get_runfiles_for_xls(ctx, [benchmark_ir_tool_runfiles], [src.ir_file])
     return runfiles, cmd
 
 def get_mangled_ir_symbol(
@@ -593,8 +602,9 @@ def xls_dslx_ir_impl(ctx):
 
     Returns:
       A tuple with the following elements in the order presented:
+        1. The IrFileInfo provder
         1. The DslxInfo provider
-        1. The ConvIRInfo provider
+        1. The ConvIrInfo provider
         1. The list of built files.
         1. The runfiles.
     """
@@ -605,12 +615,13 @@ def xls_dslx_ir_impl(ctx):
 
     src = srcs[0]
 
-    runfiles, ir_file = _convert_to_ir(ctx, src)
+    runfiles, ir_file, interface_proto = _convert_to_ir(ctx, src)
 
     dslx_info = get_DslxInfo_from_dslx_library_as_input(ctx)
     return [
+        IrFileInfo(ir_file = ir_file),
         dslx_info,
-        ConvIRInfo(original_input_files = srcs, conv_ir_file = ir_file),
+        ConvIrInfo(original_input_files = srcs, ir_interface = interface_proto),
         [ir_file],
         runfiles,
     ]
@@ -625,13 +636,15 @@ def _xls_dslx_ir_impl_wrapper(ctx):
 
     Returns:
       DslxInfo provider
-      ConvIRInfo provider
+      IrFileInfo provider
+      ConvIrInfo provider
       DefaultInfo provider
     """
-    dslx_info, ir_conv_info, built_files, runfiles = (
+    ir_file, dslx_info, ir_conv_info, built_files, runfiles = (
         xls_dslx_ir_impl(ctx)
     )
     return [
+        ir_file,
         dslx_info,
         ir_conv_info,
         DefaultInfo(
@@ -676,21 +689,21 @@ def xls_ir_opt_ir_impl(ctx, src, original_input_files):
 
     Args:
       ctx: The current rule's context object.
-      src: The source file.
+      src: The source IrFileInfo.
       original_input_files: All original source files that produced this IR file (used for errors).
 
     Returns:
       A tuple with the following elements in the order presented:
-        1. The OptIRInfo provider
+        1. The IrFileInfo result
+        1. The OptIrArgInfo provider
         1. The list of built files.
         1. The runfiles.
     """
     runfiles, opt_ir_file = _optimize_ir(ctx, src, original_input_files)
     return [
-        OptIRInfo(
-            original_input_files = original_input_files,
-            input_ir_file = src,
-            opt_ir_file = opt_ir_file,
+        IrFileInfo(ir_file = opt_ir_file),
+        OptIrArgInfo(
+            unopt_ir = src,
             opt_ir_args = ctx.attr.opt_ir_args,
         ),
         [opt_ir_file],
@@ -731,16 +744,26 @@ def _xls_ir_opt_ir_impl_wrapper(ctx):
       ctx: The current rule's context object.
 
     Returns:
-      OptIRInfo provider
+      IrFileInfo provider
+      OptIrArgInfo provider
+      [ConvIrInfo provder if present]
       DefaultInfo provider
     """
-    ir_opt_info, built_files_list, runfiles = xls_ir_opt_ir_impl(
+    ir_result, ir_opt_info, built_files_list, runfiles = xls_ir_opt_ir_impl(
         ctx,
         get_src_ir_for_xls(ctx),
         get_original_input_files_for_xls(ctx),
     )
 
+    existing_infos = []
+
+    # Some of our macros end up calling this on already opt-ed IR. This works
+    # fine but it could mean multiple OptIrArgInfos in the list if we use the
+    # normal get_input_infos
+    if ConvIrInfo in ctx.attr.src:
+        existing_infos.append(ctx.attr.src[ConvIrInfo])
     return [
+        ir_result,
         ir_opt_info,
         DefaultInfo(
             files = depset(
@@ -752,7 +775,7 @@ def _xls_ir_opt_ir_impl_wrapper(ctx):
             ),
             runfiles = runfiles,
         ),
-    ]
+    ] + existing_infos
 
 xls_ir_opt_ir = rule(
     doc = """A build rule that optimizes an IR file.
@@ -800,8 +823,14 @@ def _xls_ir_equivalence_test_impl(ctx):
     Returns:
       DefaultInfo provider
     """
-    ir_file_a = ctx.file.src_0
-    ir_file_b = ctx.file.src_1
+    ir_file_a = get_src_like_ir_file_for_xls(ctx.attr.src_0, ctx.files.src_0)
+    ir_file_b = get_src_like_ir_file_for_xls(ctx.attr.src_1, ctx.files.src_1)
+
+    transitive_files = get_transitive_built_files_for_xls(ctx)
+    if transitive_files == None:
+        transitive_files = []
+    transitive_files.append(ctx.attr.src_0[DefaultInfo].files)
+    transitive_files.append(ctx.attr.src_1[DefaultInfo].files)
 
     runfiles, cmd = get_ir_equivalence_test_cmd(ctx, ir_file_a, ir_file_b)
     executable_file = ctx.actions.declare_file(ctx.label.name + ".sh")
@@ -821,10 +850,7 @@ def _xls_ir_equivalence_test_impl(ctx):
             runfiles = runfiles,
             files = depset(
                 direct = [executable_file],
-                transitive = get_transitive_built_files_for_xls(
-                    ctx,
-                    [ctx.attr.src_0, ctx.attr.src_1],
-                ),
+                transitive = transitive_files,
             ),
             executable = executable_file,
         ),
@@ -835,13 +861,13 @@ _two_ir_files_attrs = {
         doc = "An IR source file for the rule. A single source file must be " +
               "provided. The file must have a '.ir' extension.",
         mandatory = True,
-        allow_single_file = [_IR_FILE_EXTENSION],
+        allow_files = True,
     ),
     "src_1": attr.label(
         doc = "An IR source file for the rule. A single source file must be " +
               "provided. The file must have a '.ir' extension.",
         mandatory = True,
-        allow_single_file = [_IR_FILE_EXTENSION],
+        allow_files = True,
     ),
 }
 
@@ -1134,7 +1160,7 @@ def _xls_ir_cc_library_impl(ctx):
         arguments = [aot_basic_function_args],
         executable = aot_basic_function_tool.path,
         mnemonic = "GenerateAotWrapper",
-        progress_message = "AOT Wrapping %s" % src.path,
+        progress_message = "AOT Wrapping %s" % src.ir_file.path,
         toolchain = None,
     )
 

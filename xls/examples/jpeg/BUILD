@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@rules_hdl//verilog:providers.bzl", "verilog_library")
 load("@rules_hdl//static_timing:build_defs.bzl", "run_opensta")
 load("@rules_hdl//synthesis:build_defs.bzl", "synthesize_rtl")
-load("@rules_hdl//verilog:providers.bzl", "verilog_library")
 load(
     "//xls/build_rules:xls_build_defs.bzl",
     "cc_xls_ir_jit_wrapper",
@@ -47,7 +47,7 @@ xls_dslx_opt_ir(
 
 xls_ir_verilog(
     name = "idct_chen_5000ps_model_unit",
-    src = ":idct_chen.opt.ir",
+    src = ":idct_chen",
     codegen_args = {
         "delay_model": "unit",
         "clock_period_ps": "5000",
@@ -96,7 +96,7 @@ xls_benchmark_ir(
 
 xls_ir_verilog(
     name = "idct_chen_13000ps_model_sky130",
-    src = ":idct_chen.opt.ir",
+    src = ":idct_chen",
     codegen_args = {
         "delay_model": "sky130",
         "clock_period_ps": "13000",
@@ -142,7 +142,7 @@ xls_synthesis_metrics(
 
 xls_ir_verilog_fdo(
     name = "idct_chen_6400ps_model_sky130_fdo",
-    src = ":idct_chen.opt.ir",
+    src = ":idct_chen",
     codegen_args = {
         "delay_model": "sky130",
         "clock_period_ps": "6400",
@@ -177,7 +177,7 @@ xls_eval_ir_test(
 
 cc_xls_ir_jit_wrapper(
     name = "idct_chen_jit_wrapper",
-    src = ":idct_chen.opt.ir",
+    src = ":idct_chen",
     jit_wrapper_args = {
         "class_name": "IdctChen",
         "namespace": "xls::jpeg",
@@ -189,9 +189,9 @@ cc_test(
     srcs = ["idct_chen_jit_wrapper_test.cc"],
     deps = [
         ":idct_chen_jit_wrapper",
+        "@com_google_googletest//:gtest",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
-        "@com_google_googletest//:gtest",
     ],
 )
 
@@ -226,11 +226,11 @@ cc_test(
     deps = [
         ":constants",
         ":streams",
+        "@com_google_googletest//:gtest",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
-        "@com_google_googletest//:gtest",
     ],
 )
 
@@ -258,11 +258,11 @@ cc_test(
     srcs = ["jpeg_grm_test.cc"],
     deps = [
         ":jpeg_grm",
+        "@com_google_googletest//:gtest",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/strings:str_format",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
-        "@com_google_googletest//:gtest",
     ],
 )
 

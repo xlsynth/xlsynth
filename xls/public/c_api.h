@@ -15,7 +15,7 @@
 #ifndef XLS_PUBLIC_C_API_H_
 #define XLS_PUBLIC_C_API_H_
 
-#include <stddef.h>
+#include <stddef.h>  // NOLINT(modernize-deprecated-headers)
 
 #ifndef XLS_DLL_EXPORT
 #define XLS_DLL_EXPORT __attribute__((visibility("default")))

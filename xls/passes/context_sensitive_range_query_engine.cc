@@ -227,7 +227,7 @@ class Analysis {
     // arm and selector are identical
     absl::flat_hash_map<SelectorAndArm, EquivalenceSet> equivalences;
     equivalences.reserve(interesting.state_and_nodes.size());
-    for (auto [state, interesting_nodes] : interesting.state_and_nodes) {
+    for (const auto& [state, interesting_nodes] : interesting.state_and_nodes) {
       EquivalenceSet& cur =
           equivalences
               .try_emplace(
@@ -432,6 +432,11 @@ class ProxyContextQueryEngine final : public QueryEngine {
   }
   // We're a range-analysis so no data here.
   std::optional<Bits> ImpliedNodeValue(
+      absl::Span<const std::pair<TreeBitLocation, bool>> predicate_bit_values,
+      Node* node) const override {
+    return std::nullopt;
+  }
+  std::optional<TernaryVector> ImpliedNodeTernary(
       absl::Span<const std::pair<TreeBitLocation, bool>> predicate_bit_values,
       Node* node) const override {
     return std::nullopt;

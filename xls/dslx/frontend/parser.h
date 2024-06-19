@@ -82,7 +82,7 @@ struct DslxParserOptions {
   // TODO(https://github.com/google/xls/issues/1401): Remove support for the
   // false token-param option.
   ProcNextImplicitTokenStyle proc_next_implicit_token_style =
-      ProcNextImplicitTokenStyle::kConvert;
+      ProcNextImplicitTokenStyle::kBlock;
 };
 
 class Parser : public TokenParser {
@@ -263,7 +263,8 @@ class Parser : public TokenParser {
   absl::StatusOr<ColonRef*> ParseColonRef(Bindings& bindings,
                                           ColonRef::Subject subject);
 
-  absl::StatusOr<Expr*> ParseCastOrEnumRefOrStructInstance(Bindings& bindings);
+  absl::StatusOr<Expr*> ParseCastOrEnumRefOrStructInstanceOrToken(
+      Bindings& bindings);
 
   absl::StatusOr<Expr*> ParseStructInstance(Bindings& bindings,
                                             TypeAnnotation* type = nullptr);
@@ -553,8 +554,15 @@ class Parser : public TokenParser {
   absl::Status ParseModuleAttribute();
 
   // Parses DSLX attributes, analogous to Rust's attributes.
+  //
+  // This accepts the following attributes:
+  // #[test] Expects a 'fn', returns TestFunction*
+  // #[extern_verilog(...)] Expects a fn, returns Function*
+  // #[test_proc] Expects a proc, returns TestProc*
+  // #[quickcheck(...)] Expects a fn, returns QuickCheck*
+  // #[sv_type(...)] Expects a TypeDefinition, returns TypeDefinition
   absl::StatusOr<std::variant<TestFunction*, Function*, TestProc*, QuickCheck*,
-                              std::nullptr_t>>
+                              TypeDefinition, std::nullptr_t>>
   ParseAttribute(absl::flat_hash_map<std::string, Function*>* name_to_fn,
                  Bindings& bindings, const Pos& hash_pos);
 

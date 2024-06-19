@@ -20,6 +20,7 @@ load("@bazel_skylib//lib:dicts.bzl", "dicts")
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
 load(
     "//xls/build_rules:xls_common_rules.bzl",
+    "get_input_infos",
     "get_src_ir_for_xls",
 )
 load(
@@ -36,6 +37,10 @@ load(
     "//xls/build_rules:xls_toolchains.bzl",
     "xls_toolchain_attrs",
 )
+load(
+    "//xls/build_rules:xls_utilities.bzl",
+    "BoolConfigSettingInfo",
+)
 load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain", "use_cpp_toolchain")
 
 _PROTO_FILE_EXTENSION = ".pb"
@@ -49,10 +54,10 @@ _xls_aot_files_attrs = {
         doc = "if the jit code should be compiled with msan",
         mandatory = True,
     ),
-    "save_temps_is_requested": attr.bool(
-        mandatory = True,
-        default = False,
-        doc = "True if we should emit llvm and asm code equivalents.",
+    "_save_temps_is_requested": attr.label(
+        doc = "save_temps config",
+        default = "//xls/common/config:save_temps_is_requested",
+        providers = [BoolConfigSettingInfo],
     ),
     "_jit_emulated_tls": attr.label(
         doc = "emulated tls implementation",
@@ -81,12 +86,14 @@ def _xls_aot_generate_impl(ctx):
     proto_file = ctx.actions.declare_file(out_proto_filename)
     obj_file = ctx.actions.declare_file(out_obj_filename)
     args = ctx.actions.args()
-    args.add("-input", src.path)
+    args.add("-input", src.ir_file.path)
     args.add("-top", ctx.attr.top)
     args.add("-output_object", obj_file.path)
     args.add("-output_proto", proto_file.path)
     extra_files = []
-    if ctx.attr._emit_aot_intermediates[BuildSettingInfo].value or ctx.attr.save_temps_is_requested:
+    aot_direct_request = ctx.attr._emit_aot_intermediates[BuildSettingInfo].value
+    save_temps_reqest = ctx.attr._save_temps_is_requested[BoolConfigSettingInfo].value
+    if aot_direct_request or save_temps_reqest:
         textproto_file = ctx.actions.declare_file(ctx.attr.name + ".text_proto")
         llvm_ir_file = ctx.actions.declare_file(ctx.attr.name + ".ll")
         llvm_opt_ir_file = ctx.actions.declare_file(ctx.attr.name + ".opt.ll")
@@ -107,7 +114,7 @@ def _xls_aot_generate_impl(ctx):
         args.add("--include_msan=false")
     ctx.actions.run(
         outputs = [proto_file, obj_file] + extra_files,
-        inputs = [src],
+        inputs = [src.ir_file],
         arguments = [args],
         executable = aot_compiler,
         mnemonic = "AOTCompiling",
@@ -132,9 +139,9 @@ def _xls_aot_generate_impl(ctx):
         AotCompileInfo(object_file = obj_file, proto_file = proto_file),
         DefaultInfo(files = depset([obj_file, proto_file] + extra_files)),
         CcInfo(linking_context = linking_context),
-    ]
+    ] + get_input_infos(ctx.attr.src)
 
-_xls_aot_generate = rule(
+xls_aot_generate = rule(
     implementation = _xls_aot_generate_impl,
     attrs = dicts.add(
         xls_ir_common_attrs,
@@ -146,34 +153,3 @@ _xls_aot_generate = rule(
     fragments = ["cpp"],
     toolchains = use_cpp_toolchain(),
 )
-
-def xls_aot_generate(
-        name,
-        src,
-        with_msan,
-        top = "",
-        **kwargs):
-    """Generate an aot object file and a proto describing it.
-
-    Args:
-      name: The name of the rule.
-      src: The source ir file.
-      with_msan: If the jit code should be compiled with msan.
-      top: The top of the ir file.
-      **kwargs: Additional arguments to pass to the rule.
-    """
-
-    # TODO(allight): This seems rather hacky but as far as I can tell this is
-    # the best way to hook into a config-setting. There doesn't seem to be any
-    # documentation about what providers the config_setting returns.
-    _xls_aot_generate(
-        name = name,
-        top = top,
-        src = src,
-        with_msan = with_msan,
-        save_temps_is_requested = select({
-            "//xls/common/config:save_temps_is_requested": True,
-            "//conditions:default": False,
-        }),
-        **kwargs
-    )

@@ -1378,6 +1378,13 @@ fn f(t: (u8, (u16, u32))) -> u32 {
 Here we use a "catch all" wildcard pattern in the last match arm to ensure the
 match expression always matches the input somehow.
 
+!!! WARNING
+    This "catch all" (i.e. an
+    [irrefutable pattern](https://doc.rust-lang.org/book/ch18-02-refutability.html))
+    is [currently required](https://github.com/google/xls/issues/204) in **all**
+    match expressions, even if the other match arms form an exhaustive set of
+    refutable patterns (e.g. matching against fully specified enumerators).
+
 We can also match on ranges of values using the range syntax:
 
 ```dslx
@@ -1647,7 +1654,7 @@ fn test_numerical_conversions() {
 
   // Nop (bitwidth is unchanged).
   assert_eq(s8:-2, s8_m2 as s8);
-  assert_eq(s8:-2, u8_m2 as s8);
+  assert_eq(u8:0xfe, s8_m2 as u8);
   assert_eq(u8:0xfe, u8_m2 as u8);
   assert_eq(s8:-2, u8_m2 as s8);
 }
@@ -2082,32 +2089,34 @@ A proc can create a sub-proc via the `spawn` keyword, and this "spawning"
 happens at configuration time, whereas `next` reflects the "runtime" execution;
 e.g.
 
-> WARNING: Though DSLX organizes procs into a tree based on `spawn`s the
-> underlying IR does not (yet) do so. This will be added with
-> [proc-scoped channels](./design_docs/proc_scoped_channels.md)
-> but until then a proc is only considered to be connected to another proc if
-> there is some path of channel `recv`s and `send`s through which the two procs
-> communicate within their respective `next`s.
->
-> This means that 'spawner-procs' - procs which exist only to `spawn` a network
-> of other procs with no channels of their own - have somewhat strange
-> interactions with optimization. This most often causes spawned procs
-> to be removed from opt-ir outputs. This can be worked around by manually
-> setting top to a spawned procs. See below for more information.
+!!! WARNING
+    Though DSLX organizes procs into a tree based on `spawn`s the
+    underlying IR does not (yet) do so. This will be added with
+    [proc-scoped channels](./design_docs/proc_scoped_channels.md)
+    but until then a proc is only considered to be connected to another proc if
+    there is some path of channel `recv`s and `send`s through which the two procs
+    communicate within their respective `next`s.
+    
+    This means that 'spawner-procs' - procs which exist only to `spawn` a network
+    of other procs with no channels of their own - have somewhat strange
+    interactions with optimization. This most often causes spawned procs
+    to be removed from opt-ir outputs. This can be worked around by manually
+    setting top to a spawned procs. See below for more information.
 
-NOTE: If one wishes to spawn procs one may use an empty proc with only spawns in
-the `config`, however one must manually set the `dslx_top` to the mangled name
-of the spawned proc and have a separate `xls_ir_opt_ir` target for each spawned
-proc independent group of procs. This can be used to instantiate a proc with
-template parameters. For example see the
-[proc_iota.x](https://github.com/google/xls/tree/main/xls/examples/proc_iota.x) program and
-the
-[associated build targets](https://github.com/google/xls/tree/main/xls/examples/BUILD;l=377).
-Note how the procs `spawn`ed by main are manually `opt_ir`d using the mangled
-identifiers in the build-files instead of simply using the existing 'main' proc
-to spawn them both. In almost all cases simply picking any random proc
-instantiated in the proc-tree of the true `top` to act as `dslx_top` is
-sufficient.
+!!! NOTE
+    If one wishes to spawn procs one may use an empty proc with only spawns in
+    the `config`, however one must manually set the `dslx_top` to the mangled name
+    of the spawned proc and have a separate `xls_ir_opt_ir` target for each spawned
+    proc independent group of procs. This can be used to instantiate a proc with
+    template parameters. For example see the
+    [proc_iota.x](https://github.com/google/xls/tree/main/xls/examples/proc_iota.x) program and
+    the
+    [associated build targets](https://github.com/google/xls/tree/main/xls/examples/BUILD;l=377).
+    Note how the procs `spawn`ed by main are manually `opt_ir`d using the mangled
+    identifiers in the build-files instead of simply using the existing 'main' proc
+    to spawn them both. In almost all cases simply picking any random proc
+    instantiated in the proc-tree of the true `top` to act as `dslx_top` is
+    sufficient.
 
 ```dslx-snippet
 proc Top {

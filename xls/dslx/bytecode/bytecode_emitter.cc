@@ -591,6 +591,11 @@ absl::Status BytecodeEmitter::HandleBuiltinJoin(const Invocation* node) {
   return absl::OkStatus();
 }
 
+absl::Status BytecodeEmitter::HandleBuiltinToken(const Invocation* node) {
+  Add(Bytecode::MakeLiteral(node->span(), InterpValue::MakeToken()));
+  return absl::OkStatus();
+}
+
 absl::Status BytecodeEmitter::HandleBuiltinRecvNonBlocking(
     const Invocation* node) {
   Expr* token = node->args()[0];
@@ -1071,8 +1076,8 @@ absl::Status BytecodeEmitter::HandleInvocation(const Invocation* node) {
       XLS_RETURN_IF_ERROR(node->args().at(0)->AcceptExpr(this));
 
       std::vector<FormatStep> steps;
-      steps.push_back(absl::StrCat("trace of ", node->args()[0]->ToString(),
-                                   " @ ", node->span().ToString(), ": "));
+      steps.push_back(
+          absl::StrCat("trace of ", node->args()[0]->ToString(), ": "));
       steps.push_back(options_.format_preference);
       bytecode_.push_back(Bytecode(node->span(), Bytecode::Op::kTrace,
                                    Bytecode::TraceData(std::move(steps), {})));
@@ -1110,6 +1115,9 @@ absl::Status BytecodeEmitter::HandleInvocation(const Invocation* node) {
     }
     if (name_ref->identifier() == "join") {
       return HandleBuiltinJoin(node);
+    }
+    if (name_ref->identifier() == "token") {
+      return HandleBuiltinToken(node);
     }
   }
 

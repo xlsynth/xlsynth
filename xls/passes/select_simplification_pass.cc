@@ -311,6 +311,215 @@ absl::StatusOr<std::vector<OneHotSelect*>> MaybeSplitOneHotSelect(
   return new_ohses;
 }
 
+// Any type of select with only one non-literal-zero arm can be replaced with
+// an AND.
+//
+//  sel(p, cases=[x, 0]) => and(sign_ext(p == 0), x)
+//  sel(p, cases=[0, x]) => and(sign_ext(p == 1), x)
+//  one_hot_select(p, cases=[x, 0]) => and(sign_ext(p[0]), x)
+//  one_hot_select(p, cases=[0, x]) => and(sign_ext(p[1]), x)
+//  priority_select(p, cases=[x, 0]) => and(sign_ext(p[0]), x)
+//  priority_select(p, cases=[0, x]) => and(sign_ext(p == 2), x)
+//
+//  sel(p, cases=[x], default_value=0) => and(sign_ext(p == 0), x)
+//  one_hot_select(p, cases=[x])       => and(sign_ext(p[0]), x)
+//  priority_select(p, cases=[x])      => and(sign_ext(p), x)
+//
+//  sel(p, cases=[0], default_value=x) => and(sign_ext(p != 0), x)
+//
+// If the result is not bits-typed, we can still reduce it to a two-arm select
+// against a literal zero. (If a non-bits-typed select only has two arms,
+// there's no benefit, so we won't simplify the node.)
+//
+absl::StatusOr<bool> MaybeConvertSelectToMask(Node* node,
+                                              const QueryEngine& query_engine) {
+  if (!node->OpIn({Op::kSel, Op::kOneHotSel, Op::kPrioritySel})) {
+    return false;
+  }
+  if (!node->GetType()->IsBits() && node->operands().size() <= 3) {
+    // We already have a select with at most two arms; we can't simplify this
+    // any further for non-bits-typed operands.
+    return false;
+  }
+
+  std::optional<Node*> only_nonzero_value = std::nullopt;
+  Node* nonzero_condition = nullptr;
+  switch (node->op()) {
+    default:
+      return false;
+    case Op::kSel: {
+      Select* sel = node->As<Select>();
+      std::optional<int64_t> nonzero_arm = std::nullopt;
+      if (sel->default_value().has_value() &&
+          !query_engine.IsAllZeros(*sel->default_value())) {
+        nonzero_arm = -1;
+        only_nonzero_value = sel->default_value();
+      }
+      for (int64_t arm = 0; arm < sel->cases().size(); ++arm) {
+        Node* case_value = sel->get_case(arm);
+        if (query_engine.IsAllZeros(case_value)) {
+          continue;
+        }
+        if (only_nonzero_value.has_value()) {
+          // More than one non-zero value;
+          return false;
+        }
+
+        nonzero_arm = arm;
+        only_nonzero_value = case_value;
+      }
+      if (nonzero_arm.has_value()) {
+        VLOG(2) << absl::StrFormat("Select with one non-zero case: %s",
+                                   node->ToString());
+        if (*nonzero_arm == -1) {
+          XLS_ASSIGN_OR_RETURN(
+              Node * num_cases,
+              node->function_base()->MakeNode<Literal>(
+                  node->loc(), Value(UBits(sel->cases().size(),
+                                           sel->selector()->BitCountOrDie()))));
+          XLS_ASSIGN_OR_RETURN(
+              nonzero_condition,
+              node->function_base()->MakeNode<CompareOp>(
+                  sel->loc(), sel->selector(), num_cases, Op::kUGe));
+        } else if (sel->selector()->BitCountOrDie() == 1) {
+          if (*nonzero_arm == 0) {
+            XLS_ASSIGN_OR_RETURN(nonzero_condition,
+                                 node->function_base()->MakeNode<UnOp>(
+                                     sel->loc(), sel->selector(), Op::kNot));
+          } else {
+            XLS_RET_CHECK_EQ(*nonzero_arm, 1);
+            nonzero_condition = sel->selector();
+          }
+        } else {
+          XLS_ASSIGN_OR_RETURN(
+              Node * arm_number,
+              node->function_base()->MakeNode<Literal>(
+                  node->loc(), Value(UBits(*nonzero_arm,
+                                           sel->selector()->BitCountOrDie()))));
+          XLS_ASSIGN_OR_RETURN(
+              nonzero_condition,
+              node->function_base()->MakeNode<CompareOp>(
+                  sel->loc(), sel->selector(), arm_number, Op::kEq));
+        }
+      }
+      break;
+    }
+    case Op::kOneHotSel: {
+      OneHotSelect* sel = node->As<OneHotSelect>();
+      std::optional<int64_t> nonzero_arm = std::nullopt;
+      for (int64_t arm = 0; arm < sel->cases().size(); ++arm) {
+        Node* case_value = sel->get_case(arm);
+        if (query_engine.IsAllZeros(case_value)) {
+          continue;
+        }
+        if (only_nonzero_value.has_value()) {
+          // More than one non-zero value;
+          return false;
+        }
+
+        nonzero_arm = arm;
+        only_nonzero_value = case_value;
+      }
+      if (nonzero_arm.has_value()) {
+        VLOG(2) << absl::StrFormat("One-hot select with one non-zero case: %s",
+                                   node->ToString());
+        if (sel->selector()->BitCountOrDie() == 1) {
+          XLS_RET_CHECK_EQ(*nonzero_arm, 0);
+          nonzero_condition = sel->selector();
+        } else {
+          XLS_ASSIGN_OR_RETURN(
+              nonzero_condition,
+              node->function_base()->MakeNode<BitSlice>(
+                  sel->loc(), sel->selector(), /*start=*/*nonzero_arm,
+                  /*width=*/1));
+        }
+      }
+      break;
+    }
+    case Op::kPrioritySel: {
+      PrioritySelect* sel = node->As<PrioritySelect>();
+      std::optional<int64_t> nonzero_arm = std::nullopt;
+      for (int64_t arm = 0; arm < sel->cases().size(); ++arm) {
+        Node* case_value = sel->get_case(arm);
+        if (query_engine.IsAllZeros(case_value)) {
+          continue;
+        }
+        if (only_nonzero_value.has_value()) {
+          // More than one non-zero value;
+          return false;
+        }
+
+        nonzero_arm = arm;
+        only_nonzero_value = case_value;
+      }
+      if (nonzero_arm.has_value()) {
+        VLOG(2) << absl::StrFormat("Priority select with one non-zero case: %s",
+                                   node->ToString());
+        Node* truncated_selector;
+        if (sel->selector()->BitCountOrDie() == 1) {
+          truncated_selector = sel->selector();
+        } else {
+          XLS_ASSIGN_OR_RETURN(truncated_selector,
+                               node->function_base()->MakeNode<BitSlice>(
+                                   sel->loc(), sel->selector(), /*start=*/0,
+                                   /*width=*/*nonzero_arm + 1));
+        }
+        if (*nonzero_arm == 0) {
+          nonzero_condition = truncated_selector;
+        } else {
+          XLS_ASSIGN_OR_RETURN(
+              Node * matching_value,
+              node->function_base()->MakeNode<Literal>(
+                  sel->loc(),
+                  Value(Bits::PowerOfTwo(*nonzero_arm, *nonzero_arm + 1))));
+          XLS_ASSIGN_OR_RETURN(
+              nonzero_condition,
+              node->function_base()->MakeNode<CompareOp>(
+                  sel->loc(), truncated_selector, matching_value, Op::kEq));
+        }
+      }
+      break;
+    }
+  }
+
+  if (!only_nonzero_value.has_value()) {
+    // The select can't return any non-zero value.
+    VLOG(2) << absl::StrFormat("select with no non-zero cases: %s",
+                               node->ToString());
+    XLS_RETURN_IF_ERROR(
+        node->ReplaceUsesWithNew<Literal>(ZeroOfType(node->GetType()))
+            .status());
+    return true;
+  }
+
+  XLS_RET_CHECK_NE(nonzero_condition, nullptr);
+  if (node->GetType()->IsBits()) {
+    Node* mask;
+    if (node->BitCountOrDie() == 1) {
+      mask = nonzero_condition;
+    } else {
+      XLS_ASSIGN_OR_RETURN(
+          mask, node->function_base()->MakeNode<ExtendOp>(
+                    node->loc(), nonzero_condition,
+                    /*new_bit_count=*/node->BitCountOrDie(), Op::kSignExt));
+    }
+    XLS_RETURN_IF_ERROR(
+        node->ReplaceUsesWithNew<NaryOp>(
+                std::vector<Node*>{*only_nonzero_value, mask}, Op::kAnd)
+            .status());
+    return true;
+  }
+  XLS_ASSIGN_OR_RETURN(Node * literal_zero,
+                       node->function_base()->MakeNode<Literal>(
+                           node->loc(), ZeroOfType(node->GetType())));
+  XLS_RETURN_IF_ERROR(
+      node->ReplaceUsesWithNew<Select>(nonzero_condition,
+                                       std::vector<Node*>({literal_zero}),
+                                       /*default_value=*/*only_nonzero_value)
+          .status());
+  return true;
+}
+
 absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
                                   int64_t opt_level) {
   // Select with a constant selector can be replaced with the respective
@@ -330,6 +539,33 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
       XLS_RETURN_IF_ERROR(sel->ReplaceUsesWith(sel->get_case(i)));
     }
     return true;
+  }
+
+  // Priority select where we know the selector ends with a one followed by
+  // zeros can be replaced with the selected case.
+  if (node->Is<PrioritySelect>()) {
+    PrioritySelect* sel = node->As<PrioritySelect>();
+    XLS_RET_CHECK(sel->selector()->GetType()->IsBits());
+    const TernaryVector selector =
+        query_engine.GetTernary(sel->selector()).Get({});
+    auto first_nonzero_case = absl::c_find_if(
+        selector, [](TernaryValue v) { return v != TernaryValue::kKnownZero; });
+    if (first_nonzero_case == selector.end()) {
+      // All zeros; priority select with a zero selector returns zero.
+      XLS_RETURN_IF_ERROR(
+          sel->ReplaceUsesWithNew<Literal>(ZeroOfType(sel->GetType()))
+              .status());
+      return true;
+    }
+    if (*first_nonzero_case == TernaryValue::kKnownOne) {
+      // Ends with a one followed by zeros; returns the corresponding case.
+      int64_t case_num = std::distance(selector.begin(), first_nonzero_case);
+      XLS_RETURN_IF_ERROR(sel->ReplaceUsesWith(sel->get_case(case_num)));
+      return true;
+    }
+    // Has an unknown bit before the first known one, so the result is unknown.
+    // TODO(https://github.com/google/xls/issues/1446): Trim out all cases that
+    // are known-zero or after the first known one.
   }
 
   // One-hot-select with a constant selector can be replaced with OR of the
@@ -378,41 +614,45 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
     }
   }
 
-  // OneHotSelect with identical cases can be replaced with a select between one
-  // of the identical case and the value zero where the selector is: original
-  // selector == 0
-  if (node->Is<OneHotSelect>() && node->GetType()->IsBits()) {
-    OneHotSelect* sel = node->As<OneHotSelect>();
-    if (std::all_of(sel->cases().begin(), sel->cases().end(),
-                    [&](Node* c) { return c == sel->get_case(0); })) {
+  // OneHotSelect & PrioritySelect with identical cases can be replaced with a
+  // select between one of the identical case and the value zero where the
+  // selector is: original selector == 0
+  if (node->OpIn({Op::kOneHotSel, Op::kPrioritySel}) &&
+      node->GetType()->IsBits()) {
+    Node* selector = node->Is<OneHotSelect>()
+                         ? node->As<OneHotSelect>()->selector()
+                         : node->As<PrioritySelect>()->selector();
+    absl::Span<Node* const> cases = node->Is<OneHotSelect>()
+                                        ? node->As<OneHotSelect>()->cases()
+                                        : node->As<PrioritySelect>()->cases();
+    if (absl::c_all_of(cases, [&](Node* c) { return c == cases[0]; })) {
       FunctionBase* f = node->function_base();
       XLS_ASSIGN_OR_RETURN(
           Node * selector_zero,
-          f->MakeNode<Literal>(
-              node->loc(), Value(UBits(0, sel->selector()->BitCountOrDie()))));
+          f->MakeNode<Literal>(node->loc(), ZeroOfType(selector->GetType())));
       XLS_ASSIGN_OR_RETURN(Node * is_zero,
-                           f->MakeNode<CompareOp>(node->loc(), sel->selector(),
+                           f->MakeNode<CompareOp>(node->loc(), selector,
                                                   selector_zero, Op::kEq));
       XLS_ASSIGN_OR_RETURN(
           Node * selected_zero,
-          f->MakeNode<Literal>(node->loc(),
-                               Value(UBits(0, sel->BitCountOrDie()))));
+          f->MakeNode<Literal>(node->loc(), ZeroOfType(node->GetType())));
       VLOG(2) << absl::StrFormat(
-          "Simplifying one-hot-select with identical cases: %s",
+          "Simplifying %s-select with identical cases: %s",
+          (node->Is<OneHotSelect>() ? "one-hot" : "priority"),
           node->ToString());
-      XLS_RETURN_IF_ERROR(
-          node->ReplaceUsesWithNew<Select>(
-                  is_zero, std::vector<Node*>{sel->get_case(0), selected_zero},
-                  /*default_value=*/std::nullopt)
-              .status());
+      XLS_RETURN_IF_ERROR(node->ReplaceUsesWithNew<Select>(
+                                  is_zero,
+                                  std::vector<Node*>{cases[0], selected_zero},
+                                  /*default_value=*/std::nullopt)
+                              .status());
       return true;
     }
   }
 
-  // Replace a select among tuples to a tuple of selects. Handles both
-  // kOneHotSelect and kSelect.
-  if ((node->Is<Select>() || node->Is<OneHotSelect>()) &&
-      node->GetType()->IsTuple()) {
+  // Replace a select among tuples to a tuple of selects. Handles all of select,
+  // one-hot-select, and priority-select.
+  if (node->GetType()->IsTuple() &&
+      node->OpIn({Op::kSel, Op::kOneHotSel, Op::kPrioritySel})) {
     // Construct a vector containing the element at 'tuple_index' for each
     // case of the select.
     auto elements_at_tuple_index =
@@ -470,6 +710,24 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
           node->ReplaceUsesWithNew<Tuple>(selected_elements).status());
       return true;
     }
+
+    if (node->Is<PrioritySelect>()) {
+      PrioritySelect* sel = node->As<PrioritySelect>();
+      std::vector<Node*> selected_elements;
+      for (int64_t i = 0; i < node->GetType()->AsTupleOrDie()->size(); ++i) {
+        XLS_ASSIGN_OR_RETURN(std::vector<Node*> case_elements,
+                             elements_at_tuple_index(sel->cases(), i));
+        XLS_ASSIGN_OR_RETURN(Node * selected_element,
+                             node->function_base()->MakeNode<PrioritySelect>(
+                                 node->loc(), sel->selector(), case_elements));
+        selected_elements.push_back(selected_element);
+      }
+      VLOG(2) << absl::StrFormat("Decomposing tuple-typed priority select: %s",
+                                 node->ToString());
+      XLS_RETURN_IF_ERROR(
+          node->ReplaceUsesWithNew<Tuple>(selected_elements).status());
+      return true;
+    }
   }
 
   // Common out equivalent cases in a one hot select.
@@ -509,10 +767,85 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
       std::reverse(new_selectors.begin(), new_selectors.end());
       XLS_ASSIGN_OR_RETURN(Node * new_selector,
                            f->MakeNode<Concat>(node->loc(), new_selectors));
-      VLOG(2) << absl::StrFormat("Select with equivalent cases: %s",
+      VLOG(2) << absl::StrFormat("One-hot select with equivalent cases: %s",
                                  node->ToString());
       XLS_RETURN_IF_ERROR(
           node->ReplaceUsesWithNew<OneHotSelect>(new_selector, new_cases)
+              .status());
+      return true;
+    }
+  }
+
+  // Common out equivalent cases in a priority select.
+  if (SplitsEnabled(opt_level) && node->Is<PrioritySelect>() &&
+      !node->As<PrioritySelect>()->cases().empty()) {
+    FunctionBase* f = node->function_base();
+    PrioritySelect* sel = node->As<PrioritySelect>();
+
+    // We can merge adjacent cases with the same outputs by OR-ing together
+    // the relevant bits of the selector.
+    struct SelectorRange {
+      int64_t start;
+      int64_t width = 1;
+    };
+    std::vector<SelectorRange> new_selector_ranges;
+    std::vector<Node*> new_cases;
+    new_selector_ranges.push_back({.start = 0});
+    new_cases.push_back(sel->get_case(0));
+    for (int64_t i = 1; i < sel->cases().size(); ++i) {
+      Node* old_case = sel->get_case(i);
+      if (old_case == new_cases.back()) {
+        new_selector_ranges.back().width++;
+      } else {
+        new_selector_ranges.push_back({.start = i});
+        new_cases.push_back(old_case);
+      }
+    }
+    if (new_cases.size() < sel->cases().size()) {
+      std::vector<Node*> new_selector_slices;
+      std::optional<SelectorRange> current_original_slice = std::nullopt;
+      auto commit_original_slice = [&]() -> absl::Status {
+        if (!current_original_slice.has_value()) {
+          return absl::OkStatus();
+        }
+        XLS_ASSIGN_OR_RETURN(
+            Node * selector_slice,
+            f->MakeNode<BitSlice>(node->loc(), sel->selector(),
+                                  current_original_slice->start,
+                                  current_original_slice->width));
+        new_selector_slices.push_back(selector_slice);
+        current_original_slice.reset();
+        return absl::OkStatus();
+      };
+      for (const SelectorRange& range : new_selector_ranges) {
+        if (range.width == 1 && current_original_slice.has_value()) {
+          current_original_slice->width++;
+          continue;
+        }
+
+        XLS_RETURN_IF_ERROR(commit_original_slice());
+        if (range.width == 1) {
+          current_original_slice = SelectorRange{.start = range.start};
+        } else {
+          XLS_ASSIGN_OR_RETURN(
+              Node * selector_slice,
+              f->MakeNode<BitSlice>(node->loc(), sel->selector(), range.start,
+                                    range.width));
+          XLS_ASSIGN_OR_RETURN(Node * selector_bit,
+                               f->MakeNode<BitwiseReductionOp>(
+                                   node->loc(), selector_slice, Op::kOrReduce));
+          new_selector_slices.push_back(selector_bit);
+        }
+      }
+      XLS_RETURN_IF_ERROR(commit_original_slice());
+      absl::c_reverse(new_selector_slices);
+      XLS_ASSIGN_OR_RETURN(
+          Node * new_selector,
+          f->MakeNode<Concat>(node->loc(), new_selector_slices));
+      VLOG(2) << absl::StrFormat("Priority select with equivalent cases: %s",
+                                 node->ToString());
+      XLS_RETURN_IF_ERROR(
+          node->ReplaceUsesWithNew<PrioritySelect>(new_selector, new_cases)
               .status());
       return true;
     }
@@ -525,7 +858,7 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
   // * At least one of the selected values is a constant.
   // * One of the selected values is also the selector.
   //
-  // TODO(meheff): Handle one-hot select here as well.
+  // TODO(meheff): Handle one-hot select and priority-select here as well.
   auto is_one_bit_mux = [&] {
     return node->Is<Select>() && node->GetType()->IsBits() &&
            node->BitCountOrDie() == 1 && node->operand(0)->BitCountOrDie() == 1;
@@ -560,15 +893,25 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
     return true;
   }
 
-  // Merge consecutive one-hot-select instructions if the predecessor operation
-  // has only a single use.
-  if (NarrowingEnabled(opt_level) && node->Is<OneHotSelect>()) {
-    OneHotSelect* select = node->As<OneHotSelect>();
-    absl::Span<Node* const> cases = select->cases();
-    auto is_single_user_ohs = [](Node* n) {
-      return n->Is<OneHotSelect>() && HasSingleUse(n);
+  // Merge consecutive one-hot-select or priority-select instructions if the
+  // predecessor operation has only a single use (and is of matching type).
+  if (NarrowingEnabled(opt_level) &&
+      (node->Is<OneHotSelect>() || node->Is<PrioritySelect>())) {
+    Node* selector;
+    absl::Span<Node* const> cases;
+    if (node->Is<OneHotSelect>()) {
+      selector = node->As<OneHotSelect>()->selector();
+      cases = node->As<OneHotSelect>()->cases();
+    } else {
+      XLS_RET_CHECK(node->Is<PrioritySelect>());
+      selector = node->As<PrioritySelect>()->selector();
+      cases = node->As<PrioritySelect>()->cases();
+    }
+    auto is_single_user_matching_select = [select_op = node->op()](Node* n) {
+      return n->op() == select_op && HasSingleUse(n);
     };
-    if (std::any_of(cases.begin(), cases.end(), is_single_user_ohs)) {
+    if (std::any_of(cases.begin(), cases.end(),
+                    is_single_user_matching_select)) {
       // Cases for the replacement one-hot-select.
       std::vector<Node*> new_cases;
       // Pieces of the selector for the replacement one-hot-select. These are
@@ -576,33 +919,43 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
       std::vector<Node*> new_selector_parts;
       // When iterating through the cases to perform this optimization, cases
       // which are to remain unmodified (ie, not a single-use one-hot-select)
-      // are passed over. This lambda gathers the passed over cases and updates
-      // new_cases and new_selector_parts.
+      // are passed over. This lambda gathers the passed over cases and
+      // updates new_cases and new_selector_parts.
       int64_t unhandled_selector_bits = 0;
       auto add_unhandled_selector_bits = [&](int64_t index) -> absl::Status {
         if (unhandled_selector_bits != 0) {
           XLS_ASSIGN_OR_RETURN(Node * selector_part,
                                node->function_base()->MakeNode<BitSlice>(
-                                   select->loc(), select->selector(),
+                                   node->loc(), selector,
                                    /*start=*/index - unhandled_selector_bits,
                                    /*width=*/
                                    unhandled_selector_bits));
           new_selector_parts.push_back(selector_part);
           for (int64_t i = index - unhandled_selector_bits; i < index; ++i) {
-            new_cases.push_back(select->get_case(i));
+            new_cases.push_back(cases[i]);
           }
         }
         unhandled_selector_bits = 0;
         return absl::OkStatus();
       };
-      // Iterate through the cases merging single-use one-hot-select cases.
+      // Iterate through the cases merging single-use matching-select cases.
+      Node* zero = nullptr;
       for (int64_t i = 0; i < cases.size(); ++i) {
-        if (is_single_user_ohs(cases[i])) {
-          OneHotSelect* ohs_operand = cases[i]->As<OneHotSelect>();
+        if (is_single_user_matching_select(cases[i])) {
+          Node* operand_selector;
+          absl::Span<Node* const> operand_cases;
+          if (cases[i]->Is<OneHotSelect>()) {
+            operand_selector = cases[i]->As<OneHotSelect>()->selector();
+            operand_cases = cases[i]->As<OneHotSelect>()->cases();
+          } else {
+            XLS_RET_CHECK(cases[i]->Is<PrioritySelect>());
+            operand_selector = cases[i]->As<PrioritySelect>()->selector();
+            operand_cases = cases[i]->As<PrioritySelect>()->cases();
+          }
           XLS_RETURN_IF_ERROR(add_unhandled_selector_bits(i));
-          // The selector bits for the predecessor one-hot-select need to be
-          // ANDed with the original selector bit in the successor
-          // one-hot-select. Example:
+          // The selector bits for the predecessor bit-select need to be
+          // ANDed with the original selector bit in the successor bit-select.
+          // Example:
           //
           //   X = one_hot_select(selector={A, B, C},
           //                      cases=[x, y z])
@@ -616,22 +969,54 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
           //
           XLS_ASSIGN_OR_RETURN(Node * selector_bit,
                                node->function_base()->MakeNode<BitSlice>(
-                                   select->loc(), select->selector(),
+                                   node->loc(), selector,
                                    /*start=*/i, /*width=*/1));
           XLS_ASSIGN_OR_RETURN(
               Node * selector_bit_mask,
               node->function_base()->MakeNode<ExtendOp>(
-                  select->loc(), selector_bit,
-                  /*new_bit_count=*/ohs_operand->cases().size(), Op::kSignExt));
-          XLS_ASSIGN_OR_RETURN(Node * masked_selector,
-                               node->function_base()->MakeNode<NaryOp>(
-                                   select->loc(),
-                                   std::vector<Node*>{selector_bit_mask,
-                                                      ohs_operand->selector()},
-                                   Op::kAnd));
+                  node->loc(), selector_bit,
+                  /*new_bit_count=*/operand_cases.size(), Op::kSignExt));
+          XLS_ASSIGN_OR_RETURN(
+              Node * masked_selector,
+              node->function_base()->MakeNode<NaryOp>(
+                  node->loc(),
+                  std::vector<Node*>{selector_bit_mask, operand_selector},
+                  Op::kAnd));
           new_selector_parts.push_back(masked_selector);
-          for (Node* subcase : ohs_operand->cases()) {
-            new_cases.push_back(subcase);
+          absl::c_copy(operand_cases, std::back_inserter(new_cases));
+          if (node->Is<PrioritySelect>()) {
+            // We also need to handle the scenario where this case is
+            // selected, but the case evaluates to its default value (zero).
+            Node* operand_selector_is_zero;
+            if (operand_selector->BitCountOrDie() == 1) {
+              XLS_ASSIGN_OR_RETURN(
+                  operand_selector_is_zero,
+                  node->function_base()->MakeNode<UnOp>(
+                      cases[i]->loc(), operand_selector, Op::kNot));
+            } else {
+              XLS_ASSIGN_OR_RETURN(
+                  Node * operand_selector_zero,
+                  node->function_base()->MakeNode<Literal>(
+                      cases[i]->loc(),
+                      ZeroOfType(operand_selector->GetType())));
+              XLS_ASSIGN_OR_RETURN(operand_selector_is_zero,
+                                   node->function_base()->MakeNode<CompareOp>(
+                                       node->loc(), operand_selector,
+                                       operand_selector_zero, Op::kEq));
+            }
+            XLS_ASSIGN_OR_RETURN(
+                Node * masked_operand_selector_is_zero,
+                node->function_base()->MakeNode<NaryOp>(
+                    cases[i]->loc(),
+                    std::vector<Node*>{selector_bit, operand_selector_is_zero},
+                    Op::kAnd));
+            if (zero == nullptr) {
+              XLS_ASSIGN_OR_RETURN(
+                  zero, node->function_base()->MakeNode<Literal>(
+                            cases[i]->loc(), ZeroOfType(cases[i]->GetType())));
+            }
+            new_selector_parts.push_back(masked_operand_selector_is_zero);
+            new_cases.push_back(zero);
           }
         } else {
           unhandled_selector_bits++;
@@ -642,19 +1027,39 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
       std::reverse(new_selector_parts.begin(), new_selector_parts.end());
       XLS_ASSIGN_OR_RETURN(Node * new_selector,
                            node->function_base()->MakeNode<Concat>(
-                               select->loc(), new_selector_parts));
-      VLOG(2) << absl::StrFormat("Merging consecutive one-hot-selects: %s",
-                                 node->ToString());
-      XLS_RETURN_IF_ERROR(
-          node->ReplaceUsesWithNew<OneHotSelect>(new_selector, new_cases)
-              .status());
+                               node->loc(), new_selector_parts));
+      if (node->Is<OneHotSelect>()) {
+        VLOG(2) << absl::StrFormat("Merging consecutive one-hot-selects: %s",
+                                   node->ToString());
+        XLS_RETURN_IF_ERROR(
+            node->ReplaceUsesWithNew<OneHotSelect>(new_selector, new_cases)
+                .status());
+      } else {
+        XLS_RET_CHECK(node->Is<PrioritySelect>());
+        VLOG(2) << absl::StrFormat("Merging consecutive priority-selects: %s",
+                                   node->ToString());
+        XLS_RETURN_IF_ERROR(
+            node->ReplaceUsesWithNew<PrioritySelect>(new_selector, new_cases)
+                .status());
+      }
+      return true;
+    }
+  }
+
+  // Since masking with an 'and' can't be reasoned through as easily (e.g., by
+  // conditional specialization), we want to avoid doing this until fairly
+  // late in the pipeline.
+  if (SplitsEnabled(opt_level)) {
+    XLS_ASSIGN_OR_RETURN(bool converted_to_mask,
+                         MaybeConvertSelectToMask(node, query_engine));
+    if (converted_to_mask) {
       return true;
     }
   }
 
   // Literal zero cases or positions where the selector is zero can be removed
   // from OneHotSelects and priority selects.
-  if (SplitsEnabled(opt_level) &&
+  if (NarrowingEnabled(opt_level) &&
       (node->Is<OneHotSelect>() || node->Is<PrioritySelect>())) {
     Node* selector = node->Is<OneHotSelect>()
                          ? node->As<OneHotSelect>()->selector()
@@ -666,25 +1071,58 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
       TernaryVector selector_bits = query_engine.GetTernary(selector).Get({});
       // For one-hot-selects if either the selector bit or the case value is
       // zero, the case can be removed. For priority selects, the case can be
-      // removed only if the selector bit is zero.
+      // removed only if the selector bit is zero, or if *all later* cases are
+      // removable.
+      bool all_later_cases_removable = false;
       auto is_removable_case = [&](int64_t c) {
-        return (node->Is<OneHotSelect>() && cases[c]->GetType()->IsBits() &&
-                query_engine.IsAllZeros(cases[c])) ||
-               selector_bits[c] == TernaryValue::kKnownZero;
+        if (all_later_cases_removable) {
+          return true;
+        }
+        if (node->Is<PrioritySelect>() &&
+            selector_bits[c] == TernaryValue::kKnownOne) {
+          all_later_cases_removable = true;
+          return false;
+        }
+        if (selector_bits[c] == TernaryValue::kKnownZero) {
+          return true;
+        }
+        return node->Is<OneHotSelect>() && query_engine.IsAllZeros(cases[c]);
       };
       bool has_removable_case = false;
-      std::vector<int64_t> nonzero_indices;
+      std::vector<int64_t> nonremovable_indices;
       for (int64_t i = 0; i < cases.size(); ++i) {
         if (is_removable_case(i)) {
           has_removable_case = true;
         } else {
-          nonzero_indices.push_back(i);
+          nonremovable_indices.push_back(i);
+        }
+      }
+      if (node->Is<PrioritySelect>()) {
+        // Go back and check the trailing cases; we can remove trailing zeros.
+        while (!nonremovable_indices.empty() &&
+               query_engine.IsAllZeros(cases[nonremovable_indices.back()])) {
+          nonremovable_indices.pop_back();
+        }
+      }
+      if (!SplitsEnabled(opt_level) && !nonremovable_indices.empty() &&
+          has_removable_case) {
+        // No splitting, so we can only remove the leading and trailing cases.
+        int64_t first_nonremovable_index = nonremovable_indices.front();
+        int64_t last_nonremovable_index = nonremovable_indices.back();
+        nonremovable_indices.clear();
+        for (int64_t i = first_nonremovable_index; i <= last_nonremovable_index;
+             ++i) {
+          nonremovable_indices.push_back(i);
+        }
+        if (nonremovable_indices.size() == cases.size()) {
+          // No cases are removable.
+          has_removable_case = false;
         }
       }
       if (has_removable_case) {
         // Assemble the slices of the selector which correspond to non-zero
         // cases.
-        if (nonzero_indices.empty()) {
+        if (nonremovable_indices.empty()) {
           // If all cases were zeros, just replace the op with literal zero.
           XLS_RETURN_IF_ERROR(
               node->ReplaceUsesWithNew<Literal>(ZeroOfType(node->GetType()))
@@ -692,11 +1130,12 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
           return true;
         }
         XLS_ASSIGN_OR_RETURN(Node * new_selector,
-                             GatherBits(selector, nonzero_indices));
+                             GatherBits(selector, nonremovable_indices));
         std::vector<Node*> new_cases =
-            GatherFromSequence(cases, nonzero_indices);
+            GatherFromSequence(cases, nonremovable_indices);
         VLOG(2) << absl::StrFormat(
-            "Literal zero cases removed from one-hot-/priority-select: %s",
+            "Literal zero cases removed from %s-select: %s",
+            node->Is<OneHotSelect>() ? "one-hot" : "priority",
             node->ToString());
         if (node->Is<OneHotSelect>()) {
           XLS_RETURN_IF_ERROR(
@@ -710,47 +1149,6 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
         return true;
       }
     }
-  }
-
-  // A two-way select with one arm which is literal zero can be replaced with an
-  // AND.
-  //
-  //  sel(p cases=[x, 0]) => and(sign_ext(p), x)
-  //
-  // Since 'and' can't be reasoned through by conditional specialization and
-  // other passes as easily we want to avoid doing this until fairly late in the
-  // pipeline.
-  auto is_select_with_zero = [&](Node* n) {
-    if (!n->Is<Select>()) {
-      return false;
-    }
-    Select* sel = n->As<Select>();
-    return sel->GetType()->IsBits() && sel->selector()->BitCountOrDie() == 1 &&
-           sel->cases().size() == 2 &&
-           (IsLiteralZero(sel->get_case(0)) || IsLiteralZero(sel->get_case(1)));
-  };
-  if (SplitsEnabled(opt_level) && is_select_with_zero(node)) {
-    Select* sel = node->As<Select>();
-    int64_t nonzero_case_no = IsLiteralZero(sel->get_case(0)) ? 1 : 0;
-    Node* selector = sel->selector();
-    if (nonzero_case_no == 0) {
-      XLS_ASSIGN_OR_RETURN(selector, sel->function_base()->MakeNode<UnOp>(
-                                         sel->loc(), selector, Op::kNot));
-    }
-    XLS_ASSIGN_OR_RETURN(
-        Node * sign_ext_selector,
-        node->function_base()->MakeNode<ExtendOp>(
-            node->loc(), selector,
-            /*new_bit_count=*/sel->BitCountOrDie(), Op::kSignExt));
-    VLOG(2) << absl::StrFormat("Binary select with zero case: %s",
-                               node->ToString());
-    XLS_RETURN_IF_ERROR(
-        node->ReplaceUsesWithNew<NaryOp>(
-                std::vector<Node*>{sel->get_case(nonzero_case_no),
-                                   sign_ext_selector},
-                Op::kAnd)
-            .status());
-    return true;
   }
 
   // "Squeeze" the width of the mux when bits are known to reduce the cost of
@@ -804,7 +1202,6 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
   }
 
   // Collapse consecutive two-ways selects which have share a common case. For
-
   // example:
   //
   //   s1 = select(p1, [y, x])
@@ -824,8 +1221,8 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
            n->As<Select>()->cases().size() == 2;
   };
   if (is_2way_select(node)) {
-    //  The variable names correspond to the names of the nodes in the diagrams
-    //  below.
+    //  The variable names correspond to the names of the nodes in the
+    //  diagrams below.
     Select* sel0 = node->As<Select>();
     Node* p0 = sel0->selector();
     // The values below are by each matching cases below.
@@ -1006,8 +1403,8 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
           Node * zero,
           node->function_base()->MakeNode<Literal>(
               node->loc(),
-              Value(
-                  UBits(0, /*bit_count=*/node->operand(0)->BitCountOrDie()))));
+              Value(UBits(0,
+                          /*bit_count=*/node->operand(0)->BitCountOrDie()))));
       XLS_ASSIGN_OR_RETURN(Node * operand_eq_zero,
                            node->function_base()->MakeNode<CompareOp>(
                                node->loc(), node->operand(0), zero, Op::kEq));
@@ -1025,9 +1422,9 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
             query_engine.ExactlyOneBitUnknown(node->operand(0));
         unknown_bit.has_value()) {
       Node* input = node->operand(0);
-      // When only one bit is unknown there are only two possible values, so we
-      // can strength reduce this to a select between the two possible values
-      // based on the unknown bit, which should unblock more subsequent
+      // When only one bit is unknown there are only two possible values, so
+      // we can strength reduce this to a select between the two possible
+      // values based on the unknown bit, which should unblock more subsequent
       // optimizations.
       // 1. Determine the unknown bit (for use as a selector).
       XLS_ASSIGN_OR_RETURN(
@@ -1041,8 +1438,8 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
       const int64_t input_bit_count =
           input->GetType()->AsBitsOrDie()->bit_count();
 
-      // Build up inputs for the case where the unknown value is true and false,
-      // respectively.
+      // Build up inputs for the case where the unknown value is true and
+      // false, respectively.
       InlineBitmap input_on_true(input_bit_count);
       InlineBitmap input_on_false(input_bit_count);
       int64_t seen_unknown = 0;
@@ -1063,8 +1460,8 @@ absl::StatusOr<bool> SimplifyNode(Node* node, const QueryEngine& query_engine,
           << "Query engine noted exactly one bit was unknown; saw unexpected "
              "number of unknown bits";
 
-      // Wrapper lambda that invokes the right priority for the one hot op based
-      // on the node metadata.
+      // Wrapper lambda that invokes the right priority for the one hot op
+      // based on the node metadata.
       auto do_one_hot = [&](const Bits& input) {
         OneHot* one_hot = node->As<OneHot>();
         if (one_hot->priority() == LsbOrMsb::kLsb) {

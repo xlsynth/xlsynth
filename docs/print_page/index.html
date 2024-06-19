@@ -14,7 +14,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.0, mkdocs-material-9.5.24">
+      <meta name="generator" content="mkdocs-1.6.0, mkdocs-material-9.5.27">
     
     
       
@@ -155,7 +155,7 @@
       
     </form>
     <div class="md-search__output">
-      <div class="md-search__scrollwrap" data-md-scrollfix>
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
         <div class="md-search-result" data-md-component="search-result">
           <div class="md-search-result__meta">
             Initializing search
@@ -2541,11 +2541,11 @@ colab notebooks:</p>
 <h2 id="index-install-latest-release">Install Latest Release</h2>
 <p>The following downloads the latest github repo release binaries for an x64 Linux machine:</p>
 <div class="highlight"><pre><span></span><code><span class="c1"># Determine the url of the latest release tarball.</span>
-<span class="nv">LATEST_XLS_RELEASE_TARBALL_URL</span><span class="o">=</span><span class="k">$(</span>curl<span class="w"> </span>-L<span class="w"> </span><span class="se">\</span>
+<span class="nv">LATEST_XLS_RELEASE_TARBALL_URL</span><span class="o">=</span><span class="k">$(</span>curl<span class="w"> </span>-s<span class="w"> </span>-L<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Accept: application/vnd.github+json&quot;</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;X-GitHub-Api-Version: 2022-11-28&quot;</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>https://api.github.com/repos/google/xls/releases<span class="w"> </span><span class="p">|</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>python3<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;import json; import sys; print(json.load(sys.stdin)[0][&quot;assets&quot;][0][&quot;browser_download_url&quot;])&#39;</span><span class="k">)</span>
+<span class="w">  </span>grep<span class="w"> </span>-m<span class="w"> </span><span class="m">1</span><span class="w"> </span>-o<span class="w"> </span><span class="s1">&#39;https://.*/releases/download/.*\.tar\.gz&#39;</span><span class="k">)</span>
 
 <span class="c1"># Download the tarball and unpack it, observe the version numbers for each of the included tools.</span>
 curl<span class="w"> </span>-O<span class="w"> </span>-L<span class="w"> </span><span class="si">${</span><span class="nv">LATEST_XLS_RELEASE_TARBALL_URL</span><span class="si">}</span>
@@ -2615,9 +2615,12 @@ elsewhere on disk; just create a directory somewhere (e.g.,
 <div class="highlight"><pre><span></span><code><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;build --disk_cache=</span><span class="k">$(</span>realpath<span class="w"> </span>~/.bazel_disk_cache<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span>&gt;&gt;<span class="w"> </span>~/.bazelrc
 <span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;test --disk_cache=</span><span class="k">$(</span>realpath<span class="w"> </span>~/.bazel_disk_cache<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span>&gt;&gt;<span class="w"> </span>~/.bazelrc
 </code></pre></div>
-<p>WARNING: Bazel does not automate garbage collection of this directory, so it
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>Bazel does not automate garbage collection of this directory, so it
 will grow over time without bounds. You will need to clean it up periodically,
 either manually or with an automated script.</p>
+</div>
 <p>Alternatively, you can add a <a href="https://bazel.build/remote/caching">remote cache</a>
 that takes care of garbage collection for you. This can be hosted on a personal
 server or even on the local machine. We've personally had good results with
@@ -2993,24 +2996,22 @@ line-by-line:</p>
     <code>x</code>, whose type follows its name. In this case, it's a <em><code>tuple</code></em>: a grouping
     of potentially disparate elements into a single quantity. A tuple is
     specified by listing a set of types in parentheses, as here. Our tuple has a
-    1-bit element for the sign, an 8-bit element for the biased
-    exponent, and a 23-bit element for the fractional part. In what is the
-    complete opposite of a coincidence, these fields match those of an IEEE
-    float32 number. If a function takes more than one argument, they'll be
-    comma-separated.
-    -   u1, u8, and u23 are all shortcuts for the type uN[1], uN[8], and uN[23].
-        The uN[X] construct declares an X-bit wide unsigned type. There is also
-        sN[X], which declares an X-bit wide <em>signed</em> type.
-    -   Other type shortcuts exist such as bits<a href="#tutorials-float_to_int-alias for un[x]">X</a>, bool (alias
-        for uN[1]), and u[1-64] and s[1-64], being aliases for uN[1] through
-        uN[64] and sN[1] through sN[64].</li>
+    1-bit element for the sign, an 8-bit element for the biased exponent, and a
+    23-bit element for the fractional part. In what is the complete opposite of
+    a coincidence, these fields match those of an IEEE float32 number. If a
+    function takes more than one argument, they'll be comma-separated.
+    -   <code>u1</code>, <code>u8</code>, and <code>u23</code> are all shortcuts for the type <code>uN[1]</code>, <code>uN[8]</code>,
+        and <code>uN[23]</code>. The <code>uN[X]</code> construct declares an X-bit wide unsigned
+        type. There is also <code>sN[X]</code>, which declares an X-bit wide <em>signed</em> type.
+    -   Other type shortcuts exist such as <code>bits[X]</code> (alias for <code>uN[X]</code>), <code>bool</code>
+        (alias for <code>uN[1]</code>), and <code>u[1-64]</code> and <code>s[1-64]</code>, being aliases for
+        <code>uN[1]</code> through <code>uN[64]</code> and <code>sN[1]</code> through <code>sN[64]</code>.</li>
 <li>Function return type. This function returns a signed 32-bit type, matching
     the intentions of float-to-int conversion (since floats are signed).</li>
 <li>Finally, the last line: the final statement in a function is its return
-    value. Here, we're unconditionally returning a signed 32-bit number with
-    the value <code>48879</code>. This is only temporary to
-    make the function syntactically valid - we're still learning the basics!
-    Gimme a second!</li>
+    value. Here, we're unconditionally returning a signed 32-bit number with the
+    value <code>48879</code>. This is only temporary to make the function syntactically
+    valid - we're still learning the basics! Gimme a second!</li>
 </ol>
 <p>As an aside, it's a good idea to keep a bookmark to the
 <a href="#dslx_reference">DSLX language reference</a>
@@ -3271,8 +3272,8 @@ example, which we take from the previous codelab:</p>
 size of the result and the layout of the floating-point type itself; all other
 types flow from that base definition:</p>
 <ul>
-<li><code>exp:</code>float32::bexp` size + 1 sign bit</li>
-<li><code>fraction:</code>float32::fraction` size + 1 implicit leading bit</li>
+<li><code>exp</code>: <code>float32::bexp</code> size + 1 sign bit</li>
+<li><code>fraction</code>: <code>float32::fraction</code> size + 1 implicit leading bit</li>
 </ul>
 <p>Thus, the struct declaration and function signature will be:</p>
 <div class="highlight"><pre><span></span><code><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">float</span><span class="o">&lt;</span><span class="n">EXP_SZ</span><span class="p">:</span><span class="w"> </span><span class="kt">u32</span><span class="p">,</span><span class="w"> </span><span class="n">FRACTION_SZ</span><span class="p">:</span><span class="w"> </span><span class="kt">u32</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
@@ -3352,7 +3353,7 @@ number of times</strong> within a function.</p>
 <p>A DSLX <code>for</code> loop has the following structure:</p>
 <ol>
 <li>The loop signature: this consists of three elements:
-    1.  An (index, <accumulator vars>) tuple. The index holds the current
+    1.  An <code>(index, &lt;accumulator vars&gt;)</code> tuple. The index holds the current
         iteration number, and the accumulator vars are user-specified data
         carried into the current iteration.
     2.  The type specification for the index/accumulators tuple. Note that the
@@ -3368,11 +3369,14 @@ number of times</strong> within a function.</p>
     the next iteration of the loop (for non-terminal iterations) or as the
     result of the entire expression (for the terminal iteration).</li>
 </ol>
-<p>For this specific for loop, the index variable and accumulator are <code>i</code> and
-<code>crc</code>, both of type <code>u32</code>. The iterable range expression specifies that the loop
-should execute 8 times.</p>
+<p>For this specific for loop, the index variable is unused, so we assign it to
+<code>_</code>. This indicates to the DSLX frontend that "the variable is unused but that's
+ok"; a trailing name after the underscore is also allowed to provide additional
+context. The accumulator consists of a single variable <code>crc</code>. Both index and
+accumulator are of type <code>u32</code>. The iterable range expression specifies that the
+loop should execute 8 times.</p>
 <div class="highlight"><pre><span></span><code><span class="w">  </span><span class="c1">// 8 rounds of updates.</span>
-<span class="w">  </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">i</span><span class="p">,</span><span class="w"> </span><span class="n">crc</span><span class="p">):</span><span class="w"> </span><span class="p">(</span><span class="kt">u32</span><span class="p">,</span><span class="w"> </span><span class="kt">u32</span><span class="p">)</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">range</span><span class="p">(</span><span class="kt">u32</span><span class="p">:</span><span class="mi">8</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">_</span><span class="p">,</span><span class="w"> </span><span class="n">crc</span><span class="p">):</span><span class="w"> </span><span class="p">(</span><span class="kt">u32</span><span class="p">,</span><span class="w"> </span><span class="kt">u32</span><span class="p">)</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">range</span><span class="p">(</span><span class="kt">u32</span><span class="p">:</span><span class="mi">8</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 </code></pre></div>
 <p>At the end of the loop, the calculated value is being assigned to the
 accumulator <code>crc</code> - the last expression in the loop body is assigned to the
@@ -3397,10 +3401,14 @@ understand the intended functionality first.</p>
 input and produces an output of the same size. Each element in the output
 contains the count of duplicate values seen so far in the input. The counter
 resets to 0 if a new value is found.</p>
-<p>For example, for this input:</p>
+<p>For example, suppose we have this input:</p>
 <div class="highlight"><pre><span></span><code><span class="w">  </span><span class="kd">let</span><span class="w"> </span><span class="n">input</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kt">u32</span><span class="p">[</span><span class="mi">8</span><span class="p">]:[</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="o">..</span><span class="p">.]</span>
 </code></pre></div>
-<p>the code should produce this output:</p>
+<p>This creates an 8-element
+<a href="#dslx_reference-array-type">array</a> of <code>u32</code>
+integers; the <code>...</code> at the end of the array is a shorthand to indicate
+"fill in the rest of the elements with the last value specified".</p>
+<p>The prefix scan code should produce this output:</p>
 <div class="highlight"><pre><span></span><code><span class="w">  </span><span class="n">u3</span><span class="p">[</span><span class="mi">8</span><span class="p">]:[</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span><span class="w"> </span><span class="mi">7</span><span class="p">])</span>
 </code></pre></div>
 <p>At index 0 it has not yet found any value, so it assigns a counter value of <code>0</code>.</p>
@@ -3414,7 +3422,8 @@ duplicate) and therefore adds a 1 to the counter from index 1. And so on.</p>
 <p>it should produce:</p>
 <div class="highlight"><pre><span></span><code><span class="w">  </span><span class="n">assert_eq</span><span class="p">(</span><span class="n">result</span><span class="p">,</span><span class="w"> </span><span class="n">u3</span><span class="p">[</span><span class="mi">8</span><span class="p">]:[</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">])</span>
 </code></pre></div>
-<p>The full listing is in <code>examples/dslx_intro/prefix_scan_equality.x</code>.</p>
+<p>The full listing is in
+<a href="https://github.com/google/xls/tree/main/xls/examples/dslx_intro/prefix_scan_equality.x">examples/dslx_intro/prefix_scan_equality.x</a>.</p>
 <h3 id="tutorials-prefix_scan-function-prefix_scan_eq">Function <code>prefix_scan_eq</code></h3>
 <p>The implementation displays a few interesting language features.</p>
 <p>The function prototype is straight-forward. Input is an array of 8 values of type
@@ -3423,13 +3432,14 @@ count can only be 7, which fits in 3 bits).</p>
 <div class="highlight"><pre><span></span><code><span class="k">fn</span><span class="w"> </span><span class="nf">prefix_scan_eq</span><span class="p">(</span><span class="n">x</span><span class="p">:</span><span class="w"> </span><span class="kt">u32</span><span class="p">[</span><span class="mi">8</span><span class="p">])</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">u3</span><span class="p">[</span><span class="mi">8</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
 </code></pre></div>
 <p>The first let expression produces a tuple of 3 values. It only cares about the
-last value <code>result</code>, so it stubs out the other two elements via the 'ignore'
+last value <code>result</code>, so it stubs out the other two elements via the 'unused'
 placeholder <code>_</code>.</p>
 <div class="highlight"><pre><span></span><code><span class="w">  </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">_</span><span class="p">,</span><span class="w"> </span><span class="n">_</span><span class="p">,</span><span class="w"> </span><span class="n">result</span><span class="p">)</span><span class="w"> </span><span class="o">=</span>
 </code></pre></div>
-<p>Why a 3-Tuple? Because he following loop has tuple of three values as the
-accumulator. The return type of the loop is the type of the accumulator, so
-above let needs to be of the same type.</p>
+<p>Why a 3-Tuple? Because the subsequent loop on the right hand side of this
+assignment has a tuple of three values as the accumulator. The return type of
+the loop is the type of the accumulator, so the above let needs to be of the
+same type.</p>
 <h4 id="tutorials-prefix_scan-enumerated-loop">Enumerated Loop</h4>
 <p>Using tuples as the accumulator is a convenient way to model multiple
 loop-carried values:</p>
@@ -3447,7 +3457,7 @@ a tuple consisting of a <code>u32</code> value (<code>prior</code>), a <code>u3<
 array type <code>u3[8]</code>, which is an array holding 8 elements of bit-width 3. This is
 the type of <code>result</code> in the accumulator.</p>
 <p>Looping back to the prior <code>let</code> statement, it ignores the <code>prior</code> and <code>count</code>
-members of the tuple and will only return the <code>result</code> part.</p>
+members of the tuple and will only store the <code>result</code> part.</p>
 <h4 id="tutorials-prefix_scan-a-match-expression">A Match Expression</h4>
 <p>The next expression is an interesting <code>match</code> expression. The let expression
 binds the tuple <code>(to_place, new_count): (u3, u3)</code> to the result of the following
@@ -3493,9 +3503,7 @@ accumulator in the following way.</p>
 <ul>
 <li>set element <code>prior</code> to -1, in order to not match any other value.</li>
 <li>set element <code>count</code> to 0.</li>
-<li>set element <code>result</code> to 8 0's of size <code>u3</code>. (Note that the <code>...</code> syntax
-    is short for "fill in the rest of the elements with the last value
-    specified".)</li>
+<li>set element <code>result</code> to 8 0's of size <code>u3</code>.</li>
 </ul>
 <div class="highlight"><pre><span></span><code><span class="p">}((</span><span class="kt">u32</span><span class="p">:</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="n">u3</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="n">u3</span><span class="p">[</span><span class="mi">8</span><span class="p">]:[</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="o">..</span><span class="p">.]));</span>
 </code></pre></div>
@@ -3560,18 +3568,17 @@ designed to:</p>
 channels A and B, then write their sum as the first value on channel C. The
 second activation will read the second number from each of channels A and B,
 then write their sum as the second value on channel C... and so on.</p>
-<blockquote>
-<p>[!NOTE] \
-XLS guarantees that, for each I/O operation X, the first activation's action
-(X<sub>0</sub>) will happen before the second activation's action
-(X<sub>1</sub>), and so on. Therefore, the first activation will read the
-first numbers on channels A and B, and write the first number on channel C.
-However, if a proc includes multiple I/O operations - even on the same
-channel - and these operations need to happen in a specific order (whether in
-the same activation or between activations), there is no ordering guarantee by
-default. Instead, you can express that using <strong>tokens</strong>, as we'll discuss
-later.</p>
-</blockquote>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>XLS guarantees that, for each I/O operation X, the first activation's
+action (X<sub>0</sub>) will happen before the second activation's action
+(X<sub>1</sub>), and so on. Therefore, the first activation will read the first
+numbers on channels A and B, and write the first number on channel C. However,
+if a proc includes multiple I/O operations - even on the same channel - and
+these operations need to happen in a specific order (whether in the same
+activation or between activations), there is no ordering guarantee by default.
+Instead, you can express that using <strong>tokens</strong>, as we'll discuss later.</p>
+</div>
 <h2 id="tutorials-what_is_a_proc-channels">Channels</h2>
 <p>In general, <strong>channels</strong> provide possible I/O operations each activation can
 carry out. A proc can receive from an input channel or send on an output channel
@@ -3589,15 +3596,15 @@ proceed.</p>
 <p>Sends, by contrast, are considered to be <strong>non-blocking</strong> operations; by
 default, XLS models channels as if they used infinite-depth queues, so sends can
 always complete.</p>
-<blockquote>
-<p>[!NOTE] \
-In reality, when compiled to RTL, hardware FIFOs have finite depth. By
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>In reality, when compiled to RTL, hardware FIFOs have finite depth. By
 default, XLS allows for <strong>backpressure</strong> on finite-depth channels. If the
 channel is not able to receive new data when the send should trigger, the
 activation will stall until the channel is ready. This always produces correct
 behavior in the absence of deadlocks, but can introduce deadlocks in RTL that
 did not exist at higher levels.</p>
-</blockquote>
+</div>
 <p>Using these, we can implement our first example, which reads from two channels
 and writes the sum to a third:</p>
 <div class="highlight"><pre><span></span><code><span class="k">pub</span><span class="w"> </span><span class="n">proc</span><span class="w"> </span><span class="n">adder</span><span class="w"> </span><span class="p">{</span>
@@ -3665,13 +3672,13 @@ this as follows:</p>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </code></pre></div>
-<blockquote>
-<p>[!NOTE] \
-You might be surprised that we didn't simply put the <code>data_B</code> conditional
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>You might be surprised that we didn't simply put the <code>data_B</code> conditional
 receive inside the correct branch of our <code>if</code> expression. DSLX does not
 currently allow receives to happen in conditional expressions, so we need to
 control them separately.</p>
-</blockquote>
+</div>
 <h3 id="tutorials-what_is_a_proc-state">State</h3>
 <p>Each proc can also have its own <strong>state elements</strong>, each of which is a piece of
 data of any allowed type. Each state element has an initial value, which is the
@@ -3817,11 +3824,11 @@ activation to make sure that the sends are properly sequenced, but we also need
 to pass it to the <em>next</em> activation to make sure it doesn't start serializing
 <code>B</code> until <code>A</code> is finished. (i.e., we want to prevent orders like <code>[A1, A2, B1,
 ...]</code>.) Using tokens in our state, we can write:</p>
-<blockquote>
-<p>[!NOTE] \
-This example will not work as written until DSLX supports multiple I/O
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>This example will not work as written until DSLX supports multiple I/O
 operations per channel per activation.</p>
-</blockquote>
+</div>
 <div class="highlight"><pre><span></span><code><span class="k">pub</span><span class="w"> </span><span class="n">proc</span><span class="w"> </span><span class="n">serialize</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="n">ch_in</span><span class="p">:</span><span class="w"> </span><span class="nc">chan</span><span class="o">&lt;</span><span class="n">complex_struct</span><span class="o">&gt;</span><span class="w"> </span><span class="k">in</span><span class="p">;</span>
 <span class="w">  </span><span class="n">result</span><span class="p">:</span><span class="w"> </span><span class="nc">chan</span><span class="o">&lt;</span><span class="kt">u32</span><span class="o">&gt;</span><span class="w"> </span><span class="n">out</span><span class="p">;</span>
@@ -3846,19 +3853,19 @@ operations per channel per activation.</p>
 <span class="p">}</span>
 </code></pre></div>
 <h3 id="tutorials-what_is_a_proc-timing-sensitive-operations">Timing-Sensitive Operations</h3>
-<blockquote>
-<p>[!WARNING] \
-Using timing-sensitive operations means that your circuit's behavior can
-depend on the exact details of scheduling. It is possible to write correct XLS
-code under these constraints, but the logic <strong>must</strong> work no matter how
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>Using timing-sensitive operations means that your circuit's behavior
+can depend on the exact details of scheduling. It is possible to write correct
+XLS code under these constraints, but the logic <strong>must</strong> work no matter how
 operations are pipelined, and <strong>should</strong> (within reason) be designed to be
 correct even if the number of stages in the pipeline varies. Testing/DV is
-substantially more difficult for timing-sensitive procs. As such, similar to
-how <em>unsafe</em> operations work in Rust, we recommend that you avoid using
-timing-sensitive operations except where strictly necessary. It's good
-practice to keep them confined to small well-understood procs that implement
-certain necessary behaviors.</p>
-</blockquote>
+substantially more difficult for timing-sensitive procs. As such, similar to how
+<em>unsafe</em> operations work in Rust, we recommend that you avoid using
+timing-sensitive operations except where strictly necessary. It's good practice
+to keep them confined to small well-understood procs that implement certain
+necessary behaviors.</p>
+</div>
 <p>Using streaming channels as documented above, there are some circuits that are
 simply impossible to implement; for example, you cannot implement an
 <strong>arbiter</strong>, a process that listens on multiple channels and forwards the
@@ -4918,7 +4925,7 @@ to be introduced. Specifically:</p>
 <ul>
 <li>XLS has a single IR representation which is used from the front-end down to
     the RTL-level. A single representation throughout the compiler enables
-    maximal resuse of analysis and transformation components. Often compilers
+    maximal reuse of analysis and transformation components. Often compilers
     have different specialized IRs (or "dialects") for different levels of
     abstraction which can add complexity and inhibit reusability. However, in
     XLS this tradeoff between specialization and reusability is unnecessary
@@ -6948,8 +6955,8 @@ result = assert(tkn, condition, message=&lt;string&gt;, label=&lt;string&gt;)
 <h4 id="ir_semantics-cover"><strong><code>cover</code></strong></h4>
 <p>Records the number of times the given condition evaluates to true. Just like
 <code>assert</code>, this is a software-only construct and is not emitted in a final
-hardware design. Tokens are used to sequence this operation in the graph.</p>
-<div class="highlight"><pre><span></span><code>result = cover(tkn, condition, label=&lt;string&gt;)
+hardware design.</p>
+<div class="highlight"><pre><span></span><code>result = cover(condition, label=&lt;string&gt;)
 </code></pre></div>
 <p><strong>Types</strong></p>
 <table>
@@ -6961,16 +6968,12 @@ hardware design. Tokens are used to sequence this operation in the graph.</p>
 </thead>
 <tbody>
 <tr>
-<td><code>tkn</code></td>
-<td><code>token</code></td>
-</tr>
-<tr>
 <td><code>condition</code></td>
 <td><code>bits[1]</code></td>
 </tr>
 <tr>
 <td><code>result</code></td>
-<td><code>token</code></td>
+<td><code>()</code></td>
 </tr>
 </tbody>
 </table>
@@ -7148,7 +7151,7 @@ is equivalent to <code>register_write.REG(sel(load_enable, {register_read.REG,
 data}))</code>).</p>
 <p>The <code>reset</code> and <code>load_enable</code> arguments affect the value written according to
 the following table.</p>
-<p>| <code>Register</code> reset      | <code>reset</code> value | <code>load_enable</code> value | new value     | {.sortable}
+<p>| <code>Register</code> reset      | <code>reset</code> value | <code>load_enable</code> value | new value     |
 : behavior              :               :                     :               :
 | --------------------- | ------------- | ------------------- | ------------- |
 | <code>active_low == false</code> | <code>false</code> / <code>0</code> | not present         | <code>data</code>        |
@@ -10263,6 +10266,14 @@ constants; For example, consider this variation on the above:</p>
 </code></pre></div>
 <p>Here we use a "catch all" wildcard pattern in the last match arm to ensure the
 match expression always matches the input somehow.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>This "catch all" (i.e. an
+<a href="https://doc.rust-lang.org/book/ch18-02-refutability.html">irrefutable pattern</a>)
+is <a href="https://github.com/google/xls/issues/204">currently required</a> in <strong>all</strong>
+match expressions, even if the other match arms form an exhaustive set of
+refutable patterns (e.g. matching against fully specified enumerators).</p>
+</div>
 <p>We can also match on ranges of values using the range syntax:</p>
 <div class="highlight"><pre><span></span><code><span class="k">fn</span><span class="w"> </span><span class="nf">f</span><span class="p">(</span><span class="n">x</span><span class="p">:</span><span class="w"> </span><span class="kt">u32</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">u32</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="k">match</span><span class="w"> </span><span class="n">x</span><span class="w"> </span><span class="p">{</span>
@@ -10457,7 +10468,7 @@ for semantics of numeric casts:</p>
 
 <span class="w">  </span><span class="c1">// Nop (bitwidth is unchanged).</span>
 <span class="w">  </span><span class="n">assert_eq</span><span class="p">(</span><span class="n">s8</span><span class="p">:</span><span class="o">-</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="n">s8_m2</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="n">s8</span><span class="p">);</span>
-<span class="w">  </span><span class="n">assert_eq</span><span class="p">(</span><span class="n">s8</span><span class="p">:</span><span class="o">-</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="n">u8_m2</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="n">s8</span><span class="p">);</span>
+<span class="w">  </span><span class="n">assert_eq</span><span class="p">(</span><span class="kt">u8</span><span class="p">:</span><span class="mh">0xfe</span><span class="p">,</span><span class="w"> </span><span class="n">s8_m2</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">u8</span><span class="p">);</span>
 <span class="w">  </span><span class="n">assert_eq</span><span class="p">(</span><span class="kt">u8</span><span class="p">:</span><span class="mh">0xfe</span><span class="p">,</span><span class="w"> </span><span class="n">u8_m2</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">u8</span><span class="p">);</span>
 <span class="w">  </span><span class="n">assert_eq</span><span class="p">(</span><span class="n">s8</span><span class="p">:</span><span class="o">-</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="n">u8_m2</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="n">s8</span><span class="p">);</span>
 <span class="p">}</span>
@@ -10848,8 +10859,9 @@ where channels are connected and the communicating process hierarchy is created.
 <p>A proc can create a sub-proc via the <code>spawn</code> keyword, and this "spawning"
 happens at configuration time, whereas <code>next</code> reflects the "runtime" execution;
 e.g.</p>
-<blockquote>
-<p>WARNING: Though DSLX organizes procs into a tree based on <code>spawn</code>s the
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>Though DSLX organizes procs into a tree based on <code>spawn</code>s the
 underlying IR does not (yet) do so. This will be added with
 <a href="#design_docs-proc_scoped_channels">proc-scoped channels</a>
 but until then a proc is only considered to be connected to another proc if
@@ -10860,8 +10872,10 @@ of other procs with no channels of their own - have somewhat strange
 interactions with optimization. This most often causes spawned procs
 to be removed from opt-ir outputs. This can be worked around by manually
 setting top to a spawned procs. See below for more information.</p>
-</blockquote>
-<p>NOTE: If one wishes to spawn procs one may use an empty proc with only spawns in
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>If one wishes to spawn procs one may use an empty proc with only spawns in
 the <code>config</code>, however one must manually set the <code>dslx_top</code> to the mangled name
 of the spawned proc and have a separate <code>xls_ir_opt_ir</code> target for each spawned
 proc independent group of procs. This can be used to instantiate a proc with
@@ -10874,6 +10888,7 @@ identifiers in the build-files instead of simply using the existing 'main' proc
 to spawn them both. In almost all cases simply picking any random proc
 instantiated in the proc-tree of the true <code>top</code> to act as <code>dslx_top</code> is
 sufficient.</p>
+</div>
 <div class="highlight"><pre><span></span><code><span class="n">proc</span><span class="w"> </span><span class="n">Top</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="c1">// Channel where we&#39;ll receive values from `CountUp`.</span>
 <span class="w">    </span><span class="n">from_count_up</span><span class="p">:</span><span class="w"> </span><span class="nc">chan</span><span class="o">&lt;</span><span class="kt">u32</span><span class="o">&gt;</span><span class="w"> </span><span class="k">in</span><span class="p">;</span>
@@ -10948,10 +10963,11 @@ in a user-defined function, and thus do not live in the standard library.</p>
 <li><a href="#dslx_std-proc-related-builtins-communicating-sequential-processes">proc-related builtins (Communicating Sequential Processes)</a><ul>
 <li><a href="#dslx_std-join-sequencing-io-tokens">join: sequencing I/O tokens</a></li>
 <li><a href="#dslx_std-send-send-a-value-on-a-channel">send: send a value on a channel</a></li>
+<li><a href="#dslx_std-send_if-conditionally-send-a-value-on-a-channel">send_if: conditionally send a value on a channel</a></li>
 <li><a href="#dslx_std-recv-blocking-receive-of-a-value-from-a-channel">recv: (blocking) receive of a value from a channel</a></li>
 <li><a href="#dslx_std-recv_if-conditional-blocking-receive-of-a-value-from-a-channel">recv_if: conditional (blocking) receive of a value from a channel</a></li>
-<li><a href="#dslx_std-recv_nonblocking-non-blocking-receive-of-a-value-from-a-channel">recv_nonblocking: non-blocking receive of a value from a channel</a></li>
-<li><a href="#dslx_std-recv_if_nonblocking-conditional-non-blocking-receive-of-a-value-from-a-channel">recv_if_nonblocking: conditional non-blocking receive of a value from a channel</a></li>
+<li><a href="#dslx_std-recv_non_blocking-non-blocking-receive-of-a-value-from-a-channel">recv_non_blocking: non-blocking receive of a value from a channel</a></li>
+<li><a href="#dslx_std-recv_if_non_blocking-conditional-non-blocking-receive-of-a-value-from-a-channel">recv_if_non_blocking: conditional non-blocking receive of a value from a channel</a></li>
 </ul>
 </li>
 <li><a href="#dslx_std-import-std-dslx-standard-library-routines">import std: DSLX standard library routines</a><ul>
@@ -11023,12 +11039,15 @@ facilities that normal functions are not capable of. This is intended to help
 the user discern when they're calling "something that will behave like a normal
 function" versus "something that has special abilities beyond normal functions,
 e.g. special side-effects".</p>
-<p>NOTE: A brief note on "Parallel Primitives": the DSL is expected to grow
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>A brief note on "Parallel Primitives": the DSL is expected to grow
 additional support for use of high-level parallel primitives over time, adding
 operators for order-insensitive reductions, scans, groupings, and similar. By
 making these operations known to the compiler in their high level form, we
 potentially enable optimizations and analyses on their higher level ("lifted")
 form. As of now, <code>map</code> is the sole parallel-primitive-oriented built-in.</p>
+</div>
 <h3 id="dslx_std-add_with_carry"><code>add_with_carry</code></h3>
 <p>Operation that produces the result of the add, as well as the carry bit as an
 output. The binary add operators works similar to software programming
@@ -11098,8 +11117,11 @@ value. As a function that "takes" a function as an argument, <code>map</code> is
 built-in -- in language implementor parlance it is a <em>higher order function</em>.</p>
 <p>Implementation note: Functions are not first class values in the DSL, so the
 name of the function must be referred to directly.</p>
-<p>Note: Novel higher order functions (e.g. if a user wanted to write their own
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Novel higher order functions (e.g. if a user wanted to write their own
 <code>map</code>) cannot currently be written in user-level DSL code.</p>
+</div>
 <h3 id="dslx_std-zip"><code>zip</code></h3>
 <p><code>zip</code> places elements of two same-sized arrays together in an array of 2-tuples.</p>
 <p>Its signature is: <code>zip(lhs: T[N], rhs: U[N]) -&gt; (T, U)[N]</code>.</p>
@@ -11211,8 +11233,11 @@ set, the second if the next least significant bit and so on. If no selector bits
 are set this evaluates to zero. This function is not generally used directly
 though the compiler will when possible synthesize the equivalent code from a
 <code>match</code> expression.</p>
-<p>NOTE: This is included largely for testing purposes and for bespoke
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>This is included largely for testing purposes and for bespoke
 'intrinsic-style programming' use cases.</p>
+</div>
 <h3 id="dslx_std-priority_sel"><code>priority_sel</code></h3>
 <p>Implements a priority selector. Has the following signature:</p>
 <div class="highlight"><pre><span></span><code>fn priority_sel(selector: uN[N], cases: xN[S][M][N]) -&gt; xN[S][M]
@@ -11222,9 +11247,12 @@ though the compiler will when possible synthesize the equivalent code from a
 <p>If the selector is zero, the zero-value (of the result type) is returned.</p>
 <p>Example usage:
 <a href="https://github.com/google/xls/tree/main/xls/dslx/tests/priority_sel.x"><code>dslx/tests/priority_sel.x</code></a>.</p>
-<p>NOTE: This operator is only defined for bits types because other types do not
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>This operator is only defined for bits types because other types do not
 have defined or-operators, and conceptually <code>priority_sel</code> desugars to a masked
 or-reduction, which is why it produces the zero value when nothing is selected.</p>
+</div>
 <h3 id="dslx_std-range"><code>range</code></h3>
 <p>Returns an array filled with the sequence from inclusive <code>START</code> to exclusive
 <code>LIMIT</code>. Note that <code>START</code> and <code>LIMIT</code> must be compile-time-constant values (AKA
@@ -11437,16 +11465,19 @@ dumping of current values to stdout. For example:</p>
 corresponding source position:</p>
 <div class="highlight"><pre><span></span><code>[...]
 [ RUN UNITTEST  ] test_shifty
-I0510 14:31:17.516227 1247677 bytecode_interpreter.cc:994] x: 42 y: 4
-I0510 14:31:17.516227 1247677 bytecode_interpreter.cc:994] y as s8: 4
-I0510 14:31:17.516227 1247677 bytecode_interpreter.cc:994] x: 42 y: 7
-I0510 14:31:17.516227 1247677 bytecode_interpreter.cc:994] y as s8: -1
+I0607 10:11:02.897455  810431 shifty.x:6] x: 42 y: 4
+I0607 10:11:02.897462  810431 shifty.x:8] y as s8: 0
+I0607 10:11:02.908182  810431 shifty.x:6] x: 42 y: 7
+I0607 10:11:02.908208  810431 shifty.x:8] y as s8: -1
 [            OK ]
 [...]
 </code></pre></div>
-<p>Note: <code>trace!</code> currently exists as a builtin but is in the process of being
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><code>trace!</code> currently exists as a builtin but is in the process of being
 removed, as it provided the user with only a "global flag" way of specifying the
 desired format for output values -- <code>trace_fmt!</code> is more powerful.</p>
+</div>
 <h3 id="dslx_std-fail-assert-assertion-failure"><code>fail!</code> / <code>assert!</code>: assertion failure</h3>
 <p>The <code>fail!</code> builtin indicates a path that should not be reachable in practice.
 Its general signature is:</p>
@@ -11458,9 +11489,12 @@ produce a value:</p>
 </code></pre></div>
 <p>These can be thought of as "fatal assertions", and convert to
 Verilog/SytemVerilog assertions in generated code.</p>
-<p>Note: XLS hopes to permit users to optionally insert fatal-error-signaling
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>XLS hopes to permit users to optionally insert fatal-error-signaling
 hardware that correspond to these operations. See
 https://github.com/google/xls/issues/1352</p>
+</div>
 <p><code>fail!</code> indicates a <strong>control path that should not be reachable</strong>, <code>assert!</code>
 gives a <strong>predicate that should always be true</strong> when the statement is reached.</p>
 <p>If triggered, these raise a fatal error in simulation (e.g. via a JIT-execution
@@ -11504,9 +11538,12 @@ gates which did not insert fatal-error-indicating hardware.</p>
 Verilog identifier and is used for identifying the failure when lowered to
 SystemVerilog. At higher levels in the stack, it's unused.</p>
 <h3 id="dslx_std-cover"><code>cover!</code></h3>
-<p>NOTE: Currently, <code>cover!</code> has no effect in RTL simulators supported in XLS open
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Currently, <code>cover!</code> has no effect in RTL simulators supported in XLS open
 source (i.e. iverilog). See
 <a href="https://github.com/google/xls/issues/436">google/xls#436</a>.</p>
+</div>
 <p>The <code>cover!</code> builtin tracks how often some condition is satisfied. It desugars
 into SystemVerilog cover points. Its signature is:</p>
 <div class="highlight"><pre><span></span><code>cover!(&lt;name&gt;, &lt;condition&gt;);
@@ -11547,13 +11584,21 @@ begin.</p>
 <span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">joined</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">join</span><span class="p">(</span><span class="n">token0</span><span class="p">,</span><span class="w"> </span><span class="n">token1</span><span class="p">);</span>
 <span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">token2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">send</span><span class="p">(</span><span class="n">joined</span><span class="p">,</span><span class="w"> </span><span class="n">chan2</span><span class="p">,</span><span class="w"> </span><span class="n">another_value</span><span class="p">);</span>
 </code></pre></div>
-<p>NOTE: this routine can only be used in the body of a <code>proc</code>.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>this routine can only be used in the body of a <code>proc</code>.</p>
+</div>
 <h3 id="dslx_std-send-send-a-value-on-a-channel"><code>send</code>: send a value on a channel</h3>
 <p>The <code>send</code> builtin sends a value on a channel, taking an I/O sequencing token
 and producing a new I/O sequencing token (which can be used to order
 communication events).</p>
 <div class="highlight"><pre><span></span><code>send(tok: token, chan&lt;T&gt; out, value: T) -&gt; token
 </code></pre></div>
+<h3 id="dslx_std-send_if-conditionally-send-a-value-on-a-channel"><code>send_if</code>: conditionally send a value on a channel</h3>
+<div class="highlight"><pre><span></span><code>send_if(tok: token, chan&lt;T&gt; out, predicate: bool, value: T) -&gt; token
+</code></pre></div>
+<p>The <code>send_if</code> builtin does a send on a channel as described in [<code>send</code>][#send],
+but only attempts to do so if the given predicate is true.</p>
 <h3 id="dslx_std-recv-blocking-receive-of-a-value-from-a-channel"><code>recv</code>: (blocking) receive of a value from a channel</h3>
 <p>The <code>recv</code> builtin does a "blocking" <code>recv</code> of a value from a channel -- it is
 blocking in the sense that the current activation of the <code>proc</code> cannot complete
@@ -11566,23 +11611,26 @@ used to force a sequencing of the <code>recv</code> with respect to other I/O op
 but only attempts to do so if the given predicate is true.</p>
 <div class="highlight"><pre><span></span><code>recv_if(tok: token, c: chan&lt;T&gt; in, predicate: bool, default_value: T) -&gt; (token, T)
 </code></pre></div>
-<h3 id="dslx_std-recv_nonblocking-non-blocking-receive-of-a-value-from-a-channel"><code>recv_nonblocking</code>: non-blocking receive of a value from a channel</h3>
+<h3 id="dslx_std-recv_non_blocking-non-blocking-receive-of-a-value-from-a-channel"><code>recv_non_blocking</code>: non-blocking receive of a value from a channel</h3>
 <p>Performs a non-blocking receive from channel <code>c</code> -- if the channel is empty the
 <code>default_value</code> is returned as the result, and the <code>bool</code> in the result
 indicates whether the value originated from the channel (i.e. <code>true</code> means the
 value came from the channel).</p>
-<div class="highlight"><pre><span></span><code>recv_nonblocking(tok: token, c: chan&lt;T&gt; in, default_value: T) -&gt; (token, T, bool)
+<div class="highlight"><pre><span></span><code>recv_non_blocking(tok: token, c: chan&lt;T&gt; in, default_value: T) -&gt; (token, T, bool)
 </code></pre></div>
-<p>NOTE: non-blocking operations make a block latency sensitive and can no longer
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>non-blocking operations make a block latency sensitive and can no longer
 be described as pure "Kahn Process Networks", which means that the design's
 correctness is more sensitive to the chosen schedule, and thus design
 verification should occur on the scheduled design.</p>
-<h3 id="dslx_std-recv_if_nonblocking-conditional-non-blocking-receive-of-a-value-from-a-channel"><code>recv_if_nonblocking</code>: conditional non-blocking receive of a value from a channel</h3>
-<p>As <code>recv_nonblocking</code> is above, but with an additional predicate that indicates
+</div>
+<h3 id="dslx_std-recv_if_non_blocking-conditional-non-blocking-receive-of-a-value-from-a-channel"><code>recv_if_non_blocking</code>: conditional non-blocking receive of a value from a channel</h3>
+<p>As <code>recv_non_blocking</code> is above, but with an additional predicate that indicates
 whether we should attempt to do the nonblocking receive from the channel. If
 this predicate is false, the default value will be provided and the returned
 boolean will be false.</p>
-<div class="highlight"><pre><span></span><code>recv_nonblocking(tok: token, c: chan&lt;T&gt; in, predicate: bool, default_value: T) -&gt; (token, T, bool)
+<div class="highlight"><pre><span></span><code>recv_if_non_blocking(tok: token, c: chan&lt;T&gt; in, predicate: bool, default_value: T) -&gt; (token, T, bool)
 </code></pre></div>
 <h2 id="dslx_std-import-std-dslx-standard-library-routines"><code>import std</code>: DSLX standard library routines</h2>
 <h3 id="dslx_std-bits-type-properties">Bits Type Properties</h3>
@@ -12386,9 +12434,12 @@ described in the
   //xls/fuzzer:run_fuzz_multiprocess \
   -- --crash_path=/tmp/crashers-$(date +&#39;%Y-%m-%d&#39;) --seed=0 --duration=8h
 </code></pre></div>
-<p>NOTE: The <code>--seed=0</code> flag makes the fuzzer run from a deterministic seed, so the
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The <code>--seed=0</code> flag makes the fuzzer run from a deterministic seed, so the
 same sequence of examples will be tested each time command line invocation. To
 run non-deterministically, do not provide the <code>--seed</code> flag.</p>
+</div>
 <p>The XLS fuzzer generates a sequence of randomly generated DSLX functions and a
 set of random inputs to each function often with interesting bit patterns.</p>
 <p>Given that stimulus, the fuzz driver performs the following actions some of
@@ -12746,8 +12797,11 @@ and resumed more easily than an AST-walking native interpreter, as its full
 state can be captured as <code>{PC, stack}</code> instead of some traversal state
 in native execution, which makes it very suitable for modeling independent
 processes, such as <code>Proc</code>s.</p>
-<p>NOTE: The bytecode interpreter system is under active construction and does not
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The bytecode interpreter system is under active construction and does not
 yet support the full set of DSLX functionality.</p>
+</div>
 <div class="toc">
 <ul>
 <li><a href="#dslx_bytecode_interpreter-bytecode-interpreter">Bytecode interpreter</a><ul>
@@ -13465,11 +13519,14 @@ estimation refinements in XLS. For now, FDO is disabled by default
 <li><code>--fdo_yosys_path=...</code> Absolute path of yosys.</li>
 <li><code>--fdo_sta_path=...</code> Absolute path of OpenSTA.</li>
 <li><code>--fdo_synthesis_libraries=...</code> Synthesis and STA libraries.</li>
+<li><code>--fdo_default_driver_cell=...</code> Cell to assume is driving primary inputs.</li>
+<li><code>--fdo_default_load=...</code> Cell to assume is being driven by primary outputs.</li>
 </ul>
 <h1 id="codegen_options-naming">Naming</h1>
 <p>Some names can be set at codegen via the following flags:</p>
 <ul>
 <li><code>--module_name=...</code> sets the name of the generated verilog module.</li>
+<li><code>--output_port_name=....</code> sets the name of the output port for functions.</li>
 <li>For functions, <code>--input_valid_signal=...</code> and <code>--output_valid_signal=...</code>
     adds and sets the name of valid signals when <code>--generator</code> is set to
     <code>pipeline</code>.</li>
@@ -14201,6 +14258,63 @@ xls_benchmark_verilog(<a href="#bazel_rules_macros-xls_benchmark_verilog-name">n
 <tr>
 <td style="text-align: left;"><a id="xls_benchmark_verilog-verilog_target"></a>verilog_target</td>
 <td style="text-align: left;">The verilog target to benchmark.</td>
+<td style="text-align: left;"><a href="https://bazel.build/concepts/labels">Label</a></td>
+<td style="text-align: left;">optional</td>
+<td style="text-align: left;"><code>None</code></td>
+</tr>
+</tbody>
+</table>
+<p><a id="xls_delay_model_generation"></a></p>
+<h2 id="bazel_rules_macros-xls_delay_model_generation">xls_delay_model_generation</h2>
+<pre>
+xls_delay_model_generation(<a href="#bazel_rules_macros-xls_delay_model_generation-name">name</a>, <a href="#bazel_rules_macros-xls_delay_model_generation-samples_file">samples_file</a>, <a href="#bazel_rules_macros-xls_delay_model_generation-standard_cells">standard_cells</a>)
+</pre>
+
+<p>Builds a script to generate an XLS delay model for one PDK corner.</p>
+<p>This rule gathers the locations of the required dependencies
+(Yosys, OpenSTA, helper scripts, and cell libraries) and
+generates a wrapper script that invokes "run_timing_characterization"
+with the dependency locations provided as args.</p>
+<p>Any extra runtime args will get passed in to the
+"run_timing_characterization" script (e.g. "--debug" or "--quick_run").</p>
+<p>The script must be "run" from the root of the workspace
+to perform the timing characterization.  The output textproto
+will be produced in the current directory (which, as just
+stated, must be the root of the workspace).</p>
+<p>Currently, only a subset of XLS operators are characterized,
+including most arithmetic, logical, and shift operators.
+However, many common operators such as "concat", "bit_slice",
+and "encode" are missing, and so the delay model that is
+currently produced should be considered INCOMPLETE.</p>
+<p><strong>ATTRIBUTES</strong></p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Name</th>
+<th style="text-align: left;">Description</th>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">Mandatory</th>
+<th style="text-align: left;">Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><a id="xls_delay_model_generation-name"></a>name</td>
+<td style="text-align: left;">A unique name for this target.</td>
+<td style="text-align: left;"><a href="https://bazel.build/concepts/labels#target-names">Name</a></td>
+<td style="text-align: left;">required</td>
+<td style="text-align: left;"></td>
+</tr>
+<tr>
+<td style="text-align: left;"><a id="xls_delay_model_generation-samples_file"></a>samples_file</td>
+<td style="text-align: left;">Proto providing sample points.</td>
+<td style="text-align: left;"><a href="https://bazel.build/concepts/labels">Label</a></td>
+<td style="text-align: left;">optional</td>
+<td style="text-align: left;"><code>None</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><a id="xls_delay_model_generation-standard_cells"></a>standard_cells</td>
+<td style="text-align: left;">Target for the PDK; will use the target's default corner.</td>
 <td style="text-align: left;"><a href="https://bazel.build/concepts/labels">Label</a></td>
 <td style="text-align: left;">optional</td>
 <td style="text-align: left;"><code>None</code></td>
@@ -15102,60 +15216,6 @@ xls_benchmark_ir(
 <tr>
 <td style="text-align: left;"><a id="xls_benchmark_ir-kwargs"></a>kwargs</td>
 <td style="text-align: left;"><p align="center"> - </p></td>
-<td style="text-align: left;">none</td>
-</tr>
-</tbody>
-</table>
-<p><a id="xls_delay_model_generation"></a></p>
-<h2 id="bazel_rules_macros-xls_delay_model_generation">xls_delay_model_generation</h2>
-<pre>
-xls_delay_model_generation(<a href="#bazel_rules_macros-xls_delay_model_generation-name">name</a>, <a href="#bazel_rules_macros-xls_delay_model_generation-standard_cells">standard_cells</a>, <a href="#bazel_rules_macros-xls_delay_model_generation-samples_file">samples_file</a>, <a href="#bazel_rules_macros-xls_delay_model_generation-kwargs">kwargs</a>)
-</pre>
-
-<p>Generate an XLS delay model for one PDK corner.</p>
-<p>This macro gathers the locations of the required dependencies
-(Yosys, OpenSTA, helper scripts, and cell libraries) and
-generates a wrapper script that invokes "run_timing_characterization"
-with the dependency locations provided as args.</p>
-<p>Any extra runtime args will get passed in to the
-"run_timing_characterization" script (e.g. "--debug" or "--quick_run").</p>
-<p>The script must be "run" from the root of the workspace
-to perform the timing characterization.  The output textproto
-will be produced in the current directory (which, as just
-stated, must be the root of the workspace).</p>
-<p>Currently, only a subset of XLS operators are characterized,
-including most arithmetic, logical, and shift operators.
-However, many common operators such as "concat", "bit_slice",
-and "encode" are missing, and so the delay model that is
-currently produced should be considered INCOMPLETE.</p>
-<p><strong>PARAMETERS</strong></p>
-<table>
-<thead>
-<tr>
-<th style="text-align: left;">Name</th>
-<th style="text-align: left;">Description</th>
-<th style="text-align: left;">Default Value</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td style="text-align: left;"><a id="xls_delay_model_generation-name"></a>name</td>
-<td style="text-align: left;">Used as basename for both the script and the output textproto.</td>
-<td style="text-align: left;">none</td>
-</tr>
-<tr>
-<td style="text-align: left;"><a id="xls_delay_model_generation-standard_cells"></a>standard_cells</td>
-<td style="text-align: left;">Label for the PDK (possibly specifying a non-default corner), with the assumption that $location will return the timing (Liberty) library for the PDK corner.</td>
-<td style="text-align: left;">none</td>
-</tr>
-<tr>
-<td style="text-align: left;"><a id="xls_delay_model_generation-samples_file"></a>samples_file</td>
-<td style="text-align: left;">Path to proto providing sample points.</td>
-<td style="text-align: left;">none</td>
-</tr>
-<tr>
-<td style="text-align: left;"><a id="xls_delay_model_generation-kwargs"></a>kwargs</td>
-<td style="text-align: left;">Accepts add'l keyword arguments. Passed to native.genrule().</td>
 <td style="text-align: left;">none</td>
 </tr>
 </tbody>
@@ -16065,10 +16125,13 @@ domain. Example:</p>
 <div class="highlight"><pre><span></span><code>$ bazel run -c opt //xls/dslx:prove_quickcheck_main -- $PWD/xls/dslx/stdlib/std.x convert_to_from_bools
 Proven! elapsed: 115.419669ms
 </code></pre></div>
-<p>NOTE: Currently an error code is returned if it cannot be proven, but it does
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Currently an error code is returned if it cannot be proven, but it does
 not dump a counterexample to terminal. A temporary workaround is to use
 <code>--alsologtostderr --v=1</code> until that functionality is completed.</p>
-<h2 id="tools-dslx_fmt"><a href="https://github.com/google/xls/tree/main/xls/dslx/dslx_fmt.cc"><code>dslx_fmt</code></a></h2>
+</div>
+<h2 id="tools-dslxdslx_fmt"><a href="https://github.com/google/xls/tree/main/xls/dslx/dslx_fmt.cc"><code>dslx/dslx_fmt</code></a></h2>
 <p>Auto-formatter for DSLX code (i.e. <code>.x</code> files). This is analogous to rustfmt /
 clang-format.</p>
 <p>To format a file in-place, use the <code>-i</code> flag:</p>
@@ -16091,6 +16154,21 @@ xls_dslx_fmt_test(
 </code></pre></div>
 <p>Also see the
 <a href="https://google.github.io/xls/bazel_rules_macros/#xls_dslx_fmt_test">Bazel rule documentation for <code>xls_dslx_fmt_test</code></a>.</p>
+<h2 id="tools-dslxir_convertir_converter_main"><a href="https://github.com/google/xls/tree/main/xls/dslx/ir_convert/ir_converter_main.cc"><code>dslx/ir_convert/ir_converter_main</code></a></h2>
+<p>Tool for converting DSLX code (i.e. whole <code>.x</code> files or functions/procs inside
+of <code>.x</code> files) into XLS IR.</p>
+<div class="highlight"><pre><span></span><code>$ bazel build -c opt //xls/dslx/ir_convert:ir_converter_main
+$ echo &#39;fn f(x:u32)-&gt;u32{x}&#39; &gt; /tmp/my_file.x
+$ ./bazel-bin/xls/dslx/ir_convert/ir_converter_main /tmp/my_file.x &gt; /tmp/my_file.ir
+$ cat /tmp/my_file.ir
+package my_file
+
+file_number 0 &quot;/tmp/my_file.x&quot;
+
+fn __my_file__f(x: bits[32]) -&gt; bits[32] {
+  ret x: bits[32] = param(name=x)
+}
+</code></pre></div>
 <h2 id="tools-proto_to_dslx_main"><a href="https://github.com/google/xls/tree/main/xls/tools/proto_to_dslx_main.cc"><code>proto_to_dslx_main</code></a></h2>
 <p>Takes in a proto schema and a textproto instance thereof and outputs a DSLX
 module containing a DSLX type and constant matching both inputs, respectively.</p>
@@ -16370,7 +16448,7 @@ question</a>.</p>
 serves it via GitHub pages at <a href="https://google.github.io/xls">https://google.github.io/xls</a>. To render
 documentation locally as a preview, you can set up mkdocs as follows:</p>
 <div class="highlight"><pre><span></span><code><span class="go">proj/xls$ mkvirtualenv xls-mkdocs-env</span>
-<span class="go">proj/xls$ pip install mkdocs-material mkdocs-exclude mdx_truly_sane_lists</span>
+<span class="go">proj/xls$ pip install mkdocs-material mkdocs-exclude mdx_truly_sane_lists mkdocs-print-site-plugin</span>
 <span class="go">proj/xls$ mkdocs serve</span>
 </code></pre></div>
 <p>This will start a local server that you can browse to and that will update the
@@ -18336,7 +18414,7 @@ USA.</p></section><h1 class='nav-section-title-end'>Ended: NoC</h1></div>
     <script id="__config" type="application/json">{"base": "/xls/", "features": [], "search": "../assets/javascripts/workers/search.b8dbb3d2.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}}</script>
     
     
-      <script src="../assets/javascripts/bundle.081f42fc.min.js"></script>
+      <script src="../assets/javascripts/bundle.ad660dcc.min.js"></script>
       
         <script src="../js/print-site.js"></script>
       

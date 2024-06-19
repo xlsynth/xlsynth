@@ -260,17 +260,18 @@ std::unique_ptr<OptimizationCompoundPass> CreateOptimizationPassPipeline(
 absl::StatusOr<bool> RunOptimizationPassPipeline(Package* package,
                                                  int64_t opt_level) {
   std::unique_ptr<OptimizationCompoundPass> pipeline =
-      CreateOptimizationPassPipeline();
+      CreateOptimizationPassPipeline(opt_level);
   PassResults results;
   return pipeline->Run(package, OptimizationPassOptions(), &results);
 }
 
 absl::Status OptimizationPassPipelineGenerator::AddPassToPipeline(
-    OptimizationCompoundPass* pipeline, std::string_view pass_name) const {
+    OptimizationCompoundPass* pass, std::string_view pass_name) const {
   XLS_ASSIGN_OR_RETURN(auto* generator,
                        GetOptimizationRegistry().Generator(pass_name));
-  return generator->AddToPipeline(pipeline, opt_level_);
+  return generator->AddToPipeline(pass, opt_level_);
 }
+
 std::string OptimizationPassPipelineGenerator::GetAvailablePassesStr() const {
   std::ostringstream oss;
   oss << "[";

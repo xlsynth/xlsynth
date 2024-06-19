@@ -132,6 +132,28 @@ TEST(TypecheckErrorTest, ReturnTypeMismatch) {
                HasSubstr("uN[4] vs uN[5]: Return type of function body")));
 }
 
+TEST(TypecheckErrorTest, ReturnTypeMismatchWithImplicitUnitReturn) {
+  EXPECT_THAT(
+      Typecheck("fn f(x: bits[1]) -> bits[1] { x; }"),
+      StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          AllOf(HasSubstr("() vs uN[1]"),
+                HasSubstr("Return type of function body for 'f' did not match "
+                          "the annotated return type"),
+                HasSubstr("terminated with a semicolon"))));
+}
+
+TEST(TypecheckErrorTest, ReturnTypeMismatchWithExplicitUnitReturn) {
+  EXPECT_THAT(
+      Typecheck("fn f(x: bits[1]) -> bits[1] { () }"),
+      StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          AllOf(HasSubstr("() vs uN[1]"),
+                HasSubstr("Return type of function body for 'f' did not match "
+                          "the annotated return type"),
+                Not(HasSubstr("terminated with a semicolon")))));
+}
+
 TEST(TypecheckTest, Identity) {
   XLS_EXPECT_OK(Typecheck("fn f(x: u32) -> u32 { x }"));
   XLS_EXPECT_OK(Typecheck("fn f(x: bits[3], y: bits[4]) -> bits[3] { x }"));
@@ -151,12 +173,12 @@ TEST(TypecheckTest, Arithmetic) {
   // Simple add.
   XLS_EXPECT_OK(Typecheck("fn f(x: u32, y: u32) -> u32 { x + y }"));
 
-  // Wrong return type (implicitly unit).
+  // Wrong annotated return type (implicitly unit).
   EXPECT_THAT(
       Typecheck("fn f(x: u32, y: u32) { x + y }"),
       StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("uN[32] vs ()")));
 
-  // Wrong return type (implicitly unit).
+  // Wrong annotated return type (implicitly unit).
   EXPECT_THAT(Typecheck(R"(
       fn f<N: u32>(x: bits[N], y: bits[N]) { x + y }
       fn g() -> u64 { f(u64:5, u64:5) }
@@ -916,6 +938,20 @@ fn caller() {
   ()
 }
 )"));
+}
+
+TEST(TypecheckErrorTest, WidthSliceWithANonType) {
+  EXPECT_THAT(
+      Typecheck(R"(import float32;
+
+fn f(x: u32) -> u2 {
+  x[0 +: float32::F32_EXP_SZ]  // Note this is a constant not a type.
+}
+)"),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr(
+                   "Expected type-reference to refer to a type definition, but "
+                   "this did not resolve to a type; instead got: `uN[32]`")));
 }
 
 // This test adds a literal u5 to a parametric-typed number -- which only works

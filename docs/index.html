@@ -16,7 +16,7 @@
       
       
       <link rel="icon" href="assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.0, mkdocs-material-9.5.24">
+      <meta name="generator" content="mkdocs-1.6.0, mkdocs-material-9.5.27">
     
     
       
@@ -151,7 +151,7 @@
       
     </form>
     <div class="md-search__output">
-      <div class="md-search__scrollwrap" data-md-scrollfix>
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
         <div class="md-search-result" data-md-component="search-result">
           <div class="md-search-result__meta">
             Initializing search
@@ -2337,11 +2337,11 @@ colab notebooks:</p>
 <h2 id="install-latest-release">Install Latest Release</h2>
 <p>The following downloads the latest github repo release binaries for an x64 Linux machine:</p>
 <div class="highlight"><pre><span></span><code><span class="c1"># Determine the url of the latest release tarball.</span>
-<span class="nv">LATEST_XLS_RELEASE_TARBALL_URL</span><span class="o">=</span><span class="k">$(</span>curl<span class="w"> </span>-L<span class="w"> </span><span class="se">\</span>
+<span class="nv">LATEST_XLS_RELEASE_TARBALL_URL</span><span class="o">=</span><span class="k">$(</span>curl<span class="w"> </span>-s<span class="w"> </span>-L<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Accept: application/vnd.github+json&quot;</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;X-GitHub-Api-Version: 2022-11-28&quot;</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>https://api.github.com/repos/google/xls/releases<span class="w"> </span><span class="p">|</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>python3<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;import json; import sys; print(json.load(sys.stdin)[0][&quot;assets&quot;][0][&quot;browser_download_url&quot;])&#39;</span><span class="k">)</span>
+<span class="w">  </span>grep<span class="w"> </span>-m<span class="w"> </span><span class="m">1</span><span class="w"> </span>-o<span class="w"> </span><span class="s1">&#39;https://.*/releases/download/.*\.tar\.gz&#39;</span><span class="k">)</span>
 
 <span class="c1"># Download the tarball and unpack it, observe the version numbers for each of the included tools.</span>
 curl<span class="w"> </span>-O<span class="w"> </span>-L<span class="w"> </span><span class="si">${</span><span class="nv">LATEST_XLS_RELEASE_TARBALL_URL</span><span class="si">}</span>
@@ -2411,9 +2411,12 @@ elsewhere on disk; just create a directory somewhere (e.g.,
 <div class="highlight"><pre><span></span><code><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;build --disk_cache=</span><span class="k">$(</span>realpath<span class="w"> </span>~/.bazel_disk_cache<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span>&gt;&gt;<span class="w"> </span>~/.bazelrc
 <span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;test --disk_cache=</span><span class="k">$(</span>realpath<span class="w"> </span>~/.bazel_disk_cache<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span>&gt;&gt;<span class="w"> </span>~/.bazelrc
 </code></pre></div>
-<p>WARNING: Bazel does not automate garbage collection of this directory, so it
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>Bazel does not automate garbage collection of this directory, so it
 will grow over time without bounds. You will need to clean it up periodically,
 either manually or with an automated script.</p>
+</div>
 <p>Alternatively, you can add a <a href="https://bazel.build/remote/caching">remote cache</a>
 that takes care of garbage collection for you. This can be hosted on a personal
 server or even on the local machine. We've personally had good results with
@@ -2640,7 +2643,7 @@ discussions</a>!</p>
     <script id="__config" type="application/json">{"base": ".", "features": [], "search": "assets/javascripts/workers/search.b8dbb3d2.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}}</script>
     
     
-      <script src="assets/javascripts/bundle.081f42fc.min.js"></script>
+      <script src="assets/javascripts/bundle.ad660dcc.min.js"></script>
       
         <script src="js/print-site.js"></script>
       

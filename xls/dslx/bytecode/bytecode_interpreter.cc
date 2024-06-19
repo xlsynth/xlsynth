@@ -1041,12 +1041,13 @@ absl::Status BytecodeInterpreter::EvalRecvNonBlocking(
   XLS_ASSIGN_OR_RETURN(const Bytecode::ChannelData* channel_data,
                        bytecode.channel_data());
   if (condition.IsTrue() && !channel->empty()) {
-    if (options_.trace_channels() && options_.trace_hook() != nullptr) {
+    if (options_.trace_channels() && options_.trace_hook()) {
       XLS_ASSIGN_OR_RETURN(std::string formatted_data,
                            ToStringMaybeFormatted(
                                channel->front(), channel_data->value_fmt_desc(),
                                kChannelTraceIndentation));
       options_.trace_hook()(
+          bytecode.source_span(),
           absl::StrFormat("Received data on channel `%s`:\n%s",
                           channel_data->channel_name(), formatted_data));
     }
@@ -1081,12 +1082,13 @@ absl::Status BytecodeInterpreter::EvalRecv(const Bytecode& bytecode) {
 
     XLS_ASSIGN_OR_RETURN(InterpValue token, Pop());
 
-    if (options_.trace_channels() && options_.trace_hook() != nullptr) {
+    if (options_.trace_channels() && options_.trace_hook()) {
       XLS_ASSIGN_OR_RETURN(std::string formatted_data,
                            ToStringMaybeFormatted(
                                channel->front(), channel_data->value_fmt_desc(),
                                kChannelTraceIndentation));
       options_.trace_hook()(
+          bytecode.source_span(),
           absl::StrFormat("Received data on channel `%s`:\n%s",
                           channel_data->channel_name(), formatted_data));
     }
@@ -1107,16 +1109,17 @@ absl::Status BytecodeInterpreter::EvalSend(const Bytecode& bytecode) {
   XLS_ASSIGN_OR_RETURN(auto channel, channel_value.GetChannel());
   XLS_ASSIGN_OR_RETURN(InterpValue token, Pop());
   if (condition.IsTrue()) {
-    if (options_.trace_channels() && options_.trace_hook() != nullptr) {
+    if (options_.trace_channels() && options_.trace_hook()) {
       XLS_ASSIGN_OR_RETURN(const Bytecode::ChannelData* channel_data,
                            bytecode.channel_data());
       XLS_ASSIGN_OR_RETURN(
           std::string formatted_data,
           ToStringMaybeFormatted(payload, channel_data->value_fmt_desc(),
                                  kChannelTraceIndentation));
-      options_.trace_hook()(absl::StrFormat("Sent data on channel `%s`:\n%s",
-                                            channel_data->channel_name(),
-                                            formatted_data));
+      options_.trace_hook()(
+          bytecode.source_span(),
+          absl::StrFormat("Sent data on channel `%s`:\n%s",
+                          channel_data->channel_name(), formatted_data));
     }
     channel->push_back(payload);
   }
@@ -1303,8 +1306,8 @@ absl::Status BytecodeInterpreter::EvalTrace(const Bytecode& bytecode) {
                        bytecode.trace_data());
   XLS_ASSIGN_OR_RETURN(std::string message,
                        TraceDataToString(*trace_data, stack_));
-  if (options_.trace_hook() != nullptr) {
-    options_.trace_hook()(message);
+  if (options_.trace_hook()) {
+    options_.trace_hook()(bytecode.source_span(), message);
   }
   stack_.Push(InterpValue::MakeToken());
   return absl::OkStatus();
@@ -1434,6 +1437,7 @@ absl::Status BytecodeInterpreter::RunBuiltinFn(const Bytecode& bytecode,
     // Implementation note: some of these operations are implemented via
     // bytecodes; e.g. see `BytecodeEmitter::HandleBuiltin*`
     case Builtin::kJoin:
+    case Builtin::kToken:
     case Builtin::kSend:
     case Builtin::kSendIf:
     case Builtin::kRecv:

@@ -51,7 +51,7 @@ xls_dslx_opt_ir(
 
 cc_xls_ir_jit_wrapper(
     name = "apfloat_add_parallel_jit_wrapper",
-    src = ":apfloat_add_parallel.opt.ir",
+    src = ":apfloat_add_parallel_opt_ir",
     jit_wrapper_args = {
         "class_name": "Float32AddSe",
         "namespace": "xls::examples",
@@ -64,12 +64,12 @@ cc_test(
     tags = ["optonly"],
     deps = [
         ":apfloat_add_parallel_jit_wrapper",
+        "@com_google_googletest//:gtest",
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/container:btree",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings:str_format",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
-        "@com_google_googletest//:gtest",
     ],
 )

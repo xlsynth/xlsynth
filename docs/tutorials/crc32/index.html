@@ -18,7 +18,7 @@
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.0, mkdocs-material-9.5.24">
+      <meta name="generator" content="mkdocs-1.6.0, mkdocs-material-9.5.27">
     
     
       
@@ -153,7 +153,7 @@
       
     </form>
     <div class="md-search__output">
-      <div class="md-search__scrollwrap" data-md-scrollfix>
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
         <div class="md-search-result" data-md-component="search-result">
           <div class="md-search-result__meta">
             Initializing search
@@ -2134,7 +2134,7 @@ number of times</strong> within a function.</p>
 <p>A DSLX <code>for</code> loop has the following structure:</p>
 <ol>
 <li>The loop signature: this consists of three elements:
-    1.  An (index, <accumulator vars>) tuple. The index holds the current
+    1.  An <code>(index, &lt;accumulator vars&gt;)</code> tuple. The index holds the current
         iteration number, and the accumulator vars are user-specified data
         carried into the current iteration.
     2.  The type specification for the index/accumulators tuple. Note that the
@@ -2150,11 +2150,14 @@ number of times</strong> within a function.</p>
     the next iteration of the loop (for non-terminal iterations) or as the
     result of the entire expression (for the terminal iteration).</li>
 </ol>
-<p>For this specific for loop, the index variable and accumulator are <code>i</code> and
-<code>crc</code>, both of type <code>u32</code>. The iterable range expression specifies that the loop
-should execute 8 times.</p>
+<p>For this specific for loop, the index variable is unused, so we assign it to
+<code>_</code>. This indicates to the DSLX frontend that "the variable is unused but that's
+ok"; a trailing name after the underscore is also allowed to provide additional
+context. The accumulator consists of a single variable <code>crc</code>. Both index and
+accumulator are of type <code>u32</code>. The iterable range expression specifies that the
+loop should execute 8 times.</p>
 <div class="highlight"><pre><span></span><code><span class="w">  </span><span class="c1">// 8 rounds of updates.</span>
-<span class="w">  </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">i</span><span class="p">,</span><span class="w"> </span><span class="n">crc</span><span class="p">):</span><span class="w"> </span><span class="p">(</span><span class="kt">u32</span><span class="p">,</span><span class="w"> </span><span class="kt">u32</span><span class="p">)</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">range</span><span class="p">(</span><span class="kt">u32</span><span class="p">:</span><span class="mi">8</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">_</span><span class="p">,</span><span class="w"> </span><span class="n">crc</span><span class="p">):</span><span class="w"> </span><span class="p">(</span><span class="kt">u32</span><span class="p">,</span><span class="w"> </span><span class="kt">u32</span><span class="p">)</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">range</span><span class="p">(</span><span class="kt">u32</span><span class="p">:</span><span class="mi">8</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 </code></pre></div>
 <p>At the end of the loop, the calculated value is being assigned to the
 accumulator <code>crc</code> - the last expression in the loop body is assigned to the
@@ -2221,7 +2224,7 @@ used in the same manner as any other expression's result.</p>
     <script id="__config" type="application/json">{"base": "../..", "features": [], "search": "../../assets/javascripts/workers/search.b8dbb3d2.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}}</script>
     
     
-      <script src="../../assets/javascripts/bundle.081f42fc.min.js"></script>
+      <script src="../../assets/javascripts/bundle.ad660dcc.min.js"></script>
       
         <script src="../../js/print-site.js"></script>
       

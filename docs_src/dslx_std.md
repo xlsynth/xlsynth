@@ -22,12 +22,13 @@ the user discern when they're calling "something that will behave like a normal
 function" versus "something that has special abilities beyond normal functions,
 e.g. special side-effects".
 
-NOTE: A brief note on "Parallel Primitives": the DSL is expected to grow
-additional support for use of high-level parallel primitives over time, adding
-operators for order-insensitive reductions, scans, groupings, and similar. By
-making these operations known to the compiler in their high level form, we
-potentially enable optimizations and analyses on their higher level ("lifted")
-form. As of now, `map` is the sole parallel-primitive-oriented built-in.
+!!! NOTE
+    A brief note on "Parallel Primitives": the DSL is expected to grow
+    additional support for use of high-level parallel primitives over time, adding
+    operators for order-insensitive reductions, scans, groupings, and similar. By
+    making these operations known to the compiler in their high level form, we
+    potentially enable optimizations and analyses on their higher level ("lifted")
+    form. As of now, `map` is the sole parallel-primitive-oriented built-in.
 
 ### `add_with_carry`
 
@@ -125,8 +126,9 @@ built-in -- in language implementor parlance it is a *higher order function*.
 Implementation note: Functions are not first class values in the DSL, so the
 name of the function must be referred to directly.
 
-Note: Novel higher order functions (e.g. if a user wanted to write their own
-`map`) cannot currently be written in user-level DSL code.
+!!! NOTE
+    Novel higher order functions (e.g. if a user wanted to write their own
+    `map`) cannot currently be written in user-level DSL code.
 
 ### `zip`
 
@@ -291,8 +293,9 @@ are set this evaluates to zero. This function is not generally used directly
 though the compiler will when possible synthesize the equivalent code from a
 `match` expression.
 
-NOTE: This is included largely for testing purposes and for bespoke
-'intrinsic-style programming' use cases.
+!!! NOTE
+    This is included largely for testing purposes and for bespoke
+    'intrinsic-style programming' use cases.
 
 ### `priority_sel`
 
@@ -310,9 +313,10 @@ If the selector is zero, the zero-value (of the result type) is returned.
 Example usage:
 [`dslx/tests/priority_sel.x`](https://github.com/google/xls/tree/main/xls/dslx/tests/priority_sel.x).
 
-NOTE: This operator is only defined for bits types because other types do not
-have defined or-operators, and conceptually `priority_sel` desugars to a masked
-or-reduction, which is why it produces the zero value when nothing is selected.
+!!! NOTE
+    This operator is only defined for bits types because other types do not
+    have defined or-operators, and conceptually `priority_sel` desugars to a masked
+    or-reduction, which is why it produces the zero value when nothing is selected.
 
 ### `range`
 
@@ -579,17 +583,18 @@ corresponding source position:
 ```
 [...]
 [ RUN UNITTEST  ] test_shifty
-I0510 14:31:17.516227 1247677 bytecode_interpreter.cc:994] x: 42 y: 4
-I0510 14:31:17.516227 1247677 bytecode_interpreter.cc:994] y as s8: 4
-I0510 14:31:17.516227 1247677 bytecode_interpreter.cc:994] x: 42 y: 7
-I0510 14:31:17.516227 1247677 bytecode_interpreter.cc:994] y as s8: -1
+I0607 10:11:02.897455  810431 shifty.x:6] x: 42 y: 4
+I0607 10:11:02.897462  810431 shifty.x:8] y as s8: 0
+I0607 10:11:02.908182  810431 shifty.x:6] x: 42 y: 7
+I0607 10:11:02.908208  810431 shifty.x:8] y as s8: -1
 [            OK ]
 [...]
 ```
 
-Note: `trace!` currently exists as a builtin but is in the process of being
-removed, as it provided the user with only a "global flag" way of specifying the
-desired format for output values -- `trace_fmt!` is more powerful.
+!!! NOTE
+    `trace!` currently exists as a builtin but is in the process of being
+    removed, as it provided the user with only a "global flag" way of specifying the
+    desired format for output values -- `trace_fmt!` is more powerful.
 
 ### `fail!` / `assert!`: assertion failure
 
@@ -610,9 +615,10 @@ assert!(predicate: bool, label: u8[N]) -> ()
 These can be thought of as "fatal assertions", and convert to
 Verilog/SytemVerilog assertions in generated code.
 
-Note: XLS hopes to permit users to optionally insert fatal-error-signaling
-hardware that correspond to these operations. See
-https://github.com/google/xls/issues/1352
+!!! NOTE
+    XLS hopes to permit users to optionally insert fatal-error-signaling
+    hardware that correspond to these operations. See
+    https://github.com/google/xls/issues/1352
 
 `fail!` indicates a **control path that should not be reachable**, `assert!`
 gives a **predicate that should always be true** when the statement is reached.
@@ -669,9 +675,10 @@ SystemVerilog. At higher levels in the stack, it's unused.
 
 ### `cover!`
 
-NOTE: Currently, `cover!` has no effect in RTL simulators supported in XLS open
-source (i.e. iverilog). See
-[google/xls#436](https://github.com/google/xls/issues/436).
+!!! NOTE
+    Currently, `cover!` has no effect in RTL simulators supported in XLS open
+    source (i.e. iverilog). See
+    [google/xls#436](https://github.com/google/xls/issues/436).
 
 The `cover!` builtin tracks how often some condition is satisfied. It desugars
 into SystemVerilog cover points. Its signature is:
@@ -731,7 +738,8 @@ begin.
     let token2 = send(joined, chan2, another_value);
 ```
 
-NOTE: this routine can only be used in the body of a `proc`.
+!!! NOTE
+    this routine can only be used in the body of a `proc`.
 
 ### `send`: send a value on a channel
 
@@ -742,6 +750,15 @@ communication events).
 ```
 send(tok: token, chan<T> out, value: T) -> token
 ```
+
+### `send_if`: conditionally send a value on a channel
+
+```
+send_if(tok: token, chan<T> out, predicate: bool, value: T) -> token
+```
+
+The `send_if` builtin does a send on a channel as described in [`send`][#send],
+but only attempts to do so if the given predicate is true.
 
 ### `recv`: (blocking) receive of a value from a channel
 
@@ -763,7 +780,7 @@ but only attempts to do so if the given predicate is true.
 recv_if(tok: token, c: chan<T> in, predicate: bool, default_value: T) -> (token, T)
 ```
 
-### `recv_nonblocking`: non-blocking receive of a value from a channel
+### `recv_non_blocking`: non-blocking receive of a value from a channel
 
 Performs a non-blocking receive from channel `c` -- if the channel is empty the
 `default_value` is returned as the result, and the `bool` in the result
@@ -771,23 +788,24 @@ indicates whether the value originated from the channel (i.e. `true` means the
 value came from the channel).
 
 ```
-recv_nonblocking(tok: token, c: chan<T> in, default_value: T) -> (token, T, bool)
+recv_non_blocking(tok: token, c: chan<T> in, default_value: T) -> (token, T, bool)
 ```
 
-NOTE: non-blocking operations make a block latency sensitive and can no longer
-be described as pure "Kahn Process Networks", which means that the design's
-correctness is more sensitive to the chosen schedule, and thus design
-verification should occur on the scheduled design.
+!!! NOTE
+    non-blocking operations make a block latency sensitive and can no longer
+    be described as pure "Kahn Process Networks", which means that the design's
+    correctness is more sensitive to the chosen schedule, and thus design
+    verification should occur on the scheduled design.
 
-### `recv_if_nonblocking`: conditional non-blocking receive of a value from a channel
+### `recv_if_non_blocking`: conditional non-blocking receive of a value from a channel
 
-As `recv_nonblocking` is above, but with an additional predicate that indicates
+As `recv_non_blocking` is above, but with an additional predicate that indicates
 whether we should attempt to do the nonblocking receive from the channel. If
 this predicate is false, the default value will be provided and the returned
 boolean will be false.
 
 ```
-recv_nonblocking(tok: token, c: chan<T> in, predicate: bool, default_value: T) -> (token, T, bool)
+recv_if_non_blocking(tok: token, c: chan<T> in, predicate: bool, default_value: T) -> (token, T, bool)
 ```
 
 ## `import std`: DSLX standard library routines

@@ -27,7 +27,7 @@ package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//xls:xls_internal"],
     features = [
-        #"layering_check",  TODO(google/xls#1411)
+        "layering_check",
         "parse_headers",
     ],
     licenses = ["notice"],  # Apache 2.0
@@ -199,6 +199,7 @@ filegroup(
         "synth_only/assert.h",
         "synth_only/cassert",
         "synth_only/cmath",
+        "synth_only/cstddef",
         "synth_only/cstdint",
         "synth_only/cstdlib",
         "synth_only/inttypes.h",

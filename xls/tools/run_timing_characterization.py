@@ -50,6 +50,17 @@ _OP_INCLUDE_LIST = flags.DEFINE_list(
     'Names of ops from samples textproto to generate data points for. If empty,'
     ' all of them are included. Note that kIdentity is always included',
 )
+_MAX_THREADS = flags.DEFINE_integer(
+    'max_threads',
+    max(os.cpu_count() // 2, 1),
+    'Max number of threads for parallelizing the generation of data points.',
+)
+_CHECKPOINT_PATH = flags.DEFINE_string(
+    'checkpoint_path',
+    '',
+    'Optional file path for partial output, which enables resuming an'
+    ' interrupted run.',
+)
 _BAZEL_BIN_PATH = flags.DEFINE_string(
     'bazel_bin_path', None, 'Root directory of bazel-bin'
 )
@@ -78,6 +89,16 @@ _STA_LIBS = flags.DEFINE_string(
     None,
     'Path to static timing library or libraries; '
     'only needed if different from synth_libs',
+)
+_DEFAULT_DRIVER_CELL = flags.DEFINE_string(
+    'default_driver_cell',
+    '',
+    'The default driver cell to use during synthesis',
+)
+_DEFAULT_LOAD = flags.DEFINE_string(
+    'default_load',
+    '',
+    'The default load cell to use during synthesis',
 )
 _OUT_PATH = flags.DEFINE_string('out_path', None, 'Path for output text proto')
 
@@ -113,17 +134,20 @@ class WorkerConfig:
   client_args = []
   client_extra_args = []
   client_checkpoint_file: str
+  client_out_file: str
 
 
 def _do_config_task(config: WorkerConfig):
   """Extract configs from args and environment."""
+  config.client_checkpoint_file = (
+      _CHECKPOINT_PATH.value if _CHECKPOINT_PATH.value else ''
+  )
+
   if config.openroad_path:
     # Expect OpenROAD-flow-scripts to hold tools
     config.yosys_bin = f'{config.openroad_path}/tools/install/yosys/bin/yosys'
     config.sta_bin = f'{config.openroad_path}/tools/install/OpenROAD/bin/sta'
-    config.client_checkpoint_file = (
-        f'../../{config.target}_checkpoint.textproto'
-    )
+    config.client_out_file = f'../../{config.target}_checkpoint.textproto'
   else:
     if not _YOSYS_PATH.value:
       raise app.UsageError(
@@ -153,7 +177,7 @@ def _do_config_task(config: WorkerConfig):
     if _OUT_PATH.value:
       out_path = _OUT_PATH.value
       assert out_path is not None
-      config.client_checkpoint_file = out_path
+      config.client_out_file = out_path
     else:
       raise app.UsageError(
           'If not using --openroad_path, then must provide --out_path.'
@@ -183,7 +207,8 @@ def _do_config_task(config: WorkerConfig):
   print('server bin path:', config.server_bin)
   print('client bin path:', config.client_bin)
   print(
-      'output checkpoint path:', os.path.realpath(config.client_checkpoint_file)
+      'output checkpoint path:',
+      os.path.realpath(config.client_checkpoint_file),
   )
 
   if not os.path.isfile(config.yosys_bin):
@@ -213,6 +238,9 @@ def _do_config_task(config: WorkerConfig):
   if _SAMPLES_PATH.value:
     config.samples_path = os.path.realpath(_SAMPLES_PATH.value)
     config.client_extra_args.append(f'--samples_path={config.samples_path}')
+    config.client_extra_args.append(
+        '--max_threads={}'.format(_MAX_THREADS.value)
+    )
     config.client_extra_args.append(
         '--op_include_list=' + ','.join(_OP_INCLUDE_LIST.value)
     )
@@ -281,32 +309,41 @@ def _do_worker_task(config: WorkerConfig):
     logging.info('  Using Yosys  : %s', config.yosys_bin)
     logging.info('  Using STA    : %s', config.sta_bin)
 
-  server = [config.server_bin]
-  server.append(f'--yosys_path={config.yosys_bin}')
-  server.append(f"--synthesis_libraries={' '.join(config.synthesis_libraries)}")
+  server = [repr(config.server_bin)]
+  server.append(f'--yosys_path={config.yosys_bin!r}')
+  server.append(
+      f"--synthesis_libraries={' '.join(config.synthesis_libraries)!r}"
+  )
   server.append('--return_netlist=false')
 
-  server.append(f'--sta_path={config.sta_bin}')
-  server.append(f"--sta_libraries=\"{' '.join(config.sta_libraries)}\"")
+  server.append(f'--sta_path={config.sta_bin!r}')
+  server.append(f"--sta_libraries={' '.join(config.sta_libraries)!r}")
+  if _DEFAULT_DRIVER_CELL.value:
+    server.append(f'--default_driver_cell={_DEFAULT_DRIVER_CELL.value!r}')
+  if _DEFAULT_LOAD.value:
+    server.append(f'--default_load={_DEFAULT_LOAD.value!r}')
 
   server.append(f'--port={config.rpc_port}')
-  server.append(' '.join(config.server_extra_args))
+  server.extend(repr(arg) for arg in config.server_extra_args)
 
-  server_cmd = repr(' '.join(server))
-  server_cmd = server_cmd.replace("'", '')
+  server_cmd = ' '.join(server)
 
-  client = [config.client_bin]
-  client.append(f'--checkpoint_path {config.client_checkpoint_file}')
-  client.append(' '.join(config.client_args))
-  client.append(' '.join(config.client_extra_args))
+  client = [repr(config.client_bin)]
+  if config.client_checkpoint_file:
+    client.append(f'--checkpoint_path {config.client_checkpoint_file!r}')
+  client.append(f'--out_path {config.client_out_file!r}')
+  client.extend(repr(arg) for arg in config.client_args)
+  client.extend(repr(arg) for arg in config.client_extra_args)
   client.append(f'--port={config.rpc_port}')
 
-  client_cmd = repr(' '.join(client))
-  client_cmd = client_cmd.replace("'", '')
+  client_cmd = ' '.join(client)
 
-  # create a checkpoint file if not allready there
-  with open(config.client_checkpoint_file, 'w') as f:
-    f.write('')
+  # create a checkpoint file if not already there
+  if config.client_checkpoint_file and not os.path.isfile(
+      config.client_checkpoint_file
+  ):
+    with open(config.client_checkpoint_file, 'w') as f:
+      f.write('')
 
   start = datetime.datetime.now()
 

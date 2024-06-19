@@ -152,11 +152,10 @@ fn main() -> () {
   XLS_ASSERT_OK_AND_ASSIGN(
       InterpValue value, Interpret(kProgram, "main", /*args=*/{},
                                    BytecodeInterpreterOptions().trace_hook(
-                                       [&](std::string_view s) {
+                                       [&](const Span&, std::string_view s) {
                                          trace_output.push_back(std::string{s});
                                        })));
-  EXPECT_THAT(trace_output,
-              testing::ElementsAre("trace of u32:42 @ test.x:3:9-3:17: 42"));
+  EXPECT_THAT(trace_output, testing::ElementsAre("trace of u32:42: 42"));
   EXPECT_EQ(value, InterpValue::MakeUnit());
 }
 
@@ -171,12 +170,11 @@ fn main() -> () {
       InterpValue value,
       Interpret(kProgram, "main", /*args=*/{},
                 BytecodeInterpreterOptions()
-                    .trace_hook([&](std::string_view s) {
+                    .trace_hook([&](const Span&, std::string_view s) {
                       trace_output.push_back(std::string{s});
                     })
                     .format_preference(FormatPreference::kHex)));
-  EXPECT_THAT(trace_output,
-              testing::ElementsAre("trace of u32:42 @ test.x:3:9-3:17: 0x2a"));
+  EXPECT_THAT(trace_output, testing::ElementsAre("trace of u32:42: 0x2a"));
   EXPECT_EQ(value, InterpValue::MakeUnit());
 }
 
@@ -190,7 +188,7 @@ fn main() -> () {
   XLS_ASSERT_OK_AND_ASSIGN(
       InterpValue value, Interpret(kProgram, "main", /*args=*/{},
                                    BytecodeInterpreterOptions().trace_hook(
-                                       [&](std::string_view s) {
+                                       [&](const Span&, std::string_view s) {
                                          trace_output.push_back(std::string{s});
                                        })));
   EXPECT_THAT(trace_output, testing::ElementsAre("42"));
@@ -208,7 +206,7 @@ fn main() -> () {
       InterpValue value,
       Interpret(kProgram, "main", /*args=*/{},
                 BytecodeInterpreterOptions()
-                    .trace_hook([&](std::string_view s) {
+                    .trace_hook([&](const Span&, std::string_view s) {
                       trace_output.push_back(std::string{s});
                     })
                     .format_preference(FormatPreference::kHex)));
@@ -227,7 +225,7 @@ fn main() -> () {
       InterpValue value,
       Interpret(kProgram, "main", /*args=*/{},
                 BytecodeInterpreterOptions()
-                    .trace_hook([&](std::string_view s) {
+                    .trace_hook([&](const Span&, std::string_view s) {
                       trace_output.push_back(std::string{s});
                     })
                     .format_preference(FormatPreference::kBinary)));
@@ -250,7 +248,7 @@ fn main() -> () {
   XLS_ASSERT_OK_AND_ASSIGN(
       InterpValue value, Interpret(kProgram, "main", /*args=*/{},
                                    BytecodeInterpreterOptions().trace_hook(
-                                       [&](std::string_view s) {
+                                       [&](const Span&, std::string_view s) {
                                          trace_output.push_back(std::string{s});
                                        })));
   EXPECT_THAT(trace_output, testing::ElementsAre(R"(Point {
@@ -276,7 +274,7 @@ fn main() -> () {
       InterpValue value,
       Interpret(kProgram, "main", /*args=*/{},
                 BytecodeInterpreterOptions()
-                    .trace_hook([&](std::string_view s) {
+                    .trace_hook([&](const Span&, std::string_view s) {
                       trace_output.push_back(std::string{s});
                     })
                     .format_preference(FormatPreference::kHex)));
@@ -303,7 +301,7 @@ fn main() -> () {
       InterpValue value,
       Interpret(kProgram, "main", /*args=*/{},
                 BytecodeInterpreterOptions()
-                    .trace_hook([&](std::string_view s) {
+                    .trace_hook([&](const Span&, std::string_view s) {
                       trace_output.push_back(std::string{s});
                     })
                     .format_preference(FormatPreference::kBinary)));
@@ -335,7 +333,7 @@ fn main() -> () {
   XLS_ASSERT_OK_AND_ASSIGN(
       InterpValue value, Interpret(kProgram, "main", /*args=*/{},
                                    BytecodeInterpreterOptions().trace_hook(
-                                       [&](std::string_view s) {
+                                       [&](const Span&, std::string_view s) {
                                          trace_output.push_back(std::string{s});
                                        })));
   EXPECT_THAT(trace_output, testing::ElementsAre(R"(Foo {
@@ -370,7 +368,7 @@ fn main() -> () {
       InterpValue value,
       Interpret(kProgram, "main", /*args=*/{},
                 BytecodeInterpreterOptions()
-                    .trace_hook([&](std::string_view s) {
+                    .trace_hook([&](const Span&, std::string_view s) {
                       trace_output.push_back(std::string{s});
                     })
                     .format_preference(FormatPreference::kHex)));
@@ -1903,7 +1901,7 @@ proc tester_proc {
   XLS_ASSERT_OK(ProcConfigBytecodeInterpreter::InitializeProcNetwork(
       &import_data, ti, test_proc->proc(), terminator, &proc_instances,
       BytecodeInterpreterOptions().trace_channels(true).trace_hook(
-          [&](std::string_view s) {
+          [&](const Span&, std::string_view s) {
             trace_output.push_back(std::string{s});
           })));
   std::shared_ptr<InterpValue::Channel> term_chan =
@@ -1986,7 +1984,7 @@ proc tester_proc {
       &import_data, ti, test_proc->proc(), terminator, &proc_instances,
       BytecodeInterpreterOptions()
           .trace_channels(true)
-          .trace_hook([&](std::string_view s) {
+          .trace_hook([&](const Span&, std::string_view s) {
             trace_output.push_back(std::string{s});
           })
           .format_preference(FormatPreference::kHex)));
@@ -2065,7 +2063,7 @@ proc tester_proc {
   XLS_ASSERT_OK(ProcConfigBytecodeInterpreter::InitializeProcNetwork(
       &import_data, ti, test_proc->proc(), terminator, &proc_instances,
       BytecodeInterpreterOptions().trace_channels(true).trace_hook(
-          [&](std::string_view s) {
+          [&](const Span&, std::string_view s) {
             trace_output.push_back(std::string{s});
           })));
   std::shared_ptr<InterpValue::Channel> term_chan =
@@ -2147,7 +2145,7 @@ proc tester_proc {
   XLS_ASSERT_OK(ProcConfigBytecodeInterpreter::InitializeProcNetwork(
       &import_data, ti, test_proc->proc(), terminator, &proc_instances,
       BytecodeInterpreterOptions().trace_channels(true).trace_hook(
-          [&](std::string_view s) {
+          [&](const Span&, std::string_view s) {
             trace_output.push_back(std::string{s});
           })));
   std::shared_ptr<InterpValue::Channel> term_chan =
@@ -2232,7 +2230,7 @@ proc tester_proc {
   XLS_ASSERT_OK(ProcConfigBytecodeInterpreter::InitializeProcNetwork(
       &import_data, ti, test_proc->proc(), terminator, &proc_instances,
       BytecodeInterpreterOptions().trace_channels(true).trace_hook(
-          [&](std::string_view s) {
+          [&](const Span&, std::string_view s) {
             trace_output.push_back(std::string{s});
           })));
   std::shared_ptr<InterpValue::Channel> term_chan =

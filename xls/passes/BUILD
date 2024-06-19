@@ -1080,9 +1080,11 @@ cc_library(
         "@com_google_absl//absl/types:span",
         "//xls/common/status:status_macros",
         "//xls/data_structures:binary_decision_diagram",
+        "//xls/data_structures:leaf_type_tree",
         "//xls/ir",
         "//xls/ir:bits",
         "//xls/ir:bits_ops",
+        "//xls/ir:ternary",
     ],
 )
 
@@ -1547,7 +1549,9 @@ cc_library(
         "//xls/ir:bits",
         "//xls/ir:bits_ops",
         "//xls/ir:op",
+        "//xls/ir:ternary",
         "//xls/ir:value",
+        "//xls/ir:value_utils",
     ],
 )
 
@@ -2196,6 +2200,7 @@ cc_test(
         "//xls/ir:ir_test_base",
         "//xls/ir:op",
         "//xls/ir:type",
+        "//xls/ir:value",
         "//xls/solvers:z3_ir_equivalence_testutils",
         "@com_google_googletest//:gtest",
     ],
@@ -2307,6 +2312,7 @@ cc_test(
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
         "//xls/dslx:parse_and_typecheck",
+        "//xls/dslx/ir_convert:conversion_info",
         "//xls/dslx/ir_convert:ir_converter",
         "//xls/examples:sample_packages",
         "//xls/interpreter:ir_interpreter",
@@ -2710,6 +2716,7 @@ cc_test(
         "//xls/ir:ir_matcher",
         "//xls/ir:ir_test_base",
         "//xls/ir:value",
+        "//xls/solvers:z3_ir_equivalence_testutils",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -2732,6 +2739,7 @@ cc_test(
         "//xls/ir:ir_matcher",
         "//xls/ir:ir_test_base",
         "//xls/ir:value",
+        "//xls/solvers:z3_ir_equivalence_testutils",
         "@com_google_googletest//:gtest",
     ],
 )

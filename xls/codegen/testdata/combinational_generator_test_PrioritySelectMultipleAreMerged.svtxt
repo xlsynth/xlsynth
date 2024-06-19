@@ -13,9 +13,17 @@ module main(
         2'b10: begin
           priority_sel_16b_2way = case1;
         end
+        2'b00: begin
+          priority_sel_16b_2way = '0;
+        end
+        default: begin
+          // Propagate X
+          priority_sel_16b_2way = 'X;
+        end
       endcase
     end
   endfunction
-
-  assign out = priority_sel_16b_2way(p | 2'h1, x, y);
+  wire [15:0] add_12;
+  assign add_12 = priority_sel_16b_2way(p, x, y) + priority_sel_16b_2way(p, y, x);
+  assign out = add_12;
 endmodule

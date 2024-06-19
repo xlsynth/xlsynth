@@ -26,6 +26,7 @@ load(
     "//xls/build_rules:xls_common_rules.bzl",
     "append_default_to_args",
     "args_to_string",
+    "get_input_infos",
     "get_original_input_files_for_xls",
     "get_output_filename_value",
     "get_runfiles_for_xls",
@@ -322,6 +323,14 @@ def xls_ir_verilog_fdo_impl(ctx, src, original_input_files):
         final_args += " --fdo_yosys_path={}".format(yosys_tool.path)
         final_args += " --fdo_sta_path={}".format(sta_tool.path)
         final_args += " --fdo_synthesis_libraries={}".format(synth_lib.path)
+        if getattr(ctx.attr.standard_cells[StandardCellInfo], "default_input_driver_cell", "") != "":
+            final_args += " --fdo_default_driver_cell='{}'".format(
+                ctx.attr.standard_cells[StandardCellInfo].default_input_driver_cell,
+            )
+        if getattr(ctx.attr.standard_cells[StandardCellInfo], "default_output_load", "") != "":
+            final_args += " --fdo_default_load='{}'".format(
+                ctx.attr.standard_cells[StandardCellInfo].default_output_load,
+            )
     else:
         yosys_tool = None
         sta_tool = None
@@ -330,7 +339,7 @@ def xls_ir_verilog_fdo_impl(ctx, src, original_input_files):
     # Get runfiles
     codegen_tool_runfiles = ctx.attr._xls_codegen_tool[DefaultInfo].default_runfiles
 
-    runfiles_list = [src] + original_input_files
+    runfiles_list = [src.ir_file] + original_input_files
     if ctx.file.codegen_options_proto:
         final_args += " --codegen_options_proto={}".format(ctx.file.codegen_options_proto.path)
         runfiles_list.append(ctx.file.codegen_options_proto)
@@ -371,7 +380,7 @@ def xls_ir_verilog_fdo_impl(ctx, src, original_input_files):
         inputs = runfiles.files,
         command = "{} {} {}".format(
             codegen_tool.path,
-            src.path,
+            src.ir_file.path,
             final_args,
         ),
         env = env,
@@ -431,7 +440,7 @@ def _xls_ir_verilog_fdo_impl_wrapper(ctx):
             ),
             runfiles = runfiles,
         ),
-    ]
+    ] + get_input_infos(ctx.attr.src)
 
 xls_ir_verilog_fdo = rule(
     doc = """A build rule that generates a Verilog file from an IR file using

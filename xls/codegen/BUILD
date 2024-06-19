@@ -19,7 +19,7 @@ package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//xls:xls_internal"],
     features = [
-        #"layering_check",  TODO(google/xls#1411)
+        "layering_check",
         "parse_headers",
     ],
     licenses = ["notice"],  # Apache 2.0
@@ -132,6 +132,7 @@ cc_library(
         "//xls/ir:code_template",
         "//xls/ir:format_preference",
         "//xls/ir:source_location",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
@@ -195,6 +196,7 @@ cc_library(
         "//xls/common/status:status_macros",
         "//xls/ir:bits",
         "//xls/ir:format_preference",
+        "//xls/ir:source_location",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/numeric:bits",
         "@com_google_absl//absl/status",
@@ -312,6 +314,9 @@ cc_library(
     name = "module_signature",
     srcs = ["module_signature.cc"],
     hdrs = ["module_signature.h"],
+    features = [
+        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
+    ],
     deps = [
         ":module_signature_cc_proto",
         ":verilog_line_map_cc_proto",
@@ -414,6 +419,7 @@ cc_library(
         "//xls/ir",
         "//xls/ir:bits",
         "//xls/ir:bits_ops",
+        "//xls/ir:format_preference",
         "//xls/ir:format_strings",
         "//xls/ir:op",
         "//xls/ir:source_location",
@@ -460,6 +466,7 @@ cc_library(
         "//xls/ir:type",
         "//xls/ir:value",
         "//xls/ir:value_utils",
+        "//xls/ir:xls_ir_interface_cc_proto",
         "//xls/passes:dataflow_simplification_pass",
         "//xls/passes:dce_pass",
         "//xls/passes:pass_base",
@@ -519,6 +526,7 @@ cc_library(
         "//xls/ir:op",
         "//xls/ir:register",
         "//xls/ir:value",
+        "//xls/ir:xls_ir_interface_cc_proto",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/types:span",
@@ -554,6 +562,7 @@ cc_library(
         ":codegen_wrapper_pass",
         ":ffi_instantiation_pass",
         ":mulp_combining_pass",
+        ":name_legalization_pass",
         ":port_legalization_pass",
         ":ram_rewrite_pass",
         ":register_combining_pass",
@@ -582,6 +591,24 @@ cc_library(
         "//xls/passes:pass_base",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_library(
+    name = "name_legalization_pass",
+    srcs = ["name_legalization_pass.cc"],
+    hdrs = ["name_legalization_pass.h"],
+    deps = [
+        ":codegen_pass",
+        "//xls/common/status:ret_check",
+        "//xls/common/status:status_macros",
+        "//xls/ir",
+        "//xls/passes:pass_base",
+        "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
     ],
 )
 
@@ -694,6 +721,9 @@ cc_test(
         "//xls/examples:custom_schedule.opt.ir",
         "//xls/examples:custom_schedule.schedule_options.textproto",
         "//xls/examples:custom_schedule.sig.textproto",
+    ],
+    features = [
+        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
     ],
     deps = [
         ":module_signature_cc_proto",
@@ -1062,6 +1092,33 @@ cc_test(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "name_legalization_pass_test",
+    srcs = ["name_legalization_pass_test.cc"],
+    data = glob([
+        "testdata/name_legalization_pass_test_*",
+    ]),
+    deps = [
+        ":block_generator",
+        ":codegen_options",
+        ":codegen_pass",
+        ":combinational_generator",
+        ":name_legalization_pass",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/ir",
+        "//xls/ir:function_builder",
+        "//xls/ir:ir_matcher",
+        "//xls/ir:ir_test_base",
+        "//xls/ir:source_location",
+        "//xls/passes:pass_base",
+        "//xls/simulation:verilog_test_base",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest",
     ],
 )

@@ -22,6 +22,7 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/container/btree_set.h"
@@ -41,8 +42,10 @@
 #include "xls/ir/node.h"
 #include "xls/ir/nodes.h"
 #include "xls/ir/op.h"
+#include "xls/ir/ternary.h"
 #include "xls/ir/topo_sort.h"
 #include "xls/ir/value.h"
+#include "xls/ir/value_utils.h"
 #include "xls/passes/bdd_function.h"
 #include "xls/passes/bdd_query_engine.h"
 #include "xls/passes/optimization_pass.h"
@@ -59,10 +62,10 @@ namespace {
 // assumed to be true at particular points in the graph.
 struct Condition {
   Node* node;
-  int64_t value;
+  TernaryVector value;
 
   std::string ToString() const {
-    return absl::StrFormat("%s==%d", node->GetName(), value);
+    return absl::StrFormat("%s==%s", node->GetName(), xls::ToString(value));
   }
 
   bool operator==(const Condition& other) const {
@@ -129,9 +132,9 @@ class ConditionSet {
   // arbitrarily picking one of the conflicting conditions and transforming
   // based on it is fine.
   void AddCondition(const Condition& condition) {
-    VLOG(4) << absl::StreamFormat("ConditionSet for (%s, %d) : %s",
-                                  condition.node->GetName(), condition.value,
-                                  this->ToString());
+    VLOG(4) << absl::StreamFormat(
+        "ConditionSet for (%s, %s) : %s", condition.node->GetName(),
+        xls::ToString(condition.value), this->ToString());
     CHECK(!condition.node->Is<Literal>());
     conditions_.insert(condition);
     // The conditions are ordering in topological sort order (based on
@@ -160,8 +163,10 @@ class ConditionSet {
     std::vector<std::pair<TreeBitLocation, bool>> predicates;
     for (const Condition& condition : conditions()) {
       for (int64_t i = 0; i < condition.node->BitCountOrDie(); ++i) {
-        bool bit_value =
-            (i >= 64) ? false : static_cast<bool>(((condition.value >> i) & 1));
+        if (condition.value[i] == TernaryValue::kUnknown) {
+          continue;
+        }
+        bool bit_value = (condition.value[i] == TernaryValue::kKnownOne);
         predicates.push_back({TreeBitLocation{condition.node, i}, bit_value});
       }
     }
@@ -284,11 +289,11 @@ std::optional<Bits> ImpliedNodeValue(const ConditionSet& condition_set,
                                      Node* node,
                                      const QueryEngine& query_engine) {
   for (const Condition& condition : condition_set.conditions()) {
-    if (condition.node == node) {
-      VLOG(4) << absl::StreamFormat("%s trivially implies %s==%d",
+    if (condition.node == node && ternary_ops::IsFullyKnown(condition.value)) {
+      VLOG(4) << absl::StreamFormat("%s trivially implies %s==%s",
                                     condition_set.ToString(), node->GetName(),
-                                    condition.value);
-      return UBits(condition.value, node->BitCountOrDie());
+                                    xls::ToString(condition.value));
+      return ternary_ops::ToKnownBitsValues(condition.value);
     }
   }
 
@@ -304,6 +309,41 @@ std::optional<Bits> ImpliedNodeValue(const ConditionSet& condition_set,
   return implied_value;
 }
 
+// Returns the value for node logically implied by the given conditions if a
+// value can be implied. Returns std::nullopt otherwise.
+std::optional<TernaryVector> ImpliedNodeTernary(
+    const ConditionSet& condition_set, Node* node,
+    const QueryEngine& query_engine) {
+  if (!node->GetType()->IsBits()) {
+    return std::nullopt;
+  }
+  TernaryVector result(node->BitCountOrDie(), TernaryValue::kUnknown);
+  for (const Condition& condition : condition_set.conditions()) {
+    if (condition.node == node) {
+      VLOG(4) << absl::StreamFormat("%s trivially implies %s==%s",
+                                    condition_set.ToString(), node->GetName(),
+                                    xls::ToString(condition.value));
+      CHECK_OK(ternary_ops::UpdateWithUnion(result, condition.value));
+    }
+  }
+  if (ternary_ops::IsFullyKnown(result)) {
+    return result;
+  }
+
+  std::vector<std::pair<TreeBitLocation, bool>> predicates =
+      condition_set.GetPredicates();
+  std::optional<TernaryVector> implied_ternary =
+      query_engine.ImpliedNodeTernary(predicates, node);
+  if (implied_ternary.has_value()) {
+    VLOG(4) << absl::StreamFormat("%s implies %s==%s", condition_set.ToString(),
+                                  node->GetName(),
+                                  xls::ToString(*implied_ternary));
+    CHECK_OK(ternary_ops::UpdateWithUnion(result, *implied_ternary));
+  }
+
+  return result;
+}
+
 // Returns the case arm node of the given select which is selected when the
 // selector has the given value.
 Node* GetSelectedCase(Select* select, const Bits& selector_value) {
@@ -313,6 +353,23 @@ Node* GetSelectedCase(Select* select, const Bits& selector_value) {
   // It is safe to convert to uint64_t because of the above check against cases
   // size.
   return select->get_case(selector_value.ToUint64().value());
+}
+
+struct ZeroValue : std::monostate {};
+using PrioritySelectCase = std::variant<Node*, ZeroValue>;
+std::optional<PrioritySelectCase> GetSelectedCase(
+    PrioritySelect* select, const TernaryVector& selector_value) {
+  for (int64_t i = 0; i < select->cases().size(); ++i) {
+    if (selector_value[i] == TernaryValue::kUnknown) {
+      // We can't be sure which case is selected.
+      return std::nullopt;
+    }
+    if (selector_value[i] == TernaryValue::kKnownOne) {
+      return select->get_case(i);
+    }
+  }
+  // All bits of the selector are zero.
+  return ZeroValue();
 }
 
 }  // namespace
@@ -389,7 +446,54 @@ absl::StatusOr<bool> ConditionalSpecializationPass::RunOnFunctionBaseInternal(
       if (!select->selector()->Is<Literal>()) {
         for (int64_t case_no = 0; case_no < select->cases().size(); ++case_no) {
           ConditionSet edge_set = set;
-          edge_set.AddCondition(Condition{select->selector(), case_no});
+          // If this case is selected, we know the selector is exactly
+          // `case_no`.
+          edge_set.AddCondition(Condition{
+              .node = select->selector(),
+              .value = ternary_ops::BitsToTernary(
+                  UBits(case_no, select->selector()->BitCountOrDie())),
+          });
+          condition_map.SetEdgeConditionSet(node, case_no + 1,
+                                            std::move(edge_set));
+        }
+      }
+    }
+    if (node->Is<OneHotSelect>()) {
+      OneHotSelect* select = node->As<OneHotSelect>();
+      if (!select->selector()->Is<Literal>()) {
+        for (int64_t case_no = 0; case_no < select->cases().size(); ++case_no) {
+          ConditionSet edge_set = set;
+          // If this case is selected, we know the corresponding bit of the
+          // selector is one.
+          TernaryVector selector_value(select->selector()->BitCountOrDie(),
+                                       TernaryValue::kUnknown);
+          selector_value[case_no] = TernaryValue::kKnownOne;
+          edge_set.AddCondition(Condition{
+              .node = select->selector(),
+              .value = selector_value,
+          });
+          condition_map.SetEdgeConditionSet(node, case_no + 1,
+                                            std::move(edge_set));
+        }
+      }
+    }
+    if (node->Is<PrioritySelect>()) {
+      PrioritySelect* select = node->As<PrioritySelect>();
+      if (!select->selector()->Is<Literal>()) {
+        for (int64_t case_no = 0; case_no < select->cases().size(); ++case_no) {
+          ConditionSet edge_set = set;
+          // If this case is selected, we know all the bits of the selector up
+          // to and including `case_no`; all higher-priority bits are zero, and
+          // this case's bit is one.
+          Bits known_bits = Bits(select->selector()->BitCountOrDie());
+          known_bits.SetRange(0, case_no + 1);
+          Bits known_bits_values =
+              Bits::PowerOfTwo(case_no, select->selector()->BitCountOrDie());
+          edge_set.AddCondition(Condition{
+              .node = select->selector(),
+              .value =
+                  ternary_ops::FromKnownBits(known_bits, known_bits_values),
+          });
           condition_map.SetEdgeConditionSet(node, case_no + 1,
                                             std::move(edge_set));
         }
@@ -415,8 +519,10 @@ absl::StatusOr<bool> ConditionalSpecializationPass::RunOnFunctionBaseInternal(
         node->BitCountOrDie() == 1 && !use_bdd_) {
       // The value you can assume other operands have in the computation of this
       // operand.
-      int64_t assumed_operand_value =
-          (node->op() == Op::kOr || node->op() == Op::kNor) ? 0 : 1;
+      TernaryValue assumed_operand_value =
+          (node->op() == Op::kOr || node->op() == Op::kNor)
+              ? TernaryValue::kKnownZero
+              : TernaryValue::kKnownOne;
       for (int64_t i = 0; i < node->operand_count(); ++i) {
         if (node->operand(i)->Is<Literal>()) {
           continue;
@@ -424,8 +530,8 @@ absl::StatusOr<bool> ConditionalSpecializationPass::RunOnFunctionBaseInternal(
         ConditionSet edge_set = set;
         for (int64_t j = 0; j < node->operand_count(); ++j) {
           if (i != j && !node->operand(j)->Is<Literal>()) {
-            edge_set.AddCondition(
-                Condition{node->operand(j), assumed_operand_value});
+            edge_set.AddCondition(Condition{.node = node->operand(j),
+                                            .value = {assumed_operand_value}});
           }
         }
         condition_map.SetEdgeConditionSet(node, i, std::move(edge_set));
@@ -448,7 +554,8 @@ absl::StatusOr<bool> ConditionalSpecializationPass::RunOnFunctionBaseInternal(
           node->GetName(), predicate->GetName(), send->data()->GetName());
 
       ConditionSet edge_set = set;
-      edge_set.AddCondition(Condition{predicate, /*value=*/1});
+      edge_set.AddCondition(
+          Condition{.node = predicate, .value = {TernaryValue::kKnownOne}});
       condition_map.SetEdgeConditionSet(node, Send::kDataOperand,
                                         std::move(edge_set));
     }
@@ -470,7 +577,8 @@ absl::StatusOr<bool> ConditionalSpecializationPass::RunOnFunctionBaseInternal(
           node->GetName(), predicate->GetName(), next->value()->GetName());
 
       ConditionSet edge_set = set;
-      edge_set.AddCondition(Condition{predicate, /*value=*/1});
+      edge_set.AddCondition(
+          Condition{.node = predicate, .value = {TernaryValue::kKnownOne}});
       condition_map.SetEdgeConditionSet(node, Next::kValueOperand,
                                         std::move(edge_set));
     }
@@ -529,29 +637,65 @@ absl::StatusOr<bool> ConditionalSpecializationPass::RunOnFunctionBaseInternal(
       // It may be possible to bypass multiple selects so walk the edge up the
       // graph as far as possible. For example, in the diagram above `b` may
       // also be a select with a selector whose value is implied by `s`.
-      if (operand->Is<Select>()) {
+      if (operand->Is<Select>() || operand->Is<PrioritySelect>()) {
         std::optional<Node*> replacement;
         Node* src = operand;
-        while (src->Is<Select>()) {
-          Select* select = src->As<Select>();
-          if (select->selector()->Is<Literal>()) {
-            break;
+        while (src->Is<Select>() || src->Is<PrioritySelect>()) {
+          if (src->Is<Select>()) {
+            Select* select = src->As<Select>();
+            if (select->selector()->Is<Literal>()) {
+              break;
+            }
+            std::optional<Bits> implied_selector =
+                ImpliedNodeValue(edge_set, select->selector(), query_engine);
+            if (!implied_selector.has_value()) {
+              break;
+            }
+            Node* implied_case =
+                GetSelectedCase(select, implied_selector.value());
+            VLOG(3) << absl::StreamFormat(
+                "Conditions for edge (%s, %s) imply selector %s of select %s "
+                "has value %v",
+                operand->GetName(), node->GetName(),
+                select->selector()->GetName(), select->GetName(),
+                implied_selector.value());
+            replacement = implied_case;
+            src = implied_case;
+          } else if (src->Is<PrioritySelect>()) {
+            PrioritySelect* select = src->As<PrioritySelect>();
+            if (select->selector()->Is<Literal>()) {
+              break;
+            }
+            std::optional<TernaryVector> implied_selector =
+                ImpliedNodeTernary(edge_set, select->selector(), query_engine);
+            if (!implied_selector.has_value()) {
+              break;
+            }
+            std::optional<PrioritySelectCase> implied_case =
+                GetSelectedCase(select, *implied_selector);
+            if (!implied_case.has_value()) {
+              break;
+            }
+            if (std::holds_alternative<ZeroValue>(*implied_case)) {
+              VLOG(3) << absl::StreamFormat(
+                  "Conditions for edge (%s, %s) imply selector %s of select %s "
+                  "has zero value",
+                  operand->GetName(), node->GetName(),
+                  select->selector()->GetName(), select->GetName());
+              XLS_ASSIGN_OR_RETURN(
+                  replacement, node->function_base()->MakeNode<Literal>(
+                                   src->loc(), ZeroOfType(select->GetType())));
+              break;
+            }
+            VLOG(3) << absl::StreamFormat(
+                "Conditions for edge (%s, %s) imply selector %s of select %s "
+                "has value %s",
+                operand->GetName(), node->GetName(),
+                select->selector()->GetName(), select->GetName(),
+                xls::ToString(*implied_selector));
+            src = std::get<Node*>(*implied_case);
+            replacement = src;
           }
-          std::optional<Bits> implied_selector =
-              ImpliedNodeValue(edge_set, select->selector(), query_engine);
-          if (!implied_selector.has_value()) {
-            break;
-          }
-          Node* implied_case =
-              GetSelectedCase(select, implied_selector.value());
-          VLOG(3) << absl::StreamFormat(
-              "Conditions for edge (%s, %s) imply selector %s of select %s has "
-              "value %v",
-              operand->GetName(), node->GetName(),
-              select->selector()->GetName(), select->GetName(),
-              implied_selector.value());
-          replacement = implied_case;
-          src = implied_case;
         }
         if (replacement.has_value()) {
           VLOG(3) << absl::StreamFormat(

@@ -24,6 +24,7 @@ load(
     "xls_dslx_test",
     "xls_eval_ir_test",
     "xls_ir_cc_library",
+    "xls_ir_equivalence_test",
 )
 
 package(
@@ -117,7 +118,15 @@ xls_dslx_opt_ir(
     library = "bfloat16_dslx",
 )
 
-# TODO: 2021-03-08 Takes too long (> 15 minutes). Add xls_ir_equivalence_test.
+# TODO: xls_ir_equivalence_test takes a long time. Tag enormous and manual.
+xls_ir_equivalence_test(
+    name = "bfloat16_add_ir_opt_equivalence_test",
+    size = "enormous",
+    src_0 = ":bfloat16_add.ir",
+    src_1 = ":bfloat16_add.opt.ir",
+    tags = ["manual"],
+)
+
 xls_eval_ir_test(
     name = "bfloat16_add_eval_ir_test",
     src = ":bfloat16_add.ir",
@@ -135,7 +144,15 @@ xls_dslx_opt_ir(
     library = "bfloat16_dslx",
 )
 
-# TODO: 2021-03-08 Takes too long (> 15 minutes). Add xls_ir_equivalence_test.
+# TODO: xls_ir_equivalence_test takes a long time. Tag enormous and manual.
+xls_ir_equivalence_test(
+    name = "bfloat16_sub_ir_opt_equivalence_test",
+    size = "enormous",
+    src_0 = ":bfloat16_sub.ir",
+    src_1 = ":bfloat16_sub.opt.ir",
+    tags = ["manual"],
+)
+
 xls_eval_ir_test(
     name = "bfloat16_sub_eval_ir_test",
     src = ":bfloat16_sub.ir",
@@ -179,14 +196,21 @@ xls_dslx_opt_ir(
     opt_ir_file = "float32_add.opt.ir",
 )
 
+# TODO: xls_ir_equivalence_test takes a long time. Tag enormous and manual.
+xls_ir_equivalence_test(
+    name = "float32_add_ir_opt_equivalence_test",
+    size = "enormous",
+    src_0 = ":float32_add.ir",
+    src_1 = ":float32_add.opt.ir",
+    tags = ["manual"],
+)
+
 xls_ir_cc_library(
     name = "float32_add_cc",
-    src = ":float32_add.opt.ir",
+    src = ":float32_add",
     namespaces = "xls,fp",
 )
 
-# TODO(b/152546795): 2021-03-08 Takes too long (~5 minutes). Add
-# xls_ir_equivalence_test.
 xls_eval_ir_test(
     name = "float32_add_eval_ir_test",
     src = ":float32_add.ir",
@@ -199,7 +223,7 @@ xls_benchmark_ir(
 
 cc_xls_ir_jit_wrapper(
     name = "float32_add_jit_wrapper",
-    src = ":float32_add.opt.ir",
+    src = ":float32_add",
     jit_wrapper_args = {
         "class_name": "Float32Add",
         "namespace": "xls::fp",
@@ -249,8 +273,15 @@ xls_dslx_opt_ir(
     opt_ir_file = "float32_sub.opt.ir",
 )
 
-# TODO(b/152546795): 2021-03-08 Takes too long (~5 minutes). Add
-# xls_ir_equivalence_test.
+# TODO: xls_ir_equivalence_test takes a long time. Tag enormous and manual.
+xls_ir_equivalence_test(
+    name = "float32_sub_ir_opt_equivalence_test",
+    size = "enormous",
+    src_0 = ":float32_sub.ir",
+    src_1 = ":float32_sub.opt.ir",
+    tags = ["manual"],
+)
+
 xls_eval_ir_test(
     name = "float32_sub_eval_ir_test",
     src = ":float32_sub.ir",
@@ -282,7 +313,7 @@ xls_benchmark_ir(
 
 cc_xls_ir_jit_wrapper(
     name = "float32_mul_jit_wrapper",
-    src = ":float32_mul.opt.ir",
+    src = ":float32_mul",
     jit_wrapper_args = {
         "class_name": "Float32Mul",
         "namespace": "xls::fp",
@@ -324,7 +355,7 @@ xls_dslx_opt_ir(
 
 cc_xls_ir_jit_wrapper(
     name = "float32_upcast_jit_wrapper",
-    src = ":float32_upcast.opt.ir",
+    src = ":float32_upcast",
     jit_wrapper_args = {
         "class_name": "F32ToF64",
         "namespace": "xls::fp",
@@ -367,7 +398,7 @@ xls_dslx_opt_ir(
 
 cc_xls_ir_jit_wrapper(
     name = "float32_to_int32_wrapper",
-    src = ":float32_to_int32.opt.ir",
+    src = ":float32_to_int32",
     jit_wrapper_args = {
         "class_name": "Float32ToInt32",
         "function": get_mangled_ir_symbol("float32", "to_int32"),
@@ -386,7 +417,7 @@ xls_dslx_opt_ir(
 
 cc_xls_ir_jit_wrapper(
     name = "float32_from_int32_wrapper",
-    src = ":float32_from_int32.opt.ir",
+    src = ":float32_from_int32",
     jit_wrapper_args = {
         "class_name": "Float32FromInt32",
         "function": get_mangled_ir_symbol("float32", "from_int32"),
@@ -447,12 +478,12 @@ xls_dslx_opt_ir(
 
 xls_ir_cc_library(
     name = "float32_fma_cc",
-    src = ":float32_fma.opt.ir",
+    src = ":float32_fma",
     namespaces = "xls,fp",
 )
 
-# TODO(b/152546795): 2021-03-08 Takes too long (~5 minutes). Add
-# xls_ir_equivalence_test.
+# TODO(b/152546795): xls_ir_equivalence_test won't work because of
+# https://github.com/google/xls/issues/365
 xls_eval_ir_test(
     name = "float32_fma_eval_ir_test",
     src = ":float32_fma.ir",
@@ -465,7 +496,7 @@ xls_benchmark_ir(
 
 cc_xls_ir_jit_wrapper(
     name = "float32_fma_jit_wrapper",
-    src = ":float32_fma.opt.ir",
+    src = ":float32_fma",
     jit_wrapper_args = {
         "class_name": "Float32Fma",
         "namespace": "xls::fp",
@@ -505,7 +536,7 @@ xls_dslx_opt_ir(
 
 cc_xls_ir_jit_wrapper(
     name = "float32_ldexp_jit_wrapper",
-    src = ":float32_ldexp.opt.ir",
+    src = ":float32_ldexp",
     jit_wrapper_args = {
         "class_name": "Float32Ldexp",
         "namespace": "xls::fp",
@@ -557,7 +588,7 @@ xls_benchmark_ir(
 
 cc_xls_ir_jit_wrapper(
     name = "float32_fast_rsqrt_jit_wrapper",
-    src = ":float32_fast_rsqrt.opt.ir",
+    src = ":float32_fast_rsqrt",
     jit_wrapper_args = {
         "class_name": "Float32FastRsqrt",
         "namespace": "xls::fp",
@@ -632,7 +663,7 @@ xls_benchmark_ir(
 
 cc_xls_ir_jit_wrapper(
     name = "float64_add_jit_wrapper",
-    src = ":float64_add.opt.ir",
+    src = ":float64_add",
     jit_wrapper_args = {
         "class_name": "Float64Add",
         "namespace": "xls::fp",
@@ -705,7 +736,7 @@ xls_benchmark_ir(
 
 cc_xls_ir_jit_wrapper(
     name = "float64_mul_jit_wrapper",
-    src = ":float64_mul.opt.ir",
+    src = ":float64_mul",
     jit_wrapper_args = {
         "class_name": "Float64Mul",
         "namespace": "xls::fp",
@@ -740,8 +771,8 @@ xls_dslx_opt_ir(
     opt_ir_file = "float64_fma.opt.ir",
 )
 
-# TODO(b/152546795): 2021-03-08 Takes too long (~5 minutes). Add
-# xls_ir_equivalence_test.
+# TODO(b/152546795): xls_ir_equivalence_test won't work because of
+# https://github.com/google/xls/issues/365
 xls_eval_ir_test(
     name = "float64_fma_eval_ir_test",
     src = ":float64_fma.ir",
@@ -754,7 +785,7 @@ xls_benchmark_ir(
 
 cc_xls_ir_jit_wrapper(
     name = "float64_fma_jit_wrapper",
-    src = ":float64_fma.opt.ir",
+    src = ":float64_fma",
     jit_wrapper_args = {
         "class_name": "Float64Fma",
         "namespace": "xls::fp",

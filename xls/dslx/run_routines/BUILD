@@ -59,6 +59,7 @@ cc_library(
         "//xls/dslx/frontend:bindings",
         "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:pos",
+        "//xls/dslx/ir_convert:conversion_info",
         "//xls/dslx/ir_convert:convert_options",
         "//xls/dslx/ir_convert:ir_converter",
         "//xls/dslx/type_system:parametric_env",
@@ -82,6 +83,7 @@ cc_test(
     deps = [
         ":run_comparator",
         ":run_routines",
+        "@com_google_googletest//:gtest",
         "//xls/common:xls_gunit_main",
         "//xls/common/file:temp_file",
         "//xls/common/status:matchers",
@@ -90,7 +92,6 @@ cc_test(
         "//xls/ir:ir_parser",
         "//xls/ir:value",
         "@com_googlesource_code_re2//:re2",
-        "@com_google_googletest//:gtest",
     ],
 )
 
@@ -103,6 +104,7 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:span",
         "//xls/common:indent",
     ],
 )
@@ -112,9 +114,9 @@ cc_test(
     srcs = ["test_xml_test.cc"],
     deps = [
         ":test_xml",
+        "@com_google_googletest//:gtest",
         "@com_google_absl//absl/time",
         "//xls/common:xls_gunit_main",
-        "@com_google_googletest//:gtest",
     ],
 )
 
