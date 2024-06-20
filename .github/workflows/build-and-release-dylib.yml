@@ -61,17 +61,21 @@ jobs:
           ${{ runner.os }}-bazel-
 
 
-    - name: Install Clang
+    - name: Install Clang-17
       run: |
         sudo apt-get update
-        sudo apt-get install -y clang
+        sudo apt-get install -y wget gnupg
+        wget https://apt.llvm.org/llvm.sh
+        chmod +x llvm.sh
+        sudo ./llvm.sh 17
+        sudo apt-get install -y clang-17
 
     - name: Note Clang version
-      run: clang --version
+      run: clang-17 --version
 
     - name: Build Bazel target
       run: |
-        CC=clang CXX=clang++ bazelisk build -c opt //xls/public:libxls.so
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so
 
     - name: Create artifact directory
       run: mkdir -p linux-artifacts
