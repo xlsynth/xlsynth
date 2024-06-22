@@ -101,11 +101,13 @@ enum {
 // `xls_format_preference_from_string("hex")` returns the value of
 // `xls_format_preference_hex` -- this is particularly useful for language
 // bindings that don't parse the C headers to determine enumerated values.
+XLS_DLL_EXPORT
 bool xls_format_preference_from_string(const char* s, char** error_out,
                                        xls_format_preference* result_out);
 
 // Returns the given value `v` converted to a string by way of the given
 // `format_preference`.
+XLS_DLL_EXPORT
 bool xls_value_to_string_format_preference(
     const struct xls_value* v, xls_format_preference format_preference,
     char** error_out, char** result_out);
@@ -142,11 +144,13 @@ bool xls_package_get_function(struct xls_package* package,
 //
 // Note: the returned type does not need to be freed, it is tied to the
 // package's lifetime.
+XLS_DLL_EXPORT
 bool xls_package_get_type_for_value(struct xls_package* package,
                                     struct xls_value* value, char** error_out,
                                     struct xls_type** result_out);
 
 // Returns the string representation of the type.
+XLS_DLL_EXPORT
 bool xls_type_to_string(struct xls_type* type, char** error_out,
                         char** result_out);
 
@@ -154,15 +158,18 @@ bool xls_type_to_string(struct xls_type* type, char** error_out,
 //
 // Note: the returned type does not need to be freed, it is tied to the
 // package's lifetime.
+XLS_DLL_EXPORT
 bool xls_function_get_type(struct xls_function* function, char** error_out,
                            struct xls_function_type** xls_fn_type_out);
 
 // Returns the name of the given function `function` -- `string_out` is owned
 // by the caller and must be freed.
+XLS_DLL_EXPORT
 bool xls_function_get_name(struct xls_function* function, char** error_out,
                            char** string_out);
 
 // Returns a string representation of the given `xls_function_type`.
+XLS_DLL_EXPORT
 bool xls_function_type_to_string(struct xls_function_type* xls_function_type,
                                  char** error_out, char** string_out);
 
