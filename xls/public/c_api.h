@@ -79,12 +79,15 @@ bool xls_parse_typed_value(const char* input, char** error_out,
                            struct xls_value** xls_value_out);
 
 // Returns a new token XLS value which the caller must free.
+XLS_DLL_EXPORT
 struct xls_value* xls_value_make_token();
 
 // Returns a new `bits[1]:1` XLS value which the caller must free.
+XLS_DLL_EXPORT
 struct xls_value* xls_value_make_true();
 
 // Returns a new `bits[1]:0` XLS value which the caller must free.
+XLS_DLL_EXPORT
 struct xls_value* xls_value_make_false();
 
 // Returns a string representation of the given value `v`.
