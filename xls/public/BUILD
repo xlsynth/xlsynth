@@ -209,6 +209,7 @@ cc_binary(
     linkshared = True,
     deps = [
         ":runtime_build_actions",
+        "//xls/common:init_xls",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status:statusor",
         "//xls/interpreter:ir_interpreter",
