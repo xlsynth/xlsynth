@@ -193,7 +193,10 @@ cc_binary(
     name = "libxls.dylib",
     srcs = ["c_api.cc", "c_api.h"],
     linkshared = True,
-    deps = [":runtime_build_actions"],
+    deps = [
+        ":runtime_build_actions",
+        "//xls/common:init_xls",
+    ],
     copts = [
         "-fvisibility=hidden",
         "-fno-exceptions",
