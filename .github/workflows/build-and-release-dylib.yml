@@ -29,13 +29,15 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        bazelisk build -c opt //xls/public:libxls.dylib
+        bazelisk build -c opt //xls/public:libxls.dylib //xls/public:c_api
 
     - name: Create artifact directory
       run: mkdir -p osx-artifacts
 
     - name: Copy Bazel target to osx-artifacts
-      run: cp -r bazel-bin/xls/public/libxls.dylib osx-artifacts/
+      run:
+        cp -r bazel-bin/xls/public/libxls.dylib osx-artifacts/
+        cp -r bazel-bin/xls/public/libc_api.a osx-artifacts/libxls-osx.a
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v2
@@ -75,13 +77,15 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api
 
     - name: Create artifact directory
       run: mkdir -p linux-artifacts
 
     - name: Copy Bazel target to linux-artifacts
-      run: cp -r bazel-bin/xls/public/libxls.so linux-artifacts/
+      run:
+        cp -r bazel-bin/xls/public/libxls.so linux-artifacts/
+        cp -r bazel-bin/xls/public/libc_api.a linux-artifacts/libxls-linux.a
 
     - name: Tarball stdlib files to linux-artifacts
       run: tar -czvvf linux-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
@@ -132,4 +136,4 @@ jobs:
         TAG_NAME: ${{ env.TAG_NAME }}
       run: |
         export GH_TOKEN=${{ secrets.GITHUB_TOKEN }}
-        gh release create "$TAG_NAME" osx-artifacts/libxls.dylib linux-artifacts/dslx_stdlib.tar.gz linux-artifacts/libxls.so --title "Release $TAG_NAME" --notes "Automated release of $TAG_NAME"
+        gh release create "$TAG_NAME" osx-artifacts/libxls.dylib osx-artifacts/libxls-osx.a linux-artifacts/dslx_stdlib.tar.gz linux-artifacts/libxls.so linux-artifacts/libxls-linux.a --title "Release $TAG_NAME" --notes "Automated release of $TAG_NAME"
