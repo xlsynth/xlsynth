@@ -73,6 +73,7 @@
 #include "xls/ir/source_location.h"
 #include "xls/ir/type.h"
 #include "xls/ir/value.h"
+#include "xls/ir/value_utils.h"
 #include "xls/ir/verifier.h"
 #include "xls/ir/xls_ir_interface.pb.h"
 
@@ -300,7 +301,7 @@ class FunctionConverterVisitor : public AstNodeVisitor {
 
   NO_TRAVERSE_DISPATCH_VISIT(Attr)
   NO_TRAVERSE_DISPATCH_VISIT(Array)
-  NO_TRAVERSE_DISPATCH_VISIT(Block)
+  NO_TRAVERSE_DISPATCH_VISIT(StatementBlock)
   NO_TRAVERSE_DISPATCH_VISIT(ConstantArray)
   NO_TRAVERSE_DISPATCH_VISIT(Cast)
   NO_TRAVERSE_DISPATCH_VISIT(ColonRef)
@@ -1282,7 +1283,7 @@ absl::Status FunctionConverter::HandleFor(const For* node) {
   // So we suffix free variables for the function body onto the function
   // parameters.
   FreeVariables freevars =
-      GetFreeVariables(node->body(), &node->span().start());
+      GetFreeVariablesByPos(node->body(), &node->span().start());
   freevars = freevars.DropBuiltinDefs();
   std::vector<const NameDef*> relevant_name_defs;
   for (const auto& any_name_def : freevars.GetNameDefs()) {
@@ -2914,8 +2915,10 @@ absl::Status FunctionConverter::HandleAttr(const Attr* node) {
   return absl::OkStatus();
 }
 
-absl::Status FunctionConverter::HandleBlock(const Block* node) {
-  VLOG(5) << "FunctionConverter::HandleBlock; node: " << node->ToString();
+absl::Status FunctionConverter::HandleStatementBlock(
+    const StatementBlock* node) {
+  VLOG(5) << "FunctionConverter::HandleStatementBlock; node: "
+          << node->ToString();
   Expr* last_expr = nullptr;
 
   for (const Statement* s : node->statements()) {
@@ -3229,7 +3232,11 @@ absl::Status FunctionConverter::HandleBuiltinPrioritySel(
       cases.push_back(bvalue_case);
     }
 
-    return function_builder_->PrioritySelect(selector, cases, loc);
+    BValue default_value = function_builder_->Literal(
+        ZeroOfType(cases_arg_type->element_type()), loc);
+
+    return function_builder_->PrioritySelect(selector, cases, default_value,
+                                             loc);
   });
 
   return absl::OkStatus();
@@ -3503,7 +3510,7 @@ absl::StatusOr<Value> InterpValueToValue(const InterpValue& iv) {
 absl::StatusOr<std::vector<ConstantDef*>> GetConstantDepFreevars(
     AstNode* node) {
   Span span = node->GetSpan().value();
-  FreeVariables free_variables = GetFreeVariables(node, &span.start());
+  FreeVariables free_variables = GetFreeVariablesByPos(node, &span.start());
   std::vector<std::pair<std::string, AnyNameDef>> freevars =
       free_variables.GetNameDefTuples();
   std::vector<ConstantDef*> constant_deps;

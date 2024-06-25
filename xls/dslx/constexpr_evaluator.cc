@@ -243,7 +243,8 @@ absl::Status ConstexprEvaluator::HandleBinop(const Binop* expr) {
   return InterpretExpr(expr);
 }
 
-absl::Status ConstexprEvaluator::HandleBlock(const Block* expr) {
+absl::Status ConstexprEvaluator::HandleStatementBlock(
+    const StatementBlock* expr) {
   bool all_statements_constexpr = true;
   Expr* last_expr = nullptr;
   for (Statement* stmt : expr->statements()) {
@@ -726,7 +727,7 @@ absl::StatusOr<absl::flat_hash_map<std::string, InterpValue>> MakeConstexprEnv(
   }
 
   // Collect all the freevars that are constexpr.
-  FreeVariables freevars = GetFreeVariables(node);
+  FreeVariables freevars = GetFreeVariablesByPos(node);
   VLOG(5) << "freevar count for `" << node->ToString()
           << "`: " << freevars.GetFreeVariableCount();
   freevars = freevars.DropBuiltinDefs();

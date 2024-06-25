@@ -288,7 +288,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceString(const String* string,
   return std::make_unique<ArrayType>(BitsType::MakeU8(), std::move(dim));
 }
 
-static bool IsBlockJustUnitTuple(const Block& block) {
+static bool IsBlockJustUnitTuple(const StatementBlock& block) {
   if (block.empty()) {
     return true;
   }
@@ -308,7 +308,7 @@ static bool IsBlockJustUnitTuple(const Block& block) {
   return tuple->empty();
 }
 
-static bool IsBlockWithOneFailStmt(const Block& block) {
+static bool IsBlockWithOneFailStmt(const StatementBlock& block) {
   if (block.size() != 1) {
     return false;
   }
@@ -337,12 +337,14 @@ static bool IsBlockWithOneFailStmt(const Block& block) {
 
 static void WarnOnConditionalContainingJustFailStatement(
     const Conditional& node, DeduceCtx* ctx) {
-  const Block* consequent = node.consequent();
-  std::variant<Block*, Conditional*> alternate_ast_node = node.alternate();
-  if (!std::holds_alternative<Block*>(alternate_ast_node)) {
+  const StatementBlock* consequent = node.consequent();
+  std::variant<StatementBlock*, Conditional*> alternate_ast_node =
+      node.alternate();
+  if (!std::holds_alternative<StatementBlock*>(alternate_ast_node)) {
     return;
   }
-  const Block* alternate = std::get<Block*>(alternate_ast_node);
+  const StatementBlock* alternate =
+      std::get<StatementBlock*>(alternate_ast_node);
 
   if (IsBlockWithOneFailStmt(*consequent) && IsBlockJustUnitTuple(*alternate)) {
     std::string message = absl::StrFormat(
@@ -515,6 +517,11 @@ static absl::StatusOr<std::unique_ptr<Type>> DeduceConcat(const Binop* node,
   bool lhs_is_bits = lhs_bits != nullptr;
   bool rhs_is_bits = rhs_bits != nullptr;
   if (!lhs_is_bits || !rhs_is_bits) {
+    if (lhs->HasEnum() || rhs->HasEnum()) {
+      return ctx->TypeMismatchError(
+          node->span(), node->lhs(), *lhs, node->rhs(), *rhs,
+          "Enum values must be cast to unsigned bits before concatenation.");
+    }
     return ctx->TypeMismatchError(node->span(), node->lhs(), *lhs, node->rhs(),
                                   *rhs,
                                   "Concatenation requires operand types to be "

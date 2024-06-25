@@ -170,6 +170,9 @@ absl::StatusOr<VerilogFunction*> DefinePrioritySelectFunction(
         file->BitVectorType(tpe->GetFlatBitCount(), loc), loc));
   }
 
+  Expression* default_value = func->AddArgument(
+      "default_value", file->BitVectorType(tpe->GetFlatBitCount(), loc), loc);
+
   CaseType case_type(CaseKeyword::kCasez);
   const FourValueBit case_label_top_bits = FourValueBit::kHighZ;
   FourValueBit case_label_bottom_bits = FourValueBit::kZero;
@@ -218,14 +221,7 @@ absl::StatusOr<VerilogFunction*> DefinePrioritySelectFunction(
     // Verilog doesn't support 'X, so use the less desirable 16'dxxxx format.
     x_literal = file->Make<XSentinel>(loc, tpe->GetFlatBitCount());
   }
-  if (!selector_properties.never_zero) {
-    // If the selector can be zero, make the default zero.
-    // Use `'0` here as it's more idiomatic and will not ever be part of a
-    // larger expression.
-    Expression* zero = file->Make<ZeroLiteral>(loc);
-    case_statement->AddCaseArm(zero_label)
-        ->Add<BlockingAssignment>(loc, func->return_value_ref(), zero);
-  } else {
+  if (selector_properties.never_zero) {
     // If the selector cannot be zero, throw an error if we see zero.
     // We still explicitly propagate X (like the default case below) for
     // synthesis.
@@ -246,6 +242,9 @@ absl::StatusOr<VerilogFunction*> DefinePrioritySelectFunction(
     case_block->Add<Comment>(loc, "Never taken, propagate X");
     case_block->Add<BlockingAssignment>(loc, func->return_value_ref(),
                                         x_literal);
+  } else {
+    case_statement->AddCaseArm(zero_label)
+        ->Add<BlockingAssignment>(loc, func->return_value_ref(), default_value);
   }
 
   // Add a default case that propagates X.
@@ -1017,7 +1016,7 @@ absl::StatusOr<LogicRef*> ModuleBuilder::EmitAsAssignment(
         while (element_type->IsArray()) {
           element_type = element_type->AsArrayOrDie()->element_type();
         }
-        absl::Span<Expression* const> cases = inputs.subspan(1);
+        absl::Span<Expression* const> cases_and_default = inputs.subspan(1);
         XLS_ASSIGN_OR_RETURN(std::string function_name,
                              VerilogFunctionName(node));
         absl::StrAppend(&function_name, "_element",
@@ -1033,7 +1032,7 @@ absl::StatusOr<LogicRef*> ModuleBuilder::EmitAsAssignment(
               func,
               DefinePrioritySelectFunction(
                   node->As<PrioritySelect>()->selector(), /*tpe=*/element_type,
-                  /*num_cases*/ node->As<PrioritySelect>()->cases().size(),
+                  /*num_cases=*/node->As<PrioritySelect>()->cases().size(),
                   /*loc=*/node->loc(), function_name, functions_section_,
                   selector_properties, options_.use_system_verilog()));
         }
@@ -1046,7 +1045,8 @@ absl::StatusOr<LogicRef*> ModuleBuilder::EmitAsAssignment(
                                                   selector_and_inputs);
         };
         XLS_RETURN_IF_ERROR(AddAssignmentToGeneratedExpression(
-            array_type, /*lhs=*/ref, /*inputs=*/cases, priority_sel_element,
+            array_type, /*lhs=*/ref, /*inputs=*/cases_and_default,
+            priority_sel_element,
             /*add_assignment=*/
             [&](Expression* lhs, Expression* rhs) {
               assignment_section()->Add<ContinuousAssignment>(node->loc(), lhs,

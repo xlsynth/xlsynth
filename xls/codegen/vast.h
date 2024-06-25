@@ -489,6 +489,18 @@ class WireDef : public Def {
       : Def(name, DataKind::kWire, data_type, init, file, loc) {}
 };
 
+// A user-defined type definition. Example:
+//   FooBarT foo;
+class UserDefinedDef : public Def {
+ public:
+  UserDefinedDef(std::string_view name, DataType* data_type, VerilogFile* file,
+          const SourceInfo& loc)
+      : Def(name, DataKind::kUser, data_type, file, loc) {}
+  UserDefinedDef(std::string_view name, DataType* data_type, Expression* init,
+          VerilogFile* file, const SourceInfo& loc)
+      : Def(name, DataKind::kUser, data_type, init, file, loc) {}
+};
+
 // Register variable definition.Example:
 //   reg [41:0] foo;
 class RegDef : public Def {
@@ -1612,8 +1624,10 @@ class Literal : public Expression {
   const Bits& bits() const { return bits_; }
 
   absl::StatusOr<int64_t> ToInt64() const {
-    if (effective_bit_count() != bits_.bit_count()) {
-      return bits_ops::ZeroExtend(bits_, effective_bit_count()).ToInt64();
+    if (bits_.bit_count() != 64 &&
+        !(declared_as_signed_ && bits_.bit_count() == effective_bit_count() &&
+          bits_.Get(bits_.bit_count() - 1))) {
+      return bits_ops::ZeroExtend(bits_, 64).ToInt64();
     }
     return bits_.ToInt64();
   }

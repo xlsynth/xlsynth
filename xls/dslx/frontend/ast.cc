@@ -288,8 +288,8 @@ std::string_view AstNodeKindToString(AstNodeKind kind) {
       return "tuple";
     case AstNodeKind::kFor:
       return "for";
-    case AstNodeKind::kBlock:
-      return "block";
+    case AstNodeKind::kStatementBlock:
+      return "statement-block";
     case AstNodeKind::kCast:
       return "cast";
     case AstNodeKind::kConstantDef:
@@ -337,6 +337,13 @@ absl::StatusOr<TypeDefinition> ToTypeDefinition(AstNode* node) {
   return absl::InvalidArgumentError(
       absl::StrFormat("AST node is not a type definition: (%s) %s",
                       node->GetNodeTypeName(), node->ToString()));
+}
+
+const Span& FreeVariables::GetFirstNameRefSpan(
+    std::string_view identifier) const {
+  std::vector<const NameRef*> name_refs = values_.at(identifier);
+  CHECK(!name_refs.empty());
+  return name_refs.at(0)->span();
 }
 
 FreeVariables FreeVariables::DropBuiltinDefs() const {
@@ -401,26 +408,31 @@ absl::flat_hash_set<std::string> FreeVariables::Keys() const {
   return result;
 }
 
-FreeVariables GetFreeVariables(const AstNode* node, const Pos* start_pos) {
+FreeVariables GetFreeVariablesByLambda(
+    const AstNode* node,
+    const std::function<bool(const NameRef&)>& consider_free) {
   DfsIteratorNoTypes it(node);
   FreeVariables freevars;
   while (it.HasNext()) {
     const AstNode* n = it.Next();
     if (const auto* name_ref = dynamic_cast<const NameRef*>(n)) {
-      // If a start position was given we test whether the name definition
-      // occurs before that start position. (If none was given we accept all
-      // name refs.)
-      if (start_pos == nullptr) {
+      if (consider_free == nullptr || consider_free(*name_ref)) {
         freevars.Add(name_ref->identifier(), name_ref);
-      } else {
-        std::optional<Pos> name_def_start = name_ref->GetNameDefStart();
-        if (!name_def_start.has_value() || *name_def_start < *start_pos) {
-          freevars.Add(name_ref->identifier(), name_ref);
-        }
       }
     }
   }
   return freevars;
+}
+
+FreeVariables GetFreeVariablesByPos(const AstNode* node, const Pos* start_pos) {
+  std::function<bool(const NameRef&)> consider_free = nullptr;
+  if (start_pos != nullptr) {
+    consider_free = [start_pos](const NameRef& name_ref) {
+      std::optional<Pos> name_def_start = name_ref.GetNameDefStart();
+      return !name_def_start.has_value() || name_def_start.value() < *start_pos;
+    };
+  }
+  return GetFreeVariablesByLambda(node, consider_free);
 }
 
 std::string BuiltinTypeToString(BuiltinType t) {
@@ -587,8 +599,8 @@ NameDef::~NameDef() = default;
 // -- class Conditional
 
 Conditional::Conditional(Module* owner, Span span, Expr* test,
-                         Block* consequent,
-                         std::variant<Block*, Conditional*> alternate)
+                         StatementBlock* consequent,
+                         std::variant<StatementBlock*, Conditional*> alternate)
     : Expr(owner, std::move(span)),
       test_(test),
       consequent_(consequent),
@@ -612,13 +624,14 @@ bool Conditional::HasMultiStatementBlocks() const {
   if (consequent_->size() > 1) {
     return true;
   }
-  return absl::visit(Visitor{
-                         [](const Block* block) { return block->size() > 1; },
-                         [](const Conditional* elseif) {
-                           return elseif->HasMultiStatementBlocks();
-                         },
-                     },
-                     alternate_);
+  return absl::visit(
+      Visitor{
+          [](const StatementBlock* block) { return block->size() > 1; },
+          [](const Conditional* elseif) {
+            return elseif->HasMultiStatementBlocks();
+          },
+      },
+      alternate_);
 }
 
 // -- class Attr
@@ -700,8 +713,8 @@ std::string For::ToStringInternal() const {
 }
 
 UnrollFor::UnrollFor(Module* owner, Span span, NameDefTree* names,
-                     TypeAnnotation* types, Expr* iterable, Block* body,
-                     Expr* init)
+                     TypeAnnotation* types, Expr* iterable,
+                     StatementBlock* body, Expr* init)
     : Expr(owner, std::move(span)),
       names_(names),
       types_(types),
@@ -1532,10 +1545,11 @@ std::string Binop::ToStringInternal() const {
   return absl::StrFormat("%s %s %s", lhs, BinopKindFormat(binop_kind_), rhs);
 }
 
-// -- class Block
+// -- class StatementBlock
 
-Block::Block(Module* owner, Span span, std::vector<Statement*> statements,
-             bool trailing_semi)
+StatementBlock::StatementBlock(Module* owner, Span span,
+                               std::vector<Statement*> statements,
+                               bool trailing_semi)
     : Expr(owner, std::move(span)),
       statements_(std::move(statements)),
       trailing_semi_(trailing_semi) {
@@ -1544,9 +1558,9 @@ Block::Block(Module* owner, Span span, std::vector<Statement*> statements,
   }
 }
 
-Block::~Block() = default;
+StatementBlock::~StatementBlock() = default;
 
-std::string Block::ToInlineString() const {
+std::string StatementBlock::ToInlineString() const {
   // A formatting special case: if there are no statements (and implicitly a
   // trailing semi since an empty block gives unit type) we just give back
   // braces without any semicolon inside.
@@ -1567,7 +1581,7 @@ std::string Block::ToInlineString() const {
   return s;
 }
 
-std::string Block::ToStringInternal() const {
+std::string StatementBlock::ToStringInternal() const {
   // A formatting special case: if there are no statements (and implicitly a
   // trailing semi since an empty block gives unit type) we just give back
   // braces without any semicolon inside.
@@ -1596,7 +1610,7 @@ std::string Block::ToStringInternal() const {
 // -- class For
 
 For::For(Module* owner, Span span, NameDefTree* names,
-         TypeAnnotation* type_annotation, Expr* iterable, Block* body,
+         TypeAnnotation* type_annotation, Expr* iterable, StatementBlock* body,
          Expr* init)
     : Expr(owner, std::move(span)),
       names_(names),
@@ -1623,7 +1637,7 @@ std::vector<AstNode*> For::GetChildren(bool want_types) const {
 Function::Function(Module* owner, Span span, NameDef* name_def,
                    std::vector<ParametricBinding*> parametric_bindings,
                    std::vector<Param*> params, TypeAnnotation* return_type,
-                   Block* body, FunctionTag tag, bool is_public)
+                   StatementBlock* body, FunctionTag tag, bool is_public)
     : AstNode(owner),
       span_(std::move(span)),
       name_def_(name_def),

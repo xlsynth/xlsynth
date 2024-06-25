@@ -975,8 +975,15 @@ OpClass.kinds['ONE_HOT_SELECT'] = OpClass(
 OpClass.kinds['PRIORITY_SELECT'] = OpClass(
     name='PrioritySelect',
     op='Op::kPrioritySel',
-    operands=[Operand('selector'), OperandSpan('cases')],
+    operands=[
+        Operand('selector'),
+        OperandSpan('cases'),
+        Operand('default_value'),
+    ],
     xls_type_expression='cases[0]->GetType()',
+    extra_data_members=[
+        DataMember(name='cases_size_', cpp_type='int64_t', init='cases.size()'),
+    ],
     extra_methods=[
         Method(
             name='selector', return_cpp_type='Node*', expression='operand(0)'
@@ -984,13 +991,18 @@ OpClass.kinds['PRIORITY_SELECT'] = OpClass(
         Method(
             name='cases',
             return_cpp_type='absl::Span<Node* const>',
-            expression='operands().subspan(1)',
+            expression='operands().subspan(1, cases_size_)',
         ),
         Method(
             name='get_case',
             return_cpp_type='Node*',
             expression='cases().at(case_no)',
             params='int64_t case_no',
+        ),
+        Method(
+            name='default_value',
+            return_cpp_type='Node*',
+            expression='operand(1 + cases_size_)',
         ),
     ],
     custom_clone_method=True,
