@@ -153,6 +153,9 @@ class ParametricInstantiator {
 
   absl::flat_hash_map<std::string, std::unique_ptr<Type>>
       parametric_binding_types_;
+
+  // Note: this is initially populated with explicit parametrics, and
+  // subsequently populated with inferred parametric values from actual args.
   absl::flat_hash_map<std::string, InterpValue> parametric_env_map_;
 
   absl::Span<absl::Nonnull<const ParametricBinding*> const>

@@ -121,7 +121,8 @@ absl::StatusOr<InterpValue> InterpretExpr(DeduceCtx* ctx, Expr* expr,
 }
 
 // Verifies that all parametrics adhere to signature-annotated types, and
-// attempts to eagerly evaluate as many parametric values as possible.
+// attempts to eagerly evaluate as many parametric values as possible into
+// `parametric_env_map`.
 //
 // Take the following function signature for example:
 //
@@ -253,14 +254,17 @@ absl::Status EagerlyPopulateParametricEnvMap(
   // TODO(https://github.com/google/xls/issues/1495): 2024-06-18 We would like
   // to enable this invariant to tighten up what is accepted by the type
   // system, but that requires some investigation into failing samples.
-  if (false) {
+  if (true) {
     // Check that all parametric bindings are present in the env.
     for (const auto& [parametric_binding_name, _] : parametric_default_exprs) {
       if (!parametric_env_map.contains(parametric_binding_name)) {
+        std::string have = absl::StrJoin(parametric_env_map, ", ", [](std::string* out, const auto& item) {
+          absl::StrAppend(out, item.first);
+        });
         return TypeInferenceErrorStatus(
             span, nullptr,
-            absl::StrFormat("Caller did not supply parametric value for `%s`",
-                            parametric_binding_name));
+            absl::StrFormat("Caller did not supply parametric value for `%s`; have: [%s]",
+                            parametric_binding_name, have));
       }
     }
   }
