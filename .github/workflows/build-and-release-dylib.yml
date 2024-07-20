@@ -45,7 +45,58 @@ jobs:
         name: osx-artifacts
         path: osx-artifacts/
 
-  build-linux:
+  build-ubuntu2004:
+    runs-on: ubuntu-20.04
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Cache Bazel output
+      uses: actions/cache@v2
+      id: cache-bazel
+      with:
+        path: |
+          ~/.cache/bazel
+          bazel-out
+        key: ${{ runner.os }}-bazel-${{ hashFiles('**/BUILD') }}
+        restore-keys: |
+          ${{ runner.os }}-bazel-
+
+    - name: Install Clang-17
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget gnupg
+        wget https://apt.llvm.org/llvm.sh
+        chmod +x llvm.sh
+        sudo ./llvm.sh 17
+        sudo apt-get install -y clang-17
+
+    - name: Note Clang version
+      run: clang-17 --version
+
+    - name: Build Bazel target
+      run: |
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api
+
+    - name: Create artifact directory
+      run: mkdir -p ubuntu2004-artifacts
+
+    - name: Copy Bazel target to ubuntu2004-artifacts
+      run: |
+        cp -r bazel-bin/xls/public/libxls.so ubuntu2004-artifacts/libxls-ubuntu22.04.so
+        cp -r bazel-bin/xls/public/libc_api.a ubuntu2004-artifacts/libxls-ubuntu20.04.a
+
+    - name: Tarball stdlib files to ubuntu2004-artifacts
+      run: tar -czvvf ubuntu2004-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v2
+      with:
+        name: ubuntu2004-artifacts
+        path: ubuntu2004-artifacts/
+
+
+  build-ubuntu2204:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
@@ -80,26 +131,27 @@ jobs:
         CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api
 
     - name: Create artifact directory
-      run: mkdir -p linux-artifacts
+      run: mkdir -p ubuntu2204-artifacts
 
-    - name: Copy Bazel target to linux-artifacts
+    - name: Copy Bazel target to ubuntu2204-artifacts
       run: |
-        cp -r bazel-bin/xls/public/libxls.so linux-artifacts/
-        cp -r bazel-bin/xls/public/libc_api.a linux-artifacts/libxls-linux.a
+        cp -r bazel-bin/xls/public/libxls.so ubuntu2204-artifacts/libxls-ubuntu22.04.so
+        cp -r bazel-bin/xls/public/libc_api.a ubuntu2204-artifacts/libxls-ubuntu22.04.a
 
-    - name: Tarball stdlib files to linux-artifacts
-      run: tar -czvvf linux-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
+    - name: Tarball stdlib files to ubuntu2204-artifacts
+      run: tar -czvvf ubuntu2204-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v2
       with:
-        name: linux-artifacts
-        path: linux-artifacts/
+        name: ubuntu2204-artifacts
+        path: ubuntu2204-artifacts/
 
   release:
     needs:
       - build-osx
-      - build-linux
+      - build-ubuntu2004
+      - build-ubuntu2204
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
@@ -111,11 +163,17 @@ jobs:
         name: osx-artifacts
         path: osx-artifacts
 
-    - name: Download linux-artifacts
+    - name: Download ubuntu2004-artifacts
       uses: actions/download-artifact@v2
       with:
-        name: linux-artifacts
-        path: linux-artifacts
+        name: ubuntu2004-artifacts
+        path: ubuntu2004-artifacts
+
+    - name: Download ubuntu2204-artifacts
+      uses: actions/download-artifact@v2
+      with:
+        name: ubuntu2204-artifacts
+        path: ubuntu2204-artifacts
 
     - name: Extract tag name
       id: extract_tag
@@ -136,4 +194,4 @@ jobs:
         TAG_NAME: ${{ env.TAG_NAME }}
       run: |
         export GH_TOKEN=${{ secrets.GITHUB_TOKEN }}
-        gh release create "$TAG_NAME" osx-artifacts/libxls.dylib osx-artifacts/libxls-osx.a linux-artifacts/dslx_stdlib.tar.gz linux-artifacts/libxls.so linux-artifacts/libxls-linux.a --title "Release $TAG_NAME" --notes "Automated release of $TAG_NAME"
+        gh release create "$TAG_NAME" osx-artifacts/libxls.dylib ubuntu2004-artifacts/dslx_stdlib.tar.gz ubuntu2004-artifacts/libxls-ubuntu20.04.so ubuntu2204-artifacts/libxls-ubuntu22.04.so --title "Release $TAG_NAME" --notes "Automated release of $TAG_NAME"
