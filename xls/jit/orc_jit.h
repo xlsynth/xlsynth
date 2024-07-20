@@ -17,7 +17,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <string_view>
 
 #include "absl/status/status.h"
@@ -92,10 +91,6 @@ class OrcJit : public LlvmCompiler {
   std::unique_ptr<llvm::orc::IRTransformLayer> transform_layer_;
 
   JitObserver* jit_observer_ = nullptr;
-
-  // If the jitted code should include msan calls. Defaults to whatever 'this'
-  // process is doing and should only be overridden for AOT generators.
-  bool include_msan_;
 };
 
 }  // namespace xls

@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -36,17 +37,20 @@
 #include "xls/ir/bits.h"
 #include "xls/ir/block.h"
 #include "xls/ir/channel.h"
-#include "xls/ir/elaboration.h"
 #include "xls/ir/format_preference.h"
 #include "xls/ir/function_builder.h"
 #include "xls/ir/instantiation.h"
 #include "xls/ir/ir_test_base.h"
 #include "xls/ir/register.h"
 #include "xls/ir/value.h"
+#include "xls/ir/value_utils.h"
 
 namespace xls {
 namespace {
 
+using ::testing::_;
+using ::testing::AllOf;
+using ::testing::Contains;
 using ::testing::ElementsAre;
 using ::testing::FieldsAre;
 using ::testing::HasSubstr;
@@ -116,11 +120,6 @@ TEST_P(BlockEvaluatorTest, OutputOnlyBlock) {
 }
 
 TEST_P(BlockEvaluatorTest, StatelessInstantiatedPassthrough) {
-  // TODO(rigge): add instantiation support to block jit and remove this guard.
-  if (!SupportsHierarchicalBlocks()) {
-    GTEST_SKIP();
-    return;
-  }
   auto package = CreatePackage();
   Block* inner;
   {
@@ -147,11 +146,6 @@ TEST_P(BlockEvaluatorTest, StatelessInstantiatedPassthrough) {
 }
 
 TEST_P(BlockEvaluatorTest, PipelinedHierarchicalRotate) {
-  // TODO(rigge): add instantiation support to block jit and remove this guard.
-  if (!SupportsHierarchicalBlocks()) {
-    GTEST_SKIP();
-    return;
-  }
   auto package = CreatePackage();
   auto rot = [&](int64_t n, int64_t r) -> absl::StatusOr<Block*> {
     BlockBuilder b(absl::StrCat(TestName(), "_rot", n, "_", r), package.get());
@@ -304,7 +298,7 @@ MATCHER(NoTryPopValue, "") {
 
 TEST_P(BlockEvaluatorTest, SingleElementFifoInstantiationNoBypassWorks) {
   // TODO(rigge): add instantiation support to block jit and remove this guard.
-  if (!SupportsHierarchicalBlocks()) {
+  if (!SupportsFifos()) {
     GTEST_SKIP();
     return;
   }
@@ -322,6 +316,9 @@ TEST_P(BlockEvaluatorTest, SingleElementFifoInstantiationNoBypassWorks) {
   bb.OutputPort("pop_data", bb.InstantiationOutput(fifo_inst, "pop_data"));
   bb.OutputPort("pop_valid", bb.InstantiationOutput(fifo_inst, "pop_valid"));
   bb.OutputPort("push_ready", bb.InstantiationOutput(fifo_inst, "push_ready"));
+
+  // Don't reset.
+  bb.InstantiationInput(fifo_inst, "rst", bb.Literal(Value(UBits(0, 1))));
 
   // Make push side.
   bb.InstantiationInput(fifo_inst, "push_data", bb.InputPort("push_data", u32));
@@ -377,7 +374,7 @@ TEST_P(BlockEvaluatorTest, SingleElementFifoInstantiationNoBypassWorks) {
 
 TEST_P(BlockEvaluatorTest, SingleElementFifoInstantiationWithBypassWorks) {
   // TODO(rigge): add instantiation support to block jit and remove this guard.
-  if (!SupportsHierarchicalBlocks()) {
+  if (!SupportsFifos()) {
     GTEST_SKIP();
     return;
   }
@@ -395,6 +392,9 @@ TEST_P(BlockEvaluatorTest, SingleElementFifoInstantiationWithBypassWorks) {
   bb.OutputPort("pop_data", bb.InstantiationOutput(fifo_inst, "pop_data"));
   bb.OutputPort("pop_valid", bb.InstantiationOutput(fifo_inst, "pop_valid"));
   bb.OutputPort("push_ready", bb.InstantiationOutput(fifo_inst, "push_ready"));
+
+  // Don't reset.
+  bb.InstantiationInput(fifo_inst, "rst", bb.Literal(Value(UBits(0, 1))));
 
   // Make push side.
   bb.InstantiationInput(fifo_inst, "push_data", bb.InputPort("push_data", u32));
@@ -450,7 +450,7 @@ TEST_P(BlockEvaluatorTest, SingleElementFifoInstantiationWithBypassWorks) {
 
 TEST_P(BlockEvaluatorTest, FifoInstantiationNoBypassWorks) {
   // TODO(rigge): add instantiation support to block jit and remove this guard.
-  if (!SupportsHierarchicalBlocks()) {
+  if (!SupportsFifos()) {
     GTEST_SKIP();
     return;
   }
@@ -468,6 +468,9 @@ TEST_P(BlockEvaluatorTest, FifoInstantiationNoBypassWorks) {
   bb.OutputPort("pop_data", bb.InstantiationOutput(fifo_inst, "pop_data"));
   bb.OutputPort("pop_valid", bb.InstantiationOutput(fifo_inst, "pop_valid"));
   bb.OutputPort("push_ready", bb.InstantiationOutput(fifo_inst, "push_ready"));
+
+  // Don't reset.
+  bb.InstantiationInput(fifo_inst, "rst", bb.Literal(Value(UBits(0, 1))));
 
   // Make push side.
   bb.InstantiationInput(fifo_inst, "push_data", bb.InputPort("push_data", u32));
@@ -549,7 +552,7 @@ TEST_P(BlockEvaluatorTest, FifoInstantiationNoBypassWorks) {
 
 TEST_P(BlockEvaluatorTest, FifoInstantiationWithBypassWorks) {
   // TODO(rigge): add instantiation support to block jit and remove this guard.
-  if (!SupportsHierarchicalBlocks()) {
+  if (!SupportsFifos()) {
     GTEST_SKIP();
     return;
   }
@@ -563,6 +566,9 @@ TEST_P(BlockEvaluatorTest, FifoInstantiationWithBypassWorks) {
   XLS_ASSERT_OK_AND_ASSIGN(
       FifoInstantiation * fifo_inst,
       bb.block()->AddFifoInstantiation("fifo_inst", fifo_config, u32));
+
+  // Don't reset.
+  bb.InstantiationInput(fifo_inst, "rst", bb.Literal(Value(UBits(0, 1))));
 
   bb.OutputPort("pop_data", bb.InstantiationOutput(fifo_inst, "pop_data"));
   bb.OutputPort("pop_valid", bb.InstantiationOutput(fifo_inst, "pop_valid"));
@@ -1248,26 +1254,91 @@ TEST_P(BlockEvaluatorTest, InterpreterEventsCaptured) {
 
   b.OutputPort("y", x);
   XLS_ASSERT_OK_AND_ASSIGN(Block * block, b.Build());
-  XLS_ASSERT_OK_AND_ASSIGN(BlockElaboration elaboration,
-                           BlockElaboration::Elaborate(block));
 
-  XLS_ASSERT_OK_AND_ASSIGN(BlockRunResult result,
-                           evaluator().EvaluateBlock(
-                               {{"x", Value(UBits(10, 32))}}, {}, elaboration));
+  {
+    XLS_ASSERT_OK_AND_ASSIGN(auto cont, evaluator().NewContinuation(block));
+    XLS_ASSERT_OK(cont->RunOneCycle({{"x", Value(UBits(10, 32))}}));
+    BlockRunResult result{
+        .outputs = cont->output_ports(),
+        .reg_state = cont->registers(),
+        .interpreter_events = cont->events(),
+    };
 
-  EXPECT_THAT(result.interpreter_events.trace_msgs,
-              ElementsAre(FieldsAre("x is 10", 0),
-                          FieldsAre("I'm emphasizing that x is 10", 3)));
-  EXPECT_THAT(result.interpreter_events.assert_msgs, IsEmpty());
+    EXPECT_THAT(result.interpreter_events.trace_msgs,
+                ElementsAre(FieldsAre("x is 10", 0),
+                            FieldsAre("I'm emphasizing that x is 10", 3)));
+    EXPECT_THAT(result.interpreter_events.assert_msgs, IsEmpty());
+  }
 
-  XLS_ASSERT_OK_AND_ASSIGN(
-      result,
-      evaluator().EvaluateBlock({{"x", Value(UBits(3, 32))}}, {}, elaboration));
+  {
+    XLS_ASSERT_OK_AND_ASSIGN(auto cont, evaluator().NewContinuation(block));
+    XLS_ASSERT_OK(cont->RunOneCycle({{"x", Value(UBits(3, 32))}}));
+    BlockRunResult result{
+        .outputs = cont->output_ports(),
+        .reg_state = cont->registers(),
+        .interpreter_events = cont->events(),
+    };
 
-  EXPECT_THAT(result.interpreter_events.trace_msgs,
-              ElementsAre(FieldsAre("x is 3", 0),
-                          FieldsAre("I'm emphasizing that x is 3", 3)));
-  EXPECT_THAT(result.interpreter_events.assert_msgs, ElementsAre("foo"));
+    EXPECT_THAT(result.interpreter_events.trace_msgs,
+                ElementsAre(FieldsAre("x is 3", 0),
+                            FieldsAre("I'm emphasizing that x is 3", 3)));
+    EXPECT_THAT(result.interpreter_events.assert_msgs, ElementsAre("foo"));
+  }
+}
+
+TEST_P(BlockEvaluatorTest, InterpreterEventsCapturedByChannelizedInterface) {
+  auto package = CreatePackage();
+  BlockBuilder b(TestName(), package.get());
+  XLS_ASSERT_OK(b.block()->AddClockPort("clk"));
+
+  BValue x = b.InputPort("x", package->GetBitsType(32));
+  BValue x_vld = b.InputPort("x_vld", package->GetBitsType(1));
+  BValue y_rdy = b.InputPort("y_rdy", package->GetBitsType(1));
+  b.OutputPort("y", x);
+  b.OutputPort("x_rdy", y_rdy);
+  b.OutputPort("y_vld", x_vld);
+
+  BValue tkn = b.Literal(Value::Token());
+  BValue fire = b.And({x_vld, y_rdy});
+  BValue assert_cond = b.UGt(x, b.Literal(Value(UBits(5, 32))));
+  BValue fire_implies_cond = b.Or(b.Not(fire), assert_cond);
+  BValue assertion = b.Assert(tkn, fire_implies_cond, "foo");
+  b.Trace(assertion, fire, {x},
+          {"I'm emphasizing that x is ", FormatPreference::kDefault},
+          /*verbosity=*/3);
+
+  XLS_ASSERT_OK_AND_ASSIGN(Block * block, b.Build());
+
+  {
+    std::vector<ChannelSource> sources{
+        ChannelSource("x", "x_vld", "x_rdy", 0.5, block)};
+    XLS_ASSERT_OK(
+        sources.at(0).SetDataSequence(std::vector<uint64_t>{8, 7, 6, 5, 4}));
+
+    std::vector<ChannelSink> sinks{
+        ChannelSink("y", "y_vld", "y_rdy", 0.1, block),
+    };
+
+    std::vector<absl::flat_hash_map<std::string, uint64_t>> inputs;
+    inputs.resize(100);
+
+    BlockIOResultsAsUint64 block_io;
+    XLS_ASSERT_OK_AND_ASSIGN(
+        block_io,
+        evaluator().EvaluateChannelizedSequentialBlockWithUint64(
+            block, absl::MakeSpan(sources), absl::MakeSpan(sinks), inputs));
+
+    XLS_ASSERT_OK_AND_ASSIGN(std::vector<uint64_t> output_sequence,
+                             sinks.at(0).GetOutputSequenceAsUint64());
+    EXPECT_GT(block_io.outputs.size(), output_sequence.size());
+    EXPECT_THAT(output_sequence, ElementsAre(8, 7, 6, 5, 4));
+    EXPECT_THAT(block_io.interpreter_events.assert_msgs,
+                // Assertion fails for inputs 5 and 4.
+                ElementsAre("foo", "foo"));
+    EXPECT_THAT(block_io.interpreter_events.trace_msgs,
+                Contains(FieldsAre(HasSubstr("I'm emphasizing that x is "), _))
+                    .Times(5));
+  }
 }
 
 TEST_P(BlockEvaluatorTest, TupleInputOutput) {
@@ -1288,20 +1359,15 @@ TEST_P(BlockEvaluatorTest, TupleInputOutput) {
   b.OutputPort("o11", b.TupleIndex(b.TupleIndex(x, 1), 1));
 
   XLS_ASSERT_OK_AND_ASSIGN(Block * block, b.Build());
-  XLS_ASSERT_OK_AND_ASSIGN(BlockElaboration elaboration,
-                           BlockElaboration::Elaborate(block));
 
-  XLS_ASSERT_OK_AND_ASSIGN(
-      BlockRunResult result,
-      evaluator().EvaluateBlock(
-          {{"x",
-            Value::Tuple(
-                {Value::Tuple({Value(UBits(0, 1)), Value(UBits(1, 2))}),
-                 Value::Tuple({Value(UBits(2, 4)), Value(UBits(3, 8))})})}},
-          {}, elaboration));
+  XLS_ASSERT_OK_AND_ASSIGN(auto cont, evaluator().NewContinuation(block));
+  XLS_ASSERT_OK(cont->RunOneCycle(
+      {{"x", Value::Tuple(
+                 {Value::Tuple({Value(UBits(0, 1)), Value(UBits(1, 2))}),
+                  Value::Tuple({Value(UBits(2, 4)), Value(UBits(3, 8))})})}}));
 
   EXPECT_THAT(
-      result.outputs,
+      cont->output_ports(),
       UnorderedElementsAre(
           Pair("o0", Value::Tuple({Value(UBits(0, 1)), Value(UBits(1, 2))})),
           Pair("o00", Value(UBits(0, 1))), Pair("o01", Value(UBits(1, 2))),
@@ -1326,30 +1392,24 @@ TEST_P(BlockEvaluatorTest, TupleRegister) {
   b.InsertRegister("o11", b.TupleIndex(b.TupleIndex(x, 1), 1));
 
   XLS_ASSERT_OK_AND_ASSIGN(Block * block, b.Build());
-  XLS_ASSERT_OK_AND_ASSIGN(BlockElaboration elaboration,
-                           BlockElaboration::Elaborate(block));
-  RecordProperty("ir", block->DumpIr());
+  RecordProperty("ir", package->DumpIr());
 
-  XLS_ASSERT_OK_AND_ASSIGN(
-      BlockRunResult result,
-      evaluator().EvaluateBlock(
-          {},
-          {
-              {"x",
-               Value::Tuple(
-                   {Value::Tuple({Value(UBits(0, 1)), Value(UBits(1, 2))}),
-                    Value::Tuple({Value(UBits(2, 4)), Value(UBits(3, 8))})})},
-              {"o0", all_ones.element(0)},
-              {"o1", all_ones.element(1)},
-              {"o00", all_ones.element(0).element(0)},
-              {"o01", all_ones.element(0).element(1)},
-              {"o10", all_ones.element(1).element(0)},
-              {"o11", all_ones.element(1).element(1)},
-          },
-          elaboration));
+  XLS_ASSERT_OK_AND_ASSIGN(auto cont, evaluator().NewContinuation(block));
+  XLS_ASSERT_OK(cont->SetRegisters({
+      {"x",
+       Value::Tuple({Value::Tuple({Value(UBits(0, 1)), Value(UBits(1, 2))}),
+                     Value::Tuple({Value(UBits(2, 4)), Value(UBits(3, 8))})})},
+      {"o0", all_ones.element(0)},
+      {"o1", all_ones.element(1)},
+      {"o00", all_ones.element(0).element(0)},
+      {"o01", all_ones.element(0).element(1)},
+      {"o10", all_ones.element(1).element(0)},
+      {"o11", all_ones.element(1).element(1)},
+  }));
+  XLS_ASSERT_OK(cont->RunOneCycle({}));
 
   EXPECT_THAT(
-      result.reg_state,
+      cont->registers(),
       UnorderedElementsAre(
           Pair("x", all_ones),
           Pair("o0", Value::Tuple({Value(UBits(0, 1)), Value(UBits(1, 2))})),
@@ -1364,16 +1424,13 @@ TEST_P(BlockEvaluatorTest, TypeChecksInputs) {
   b.InputPort("test", package->GetBitsType(32));
 
   XLS_ASSERT_OK_AND_ASSIGN(Block * block, b.Build());
-  XLS_ASSERT_OK_AND_ASSIGN(BlockElaboration elaboration,
-                           BlockElaboration::Elaborate(block));
-
-  auto result = evaluator().EvaluateBlock(
-      {{"test", Value::Tuple(
-                    {Value::Tuple({Value(UBits(0, 1)), Value(UBits(1, 2))}),
-                     Value::Tuple({Value(UBits(2, 4)), Value(UBits(3, 8))})})}},
-      {}, elaboration);
-
-  RecordProperty("error", result.status().ToString());
+  XLS_ASSERT_OK_AND_ASSIGN(auto cont, evaluator().NewContinuation(block));
+  auto result = cont->RunOneCycle(
+      {{"test",
+        Value::Tuple(
+            {Value::Tuple({Value(UBits(0, 1)), Value(UBits(1, 2))}),
+             Value::Tuple({Value(UBits(2, 4)), Value(UBits(3, 8))})})}});
+  RecordProperty("error", result.ToString());
   EXPECT_THAT(result, Not(IsOk()));
 }
 
@@ -1384,17 +1441,14 @@ TEST_P(BlockEvaluatorTest, TypeChecksRegister) {
   b.InsertRegister("test", b.Literal(UBits(0, 32)));
 
   XLS_ASSERT_OK_AND_ASSIGN(Block * block, b.Build());
-  XLS_ASSERT_OK_AND_ASSIGN(BlockElaboration elaboration,
-                           BlockElaboration::Elaborate(block));
+  XLS_ASSERT_OK_AND_ASSIGN(auto cont, evaluator().NewContinuation(block));
 
-  auto result = evaluator().EvaluateBlock(
-      {},
-      {{"test", Value::Tuple(
-                    {Value::Tuple({Value(UBits(0, 1)), Value(UBits(1, 2))}),
-                     Value::Tuple({Value(UBits(2, 4)), Value(UBits(3, 8))})})}},
-      elaboration);
-
-  RecordProperty("error", result.status().ToString());
+  auto result = cont->SetRegisters(
+      {{"test",
+        Value::Tuple(
+            {Value::Tuple({Value(UBits(0, 1)), Value(UBits(1, 2))}),
+             Value::Tuple({Value(UBits(2, 4)), Value(UBits(3, 8))})})}});
+  RecordProperty("error", result.ToString());
   EXPECT_THAT(result, Not(IsOk()));
 }
 
@@ -1528,6 +1582,183 @@ TEST_P(BlockEvaluatorTest, DelaysContinuation) {
                              Pair("s2", Value(UBits(expected.v1, 32))),
                              Pair("s3", Value(UBits(expected.v2, 32))),
                              Pair("s4", Value(UBits(expected.v3, 32)))));
+  }
+}
+
+TEST_P(FifoTest, FifosReset) {
+  // TODO(rigge): add instantiation support to block jit and remove this guard.
+  if (!SupportsFifos()) {
+    GTEST_SKIP();
+    return;
+  }
+  auto p = CreatePackage();
+  Type* u1 = p->GetBitsType(1);
+  Type* u32 = p->GetBitsType(32);
+  BlockBuilder bb("fifo_wrapper", p.get());
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FifoInstantiation * fifo_inst,
+      bb.block()->AddFifoInstantiation("fifo_inst", fifo_config(), u32));
+
+  bb.OutputPort("pop_data", bb.InstantiationOutput(fifo_inst, "pop_data"));
+  bb.OutputPort("pop_valid", bb.InstantiationOutput(fifo_inst, "pop_valid"));
+  bb.OutputPort("push_ready", bb.InstantiationOutput(fifo_inst, "push_ready"));
+
+  // Make reset.
+  bb.InstantiationInput(fifo_inst, "rst", bb.InputPort("reset", u1));
+
+  // Make push side.
+  bb.InstantiationInput(fifo_inst, "push_data", bb.InputPort("push_data", u32));
+  bb.InstantiationInput(fifo_inst, "push_valid",
+                        bb.InputPort("push_valid", u1));
+  bb.InstantiationInput(fifo_inst, "pop_ready", bb.InputPort("pop_ready", u1));
+  XLS_ASSERT_OK_AND_ASSIGN(Block * block, bb.Build());
+
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlockContinuation> eval,
+                           evaluator().NewContinuation(block));
+  for (int i = 0; i < fifo_config().depth() + 1; ++i) {
+    XLS_ASSERT_OK(eval->RunOneCycle({{"reset", Value(UBits(0, 1))},
+                                     {"push_data", ZeroOfType(u32)},
+                                     {"push_valid", Value(UBits(1, 1))},
+                                     {"pop_ready", Value(UBits(0, 1))}}));
+  }
+  EXPECT_THAT(eval->output_ports(),
+              UnorderedElementsAre(
+                  // We only pushed 0s, so we should get 0s out.
+                  Pair("pop_data", Value(UBits(0, 32))),
+                  // Fifo is full, pop should be valid.
+                  Pair("pop_valid", Value(UBits(1, 1))),
+                  // Fifo is full, push should not be ready.
+                  Pair("push_ready", Value(UBits(0, 1)))));
+
+  // Reset and check that the fifo is empty.
+  XLS_ASSERT_OK(eval->RunOneCycle({{"reset", Value(UBits(1, 1))},
+                                   {"push_data", ZeroOfType(u32)},
+                                   {"push_valid", Value(UBits(1, 1))},
+                                   {"pop_ready", Value(UBits(0, 1))}}));
+  XLS_ASSERT_OK(eval->RunOneCycle({{"reset", Value(UBits(0, 1))},
+                                   {"push_data", ZeroOfType(u32)},
+                                   {"push_valid", Value(UBits(0, 1))},
+                                   {"pop_ready", Value(UBits(1, 1))}}));
+  EXPECT_THAT(eval->output_ports(),
+              AllOf(Contains(Pair("pop_valid", Value(UBits(0, 1)))),
+                    Contains(Pair("push_ready", Value(UBits(1, 1))))));
+}
+
+TEST_P(FifoTest, CutThroughLatencyCorrect) {
+  // TODO(rigge): add instantiation support to block jit and remove this guard.
+  if (!SupportsFifos()) {
+    GTEST_SKIP();
+    return;
+  }
+  auto p = CreatePackage();
+  Type* u1 = p->GetBitsType(1);
+  Type* u32 = p->GetBitsType(32);
+  BlockBuilder bb("fifo_wrapper", p.get());
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FifoInstantiation * fifo_inst,
+      bb.block()->AddFifoInstantiation("fifo_inst", fifo_config(), u32));
+
+  bb.OutputPort("pop_data", bb.InstantiationOutput(fifo_inst, "pop_data"));
+  bb.OutputPort("pop_valid", bb.InstantiationOutput(fifo_inst, "pop_valid"));
+  bb.OutputPort("push_ready", bb.InstantiationOutput(fifo_inst, "push_ready"));
+
+  // Make reset.
+  bb.InstantiationInput(fifo_inst, "rst", bb.InputPort("reset", u1));
+
+  // Make push side.
+  bb.InstantiationInput(fifo_inst, "push_data", bb.InputPort("push_data", u32));
+  bb.InstantiationInput(fifo_inst, "push_valid",
+                        bb.InputPort("push_valid", u1));
+  bb.InstantiationInput(fifo_inst, "pop_ready", bb.InputPort("pop_ready", u1));
+  XLS_ASSERT_OK_AND_ASSIGN(Block * block, bb.Build());
+
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlockContinuation> eval,
+                           evaluator().NewContinuation(block));
+  XLS_ASSERT_OK(eval->RunOneCycle({{"reset", Value(UBits(0, 1))},
+                                   {"push_data", ZeroOfType(u32)},
+                                   {"push_valid", Value(UBits(1, 1))},
+                                   {"pop_ready", Value(UBits(0, 1))}}));
+  int64_t pop_valid = 0;
+  if (GetParam().fifo_config.bypass() &&
+      !GetParam().fifo_config.register_pop_outputs()) {
+    pop_valid = 1;
+  }
+  EXPECT_THAT(eval->output_ports(),
+              AllOf(Contains(Pair("pop_valid", Value(UBits(pop_valid, 1)))),
+                    Contains(Pair("pop_data", Value(UBits(0, 32))))));
+  if (!pop_valid) {
+    pop_valid = 1;
+    XLS_ASSERT_OK(eval->RunOneCycle({{"reset", Value(UBits(0, 1))},
+                                     {"push_data", ZeroOfType(u32)},
+                                     {"push_valid", Value(UBits(0, 1))},
+                                     {"pop_ready", Value(UBits(1, 1))}}));
+  }
+  EXPECT_THAT(eval->output_ports(),
+              AllOf(Contains(Pair("pop_valid", Value(UBits(pop_valid, 1)))),
+                    Contains(Pair("pop_data", Value(UBits(0, 32))))));
+}
+
+TEST_P(FifoTest, BackpressureLatencyCorrect) {
+  // TODO(rigge): add instantiation support to block jit and remove this guard.
+  if (!SupportsFifos()) {
+    GTEST_SKIP();
+    return;
+  }
+  auto p = CreatePackage();
+  Type* u1 = p->GetBitsType(1);
+  Type* u32 = p->GetBitsType(32);
+  BlockBuilder bb("fifo_wrapper", p.get());
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FifoInstantiation * fifo_inst,
+      bb.block()->AddFifoInstantiation("fifo_inst", fifo_config(), u32));
+
+  bb.OutputPort("pop_data", bb.InstantiationOutput(fifo_inst, "pop_data"));
+  bb.OutputPort("pop_valid", bb.InstantiationOutput(fifo_inst, "pop_valid"));
+  bb.OutputPort("push_ready", bb.InstantiationOutput(fifo_inst, "push_ready"));
+
+  // Make reset.
+  bb.InstantiationInput(fifo_inst, "rst", bb.InputPort("reset", u1));
+
+  // Make push side.
+  bb.InstantiationInput(fifo_inst, "push_data", bb.InputPort("push_data", u32));
+  bb.InstantiationInput(fifo_inst, "push_valid",
+                        bb.InputPort("push_valid", u1));
+  bb.InstantiationInput(fifo_inst, "pop_ready", bb.InputPort("pop_ready", u1));
+  XLS_ASSERT_OK_AND_ASSIGN(Block * block, bb.Build());
+
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlockContinuation> eval,
+                           evaluator().NewContinuation(block));
+  // Push until the fifo is full.
+  for (int i = 0; i < fifo_config().depth() + 1; ++i) {
+    XLS_ASSERT_OK(eval->RunOneCycle({{"reset", Value(UBits(0, 1))},
+                                     {"push_data", ZeroOfType(u32)},
+                                     {"push_valid", Value(UBits(1, 1))},
+                                     {"pop_ready", Value(UBits(0, 1))}}));
+  }
+  EXPECT_THAT(eval->output_ports(),
+              UnorderedElementsAre(Pair("pop_valid", Value(UBits(1, 1))),
+                                   Pair("pop_data", Value(UBits(0, 32))),
+                                   // Cannot push more.
+                                   Pair("push_ready", Value(UBits(0, 1)))));
+  // Pop an output.
+  XLS_ASSERT_OK(eval->RunOneCycle({{"reset", Value(UBits(0, 1))},
+                                   {"push_data", ZeroOfType(u32)},
+                                   {"push_valid", Value(UBits(0, 1))},
+                                   {"pop_ready", Value(UBits(1, 1))}}));
+  int64_t push_ready = 1;
+  if (GetParam().fifo_config.register_push_outputs()) {
+    push_ready = 0;
+  }
+  EXPECT_THAT(eval->output_ports(),
+              Contains(Pair("push_ready", Value(UBits(push_ready, 1)))));
+  if (!push_ready) {
+    push_ready = 1;
+    XLS_ASSERT_OK(eval->RunOneCycle({{"reset", Value(UBits(0, 1))},
+                                     {"push_data", ZeroOfType(u32)},
+                                     {"push_valid", Value(UBits(0, 1))},
+                                     {"pop_ready", Value(UBits(0, 1))}}));
+    EXPECT_THAT(eval->output_ports(),
+                Contains(Pair("push_ready", Value(UBits(push_ready, 1)))));
   }
 }
 

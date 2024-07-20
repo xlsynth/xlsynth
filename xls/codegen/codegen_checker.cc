@@ -30,7 +30,6 @@
 #include "xls/ir/node.h"
 #include "xls/ir/register.h"
 #include "xls/ir/verifier.h"
-#include "xls/passes/pass_base.h"
 
 namespace xls::verilog {
 
@@ -188,7 +187,7 @@ absl::Status CheckStreamingIO(const StreamingIOPipeline& streaming_io,
 }  // namespace
 absl::Status CodegenChecker::Run(CodegenPassUnit* unit,
                                  const CodegenPassOptions& options,
-                                 PassResults* results) const {
+                                 CodegenPassResults* results) const {
   XLS_RETURN_IF_ERROR(CheckNodeToStageMap(*unit)) << unit->DumpIr();
   for (const auto& [block, metadata] : unit->metadata) {
     XLS_RETURN_IF_ERROR(

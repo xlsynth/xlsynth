@@ -83,9 +83,6 @@ cc_library(
 cc_binary(
     name = "aot_compiler_main",
     srcs = ["aot_compiler_main.cc"],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         ":aot_entrypoint_cc_proto",
         ":function_base_jit",
@@ -157,9 +154,6 @@ cc_library(
     name = "aot_runtime",
     srcs = ["aot_runtime.cc"],
     hdrs = ["aot_runtime.h"],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         ":type_layout",
         ":type_layout_cc_proto",
@@ -326,16 +320,6 @@ cc_library(
     ],
 )
 
-alias(
-    name = "switchable_function_jit",
-    actual = "switchable_function_jit-normal",
-    # Uncomment this and comment the above to make the
-    # switchable-function-jit use the interpreter instead. This can be used
-    # if the jit is non-functional due to some llvm update.
-    # actual = "switchable_function_jit-interpreter_fallback",
-    visibility = ["//xls:xls_users"],
-)
-
 cc_library(
     name = "jit_emulated_tls",
     srcs = ["jit_emulated_tls.cc"],
@@ -346,38 +330,13 @@ cc_library(
 )
 
 cc_library(
-    name = "switchable_function_jit-normal",
+    name = "switchable_function_jit",
     srcs = ["switchable_function_jit.cc"],
     hdrs = ["switchable_function_jit.h"],
     defines = [
         "EMERGENCY_FORCE_INTERPRETER=0",
     ],
-    visibility = ["//visibility:private"],
-    deps = [
-        ":function_jit",
-        ":observer",
-        "//xls/common/status:ret_check",
-        "//xls/common/status:status_macros",
-        "//xls/interpreter:ir_interpreter",
-        "//xls/ir",
-        "//xls/ir:events",
-        "//xls/ir:value",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/types:span",
-    ],
-)
-
-cc_library(
-    name = "switchable_function_jit-interpreter_fallback",
-    srcs = ["switchable_function_jit.cc"],
-    hdrs = ["switchable_function_jit.h"],
-    defines = [
-        "EMERGENCY_FORCE_INTERPRETER=1",
-    ],
-    visibility = ["//visibility:private"],
+    visibility = ["//xls:xls_users"],
     deps = [
         ":function_jit",
         ":observer",
@@ -400,23 +359,6 @@ cc_test(
     srcs = ["switchable_function_jit_test.cc"],
     deps = [
         ":switchable_function_jit",
-        "//xls/common:xls_gunit_main",
-        "//xls/common/status:matchers",
-        "//xls/ir",
-        "//xls/ir:bits",
-        "//xls/ir:function_builder",
-        "//xls/ir:ir_test_base",
-        "//xls/ir:value",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_googletest//:gtest",
-    ],
-)
-
-cc_test(
-    name = "switchable_function_jit_interpreter_fallback_test",
-    srcs = ["switchable_function_jit_interpreter_fallback_test.cc"],
-    deps = [
-        ":switchable_function_jit-interpreter_fallback",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
         "//xls/ir",
@@ -452,7 +394,6 @@ cc_library(
         "//xls/ir:value",
         "//xls/ir:value_utils",
         "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -480,6 +421,7 @@ cc_test(
         "//xls/common:bits_util",
         "//xls/common:math_util",
         "//xls/common:xls_gunit_main",
+        "//xls/common/fuzzing:fuzztest",
         "//xls/common/status:matchers",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
@@ -506,7 +448,6 @@ cc_test(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
-        "@com_google_fuzztest//fuzztest",
         "@com_google_googletest//:gtest",
         "@llvm-project//llvm:ir_headers",
     ],
@@ -733,8 +674,7 @@ cc_library(
         "@llvm-project//llvm:ExecutionEngine",
         "@llvm-project//llvm:IRPrinter",
         "@llvm-project//llvm:Instrumentation",
-        "@llvm-project//llvm:JITLink",  # build_cleaner: keep
-        "@llvm-project//llvm:OrcJIT",  # build_cleaner: keep
+        "@llvm-project//llvm:OrcJIT",
         "@llvm-project//llvm:OrcShared",
         "@llvm-project//llvm:Passes",
         "@llvm-project//llvm:Support",
@@ -755,11 +695,14 @@ cc_library(
         ":jit_callbacks",
         ":jit_runtime",
         ":orc_jit",
-        "//xls/codegen:module_signature_cc_proto",
+        "//xls/codegen:block_inlining_pass",
+        "//xls/codegen:codegen_pass",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
         "//xls/interpreter:block_evaluator",
         "//xls/ir",
+        "//xls/ir:block_elaboration",
+        "//xls/ir:clone_package",
         "//xls/ir:elaboration",
         "//xls/ir:events",
         "//xls/ir:register",
@@ -768,9 +711,9 @@ cc_library(
         "//xls/ir:value_utils",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
     ],
@@ -781,16 +724,17 @@ cc_test(
     srcs = ["block_jit_test.cc"],
     deps = [
         ":block_jit",
-        ":jit_runtime",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
         "//xls/interpreter:block_evaluator_test_base",
         "//xls/ir",
         "//xls/ir:bits",
+        "//xls/ir:foreign_function_data_cc_proto",
         "//xls/ir:function_builder",
         "//xls/ir:ir_test_base",
         "//xls/ir:value",
         "//xls/ir:value_view",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest",
     ],

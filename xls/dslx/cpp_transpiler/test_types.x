@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import xls.dslx.cpp_transpiler.test_types_dep as x;
+
 // TODO:
 //   * add width constants for type aliases and enums
 type MyType = u37;
@@ -103,3 +105,15 @@ struct snake_case_struct_t {
   some_field: snake_case_type_t,
   some_other_field: snake_case_enum_t,
 }
+
+struct StructWithKeywordFields {
+  float: u32,
+  int: u42,
+}
+
+enum EnumWithKeywordValues : u8 {
+  float = 0,
+  static = 1,
+}
+
+type float = u33;

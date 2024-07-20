@@ -112,7 +112,7 @@ static int64_t GetPortPosition(Node* n, const Block* block) {
     }
     i++;
   }
-  LOG(FATAL) << absl::StreamFormat("Node %s is not a port node", n->GetName());
+  LOG(FATAL) << absl::StreamFormat("Node %s is not a port node", n->ToString());
 }
 
 // Return the priority of a node for the purposes of dump order. Nodes with
@@ -629,6 +629,31 @@ absl::StatusOr<Instantiation*> Block::AddInstantiation(
   return instantiation_ptr;
 }
 
+absl::Status Block::ReplaceInstantiationWith(Instantiation* old_inst,
+                                             Instantiation* new_inst) {
+  XLS_RET_CHECK(IsOwned(old_inst));
+  XLS_RET_CHECK(IsOwned(new_inst)) << "must add instantiation to this block "
+                                      "before replacing uses of another.";
+  std::vector<InstantiationInput*> inps(instantiation_inputs_.at(old_inst));
+  std::vector<InstantiationOutput*> outs(instantiation_outputs_.at(old_inst));
+  XLS_ASSIGN_OR_RETURN(InstantiationType old_type, old_inst->type());
+  XLS_ASSIGN_OR_RETURN(InstantiationType new_type, new_inst->type());
+  XLS_RET_CHECK(old_type == new_type) << "Type mismatch of instantiations";
+  for (InstantiationInput* inp : inps) {
+    XLS_RETURN_IF_ERROR(inp->ReplaceUsesWithNew<InstantiationInput>(
+                               inp->data(), new_inst, inp->port_name())
+                            .status());
+    XLS_RETURN_IF_ERROR(RemoveNode(inp));
+  }
+  for (InstantiationOutput* out : outs) {
+    XLS_RETURN_IF_ERROR(
+        out->ReplaceUsesWithNew<InstantiationOutput>(new_inst, out->port_name())
+            .status());
+    XLS_RETURN_IF_ERROR(RemoveNode(out));
+  }
+  return RemoveInstantiation(old_inst);
+}
+
 absl::Status Block::RemoveInstantiation(Instantiation* instantiation) {
   if (!IsOwned(instantiation)) {
     return absl::InvalidArgumentError("Instantiation is not owned by block.");
@@ -678,7 +703,9 @@ absl::Span<InstantiationOutput* const> Block::GetInstantiationOutputs(
 
 absl::StatusOr<Block*> Block::Clone(
     std::string_view new_name, Package* target_package,
-    const absl::flat_hash_map<std::string, std::string>& reg_name_map) const {
+    const absl::flat_hash_map<std::string, std::string>& reg_name_map,
+    const absl::flat_hash_map<const Block*, Block*>& block_instantation_map)
+    const {
   absl::flat_hash_map<Node*, Node*> original_to_clone;
   absl::flat_hash_map<Register*, Register*> register_map;
   absl::flat_hash_map<Instantiation*, Instantiation*> instantiation_map;
@@ -718,14 +745,40 @@ absl::StatusOr<Block*> Block::Clone(
 
   for (Instantiation* inst : GetInstantiations()) {
     if (inst->kind() == InstantiationKind::kBlock) {
-      auto block_inst = dynamic_cast<BlockInstantiation*>(inst);
-      CHECK(block_inst != nullptr);
+      XLS_ASSIGN_OR_RETURN(BlockInstantiation * block_inst,
+                           inst->AsBlockInstantiation());
+      Block* new_inst;
+      if (!block_instantation_map.contains(block_inst->instantiated_block())) {
+        XLS_RET_CHECK_EQ(target_package, package())
+            << "No definition of block " << block_inst->name() << "("
+            << block_inst->instantiated_block()->name() << ") provided.";
+        new_inst = block_inst->instantiated_block();
+      } else {
+        new_inst = block_instantation_map.at(block_inst->instantiated_block());
+      }
       XLS_ASSIGN_OR_RETURN(
           instantiation_map[inst],
-          cloned_block->AddBlockInstantiation(
-              block_inst->name(), block_inst->instantiated_block()));
+          cloned_block->AddBlockInstantiation(block_inst->name(), new_inst));
+    } else if (inst->kind() == InstantiationKind::kExtern) {
+      XLS_ASSIGN_OR_RETURN(ExternInstantiation * extern_inst,
+                           inst->AsExternInstantiation());
+      XLS_ASSIGN_OR_RETURN(
+          instantiation_map[inst],
+          cloned_block->AddInstantiation(
+              inst->name(), std::make_unique<ExternInstantiation>(
+                                inst->name(), extern_inst->function())));
     } else {
-      LOG(FATAL) << "InstantiationKind not yet supported: " << inst->kind();
+      XLS_RET_CHECK_EQ(inst->kind(), InstantiationKind::kFifo)
+          << "Unknown instantiation kind";
+      XLS_ASSIGN_OR_RETURN(FifoInstantiation * fifo_inst,
+                           inst->AsFifoInstantiation());
+      XLS_ASSIGN_OR_RETURN(
+          Type * data_type,
+          target_package->MapTypeFromOtherPackage(fifo_inst->data_type()));
+      XLS_ASSIGN_OR_RETURN(instantiation_map[inst],
+                           cloned_block->AddFifoInstantiation(
+                               inst->name(), fifo_inst->fifo_config(),
+                               data_type, fifo_inst->channel_name()));
     }
   }
 

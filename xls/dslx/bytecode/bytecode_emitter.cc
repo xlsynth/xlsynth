@@ -30,6 +30,7 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
@@ -90,7 +91,7 @@ absl::StatusOr<Bytecode::ChannelData> CreateChannelData(
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> channel_payload_type,
                        GetChannelPayloadType(type_info, channel));
 
-  XLS_ASSIGN_OR_RETURN(std::unique_ptr<ValueFormatDescriptor> struct_fmt_desc,
+  XLS_ASSIGN_OR_RETURN(ValueFormatDescriptor struct_fmt_desc,
                        MakeValueFormatDescriptor(*channel_payload_type.get(),
                                                  format_preference));
 
@@ -108,13 +109,32 @@ absl::StatusOr<Bytecode::ChannelData> CreateChannelData(
       std::move(channel_payload_type), std::move(struct_fmt_desc));
 }
 
-absl::StatusOr<std::unique_ptr<ValueFormatDescriptor>>
-ExprToValueFormatDescriptor(const Expr* expr, const TypeInfo* type_info,
-                            FormatPreference field_preference) {
+absl::StatusOr<ValueFormatDescriptor> ExprToValueFormatDescriptor(
+    const Expr* expr, const TypeInfo* type_info,
+    FormatPreference field_preference) {
   std::optional<Type*> maybe_type = type_info->GetItem(expr);
   XLS_RET_CHECK(maybe_type.has_value());
   XLS_RET_CHECK(maybe_type.value() != nullptr);
   return MakeValueFormatDescriptor(*maybe_type.value(), field_preference);
+}
+
+std::optional<ValueFormatDescriptor> GetFormatDescriptorFromNumber(
+    const Number* node) {
+  std::string text = node->ToStringNoType();
+  if (absl::StartsWith(text, "0x")) {
+    return ValueFormatDescriptor::MakeLeafValue(FormatPreference::kHex);
+  }
+  if (absl::StartsWith(text, "0b")) {
+    return ValueFormatDescriptor::MakeLeafValue(FormatPreference::kBinary);
+  }
+  BuiltinTypeAnnotation* builtin_type =
+      dynamic_cast<BuiltinTypeAnnotation*>(node->type_annotation());
+  if (builtin_type == nullptr) {
+    return std::nullopt;
+  }
+  return ValueFormatDescriptor::MakeLeafValue(
+      builtin_type->GetSignedness() ? FormatPreference::kSignedDecimal
+                                    : FormatPreference::kUnsignedDecimal);
 }
 
 }  // namespace
@@ -956,10 +976,10 @@ absl::Status BytecodeEmitter::HandleFormatMacro(const FormatMacro* node) {
                        : preference;
     }
   }
-  std::vector<std::unique_ptr<ValueFormatDescriptor>> value_fmt_descs;
+  std::vector<ValueFormatDescriptor> value_fmt_descs;
   for (size_t i = 0; i < node->args().size(); ++i) {
     XLS_ASSIGN_OR_RETURN(
-        std::unique_ptr<ValueFormatDescriptor> value_fmt_desc,
+        ValueFormatDescriptor value_fmt_desc,
         ExprToValueFormatDescriptor(node->args().at(i), type_info_,
                                     preferences.at(i)));
     value_fmt_descs.push_back(std::move(value_fmt_desc));
@@ -1159,17 +1179,18 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandleNameDefTreeExpr(
                   std::get<Bytecode::SlotIndex>(item_value));
             },
             [&](Number* n) -> absl::StatusOr<Bytecode::MatchArmItem> {
-              XLS_ASSIGN_OR_RETURN(InterpValue number, HandleNumberInternal(n));
-              return Bytecode::MatchArmItem::MakeInterpValue(number);
+              XLS_ASSIGN_OR_RETURN(FormattedInterpValue number,
+                                   HandleNumberInternal(n));
+              return Bytecode::MatchArmItem::MakeInterpValue(number.value);
             },
             [&](Range* n) -> absl::StatusOr<Bytecode::MatchArmItem> {
               XLS_ASSIGN_OR_RETURN(
-                  InterpValue start,
+                  FormattedInterpValue start,
                   HandleNumberInternal(down_cast<Number*>(n->start())));
               XLS_ASSIGN_OR_RETURN(
-                  InterpValue end,
+                  FormattedInterpValue end,
                   HandleNumberInternal(down_cast<Number*>(n->end())));
-              return Bytecode::MatchArmItem::MakeRange(start, end);
+              return Bytecode::MatchArmItem::MakeRange(start.value, end.value);
             },
             [&](ColonRef* n) -> absl::StatusOr<Bytecode::MatchArmItem> {
               XLS_ASSIGN_OR_RETURN(InterpValue value,
@@ -1280,13 +1301,14 @@ BytecodeEmitter::HandleNameRefInternal(const NameRef* node) {
 }
 
 absl::Status BytecodeEmitter::HandleNumber(const Number* node) {
-  XLS_ASSIGN_OR_RETURN(InterpValue value, HandleNumberInternal(node));
-  Add(Bytecode::MakeLiteral(node->span(), value));
+  XLS_ASSIGN_OR_RETURN(FormattedInterpValue value, HandleNumberInternal(node));
+  Add(Bytecode::MakeLiteral(node->span(), value.value,
+                            value.format_descriptor));
   return absl::OkStatus();
 }
 
-absl::StatusOr<InterpValue> BytecodeEmitter::HandleNumberInternal(
-    const Number* node) {
+absl::StatusOr<BytecodeEmitter::FormattedInterpValue>
+BytecodeEmitter::HandleNumberInternal(const Number* node) {
   std::optional<Type*> type_or = type_info_->GetItem(node);
   if (!type_or.has_value()) {
     return absl::InternalError(
@@ -1302,7 +1324,9 @@ absl::StatusOr<InterpValue> BytecodeEmitter::HandleNumberInternal(
   XLS_ASSIGN_OR_RETURN(bool is_signed, bits_like->is_signed.GetAsBool());
 
   XLS_ASSIGN_OR_RETURN(Bits bits_value, node->GetBits(dim_val));
-  return InterpValue::MakeBits(is_signed, bits_value);
+  return FormattedInterpValue{
+      .value = InterpValue::MakeBits(is_signed, bits_value),
+      .format_descriptor = GetFormatDescriptorFromNumber(node)};
 }
 
 absl::Status BytecodeEmitter::HandleRange(const Range* node) {

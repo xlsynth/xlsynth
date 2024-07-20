@@ -28,6 +28,44 @@ package(
     licenses = ["notice"],  # Apache 2.0
 )
 
+cc_library(
+    name = "tool_timeout",
+    srcs = ["tool_timeout.cc"],
+    hdrs = ["tool_timeout.h"],
+    deps = [
+        "//xls/common:timeout_support",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_binary(
+    name = "tool_timeout_test_main",
+    testonly = True,
+    srcs = ["tool_timeout_test_main.cc"],
+    deps = [
+        ":tool_timeout",
+        "//xls/common:exit_status",
+        "//xls/common:init_xls",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+py_test(
+    name = "tool_timeout_test",
+    srcs = ["tool_timeout_test.py"],
+    data = [":tool_timeout_test_main"],
+    python_version = "PY3",
+    srcs_version = "PY3",
+    deps = [
+        "//xls/common:runfiles",
+        "@com_google_absl_py//absl/testing:absltest",
+    ],
+)
+
 py_binary(
     name = "package_bazel_build",
     srcs = ["package_bazel_build.py"],
@@ -129,9 +167,6 @@ cc_library(
 cc_binary(
     name = "extract_interface_main",
     srcs = ["extract_interface_main.cc"],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         ":extract_interface",
         "//xls/common:exit_status",
@@ -334,22 +369,24 @@ cc_binary(
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
         "//xls/ir",
+        "//xls/ir:format_preference",
         "//xls/ir:ir_parser",
+        "//xls/ir:value",
         "//xls/passes:dce_pass",
         "//xls/passes:inlining_pass",
         "//xls/passes:map_inlining_pass",
         "//xls/passes:optimization_pass",
         "//xls/passes:pass_base",
         "//xls/passes:unroll_pass",
+        "//xls/solvers:z3_ir_equivalence",
         "//xls/solvers:z3_ir_translator",
-        "//xls/solvers:z3_utils",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
-        "@com_google_absl//absl/types:span",
-        "@z3//:api",
     ],
 )
 
@@ -471,9 +508,6 @@ cc_library(
     name = "proto_to_dslx",
     srcs = ["proto_to_dslx.cc"],
     hdrs = ["proto_to_dslx.h"],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         "//xls/common:math_util",
         "//xls/common:proto_adaptor_utils",
@@ -519,9 +553,6 @@ cc_binary(
 cc_test(
     name = "proto_to_dslx_test",
     srcs = ["proto_to_dslx_test.cc"],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         ":proto_to_dslx",
         "//xls/common:xls_gunit_main",
@@ -557,10 +588,11 @@ cc_library(
     hdrs = ["testbench.h"],
     deps = [
         ":testbench_thread",
-        "//xls/common/file:filesystem",
-        "@com_google_absl//absl/base",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
     ],
 )
 
@@ -577,6 +609,7 @@ cc_library(
     name = "testbench_builder_utils",
     hdrs = ["testbench_builder_utils.h"],
     deps = [
+        "@com_google_absl//absl/base",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/random",
         "@com_google_absl//absl/random:distributions",
@@ -748,9 +781,6 @@ cc_library(
 cc_test(
     name = "eval_utils_test",
     srcs = ["eval_utils_test.cc"],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         ":eval_utils",
         ":proc_channel_values_cc_proto",
@@ -840,6 +870,7 @@ cc_binary(
     visibility = ["//xls:xls_users"],
     deps = [
         ":opt",
+        ":tool_timeout",
         "//xls/common:exit_status",
         "//xls/common:init_xls",
         "//xls/common/file:filesystem",
@@ -1123,6 +1154,7 @@ cc_library(
         "//xls/common/status:status_macros",
         "//xls/ir:xls_ir_interface_cc_proto",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:str_format",
@@ -1176,6 +1208,7 @@ cc_binary(
         ":codegen_flags_cc_proto",
         ":scheduling_options_flags",
         ":scheduling_options_flags_cc_proto",
+        ":tool_timeout",
         "//xls/codegen:module_signature",
         "//xls/common:exit_status",
         "//xls/common:init_xls",
@@ -1201,7 +1234,7 @@ cc_binary(
         ":eval_utils",
         "//xls/codegen:module_signature",
         "//xls/codegen:module_signature_cc_proto",
-        "//xls/codegen:vast",
+        "//xls/codegen/vast",
         "//xls/common:exit_status",
         "//xls/common:init_xls",
         "//xls/common/file:filesystem",

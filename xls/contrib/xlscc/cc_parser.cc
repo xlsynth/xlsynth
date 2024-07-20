@@ -29,7 +29,6 @@
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
-#include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/numbers.h"
@@ -690,6 +689,7 @@ void LibToolThread::Run() {
   argv.emplace_back("-Wno-unused-but-set-variable");
   argv.emplace_back("-Wno-c++11-narrowing");
   argv.emplace_back("-Wno-conversion");
+  argv.emplace_back("-Wno-missing-template-arg-list-after-template-kw");
 
   llvm::IntrusiveRefCntPtr<clang::FileManager> libtool_files;
 

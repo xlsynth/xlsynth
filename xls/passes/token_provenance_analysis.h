@@ -21,24 +21,28 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_join.h"
 #include "xls/data_structures/leaf_type_tree.h"
 #include "xls/ir/function_base.h"
 #include "xls/ir/node.h"
 
 namespace xls {
 
-using TokenProvenance = absl::flat_hash_map<Node*, LeafTypeTree<Node*>>;
+using TokenProvenance =
+    absl::flat_hash_map<Node*, LeafTypeTree<absl::flat_hash_set<Node*>>>;
 
 // Compute, for each token-type in the given `FunctionBase*`, what
-// side-effecting node produced that token. If a leaf type in one of the
-// `LeafTypeTree`s is not a token, the corresponding `Node*` will be `nullptr`.
+// side-effecting node(s) contributed to that token. If a leaf type in one of
+// the `LeafTypeTree`s is not a token, the corresponding `Node*` will be
+// `nullptr`.
 absl::StatusOr<TokenProvenance> TokenProvenanceAnalysis(FunctionBase* f);
 
 std::string ToString(const TokenProvenance& provenance);
 
 // A map from side-effecting nodes (and AfterAll) to the set of side-effecting
 // nodes (/ AfterAll) that their token inputs immediately came from. Note that
-// this skips over intermediate movement of tokens through tuples or `identity`.
+// this skips over intermediate movement of tokens through tuples, `identity`,
+// or selects.
 using TokenDAG = absl::flat_hash_map<Node*, absl::flat_hash_set<Node*>>;
 
 // Compute the immediate preceding side-effecting nodes (including proc token
@@ -48,17 +52,18 @@ using TokenDAG = absl::flat_hash_map<Node*, absl::flat_hash_set<Node*>>;
 // result map.
 absl::StatusOr<TokenDAG> ComputeTokenDAG(FunctionBase* f);
 
-
 struct NodeAndPredecessors {
   Node* node;
   absl::flat_hash_set<Node*> predecessors;
   template <typename Sink>
   friend void AbslStringify(Sink& sink, const NodeAndPredecessors& p) {
-    absl::Format(&sink, "%v: [%s]", *p.node,
-                 absl::StrJoin(p.predecessors, ", "));
+    std::vector<Node*> sorted_predecessors(p.predecessors.begin(),
+                                           p.predecessors.end());
+    absl::c_sort(sorted_predecessors, Node::NodeIdLessThan());
+    absl::Format(&sink, "%v: {%s}", *p.node,
+                 absl::StrJoin(sorted_predecessors, ", "));
   }
 };
-
 
 // Returns a predecessor-list representation of the token graph connecting
 // side-effecting operations in the given `proc`. The returns nodes will be in a

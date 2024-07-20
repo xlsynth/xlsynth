@@ -25,12 +25,15 @@
 #include "gtest/gtest.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_format.h"
 #include "absl/types/span.h"
 #include "xls/common/status/matchers.h"
 #include "xls/examples/sample_packages.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/function_builder.h"
 #include "xls/ir/ir_test_base.h"
+#include "xls/ir/nodes.h"
+#include "xls/ir/package.h"
 #include "xls/ir/topo_sort.h"
 
 namespace xls {
@@ -174,7 +177,7 @@ TEST_F(FunctionPartitionTest, BenchmarkTest) {
       // Skip packages which need the entry to be specified explicitly.
       continue;
     }
-    Function * f = f_status.value();
+    Function* f = f_status.value();
     auto topo_sort_it = TopoSort(f);
     std::vector<Node*> topo_sort(topo_sort_it.begin(), topo_sort_it.end());
 

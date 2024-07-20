@@ -22,8 +22,9 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xls/codegen/codegen_options.h"
-#include "xls/codegen/vast.h"
+#include "xls/codegen/vast/vast.h"
 #include "xls/ir/node.h"
+#include "xls/ir/op.h"
 
 namespace xls {
 namespace verilog {

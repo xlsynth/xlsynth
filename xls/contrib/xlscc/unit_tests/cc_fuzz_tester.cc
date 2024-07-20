@@ -34,7 +34,7 @@
 #include "xls/codegen/codegen_options.h"
 #include "xls/codegen/combinational_generator.h"
 #include "xls/codegen/module_signature.h"
-#include "xls/codegen/vast.h"
+#include "xls/codegen/vast/vast.h"
 #include "xls/common/file/filesystem.h"
 #include "xls/common/file/get_runfile_path.h"
 #include "xls/common/file/temp_directory.h"
@@ -75,8 +75,8 @@ class GeneratedTester : public XlsccTestBase {
     XLS_ASSIGN_OR_RETURN(xls::SubprocessResult result_value,
                          xls::InvokeSubprocess({std::string(exec_filename)}));
 
-    std::string stripped_result =
-        absl::StrReplaceAll(result_value.stdout, {{"0b", ""}, {".", ""}});
+    std::string stripped_result = absl::StrReplaceAll(
+        result_value.stdout_content, {{"0b", ""}, {".", ""}});
     std::reverse(stripped_result.begin(), stripped_result.end());
     absl::InlinedVector<bool, 1> expected_in;
     expected_in.reserve(stripped_result.size());

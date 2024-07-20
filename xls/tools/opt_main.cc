@@ -42,6 +42,7 @@
 #include "xls/passes/optimization_pass.h"
 #include "xls/passes/optimization_pass_pipeline.h"
 #include "xls/tools/opt.h"
+#include "xls/tools/tool_timeout.h"
 
 static constexpr std::string_view kUsage = R"(
 Takes in an IR file and produces an IR file that has been run through the
@@ -141,6 +142,7 @@ class FileStderrLogSink final : public absl::LogSink {
 };
 
 absl::Status RealMain(std::string_view input_path) {
+  auto timeout = StartTimeoutTimer();
   if (input_path == "-") {
     input_path = "/dev/stdin";
   }
@@ -200,7 +202,7 @@ absl::Status RealMain(std::string_view input_path) {
 }  // namespace
 }  // namespace xls::tools
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   std::vector<std::string_view> positional_arguments =
       xls::InitXls(kUsage, argc, argv);
 

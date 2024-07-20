@@ -15,7 +15,6 @@
 #ifndef XLS_FUZZER_AST_GENERATOR_H_
 #define XLS_FUZZER_AST_GENERATOR_H_
 
-#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -339,8 +338,9 @@ class AstGenerator {
   }
 
   absl::StatusOr<TypedExpr> ChooseEnvValueArray(
-      Env* env, std::function<bool(ArrayTypeAnnotation*)> take =
-                    [](auto _) { return true; }) {
+      Env* env, std::function<bool(ArrayTypeAnnotation*)> take = [](auto _) {
+        return true;
+      }) {
     auto predicate = [&](const TypedExpr& e) -> bool {
       return IsArray(e.type) &&
              take(dynamic_cast<ArrayTypeAnnotation*>(e.type));

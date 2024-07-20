@@ -31,6 +31,7 @@
 #include "xls/dslx/bytecode/bytecode_interpreter_options.h"
 #include "xls/dslx/bytecode/frame.h"
 #include "xls/dslx/bytecode/interpreter_stack.h"
+#include "xls/dslx/dslx_builtins.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/frontend/proc.h"
@@ -276,8 +277,7 @@ class ProcInstance {
  public:
   ProcInstance(Proc* proc, std::unique_ptr<BytecodeInterpreter> interpreter,
                std::unique_ptr<BytecodeFunction> next_fn,
-               std::vector<InterpValue> next_args,
-               const TypeInfo* type_info)
+               std::vector<InterpValue> next_args, const TypeInfo* type_info)
       : proc_(proc),
         interpreter_(std::move(interpreter)),
         next_fn_(std::move(next_fn)),

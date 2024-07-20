@@ -16,6 +16,7 @@
 #define XLS_INTERPRETER_BLOCK_INTERPRETER_H_
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -31,23 +32,15 @@
 
 namespace xls {
 
-// Runs a single cycle of a block with the given register values and input
-// values. Returns the value sent to the output port and the next register
-// state.
-absl::StatusOr<BlockRunResult> BlockRun(
-    const absl::flat_hash_map<std::string, Value>& inputs,
-    const absl::flat_hash_map<std::string, Value>& reg_state,
-    const BlockElaboration& elaboration);
-
 class InterpreterBlockEvaluator final : public BlockEvaluator {
  public:
   constexpr InterpreterBlockEvaluator() : BlockEvaluator("Interpreter") {}
-  absl::StatusOr<BlockRunResult> EvaluateBlock(
-      const absl::flat_hash_map<std::string, Value>& inputs,
-      const absl::flat_hash_map<std::string, Value>& registers,
-      const BlockElaboration& elaboration) const final {
-    return BlockRun(inputs, registers, elaboration);
-  }
+
+ protected:
+  absl::StatusOr<std::unique_ptr<BlockContinuation>> MakeNewContinuation(
+      BlockElaboration&& elaboration,
+      const absl::flat_hash_map<std::string, Value>& initial_registers)
+      const override;
 };
 
 // Runs the interpreter on a combinational block. `inputs` must contain a

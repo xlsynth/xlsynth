@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "absl/status/status.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "absl/status/status.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/cpp_transpiler/test_types_lib.h"
 #include "xls/ir/bits.h"
@@ -615,6 +615,15 @@ TEST(TestTypesTest, SnakeCaseToString) {
   EXPECT_EQ(s.ToDslxString(), R"(snake_case_struct_t {
   some_field: snake_case_type_t:0x42,
   some_other_field: snake_case_enum_t::kA (0),
+})");
+}
+
+TEST(TestTypesTest, StructWithKeywordFields) {
+  test::StructWithKeywordFields a{._float = 42, ._int = 1};
+
+  EXPECT_EQ(a.ToString(), R"(StructWithKeywordFields {
+  _float: bits[32]:0x2a,
+  _int: bits[42]:0x1,
 })");
 }
 

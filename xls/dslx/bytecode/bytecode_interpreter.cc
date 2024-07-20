@@ -67,9 +67,10 @@ namespace {
 // Returns the given InterpValue formatted using the given format descriptor (if
 // it is not null).
 absl::StatusOr<std::string> ToStringMaybeFormatted(
-    const InterpValue& value, const ValueFormatDescriptor* value_fmt_desc,
+    const InterpValue& value,
+    std::optional<ValueFormatDescriptor> value_fmt_desc,
     int64_t indentation = 0) {
-  if (value_fmt_desc != nullptr) {
+  if (value_fmt_desc.has_value()) {
     XLS_ASSIGN_OR_RETURN(std::string value_str,
                          value.ToFormattedString(*value_fmt_desc, indentation));
     return std::string(indentation, ' ') + value_str;
@@ -133,6 +134,7 @@ absl::Status BytecodeInterpreter::Run(bool* progress_made) {
     while (frame->pc() < frame->bf()->bytecodes().size()) {
       const std::vector<Bytecode>& bytecodes = frame->bf()->bytecodes();
       const Bytecode& bytecode = bytecodes.at(frame->pc());
+      VLOG(2) << "Bytecode: " << bytecode.ToString();
       VLOG(2) << std::hex << "PC: " << frame->pc() << " : "
               << bytecode.ToString();
       VLOG(3) << absl::StreamFormat(" - stack depth %d [%s]", stack_.size(),
@@ -836,7 +838,9 @@ absl::Status BytecodeInterpreter::EvalLe(const Bytecode& bytecode) {
 
 absl::Status BytecodeInterpreter::EvalLiteral(const Bytecode& bytecode) {
   XLS_ASSIGN_OR_RETURN(InterpValue value, bytecode.value_data());
-  stack_.Push(value);
+  stack_.PushFormattedValue(InterpreterStack::FormattedInterpValue{
+      .value = std::move(value),
+      .format_descriptor = bytecode.format_descriptor()});
   return absl::OkStatus();
 }
 
@@ -1283,11 +1287,10 @@ absl::Status BytecodeInterpreter::EvalSwap(const Bytecode& bytecode) {
       pieces.push_back(std::get<std::string>(trace_element));
     } else {
       const InterpValue& value = args.at(argno);
-      if (argno < trace_data.value_fmt_descs().size() &&
-          trace_data.value_fmt_descs().at(argno) != nullptr) {
+      if (argno < trace_data.value_fmt_descs().size()) {
         XLS_ASSIGN_OR_RETURN(
             std::string formatted,
-            value.ToFormattedString(*trace_data.value_fmt_descs().at(argno)));
+            value.ToFormattedString(trace_data.value_fmt_descs()[argno]));
         pieces.push_back(formatted);
       } else {
         pieces.push_back(value.ToString(
@@ -1511,9 +1514,8 @@ absl::Status BytecodeInterpreter::RunBuiltinMap(const Bytecode& bytecode) {
   bytecodes.push_back(
       Bytecode(span, Bytecode::Op::kJumpRelIf,
                Bytecode::JumpTarget(top_of_loop_index - bytecodes.size())));
-  bytecodes.push_back(
-      Bytecode(span, Bytecode::Op::kCreateArray,
-               Bytecode::NumElements(elements->size())));
+  bytecodes.push_back(Bytecode(span, Bytecode::Op::kCreateArray,
+                               Bytecode::NumElements(elements->size())));
 
   // Now take the collected bytecodes and cram them into a BytecodeFunction,
   // then start executing it.
@@ -1674,8 +1676,8 @@ absl::StatusOr<ProcRunResult> ProcInstance::Run() {
       QCHECK(result_value.IsTuple() && result_value.GetLength().value() == 0);
     }
 
-    XLS_RETURN_IF_ERROR(interpreter_->InitFrame(next_fn_.get(), next_args_,
-                                                type_info_));
+    XLS_RETURN_IF_ERROR(
+        interpreter_->InitFrame(next_fn_.get(), next_args_, type_info_));
     return ProcRunResult{.execution_state = ProcExecutionState::kCompleted,
                          .blocked_channel_name = std::nullopt,
                          .progress_made = progress_made};

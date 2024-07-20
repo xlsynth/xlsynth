@@ -48,6 +48,7 @@
 #include "xls/ir/function_base.h"
 #include "xls/ir/node.h"
 #include "xls/ir/op.h"
+#include "xls/ir/proc.h"
 #include "xls/ir/topo_sort.h"
 #include "xls/scheduling/min_cut_scheduler.h"
 #include "xls/scheduling/pipeline_schedule.h"
@@ -233,8 +234,7 @@ absl::StatusOr<int64_t> FindMinimumClockPeriod(
       optimistic_clk_period_ps, pessimistic_clk_period_ps,
       [&](int64_t clk_period_ps) {
         return scheduler
-            .Schedule(pipeline_stages, clk_period_ps,
-                      failure_behavior,
+            .Schedule(pipeline_stages, clk_period_ps, failure_behavior,
                       /*check_feasibility=*/true)
             .ok();
       },

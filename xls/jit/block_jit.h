@@ -15,13 +15,10 @@
 #ifndef XLS_JIT_BLOCK_JIT_H_
 #define XLS_JIT_BLOCK_JIT_H_
 
-#include <sys/types.h>
-
 #include <array>
 #include <cstdint>
 #include <initializer_list>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -32,9 +29,9 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "xls/common/status/status_macros.h"
 #include "xls/interpreter/block_evaluator.h"
 #include "xls/ir/block.h"
+#include "xls/ir/block_elaboration.h"
 #include "xls/ir/elaboration.h"
 #include "xls/ir/events.h"
 #include "xls/ir/value.h"
@@ -50,13 +47,16 @@ class BlockJitContinuation;
 class BlockJit {
  public:
   static absl::StatusOr<std::unique_ptr<BlockJit>> Create(Block* block);
+  static absl::StatusOr<std::unique_ptr<BlockJit>> Create(
+      const BlockElaboration& elab);
+  virtual ~BlockJit() = default;
 
   // Create a new blank block with no registers or ports set. Can be cycled
   // independently of other blocks/continuations.
-  std::unique_ptr<BlockJitContinuation> NewContinuation();
+  virtual std::unique_ptr<BlockJitContinuation> NewContinuation();
 
   // Runs a single cycle of a block with the given continuation.
-  absl::Status RunOneCycle(BlockJitContinuation& continuation);
+  virtual absl::Status RunOneCycle(BlockJitContinuation& continuation);
 
   OrcJit& orc_jit() const { return *jit_; }
 
@@ -74,7 +74,7 @@ class BlockJit {
         .subspan(block_->GetInputPorts().size());
   }
 
- private:
+ protected:
   BlockJit(Block* block, std::unique_ptr<JitRuntime> runtime,
            std::unique_ptr<OrcJit> jit, JittedFunctionBase function)
       : block_(block),
@@ -138,6 +138,7 @@ class BlockJitContinuation {
   };
 
  public:
+  virtual ~BlockJitContinuation() = default;
   // Overwrite all input-ports with given values.
   absl::Status SetInputPorts(absl::Span<const Value> values);
   absl::Status SetInputPorts(std::initializer_list<const Value> values) {
@@ -154,17 +155,17 @@ class BlockJitContinuation {
   // Overwrite all registers with given values.
   absl::Status SetRegisters(absl::Span<const uint8_t* const> regs);
   // Overwrite all registers with given values.
-  absl::Status SetRegisters(
+  virtual absl::Status SetRegisters(
       const absl::flat_hash_map<std::string, Value>& regs);
 
   std::vector<Value> GetOutputPorts() const;
   absl::flat_hash_map<std::string, Value> GetOutputPortsMap() const;
   std::vector<Value> GetRegisters() const;
-  absl::flat_hash_map<std::string, Value> GetRegistersMap() const;
+  virtual absl::flat_hash_map<std::string, Value> GetRegistersMap() const;
 
   absl::flat_hash_map<std::string, int64_t> GetInputPortIndices() const;
   absl::flat_hash_map<std::string, int64_t> GetOutputPortIndices() const;
-  absl::flat_hash_map<std::string, int64_t> GetRegisterIndices() const;
+  virtual absl::flat_hash_map<std::string, int64_t> GetRegisterIndices() const;
 
   // Gets pointers to the JIT ABI struct input pointers for each input port
   // Write to the pointed to memory to manually set an input port value for the
@@ -193,10 +194,12 @@ class BlockJitContinuation {
 
   const JitTempBuffer& temp_buffer() const { return temp_buffer_; }
 
- private:
-  using BufferPair = std::array<JitArgumentSet, 2>;
+ protected:
   BlockJitContinuation(Block* block, BlockJit* jit,
                        const JittedFunctionBase& jit_func);
+
+ private:
+  using BufferPair = std::array<JitArgumentSet, 2>;
   static IOSpace MakeCombinedBuffers(const JittedFunctionBase& jit_func,
                                      const Block* block,
                                      const JitArgumentSet& ports,
@@ -258,66 +261,20 @@ class BlockJitContinuation {
   friend class BlockJit;
 };
 
-// Most basic jit-evaluator. This is basically only for testing the core
-// jit-behaviors in isolation from the continuation update behaviors.
-class JitBlockEvaluator : public BlockEvaluator {
- public:
-  constexpr JitBlockEvaluator() : JitBlockEvaluator("Jit") {}
-
-  absl::StatusOr<BlockRunResult> EvaluateBlock(
-      const absl::flat_hash_map<std::string, Value>& inputs,
-      const absl::flat_hash_map<std::string, Value>& reg_state,
-      const BlockElaboration& elaboration) const final;
-
- protected:
-  constexpr explicit JitBlockEvaluator(std::string_view name)
-      : BlockEvaluator(name) {}
-};
-
-// An block-evaluator that doesn't attempt to use continuations to save register
-// state between calls. Should only be used for testing.
-static const JitBlockEvaluator kJitBlockEvaluator;
-
 // A jit block evaluator that tries to use the jit's register saving as
 // possible.
-class StreamingJitBlockEvaluator : public JitBlockEvaluator {
+class JitBlockEvaluator : public BlockEvaluator {
  public:
-  constexpr StreamingJitBlockEvaluator() : JitBlockEvaluator("StreamingJit") {}
-  absl::StatusOr<std::vector<absl::flat_hash_map<std::string, Value>>>
-  EvaluateSequentialBlock(
-      Block* block,
-      absl::Span<const absl::flat_hash_map<std::string, Value>> inputs)
-      const final;
-
-  absl::StatusOr<BlockIOResults> EvaluateChannelizedSequentialBlock(
-      Block* block, absl::Span<ChannelSource> channel_sources,
-      absl::Span<ChannelSink> channel_sinks,
-      absl::Span<const absl::flat_hash_map<std::string, Value>> inputs,
-      const std::optional<verilog::ResetProto>& reset,
-      int64_t seed) const override;
-
-  // Expose the overload without `initial_registers`.
-  using BlockEvaluator::NewContinuation;
+  constexpr JitBlockEvaluator() : BlockEvaluator("Jit") {}
 
  protected:
-  absl::StatusOr<std::unique_ptr<BlockContinuation>> NewContinuation(
+  absl::StatusOr<std::unique_ptr<BlockContinuation>> MakeNewContinuation(
       BlockElaboration&& elaboration,
       const absl::flat_hash_map<std::string, Value>& initial_registers)
       const override;
 };
 
-static const StreamingJitBlockEvaluator kStreamingJitBlockEvaluator;
-
-// Runs a single cycle of a block with the given register values and input
-// values. Returns the value sent to the output port and the next register
-// state. This is a compatibility API that matches the interpreter runner.
-inline absl::StatusOr<BlockRunResult> JitBlockRun(
-    const absl::flat_hash_map<std::string, Value>& inputs,
-    const absl::flat_hash_map<std::string, Value>& reg_state, Block* block) {
-  XLS_ASSIGN_OR_RETURN(BlockElaboration elaboration,
-                       BlockElaboration::Elaborate(block));
-  return kJitBlockEvaluator.EvaluateBlock(inputs, reg_state, elaboration);
-}
+static const JitBlockEvaluator kJitBlockEvaluator;
 
 }  // namespace xls
 

@@ -27,7 +27,6 @@
 #include "absl/types/span.h"
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
-#include "xls/ir/bits.h"
 #include "xls/ir/function.h"
 #include "xls/ir/function_builder.h"
 #include "xls/ir/node.h"
@@ -40,56 +39,6 @@
 #include "xls/solvers/z3_ir_translator.h"
 
 namespace xls::solvers::z3 {
-namespace {
-// If "original" is an aggregate type, e.g. tuple, array, creates a nodes in
-// "function" that flatten it to a Bits typed value.
-//
-// Since this is only used internally to compare FlattenToBits() results to
-// other FlattenToBits() results, we don't need to worry about the canonical
-// order of e.g. array elements in the resulting bits type.
-absl::StatusOr<Node*> FlattenToBits(Function* function, Node* original) {
-  Type* type = original->GetType();
-  if (type->IsBits()) {
-    return original;
-  }
-  std::vector<Node*> values;
-  if (type->IsTuple()) {
-    values.reserve(type->AsTupleOrDie()->size());
-    for (int64_t i = 0; i < type->AsTupleOrDie()->size(); ++i) {
-      XLS_ASSIGN_OR_RETURN(
-          Node * flattened,
-          FlattenToBits(function,
-                        function->AddNode(std::make_unique<TupleIndex>(
-                            SourceInfo(), original, i,
-                            absl::StrFormat("split_tuple_%s__%i__",
-                                            original->GetName(), i),
-                            function))));
-      values.push_back(flattened);
-    }
-  } else {
-    values.reserve(type->AsArrayOrDie()->size());
-    for (int64_t i = 0; i < type->AsArrayOrDie()->size(); ++i) {
-      Node* index = function->AddNode(std::make_unique<Literal>(
-          SourceInfo(), Value(UBits(i, 64)),
-          absl::StrFormat("split_array_index_%s__%d__", original->GetName(), i),
-          function));
-      XLS_ASSIGN_OR_RETURN(
-          Node * flattened,
-          FlattenToBits(
-              function,
-              function->AddNode(std::make_unique<ArrayIndex>(
-                  SourceInfo(), original, absl::MakeConstSpan({index}),
-                  absl::StrFormat("split_array_%s__%i__", original->GetName(),
-                                  i),
-                  function))));
-      values.push_back(flattened);
-    }
-  }
-  return function->AddNode(std::make_unique<Concat>(
-      SourceInfo(), values,
-      absl::StrFormat("split_concat_%s", original->GetName()), function));
-}
-}  // namespace
 
 absl::StatusOr<ProverResult> TryProveEquivalence(Function* a, Function* b,
                                                  absl::Duration timeout) {
@@ -128,14 +77,10 @@ absl::StatusOr<ProverResult> TryProveEquivalence(Function* a, Function* b,
                          n->CloneInNewFunction(new_ops, to_test_func));
   }
 
-  // Add check, coerce any tuples/arays into bit-arrays since z3 ir-translator
-  // doesn't support eq of tuples/arrays yet.
-  XLS_ASSIGN_OR_RETURN(
-      Node * original_result,
-      FlattenToBits(to_test_func, to_test_func->return_value()));
-  XLS_ASSIGN_OR_RETURN(
-      Node * transformed_result,
-      FlattenToBits(to_test_func, node_map[b->return_value()]));
+  // Add check
+
+  Node* original_result = to_test_func->return_value();
+  Node* transformed_result = node_map[b->return_value()];
   Node* new_ret = to_test_func->AddNode(std::make_unique<CompareOp>(
       SourceInfo(), original_result, transformed_result, Op::kEq, "TestCheck",
       to_test_func));
@@ -158,6 +103,5 @@ absl::StatusOr<ProverResult> TryProveEquivalence(
 
   return TryProveEquivalence(original, to_transform_func, timeout);
 }
-
 
 }  // namespace xls::solvers::z3

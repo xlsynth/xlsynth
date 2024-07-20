@@ -18,7 +18,6 @@
 #include <string>
 #include <vector>
 
-#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
@@ -109,7 +108,7 @@ absl::StatusOr<Type*> TypeManager::MapTypeFromOtherArena(
 }
 
 FunctionType* TypeManager::GetFunctionType(absl::Span<Type* const> args_types,
-                                         Type* return_type) {
+                                           Type* return_type) {
   std::string key = FunctionType(args_types, return_type).ToString();
   if (function_types_.find(key) != function_types_.end()) {
     return &function_types_.at(key);

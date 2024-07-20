@@ -36,7 +36,7 @@
 #include "absl/types/span.h"
 #include "xls/codegen/codegen_options.h"
 #include "xls/codegen/module_signature.h"
-#include "xls/codegen/vast.h"
+#include "xls/codegen/vast/vast.h"
 #include "xls/common/golden_files.h"
 #include "xls/common/logging/log_lines.h"
 #include "xls/common/source_location.h"
@@ -89,7 +89,7 @@ inline std::ostream& operator<<(std::ostream& os, const SimulationTarget& t) {
   return os;
 }
 
-#include "xls/simulation/simulation_targets.inc"
+#include "xls/simulation/simulation_targets.inc"  // IWYU pragma: keep
 
 // Returns the name of the parameterized test from the Paramtype info. Use in
 // INSTANTIATE_TEST_SUITE_P invocation so tests have meaningful names (e.g.,

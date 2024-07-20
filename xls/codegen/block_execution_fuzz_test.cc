@@ -23,7 +23,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "fuzztest/fuzztest.h"
+#include "xls/common/fuzzing/fuzztest.h"
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
@@ -294,7 +294,7 @@ class CustomScheduleFuzzer
     if (kInterpreter) {
       return kInterpreterBlockEvaluator.NewContinuation(b, resets).value();
     }
-    return kStreamingJitBlockEvaluator.NewContinuation(b, resets).value();
+    return kJitBlockEvaluator.NewContinuation(b, resets).value();
   }
 };
 

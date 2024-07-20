@@ -23,8 +23,10 @@
 #include <variant>
 #include <vector>
 
+#include "absl/log/check.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "xls/ir/bit_push_buffer.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/format_preference.h"
 #include "xls/ir/xls_type.pb.h"
@@ -138,7 +140,8 @@ class Value {
   bool IsArray() const { return kind_ == ValueKind::kArray; }
   bool IsBits() const { return std::holds_alternative<Bits>(payload_); }
   bool IsToken() const { return kind_ == ValueKind::kToken; }
-  const Bits& bits() const { return std::get<Bits>(payload_); }
+  const Bits& bits() const& { return std::get<Bits>(payload_); }
+  Bits&& bits() && { return std::get<Bits>(std::move(payload_)); }
   absl::StatusOr<Bits> GetBitsWithStatus() const;
 
   absl::StatusOr<std::vector<Value>> GetElements() const;
@@ -187,6 +190,11 @@ class Value {
   template <typename Sink>
   friend void AbslStringify(Sink& sink, const Value& v) {
     absl::Format(&sink, "%s", v.ToString(FormatPreference::kDefault));
+  }
+
+  template <typename H>
+  friend H AbslHashValue(H h, const Value& v) {
+    return H::combine(std::move(h), v.kind_, v.payload_);
   }
 
  private:

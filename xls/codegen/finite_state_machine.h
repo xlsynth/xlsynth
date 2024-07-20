@@ -25,12 +25,12 @@
 #include <string_view>
 #include <vector>
 
-#include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "xls/codegen/vast.h"
+#include "xls/codegen/vast/vast.h"
 #include "xls/common/casts.h"
+#include "xls/ir/bits.h"
 #include "xls/ir/source_location.h"
 
 namespace xls {
@@ -241,8 +241,7 @@ class FsmBlock : public FsmBlockBase {
 // An unconditional block of logic within an FSM state.
 class UnconditionalFsmBlock : public FsmBlock<UnconditionalFsmBlock> {
  public:
-  explicit UnconditionalFsmBlock(std::string_view debug_name,
-                                 VerilogFile* file)
+  explicit UnconditionalFsmBlock(std::string_view debug_name, VerilogFile* file)
       : FsmBlock<UnconditionalFsmBlock>(debug_name, file) {}
 };
 
@@ -339,8 +338,7 @@ class FsmState : public UnconditionalFsmBlock {
 class FsmBuilder {
  public:
   FsmBuilder(std::string_view name, Module* module, LogicRef* clk,
-             bool use_system_verilog,
-             std::optional<Reset> reset = std::nullopt)
+             bool use_system_verilog, std::optional<Reset> reset = std::nullopt)
       : name_(name),
         module_(module),
         file_(module->file()),

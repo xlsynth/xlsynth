@@ -56,9 +56,6 @@ cc_library(
         ":sample_runner_main",
         ":summarize_ir_main",
     ],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         ":ast_generator",
         ":cpp_run_fuzz",
@@ -431,6 +428,9 @@ generate_crasher_regression_tests(
         "crashers/crasher_2024-02-25_1b34.x": [
             "optonly",
         ],
+        "crashers/crasher_2024-07-08_5973.x": [
+            "optonly",
+        ],
     },
 )
 
@@ -462,9 +462,6 @@ cc_library(
     name = "sample",
     srcs = ["sample.cc"],
     hdrs = ["sample.h"],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         ":sample_cc_proto",
         ":scrub_crasher",
@@ -474,13 +471,17 @@ cc_library(
         "//xls/common/status:status_macros",
         "//xls/dslx:interp_value",
         "//xls/dslx:interp_value_utils",
+        "//xls/ir:format_preference",
         "//xls/ir:ir_parser",
         "//xls/ir:value",
         "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:differencer",
         "@com_google_protobuf//:protobuf",
         "@com_googlesource_code_re2//:re2",
     ],
@@ -493,6 +494,7 @@ cc_binary(
         ":ast_generator",
         ":run_fuzz_multiprocess_lib",
         ":sample",
+        ":sample_cc_proto",
         "//xls/common:exit_status",
         "//xls/common:init_xls",
         "//xls/common:thread",
@@ -525,9 +527,6 @@ cc_binary(
 cc_binary(
     name = "summarize_ir_main",
     srcs = ["summarize_ir_main.cc"],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         ":sample_summary_cc_proto",
         "//xls/common:exit_status",
@@ -762,6 +761,7 @@ cc_library(
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:ast_node",
         "//xls/dslx/frontend:ast_utils",
+        "//xls/dslx/frontend:module",
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info",
         "//xls/dslx/type_system:unwrap_meta_type",
@@ -784,8 +784,10 @@ cc_library(
     deps = [
         "//xls/common/status:status_macros",
         "//xls/dslx/frontend:scanner",
+        "//xls/dslx/frontend:token",
         "@com_google_absl//absl/random",
         "@com_google_absl//absl/random:bit_gen_ref",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
     ],
@@ -799,6 +801,7 @@ cc_test(
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
         "@com_google_absl//absl/random:mock_distributions",
+        "@com_google_absl//absl/random:mocking_bit_gen",
         "@com_google_absl//absl/status",
         "@com_google_googletest//:gtest",
     ],
@@ -929,6 +932,7 @@ cc_test(
     srcs = ["sample_cc_test.cc"],
     deps = [
         ":sample",
+        ":sample_cc_proto",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
         "//xls/dslx:interp_value",
@@ -946,9 +950,6 @@ cc_library(
         ":sample_runner_main",
         "//xls/tools:ir_minimizer_main",
     ],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         ":sample",
         "//xls/common:subprocess",
@@ -956,7 +957,7 @@ cc_library(
         "//xls/common/file:get_runfile_path",
         "//xls/common/logging:log_lines",
         "//xls/common/status:status_macros",
-        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
@@ -971,6 +972,7 @@ cc_library(
     deps = [
         "//xls/common/status:status_macros",
         "//xls/dslx:interp_value",
+        "//xls/ir:format_preference",
         "//xls/ir:value",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",

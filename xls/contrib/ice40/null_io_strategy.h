@@ -19,8 +19,9 @@
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "xls/codegen/vast.h"
+#include "xls/codegen/vast/vast.h"
 #include "xls/contrib/ice40/io_strategy.h"
+#include "xls/tools/verilog_include.h"
 
 namespace xls {
 namespace verilog {

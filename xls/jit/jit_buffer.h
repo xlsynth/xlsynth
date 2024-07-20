@@ -16,12 +16,14 @@
 #define XLS_JIT_JIT_BUFFER_H_
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
 
+#include "absl/base/casts.h"
 #include "absl/log/check.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -134,8 +136,8 @@ class JitTempBuffer {
   void* get() const { return data_.get(); }
 
  private:
-  std::unique_ptr<uint8_t[], DeleteAligned> MakeBuffer(
-      size_t align, size_t size) {
+  std::unique_ptr<uint8_t[], DeleteAligned> MakeBuffer(size_t align,
+                                                       size_t size) {
     std::unique_ptr<uint8_t[], DeleteAligned> result(
         absl::bit_cast<uint8_t*>(AllocateAligned(align, size)));
     CHECK(result != nullptr) << "size: " << size << " align: " << align;
@@ -145,7 +147,6 @@ class JitTempBuffer {
   const JittedFunctionBase* source_;
   std::unique_ptr<uint8_t[], DeleteAligned> data_;
 };
-
 
 }  // namespace xls
 

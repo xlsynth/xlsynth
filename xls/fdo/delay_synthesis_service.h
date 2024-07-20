@@ -17,10 +17,11 @@
 
 #include <memory>
 #include <utility>
+
 #include "grpcpp/server_context.h"
 #include "grpcpp/support/status.h"
 #include "xls/fdo/synthesizer.h"
-#include "xls/synthesis/synthesis_service.pb.h"
+#include "xls/synthesis/synthesis.pb.h"
 #include "xls/synthesis/synthesis_service.grpc.pb.h"
 
 namespace xls {
@@ -36,8 +37,8 @@ class DelaySynthesisService : public SynthesisService::Service {
       : synthesizer_(std::move(synthesizer)) {}
 
   grpc::Status Compile(grpc::ServerContext* server_context,
-                         const CompileRequest* request,
-                         CompileResponse* result) override;
+                       const CompileRequest* request,
+                       CompileResponse* result) override;
 
  private:
   std::unique_ptr<Synthesizer> synthesizer_;

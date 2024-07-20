@@ -192,6 +192,7 @@ cc_test(
         "@com_google_googletest//:gtest",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
+        "//xls/ir:value_view",
     ],
 )
 
@@ -248,8 +249,10 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
+        "//xls/common:math_util",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
+        "//xls/ir:value_view",
     ],
 )
 
@@ -257,7 +260,9 @@ cc_test(
     name = "jpeg_grm_test",
     srcs = ["jpeg_grm_test.cc"],
     deps = [
+        ":constants",
         ":jpeg_grm",
+        ":streams",
         "@com_google_googletest//:gtest",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/strings:str_format",

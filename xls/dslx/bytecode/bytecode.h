@@ -23,7 +23,6 @@
 #include <variant>
 #include <vector>
 
-#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xls/common/strong_int.h"
@@ -323,15 +322,13 @@ class Bytecode {
     TraceData(TraceData&& other) = default;
     TraceData& operator=(TraceData&& other) = default;
 
-    TraceData(
-        std::vector<FormatStep> steps,
-        std::vector<std::unique_ptr<ValueFormatDescriptor>> value_fmt_descs)
+    TraceData(std::vector<FormatStep> steps,
+              std::vector<ValueFormatDescriptor> value_fmt_descs)
         : steps_(std::move(steps)),
           value_fmt_descs_(std::move(value_fmt_descs)) {}
 
     absl::Span<const FormatStep> steps() const { return steps_; }
-    absl::Span<const std::unique_ptr<ValueFormatDescriptor>> value_fmt_descs()
-        const {
+    absl::Span<const ValueFormatDescriptor> value_fmt_descs() const {
       return value_fmt_descs_;
     }
 
@@ -340,7 +337,7 @@ class Bytecode {
 
     // For default formatting of struct operands we hold metadata that allows us
     // to format them in more detail (struct name, fields, etc).
-    std::vector<std::unique_ptr<ValueFormatDescriptor>> value_fmt_descs_;
+    std::vector<ValueFormatDescriptor> value_fmt_descs_;
   };
 
   // Information necessary for channel operations.
@@ -352,21 +349,21 @@ class Bytecode {
 
     ChannelData(std::string_view channel_name,
                 std::unique_ptr<Type> payload_type,
-                std::unique_ptr<ValueFormatDescriptor> value_fmt_desc)
+                ValueFormatDescriptor value_fmt_desc)
         : channel_name_(channel_name),
           payload_type_(std::move(payload_type)),
           value_fmt_desc_(std::move(value_fmt_desc)) {}
 
     std::string_view channel_name() const { return channel_name_; }
     const Type& payload_type() const { return *payload_type_; }
-    const ValueFormatDescriptor* value_fmt_desc() const {
-      return value_fmt_desc_.get();
+    const ValueFormatDescriptor& value_fmt_desc() const {
+      return value_fmt_desc_;
     }
 
    private:
     std::string channel_name_;
     std::unique_ptr<Type> payload_type_;
-    std::unique_ptr<ValueFormatDescriptor> value_fmt_desc_;
+    ValueFormatDescriptor value_fmt_desc_;
   };
 
   using Data = std::variant<InterpValue, JumpTarget, NumElements, SlotIndex,
@@ -380,7 +377,9 @@ class Bytecode {
   static Bytecode MakeJumpDest(Span span);
   static Bytecode MakeJumpRelIf(Span span, JumpTarget target);
   static Bytecode MakeJumpRel(Span span, JumpTarget target);
-  static Bytecode MakeLiteral(Span span, InterpValue literal);
+  static Bytecode MakeLiteral(
+      Span span, InterpValue literal,
+      std::optional<ValueFormatDescriptor> = std::nullopt);
   static Bytecode MakeLoad(Span span, SlotIndex slot_index);
   static Bytecode MakeLogicalOr(Span span);
   static Bytecode MakeMatchArm(Span span, MatchArmItem item);
@@ -401,8 +400,13 @@ class Bytecode {
       : source_span_(std::move(source_span)), op_(op), data_(std::nullopt) {}
 
   // Creates an operation with associated string or InterpValue data.
-  Bytecode(Span source_span, Op op, std::optional<Data> data)
-      : source_span_(std::move(source_span)), op_(op), data_(std::move(data)) {}
+  Bytecode(
+      Span source_span, Op op, std::optional<Data> data,
+      std::optional<ValueFormatDescriptor> format_descriptor = std::nullopt)
+      : source_span_(std::move(source_span)),
+        op_(op),
+        data_(std::move(data)),
+        format_descriptor_(std::move(format_descriptor)) {}
 
   // Not copyable, but move-able.
   Bytecode(const Bytecode& other) = delete;
@@ -444,10 +448,18 @@ class Bytecode {
   // that should be patched.
   void PatchJumpTarget(int64_t value);
 
+  const std::optional<ValueFormatDescriptor>& format_descriptor() const {
+    return format_descriptor_;
+  }
+
  private:
   Span source_span_;
   Op op_;
   std::optional<Data> data_;
+
+  // For numbers and literals, this field carries the numeric format of original
+  // text input. This enables better messages in assert_eq!, for example.
+  std::optional<ValueFormatDescriptor> format_descriptor_;
 };
 
 std::string OpToString(Bytecode::Op op);

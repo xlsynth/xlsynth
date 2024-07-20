@@ -28,7 +28,6 @@
 #include "xls/ir/bits.h"
 #include "xls/ir/interval_set.h"
 #include "xls/ir/node.h"
-#include "xls/ir/nodes.h"
 #include "xls/ir/ternary.h"
 #include "xls/passes/predicate_state.h"
 #include "xls/passes/query_engine.h"
@@ -102,8 +101,8 @@ class UnionQueryEngine : public UnownedUnionQueryEngine {
         owned_engines_(std::move(engines)) {}
 
  private:
-  static std::vector<QueryEngine*> ToUnownedVector(absl::Span<
-      std::unique_ptr<QueryEngine> const> ptrs) {
+  static std::vector<QueryEngine*> ToUnownedVector(
+      absl::Span<std::unique_ptr<QueryEngine> const> ptrs) {
     std::vector<QueryEngine*> result;
     result.reserve(ptrs.size());
     for (const auto& ptr : ptrs) {

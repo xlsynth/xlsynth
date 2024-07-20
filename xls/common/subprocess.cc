@@ -15,14 +15,15 @@
 #include "xls/common/subprocess.h"
 
 #include <fcntl.h>
-#include <poll.h>  // IWYU pragma: keep
+#include <poll.h>    // IWYU pragma: keep
+#include <signal.h>  // NOLINT
 #include <spawn.h>
+#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <atomic>
 #include <cerrno>
-#include <csignal>  // NOLINT(misc-include-cleaner)
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -53,7 +54,7 @@
 #include "xls/common/thread.h"
 
 #if defined(__APPLE__)
-extern char **environ;
+extern char** environ;
 #endif
 
 namespace xls {
@@ -71,7 +72,7 @@ struct Pipe {
   static absl::StatusOr<Pipe> Open() {
     int descriptors[2];
     if (pipe(descriptors) != 0 ||
-        fcntl(descriptors[0], F_SETFD, FD_CLOEXEC) != 0||
+        fcntl(descriptors[0], F_SETFD, FD_CLOEXEC) != 0 ||
         fcntl(descriptors[1], F_SETFD, FD_CLOEXEC) != 0) {
       return absl::InternalError(
           absl::StrCat("Failed to initialize pipe:", Strerror(errno)));
@@ -244,7 +245,7 @@ absl::StatusOr<int> WaitForPid(pid_t pid) {
       continue;
     }
     return absl::InternalError(
-         absl::StrCat("waitpid failed: ", Strerror(errno)));
+        absl::StrCat("waitpid failed: ", Strerror(errno)));
   }
   return wait_status;
 }
@@ -298,8 +299,7 @@ absl::StatusOr<SubprocessResult> InvokeSubprocess(
         return *static_cast<bool*>(release_val);
       };
       if (!watchdog_mutex.AwaitWithTimeout(
-              absl::Condition(condition_lambda, &release_watchdog),
-              timeout)) {
+              absl::Condition(condition_lambda, &release_watchdog), timeout)) {
         // Timeout has lapsed, try to kill the subprocess.
         timeout_expired.store(true);
         if (kill(pid, SIGKILL) == 0) {
@@ -330,8 +330,8 @@ absl::StatusOr<SubprocessResult> InvokeSubprocess(
     release_watchdog = true;
   }
 
-  return SubprocessResult{.stdout = stdout_output,
-                          .stderr = stderr_output,
+  return SubprocessResult{.stdout_content = stdout_output,
+                          .stderr_content = stderr_output,
                           .exit_status = WEXITSTATUS(wait_status),
                           .normal_termination = WIFEXITED(wait_status),
                           .timeout_expired = timeout_expired.load()};
@@ -340,7 +340,7 @@ absl::StatusOr<SubprocessResult> InvokeSubprocess(
 absl::StatusOr<std::pair<std::string, std::string>> SubprocessResultToStrings(
     absl::StatusOr<SubprocessResult> result) {
   if (result.ok()) {
-    return std::make_pair(result->stdout, result->stderr);
+    return std::make_pair(result->stdout_content, result->stderr_content);
   }
   return result.status();
 }
@@ -355,13 +355,14 @@ absl::StatusOr<SubprocessResult> SubprocessErrorAsStatus(
   return absl::InternalError(absl::StrFormat(
       "Subprocess exit_code: %d normal_termination: %d stdout: %s stderr: %s",
       result_or_status->exit_status, result_or_status->normal_termination,
-      result_or_status->stdout, result_or_status->stderr));
+      result_or_status->stdout_content, result_or_status->stderr_content));
 }
 
 std::ostream& operator<<(std::ostream& os, const SubprocessResult& other) {
   os << "exit_status:" << other.exit_status
      << " normal_termination:" << other.normal_termination
-     << "\nstdout:" << other.stdout << "\nstderr:" << other.stderr << "\n";
+     << "\nstdout:" << other.stdout_content
+     << "\nstderr:" << other.stderr_content << "\n";
   return os;
 }
 

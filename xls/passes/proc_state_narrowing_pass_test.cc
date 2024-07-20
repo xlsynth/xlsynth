@@ -465,5 +465,99 @@ TEST_F(ProcStateNarrowingPassTest, DecrementToZeroSigned) {
                   AllOf(m::Param("the_state"), m::Type(p->GetBitsType(3)))));
 }
 
+TEST_F(ProcStateNarrowingPassTest, ExtractConstantSetPoints) {
+  // This is a proc that counts from 5 down to 0 then resets to 8 and continues
+  // counting down.
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto* chan, p->CreateStreamingChannel("test_chan", ChannelOps::kSendOnly,
+                                            p->GetBitsType(32)));
+  ProcBuilder pb(TestName(), p.get());
+  auto state = pb.StateElement("the_state", UBits(5, 32));
+  pb.Send(chan, pb.Literal(Value::Token()), state);
+  auto cont = pb.SGt(state, pb.Literal(UBits(0, 32)));
+  pb.Next(state, pb.Subtract(state, pb.Literal(UBits(1, 32))), cont);
+  pb.Next(state, pb.Literal(UBits(8, 32)), pb.Not(cont));
+  XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, pb.Build());
+
+  solvers::z3::ScopedVerifyProcEquivalence svpe(proc, /*activation_count=*/16,
+                                                /*include_state=*/false);
+  ScopedRecordIr sri(p.get());
+  EXPECT_THAT(RunPass(proc), IsOkAndHolds(true));
+  EXPECT_THAT(RunProcStateCleanup(proc), IsOkAndHolds(true));
+
+  EXPECT_THAT(proc->StateParams(),
+              UnorderedElementsAre(
+                  AllOf(m::Param("the_state"), m::Type(p->GetBitsType(4)))));
+}
+
+TEST_F(ProcStateNarrowingPassTest, ExtractConstantSetPointsNoLiteralNexts) {
+  // This is a proc that counts from 5 down to 0 then resets to 7 and continues
+  // counting down.
+  //
+  // Like what xlscc commonly generates it doesn't include 'next' nodes with a
+  // literal reset value.
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto* chan, p->CreateStreamingChannel("test_chan", ChannelOps::kSendOnly,
+                                            p->GetBitsType(32)));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto* reset_chan,
+      p->CreateStreamingChannel("reset_chan", ChannelOps::kReceiveOnly,
+                                p->GetBitsType(1)));
+  ProcBuilder pb(TestName(), p.get());
+  auto state = pb.StateElement("the_state", UBits(5, 32));
+  pb.Send(chan, pb.Literal(Value::Token()), state);
+  auto reset =
+      pb.TupleIndex(pb.Receive(reset_chan, pb.Literal(Value::Token())), 1);
+  auto next_state =
+      pb.Subtract(pb.Select(reset, {pb.Literal(UBits(8, 32)), state}),
+                  pb.Literal(UBits(1, 32)));
+  auto cont = pb.SGt(next_state, pb.Literal(UBits(0, 32)));
+  pb.Next(state, next_state, cont);
+  pb.Next(state, state, pb.Not(cont));
+  XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, pb.Build());
+
+  solvers::z3::ScopedVerifyProcEquivalence svpe(proc, /*activation_count=*/32,
+                                                /*include_state=*/false);
+  ScopedRecordIr sri(p.get());
+  EXPECT_THAT(RunPass(proc), IsOkAndHolds(true));
+  EXPECT_THAT(RunProcStateCleanup(proc), IsOkAndHolds(true));
+
+  EXPECT_THAT(proc->StateParams(),
+              UnorderedElementsAre(
+                  AllOf(m::Param("the_state"), m::Type(p->GetBitsType(3)))));
+}
+
+TEST_F(ProcStateNarrowingPassTest, AggregateTypeComparisonHandled) {
+  // Previously it would try to split based on the 'ne' value but would
+  // XLS_RET_CHECK due to the arguments not being scalar values.
+  // Sample created through fuzzer.
+  // TODO(allight): It would be somewhat nice to see through this sort of thing
+  // but the benefits are likely to be small while being rather complicated.
+  constexpr static std::string_view kProc = R"(
+proc __sample__main_0_next(__state: bits[58], init={144115188075855871}) {
+  x2: bits[58][1] = array(__state, id=218, pos=[(0,32,28)])
+  after_all.225: token = after_all(id=225)
+  x3: bits[58][1] = array_slice(x2, __state, width=1, id=222, pos=[(0,33,33)])
+  x7: (token, bits[14]) = receive(after_all.225, channel=sample__x6, id=347)
+  x11: bits[1] = ne(x2, x3, id=233, pos=[(0,40,31)])
+  literal.339: bits[58] = literal(value=0, id=339, pos=[(0,42,38)])
+  x5: bits[58] = not(__state, id=224, pos=[(0,35,26)])
+  x9: bits[14] = tuple_index(x7, index=1, id=231, pos=[(0,38,28)])
+  x13: bits[58] = sel(x11, cases=[literal.339, __state], id=340, pos=[(0,42,38)])
+  x12: bits[189] = concat(x5, x9, __state, x11, __state, id=343, pos=[(0,41,53)])
+  x41: bits[58] = bit_slice_update(x13, x12, x9, id=258, pos=[(0,56,43)])
+  __state_next: () = next_value(param=__state, value=x41, id=348)
+}
+)";
+  auto p = CreatePackage();
+  XLS_ASSERT_OK(p->CreateStreamingChannel(
+                     "sample__x6", ChannelOps::kReceiveOnly, p->GetBitsType(14))
+                    .status());
+  XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, ParseProc(kProc, p.get()));
+  EXPECT_THAT(RunPass(proc), IsOkAndHolds(false));
+}
+
 }  // namespace
 }  // namespace xls

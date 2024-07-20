@@ -57,6 +57,9 @@ struct InstantiationPort {
   Type* type;
 };
 
+class BlockInstantiation;
+class ExternInstantiation;
+class FifoInstantiation;
 // Base class for an instantiation which is a block-scoped construct that
 // represents a module instantiation at the Verilog level. The instantiated
 // object can be another block, a FIFO (not yet supported), or a externally
@@ -73,10 +76,16 @@ class Instantiation {
 
   virtual std::string ToString() const = 0;
 
+  virtual absl::StatusOr<InstantiationType> type() const = 0;
+
   virtual absl::StatusOr<InstantiationPort> GetInputPort(
       std::string_view name) = 0;
   virtual absl::StatusOr<InstantiationPort> GetOutputPort(
       std::string_view name) = 0;
+
+  virtual absl::StatusOr<BlockInstantiation*> AsBlockInstantiation();
+  virtual absl::StatusOr<ExternInstantiation*> AsExternInstantiation();
+  virtual absl::StatusOr<FifoInstantiation*> AsFifoInstantiation();
 
  protected:
   std::string name_;
@@ -93,11 +102,16 @@ class BlockInstantiation : public Instantiation {
   Block* instantiated_block() const { return instantiated_block_; }
 
   std::string ToString() const override;
+  absl::StatusOr<InstantiationType> type() const override;
 
   absl::StatusOr<InstantiationPort> GetInputPort(
       std::string_view name) override;
   absl::StatusOr<InstantiationPort> GetOutputPort(
       std::string_view name) override;
+
+  absl::StatusOr<BlockInstantiation*> AsBlockInstantiation() override {
+    return this;
+  }
 
  private:
   Block* instantiated_block_;
@@ -114,6 +128,11 @@ class ExternInstantiation : public Instantiation {
   absl::StatusOr<InstantiationPort> GetOutputPort(std::string_view name) final;
 
   std::string ToString() const final;
+  absl::StatusOr<InstantiationType> type() const override;
+
+  absl::StatusOr<ExternInstantiation*> AsExternInstantiation() override {
+    return this;
+  }
 
  private:
   Function* function_;
@@ -126,6 +145,7 @@ class FifoInstantiation : public Instantiation {
                     std::optional<std::string_view> channel_name,
                     Package* package);
 
+  static constexpr std::string_view kResetPortName = "rst";
   static constexpr std::string_view kPushValidPortName = "push_valid";
   static constexpr std::string_view kPushDataPortName = "push_data";
   static constexpr std::string_view kPushReadyPortName = "push_ready";
@@ -135,12 +155,17 @@ class FifoInstantiation : public Instantiation {
 
   absl::StatusOr<InstantiationPort> GetInputPort(std::string_view name) final;
   absl::StatusOr<InstantiationPort> GetOutputPort(std::string_view name) final;
+  absl::StatusOr<InstantiationType> type() const override;
 
   const FifoConfig& fifo_config() const { return fifo_config_; }
   Type* data_type() const { return data_type_; }
   std::optional<std::string_view> channel_name() const { return channel_name_; }
 
   std::string ToString() const final;
+
+  absl::StatusOr<FifoInstantiation*> AsFifoInstantiation() override {
+    return this;
+  }
 
  private:
   FifoConfig fifo_config_;

@@ -35,6 +35,7 @@
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/value_format_descriptor.h"
 #include "xls/ir/bits.h"
+#include "xls/ir/format_preference.h"
 #include "xls/ir/value.h"
 
 namespace xls::dslx {
@@ -44,7 +45,7 @@ namespace xls::dslx {
 // Note this goes beyond InterpValue::Payload annotating things like whether the
 // bits should be interpreted as signed or unsigned, which can change the
 // behavior of interpreted operators like '<'.
-enum class InterpValueTag {
+enum class InterpValueTag : uint8_t {
   kUBits,
   kSBits,
   kTuple,
@@ -291,8 +292,13 @@ class InterpValue {
     absl::Format(&sink, "%s", v.ToString());
   }
 
+  // Formats this value using the given format description.
+  //
+  // Returns an error status if the descriptor does not correspond to the
+  // type appropriately.
   absl::StatusOr<std::string> ToFormattedString(
-      const ValueFormatDescriptor& fmt_desc, int64_t indentation = 0) const;
+      const ValueFormatDescriptor& fmt_desc, bool include_type_prefix = false,
+      int64_t indentation = 0) const;
 
   InterpValueTag tag() const { return tag_; }
 
@@ -376,27 +382,18 @@ class InterpValue {
  private:
   friend struct InterpValuePickler;
 
-  // Formats this tuple value using the given struct format description.
-  //
-  // Returns an error status if the struct descriptor does not correspond to the
-  // tuple structure appropriately.
-  //
-  // Precondition: IsTuple()
+  // Specializations of ToFormattedString for handling specific types.
   absl::StatusOr<std::string> ToStructString(
-      const StructFormatDescriptor& fmt_desc, int64_t indentation) const;
-
-  // As above but for tuple values (that are not participating in a struct
-  // type).
+      const ValueFormatDescriptor& fmt_desc, bool include_type_prefix,
+      int64_t indentation) const;
   absl::StatusOr<std::string> ToTupleString(
-      const TupleFormatDescriptor& fmt_desc, int64_t indentation) const;
-
-  // As above but for array values.
+      const ValueFormatDescriptor& fmt_desc, bool include_type_prefix,
+      int64_t indentation) const;
   absl::StatusOr<std::string> ToArrayString(
-      const ArrayFormatDescriptor& fmt_desc, int64_t indentation) const;
-
-  // As above but for enum values.
+      const ValueFormatDescriptor& fmt_desc, bool include_type_prefix,
+      int64_t indentation) const;
   absl::StatusOr<std::string> ToEnumString(
-      const EnumFormatDescriptor& fmt_desc) const;
+      const ValueFormatDescriptor& fmt_desc) const;
 
   // Note: currently InterpValues are not scoped to a lifetime, so we use a
   // shared_ptr for referring to token data for identity purposes.
@@ -425,8 +422,7 @@ class InterpValue {
 // defined.
 //
 // Check-fails if function_value is not a function-typed value.
-std::optional<Module*> GetFunctionValueOwner(
-    const InterpValue& function_value);
+std::optional<Module*> GetFunctionValueOwner(const InterpValue& function_value);
 
 template <typename H>
 H AbslHashValue(H state, const InterpValue::UserFnData& v) {

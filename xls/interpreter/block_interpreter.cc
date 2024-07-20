@@ -15,9 +15,11 @@
 #include "xls/interpreter/block_interpreter.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -137,75 +139,84 @@ class FifoModel {
         next_reg_state_(next_reg_state) {}
 
   absl::Status HandleInput(InstantiationInput* input, const Value& value) {
-    if (input->port_name() == "push_valid") {
+    if (input->port_name() == FifoInstantiation::kResetPortName) {
+      reset_ = value;
+    } else if (input->port_name() == FifoInstantiation::kPushValidPortName) {
       push_valid_ = value;
-    } else if (input->port_name() == "push_data") {
+    } else if (input->port_name() == FifoInstantiation::kPushDataPortName) {
       push_data_ = value;
-    } else if (input->port_name() == "pop_ready") {
+    } else if (input->port_name() == FifoInstantiation::kPopReadyPortName) {
       pop_ready_ = value;
     } else {
       return absl::InvalidArgumentError(
           absl::StrFormat("Unexpected port '%s'", input->port_name()));
     }
-    if (push_valid_.has_value() && push_data_.has_value() &&
-        pop_ready_.has_value()) {
-      XLS_RET_CHECK(Elements().IsTuple());
-      absl::Span<Value const> elements = Elements().elements();
-      bool empty = elements.empty();
-      bool full = elements.size() == config_.depth();
-      bool pop_element = !empty && pop_ready_->IsAllOnes();
-      // push to elements if:
-      // 1) push_valid
-      // 2) !full and not directly popping
-
-      bool pushed_element_immediately_popped = empty && config_.bypass() &&
-                                               pop_ready_->IsAllOnes() &&
-                                               push_valid_->IsAllOnes();
-      bool push_element =
-          push_valid_->IsAllOnes() && !pushed_element_immediately_popped &&
-          (!full || (config_.bypass() && pop_ready_->IsAllOnes()));
-      Value const* start = elements.begin();
-      if (pop_element) {
-        ++start;
-      }
-      std::vector<Value> next_elements(start, elements.end());
-      if (push_element) {
-        next_elements.push_back(*push_data_);
-      }
-      XLS_RET_CHECK_LE(next_elements.size(), config_.depth());
-      NextElements() = Value::Tuple(next_elements);
+    if (!(push_valid_.has_value() && push_data_.has_value() &&
+          pop_ready_.has_value() && reset_.has_value())) {
+      // Not yet ready to compute next state.
+      return absl::OkStatus();
     }
+    XLS_RET_CHECK(Elements().IsTuple());
+    absl::Span<Value const> elements = Elements().elements();
+
+    if (reset_->IsAllOnes()) {
+      NextElements() = Value::Tuple({});
+      return absl::OkStatus();
+    }
+
+    XLS_ASSIGN_OR_RETURN(bool push_ready, PushReady());
+    XLS_ASSIGN_OR_RETURN(bool pop_valid, PopValid());
+    bool do_push = push_valid_->IsAllOnes() && push_ready;
+    bool do_pop = pop_ready_->IsAllOnes() && pop_valid;
+    bool empty = elements.empty();
+    bool immediately_pop_pushed_value =
+        config_.bypass() && !config_.register_pop_outputs() && empty && do_pop;
+
+    Value const* start = elements.begin();
+    if (do_pop && !elements.empty()) {
+      VLOG(2) << "FIFO " << register_name_ << " popping "
+              << elements.front().ToString();
+      ++start;
+    }
+    std::vector<Value> next_elements(start, elements.end());
+
+    if (do_push) {
+      VLOG(2) << "FIFO " << register_name_ << " pushing "
+              << push_data_->ToString();
+    }
+    if (do_push && !immediately_pop_pushed_value) {
+      next_elements.push_back(*push_data_);
+    }
+    XLS_RET_CHECK_LE(next_elements.size(), config_.depth());
+    NextElements() = Value::Tuple(next_elements);
     return absl::OkStatus();
   }
   absl::StatusOr<Value> HandleOutput(InstantiationOutput* output) {
     XLS_RET_CHECK(Elements().IsTuple());
     absl::Span<Value const> elements = Elements().elements();
     XLS_RET_CHECK_LE(elements.size(), config_.depth());
-    bool empty = elements.empty();
-    bool full = elements.size() == config_.depth();
-    if (output->port_name() == "pop_valid") {
-      if (empty && config_.bypass()) {
-        XLS_RET_CHECK(push_valid_.has_value());
-        return *push_valid_;
-      }
-      return Value(UBits(static_cast<int64_t>(!empty), 1));
+    if (output->port_name() == FifoInstantiation::kPopValidPortName) {
+      VLOG(1) << "Fifo " << register_name_ << " state is " << elements.size()
+              << " elements with "
+              << (elements.empty() ? "<empty>" : elements.front().ToString())
+              << " at head.";
+      XLS_ASSIGN_OR_RETURN(bool pop_valid, PopValid());
+      return Value(UBits(static_cast<int64_t>(pop_valid), 1));
     }
-    if (output->port_name() == "pop_data") {
+    if (output->port_name() == FifoInstantiation::kPopDataPortName) {
+      bool empty = elements.empty();
       if (!empty) {
         return elements.front();
       }
-      if (config_.bypass()) {
+      if (config_.bypass() && !config_.register_pop_outputs()) {
         XLS_RET_CHECK(push_data_.has_value());
         return *push_data_;
       }
       return ZeroOfType(type_);
     }
-    if (output->port_name() == "push_ready") {
-      if (full && config_.bypass()) {
-        XLS_RET_CHECK(pop_ready_.has_value());
-        return *pop_ready_;
-      }
-      return Value(UBits(static_cast<int64_t>(!full), 1));
+    if (output->port_name() == FifoInstantiation::kPushReadyPortName) {
+      XLS_ASSIGN_OR_RETURN(bool push_ready, PushReady());
+      return Value(UBits(static_cast<int64_t>(push_ready), 1));
     }
     return absl::InvalidArgumentError(
         absl::StrFormat("Unexpected port '%s'", output->port_name()));
@@ -214,6 +225,35 @@ class FifoModel {
   std::string_view register_name() const { return register_name_; }
 
  private:
+  absl::StatusOr<bool> PushReady() const {
+    const Value& elements = Elements();
+    bool full = elements.size() >= config_.depth();
+    if (!full) {
+      return true;
+    }
+    if (config_.register_push_outputs()) {
+      return false;
+    }
+    XLS_RET_CHECK(pop_ready_.has_value());
+    return pop_ready_->IsAllOnes();
+  }
+
+  absl::StatusOr<bool> PopValid() const {
+    const Value& elements = Elements();
+    bool empty = elements.empty();
+    if (!empty) {
+      return true;
+    }
+    if (config_.register_pop_outputs()) {
+      return false;
+    }
+    if (!config_.bypass() && empty) {
+      return false;
+    }
+    XLS_RET_CHECK(push_valid_.has_value());
+    return push_valid_->IsAllOnes();
+  }
+
   const Value& Elements() const { return reg_state_.at(register_name_); }
   Value& NextElements() { return next_reg_state_[register_name_]; }
 
@@ -225,6 +265,7 @@ class FifoModel {
   std::optional<Value> push_data_;
   std::optional<Value> push_valid_;
   std::optional<Value> pop_ready_;
+  std::optional<Value> reset_;
 };
 
 class ElaboratedBlockInterpreter final : public ElaboratedBlockDfsVisitor {
@@ -707,8 +748,6 @@ class ElaboratedBlockInterpreter final : public ElaboratedBlockDfsVisitor {
   BlockInterpreter* current_interpreter_ = nullptr;
 };
 
-}  // namespace
-
 absl::StatusOr<BlockRunResult> BlockRun(
     const absl::flat_hash_map<std::string, Value>& inputs,
     const absl::flat_hash_map<std::string, Value>& reg_state,
@@ -772,6 +811,91 @@ absl::StatusOr<BlockRunResult> BlockRun(
   result.interpreter_events = interpreter.MoveInterpreterEvents();
 
   return result;
+}
+
+// A template for a generic BlockContinuation that calls a stateless evaluate
+// function with all input.
+template <typename Evaluate>
+  requires std::is_same_v<
+      absl::StatusOr<BlockRunResult>,
+      std::invoke_result_t<Evaluate,
+                           const absl::flat_hash_map<std::string, Value>&,
+                           const absl::flat_hash_map<std::string, Value>&,
+                           const BlockElaboration&>>
+class StatelessBlockContinuation final : public BlockContinuation {
+ public:
+  StatelessBlockContinuation(BlockElaboration&& block,
+                             BlockRunResult&& initial_result,
+                             Evaluate evaluator)
+      : elaboration_(std::move(block)),
+        last_result_(std::move(initial_result)),
+        evaluator_(std::move(evaluator)) {}
+
+  const absl::flat_hash_map<std::string, Value>& output_ports() final {
+    return last_result_.outputs;
+  }
+
+  const absl::flat_hash_map<std::string, Value>& registers() final {
+    return last_result_.reg_state;
+  }
+
+  const InterpreterEvents& events() final {
+    return last_result_.interpreter_events;
+  }
+
+  absl::Status RunOneCycle(
+      const absl::flat_hash_map<std::string, Value>& inputs) final {
+    XLS_ASSIGN_OR_RETURN(
+        last_result_, evaluator_(inputs, last_result_.reg_state, elaboration_));
+    return absl::OkStatus();
+  }
+
+  absl::Status SetRegisters(
+      const absl::flat_hash_map<std::string, Value>& regs) final {
+    XLS_RET_CHECK_EQ(regs.size(), last_result_.reg_state.size());
+    for (const auto& [key, v] : regs) {
+      XLS_RET_CHECK(last_result_.reg_state.contains(key)) << key;
+      XLS_RET_CHECK(last_result_.reg_state.at(key).SameTypeAs(v))
+          << "'" << key << "' is incorrect type. Expected shape to match "
+          << last_result_.reg_state.at(key) << " but value " << v
+          << " does not match.";
+    }
+    last_result_.reg_state = regs;
+    return absl::OkStatus();
+  }
+
+ private:
+  BlockElaboration elaboration_;
+  BlockRunResult last_result_;
+  Evaluate evaluator_;
+};
+
+template <typename Evaluate>
+StatelessBlockContinuation(BlockElaboration&&, BlockRunResult&&,
+                           Evaluate) -> StatelessBlockContinuation<Evaluate>;
+}  // namespace
+
+absl::StatusOr<std::unique_ptr<BlockContinuation>>
+InterpreterBlockEvaluator::MakeNewContinuation(
+    BlockElaboration&& elaboration,
+    const absl::flat_hash_map<std::string, Value>& initial_registers) const {
+  // We implement fifos using some extra registers stashed in the
+  // register-state. We need to add these here.
+  absl::flat_hash_map<std::string, Value> ext_regs = initial_registers;
+  for (BlockInstance* inst : elaboration.instances()) {
+    if (inst->instantiation().has_value() &&
+        inst->instantiation().value()->kind() == InstantiationKind::kFifo) {
+      // We use tuples b/c empty arrays are not allowed.
+      // TODO: google/xls#1389 - Factor FIFO state out.
+      ext_regs[absl::StrCat(inst->RegisterPrefix(), "elements")] =
+          Value::Tuple({});
+    }
+  }
+
+  auto* cont = new StatelessBlockContinuation(
+      std::move(elaboration), BlockRunResult{.reg_state = std::move(ext_regs)},
+      BlockRun);
+  return std::unique_ptr<BlockContinuation>(cont);
 }
 
 }  // namespace xls

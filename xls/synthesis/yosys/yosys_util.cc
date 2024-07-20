@@ -21,7 +21,9 @@
 #include <string_view>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_split.h"
@@ -158,7 +160,7 @@ absl::StatusOr<STAStatistics> ParseOpenSTAOutput(std::string_view sta_output) {
   }
   bool opensta_ok = period_ok && slack_ok;
   XLS_RET_CHECK(opensta_ok) << "\"Problem parsing results from OpenSTA. "
-                            "OpenSTA may have exited unexpectedly.\"";
+                               "OpenSTA may have exited unexpectedly.\"";
 
   return stats;
 }  // ParseOpenSTAOutput

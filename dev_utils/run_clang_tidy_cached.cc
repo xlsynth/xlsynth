@@ -71,7 +71,8 @@ static constexpr std::string_view kStartDirectory = "xls";
 static constexpr std::string_view kFileIncludeRe = ".*";
 static constexpr std::string_view kFileExcludeRe =
     ".git/|.github/|dev_utils/|"
-    "xlscc/(examples|synth_only)";
+    "xls/common/build_embed\\.cc|"
+    "xlscc/(examples|synth_only|build_rules)";
 inline bool ConsiderExtension(const std::string& extension) {
   return extension == ".cc" || extension == ".h";
 }
@@ -98,7 +99,7 @@ using filepath_contenthash_t = std::pair<fs::path, hash_t>;
 std::optional<std::string> GetCommandOutput(const std::string& prog) {
   auto result = xls::InvokeSubprocess({"/bin/sh", "-c", prog});
   if (result.ok()) {
-    return result->stdout;
+    return result->stdout_content;
   }
   std::cerr << result.status() << "\n";
   return std::nullopt;
@@ -122,8 +123,8 @@ class ContentAddressedStore {
   // Given filepath contenthash, return the path to read/write from.
   fs::path PathFor(const filepath_contenthash_t& c) const {
     // Name is human readable, the content hash makes it unique.
-    std::string name_with_contenthash = absl::StrCat(
-        c.first.filename().string(), "-", ToHex(c.second));
+    std::string name_with_contenthash =
+        absl::StrCat(c.first.filename().string(), "-", ToHex(c.second));
     return content_dir / name_with_contenthash;
   }
 
@@ -193,7 +194,8 @@ class ClangTidyRunner {
           std::cerr << "clang-tidy invocation " << run_result.status() << "\n";
           continue;
         }
-        std::string output = RepairFilenameOccurences(run_result->stdout);
+        std::string output =
+            RepairFilenameOccurences(run_result->stdout_content);
         if (auto s = xls::SetFileContents(output_store.PathFor(work), output);
             !s.ok()) {
           std::cerr << "Failed to set output " << s << "\n";

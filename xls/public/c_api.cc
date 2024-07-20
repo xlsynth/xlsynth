@@ -26,13 +26,17 @@
 #include <vector>
 
 #include "absl/log/check.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_format.h"
 #include "xls/common/init_xls.h"
 #include "xls/interpreter/function_interpreter.h"
 #include "xls/ir/events.h"
+#include "xls/ir/format_preference.h"
 #include "xls/ir/function.h"
 #include "xls/ir/ir_parser.h"
 #include "xls/ir/package.h"
+#include "xls/ir/type.h"
 #include "xls/ir/value.h"
 #include "xls/public/runtime_build_actions.h"
 
@@ -103,7 +107,7 @@ bool FormatPreferenceFromC(xls_format_preference c_pref,
 
 extern "C" {
 
-void xls_init_xls(const char* usage, int argc, char *argv[]) {
+void xls_init_xls(const char* usage, int argc, char* argv[]) {
   (void)(xls::InitXls(usage, argc, argv));
 }
 

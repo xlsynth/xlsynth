@@ -163,7 +163,10 @@ cc_library(
     name = "credentials",
     srcs = ["credentials.cc"],
     hdrs = ["credentials.h"],
-    deps = ["@com_github_grpc_grpc//:grpc++"],
+    deps = [
+        "@com_github_grpc_grpc//:grpc",
+        "@com_github_grpc_grpc//:grpc++",
+    ],
 )
 
 py_library(
@@ -237,9 +240,6 @@ cc_library(
 cc_binary(
     name = "synthesis_client_main",
     srcs = ["synthesis_client_main.cc"],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         ":synthesis_cc_proto",
         ":synthesis_client",

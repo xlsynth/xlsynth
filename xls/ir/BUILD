@@ -217,10 +217,10 @@ cc_test(
         ":interval",
         ":interval_test_utils",
         "//xls/common:xls_gunit_main",
+        "//xls/common/fuzzing:fuzztest",
         "//xls/common/status:matchers",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/types:span",
-        "@com_google_fuzztest//fuzztest",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -260,6 +260,7 @@ cc_test(
         ":ir_test_base",
         ":ternary",
         "//xls/common:xls_gunit_main",
+        "//xls/common/fuzzing:fuzztest",
         "//xls/common/status:matchers",
         "//xls/solvers:z3_ir_translator",
         "//xls/solvers:z3_ir_translator_matchers",
@@ -268,7 +269,6 @@ cc_test(
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:span",
-        "@com_google_fuzztest//fuzztest",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -297,8 +297,8 @@ cc_library(
         ":bits_ops",
         ":bits_test_utils",
         ":interval",
+        "//xls/common/fuzzing:fuzztest",
         "@com_google_absl//absl/log:check",
-        "@com_google_fuzztest//fuzztest",
     ],
 )
 
@@ -310,9 +310,9 @@ cc_library(
         ":interval",
         ":interval_set",
         ":interval_test_utils",
+        "//xls/common/fuzzing:fuzztest",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/types:span",
-        "@com_google_fuzztest//fuzztest",
     ],
 )
 
@@ -328,10 +328,10 @@ cc_test(
         ":interval_set",
         ":interval_set_test_utils",
         "//xls/common:xls_gunit_main",
+        "//xls/common/fuzzing:fuzztest",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
-        "@com_google_fuzztest//fuzztest",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -380,9 +380,9 @@ cc_library(
     hdrs = ["bits_test_utils.h"],
     deps = [
         ":bits",
+        "//xls/common/fuzzing:fuzztest",
         "//xls/data_structures:inline_bitmap",
         "@com_google_absl//absl/log:check",
-        "@com_google_fuzztest//fuzztest",
     ],
 )
 
@@ -402,6 +402,7 @@ cc_test(
         "//xls/common:bits_util",
         "//xls/common:math_util",
         "//xls/common:xls_gunit_main",
+        "//xls/common/fuzzing:fuzztest",
         "//xls/common/status:matchers",
         "//xls/data_structures:inline_bitmap",
         "@com_google_absl//absl/container:inlined_vector",
@@ -409,7 +410,6 @@ cc_test(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
-        "@com_google_fuzztest//fuzztest",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -421,6 +421,8 @@ cc_library(
     deps = [
         ":xls_type_cc_proto",
         "//xls/common:casts",
+        "//xls/common/status:ret_check",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -439,7 +441,6 @@ cc_library(
         ":value",
         ":xls_type_cc_proto",
         "//xls/common/status:status_macros",
-        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/container:node_hash_map",
@@ -537,9 +538,6 @@ cc_library(
         "topo_sort.h",
         "verify_node.h",
     ],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         ":bits",
         ":channel",
@@ -564,11 +562,11 @@ cc_library(
         "//xls/common:visitor",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
+        "//xls/data_structures:leaf_type_tree",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:btree",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/container:node_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
@@ -640,6 +638,7 @@ cc_library(
     srcs = ["function_builder.cc"],
     hdrs = ["function_builder.h"],
     deps = [
+        ":bits",
         ":channel",
         ":channel_ops",
         ":foreign_function_data_cc_proto",
@@ -741,9 +740,6 @@ cc_library(
     name = "ir_parser",
     srcs = ["ir_parser.cc"],
     hdrs = ["ir_parser.h"],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         ":bits",
         ":bits_ops",
@@ -877,7 +873,6 @@ cc_library(
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
         "//xls/delay_model:delay_estimator",
-        "//xls/delay_model:delay_estimators",
         "//xls/interpreter:ir_interpreter",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
@@ -938,6 +933,7 @@ cc_library(
         "//xls/common/status:status_macros",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -952,6 +948,7 @@ cc_library(
     hdrs = ["value_utils.h"],
     deps = [
         ":bits",
+        ":format_preference",
         ":type",
         ":value",
         "//xls/common:bits_util",
@@ -969,9 +966,6 @@ cc_library(
 cc_test(
     name = "value_test",
     srcs = ["value_test.cc"],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         ":bits",
         ":ir_parser",
@@ -979,10 +973,10 @@ cc_test(
         ":xls_value_cc_proto",
         "//xls/common:proto_test_utils",
         "//xls/common:xls_gunit_main",
+        "//xls/common/fuzzing:fuzztest",
         "//xls/common/status:matchers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
-        "@com_google_fuzztest//fuzztest",
         "@com_google_googletest//:gtest",
         "@com_google_protobuf//:protobuf",
     ],
@@ -1059,8 +1053,10 @@ cc_test(
     srcs = ["type_test.cc"],
     deps = [
         ":type",
+        ":type_manager",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
         "@com_google_googletest//:gtest",
     ],
@@ -1367,12 +1363,12 @@ cc_test(
         ":format_preference",
         ":number_parser",
         "//xls/common:xls_gunit_main",
+        "//xls/common/fuzzing:fuzztest",
         "//xls/common/status:matchers",
         "//xls/data_structures:inline_bitmap",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/strings",
         "@com_google_benchmark//:benchmark",
-        "@com_google_fuzztest//fuzztest",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -1517,6 +1513,7 @@ cc_library(
     name = "abstract_node_evaluator",
     hdrs = ["abstract_node_evaluator.h"],
     deps = [
+        ":bits",
         ":ir",
         ":op",
         ":type",
@@ -1598,9 +1595,6 @@ cc_library(
     name = "channel",
     srcs = ["channel.cc"],
     hdrs = ["channel.h"],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         ":channel_cc_proto",
         ":channel_ops",
@@ -1665,9 +1659,9 @@ cc_test(
         ":bits_ops",
         ":bits_test_utils",
         "//xls/common:xls_gunit_main",
+        "//xls/common/fuzzing:fuzztest",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/types:span",
-        "@com_google_fuzztest//fuzztest",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -1766,6 +1760,8 @@ cc_test(
     srcs = ["block_test.cc"],
     deps = [
         ":bits",
+        ":channel",
+        ":foreign_function_data_cc_proto",
         ":function_builder",
         ":ir",
         ":ir_test_base",
@@ -1778,6 +1774,7 @@ cc_test(
         "//xls/common/logging:log_lines",
         "//xls/common/status:matchers",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
         "@com_google_absl//absl/types:variant",
         "@com_google_googletest//:gtest",
@@ -2058,8 +2055,8 @@ cc_library(
     deps = [
         ":xls_type_cc_proto",
         "//xls/common:math_util",
+        "//xls/common/fuzzing:fuzztest",
         "@com_google_absl//absl/log:check",
-        "@com_google_fuzztest//fuzztest",
     ],
 )
 
@@ -2120,6 +2117,42 @@ cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
+cc_library(
+    name = "clone_package",
+    srcs = ["clone_package.cc"],
+    hdrs = ["clone_package.h"],
+    deps = [
+        ":channel",
+        ":ir",
+        "//xls/common/status:ret_check",
+        "//xls/common/status:status_macros",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_test(
+    name = "clone_package_test",
+    srcs = ["clone_package_test.cc"],
+    deps = [
+        ":bits",
+        ":channel",
+        ":channel_ops",
+        ":clone_package",
+        ":function_builder",
+        ":ir",
+        ":ir_matcher",
+        ":ir_test_base",
+        ":proc_testutils",
+        ":value",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/solvers:z3_ir_equivalence",
+        "//xls/solvers:z3_ir_translator_matchers",
         "@com_google_googletest//:gtest",
     ],
 )

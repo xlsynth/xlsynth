@@ -16,7 +16,6 @@
 #define XLS_SIMULATION_MODULE_TESTBENCH_H_
 
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -29,7 +28,8 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xls/codegen/module_signature.h"
-#include "xls/codegen/vast.h"
+#include "xls/codegen/module_signature.pb.h"
+#include "xls/codegen/vast/vast.h"
 #include "xls/simulation/module_testbench_thread.h"
 #include "xls/simulation/testbench_metadata.h"
 #include "xls/simulation/testbench_signal_capture.h"

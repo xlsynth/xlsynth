@@ -177,6 +177,10 @@ class ChannelSink {
     return data_per_cycle_;
   }
 
+  std::string_view data_name() const { return data_name_; }
+  std::string_view valid_name() const { return valid_name_; }
+  std::string_view ready_name() const { return ready_name_; }
+
  private:
   std::string data_name_;
   std::string valid_name_;
@@ -196,11 +200,13 @@ class ChannelSink {
 struct BlockIOResults {
   std::vector<absl::flat_hash_map<std::string, Value>> inputs;
   std::vector<absl::flat_hash_map<std::string, Value>> outputs;
+  InterpreterEvents interpreter_events;
 };
 
 struct BlockIOResultsAsUint64 {
   std::vector<absl::flat_hash_map<std::string, uint64_t>> inputs;
   std::vector<absl::flat_hash_map<std::string, uint64_t>> outputs;
+  InterpreterEvents interpreter_events;
 };
 
 class BlockContinuation;
@@ -221,14 +227,6 @@ class BlockEvaluator {
   // cycle-by-cycle.
   absl::StatusOr<std::unique_ptr<BlockContinuation>> NewContinuation(
       Block* block) const;
-
-  // Runs a single cycle of a block with the given register values and input
-  // values. Returns the value sent to the output port and the next register
-  // state.
-  virtual absl::StatusOr<BlockRunResult> EvaluateBlock(
-      const absl::flat_hash_map<std::string, Value>& inputs,
-      const absl::flat_hash_map<std::string, Value>& registers,
-      const BlockElaboration& elaboration) const = 0;
 
   // The name of this evaluator for debug purposes.
   std::string_view name() const { return name_; }
@@ -362,9 +360,10 @@ class BlockEvaluator {
   }
 
  protected:
-  virtual absl::StatusOr<std::unique_ptr<BlockContinuation>> NewContinuation(
-      BlockElaboration&& elaboration,
-      const absl::flat_hash_map<std::string, Value>& initial_registers) const;
+  virtual absl::StatusOr<std::unique_ptr<BlockContinuation>>
+  MakeNewContinuation(BlockElaboration&& elaboration,
+                      const absl::flat_hash_map<std::string, Value>&
+                          initial_registers) const = 0;
 
   std::string_view name_;
 };

@@ -49,6 +49,7 @@ _DEFAULT_SCHEDULING_ARGS = {
 
 _DEFAULT_CODEGEN_ARGS = {
     "register_merge_strategy": "IdentityOnly",
+    "emit_sv_types": True,
 }
 
 _SYSTEM_VERILOG_FILE_EXTENSION = "sv"
@@ -414,8 +415,8 @@ def xls_ir_verilog_impl(ctx, src, conv_info):
             final_args,
             log_file.path,
         ),
-        mnemonic = "Codegen",
-        progress_message = "Building Verilog file: %s" % (verilog_file.path),
+        mnemonic = "GenerateVerilog",
+        progress_message = "Compiling %s" % verilog_file.short_path,
         toolchain = None,
     )
 

@@ -40,7 +40,7 @@
 #include "xls/codegen/module_signature.pb.h"
 #include "xls/codegen/node_expressions.h"
 #include "xls/codegen/node_representation.h"
-#include "xls/codegen/vast.h"
+#include "xls/codegen/vast/vast.h"
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/ir/bits.h"
@@ -407,7 +407,7 @@ absl::StatusOr<LogicRef*> ModuleBuilder::AddInputPort(
 LogicRef* ModuleBuilder::AddInputPort(std::string_view name, int64_t bit_count,
                                       std::optional<std::string_view> sv_type) {
   auto* raw_bits_type = file_->BitVectorType(bit_count, SourceInfo());
-  if (sv_type) {
+  if (sv_type && options_.emit_sv_types()) {
     return module_->AddInput(
         SanitizeIdentifier(name),
         file_->ExternType(raw_bits_type, *sv_type, SourceInfo()), SourceInfo());
@@ -422,7 +422,7 @@ absl::Status ModuleBuilder::AddOutputPort(
   LogicRef* output_port;
   DataType* bits_type =
       file_->BitVectorType(type->GetFlatBitCount(), SourceInfo());
-  if (sv_type) {
+  if (sv_type && options_.emit_sv_types()) {
     output_port = module_->AddOutput(
         SanitizeIdentifier(name),
         file_->ExternType(bits_type, *sv_type, SourceInfo()), SourceInfo());
@@ -450,14 +450,13 @@ absl::Status ModuleBuilder::AddOutputPort(
     std::optional<std::string_view> sv_type) {
   LogicRef* output_port;
   DataType* bits_type = file_->BitVectorType(bit_count, SourceInfo());
-  if (sv_type) {
+  if (sv_type && options_.emit_sv_types()) {
     output_port = module_->AddOutput(
         SanitizeIdentifier(name),
         file_->ExternType(bits_type, *sv_type, SourceInfo()), SourceInfo());
   } else {
-    output_port = module_->AddOutput(
-        SanitizeIdentifier(name), bits_type,
-        SourceInfo());
+    output_port =
+        module_->AddOutput(SanitizeIdentifier(name), bits_type, SourceInfo());
   }
   output_section()->Add<ContinuousAssignment>(SourceInfo(), output_port, value);
   return absl::OkStatus();
@@ -1035,6 +1034,7 @@ absl::StatusOr<LogicRef*> ModuleBuilder::EmitAsAssignment(
                   /*num_cases=*/node->As<PrioritySelect>()->cases().size(),
                   /*loc=*/node->loc(), function_name, functions_section_,
                   selector_properties, options_.use_system_verilog()));
+          node_functions_[function_name] = func;
         }
         auto priority_sel_element = [&](absl::Span<Expression* const> inputs) {
           std::vector<Expression*> selector_and_inputs{selector_expression};
@@ -1862,7 +1862,6 @@ VerilogFunction* DefineSDivFunction(Node* node, std::string_view function_name,
                     overflow_protected_quotient, node->loc()));
   return func;
 }
-
 
 }  // namespace
 

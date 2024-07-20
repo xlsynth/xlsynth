@@ -21,6 +21,7 @@
 #include "absl/status/status.h"
 #include "xls/noc/simulation/common.h"
 #include "xls/noc/simulation/sim_objects.h"
+#include "xls/noc/simulation/simulator_shims.h"
 
 namespace xls::noc {
 
@@ -48,8 +49,7 @@ inline bool operator==(const FlitDestination& lhs, const FlitDestination& rhs) {
 using DestinationToPacketCount = absl::flat_hash_map<FlitDestination, int64_t>;
 
 // Shim to collect information from the links of the simulator.
-class NocSimulatorToLinkMonitorServiceShim
-    : public NocSimulatorServiceShim {
+class NocSimulatorToLinkMonitorServiceShim : public NocSimulatorServiceShim {
  public:
   explicit NocSimulatorToLinkMonitorServiceShim(NocSimulator& simulator);
   absl::Status RunCycle() override;

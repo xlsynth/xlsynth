@@ -71,6 +71,7 @@ bzl_library(
     deps = [
         ":xls_common_rules_bzl",
         "@bazel_skylib//lib:dicts",
+        "@rules_proto//proto:defs",
     ],
 )
 
@@ -108,6 +109,7 @@ bzl_library(
     visibility = ["//visibility:private"],
     deps = [
         ":xls_common_rules_bzl",
+        ":xls_config_rules_bzl",
         ":xls_providers_bzl",
         ":xls_toolchains_bzl",
         "@bazel_skylib//lib:dicts",
@@ -151,6 +153,7 @@ bzl_library(
         "xls_codegen_fdo_rules.bzl",
         "xls_codegen_rules.bzl",
     ],
+    visibility = ["//xls:xls_users"],
     deps = [
         ":xls_common_rules_bzl",
         ":xls_config_rules_bzl",

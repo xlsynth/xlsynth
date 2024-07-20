@@ -203,11 +203,13 @@ cc_library(
 
 cc_library(
     name = "value_format_descriptor",
+    srcs = ["value_format_descriptor.cc"],
     hdrs = ["value_format_descriptor.h"],
     deps = [
         "//xls/ir:bits",
         "//xls/ir:format_preference",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
     ],
@@ -244,10 +246,14 @@ cc_test(
     srcs = ["interp_value_test.cc"],
     deps = [
         ":interp_value",
+        ":parse_and_typecheck",
         ":value_format_descriptor",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
+        "//xls/dslx/frontend:ast",
+        "//xls/ir:bits",
         "//xls/ir:format_preference",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest",
@@ -262,7 +268,7 @@ cc_library(
         ":interp_value",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:pos",
-        "//xls/dslx/type_system:type_info",
+        "//xls/dslx/type_system:parametric_env",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log",

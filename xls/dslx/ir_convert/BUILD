@@ -216,7 +216,6 @@ cc_library(
         "//xls/ir",
         "//xls/ir:bits",
         "//xls/ir:foreign_function",
-        "//xls/ir:format_strings",
         "//xls/ir:function_builder",
         "//xls/ir:op",
         "//xls/ir:source_location",
@@ -268,8 +267,6 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
-        "@com_google_absl//absl/types:variant",
-        "//xls/common:visitor",
         "//xls/common/file:filesystem",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
@@ -374,9 +371,6 @@ cc_library(
 cc_binary(
     name = "ir_converter_main",
     srcs = ["ir_converter_main.cc"],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     visibility = ["//xls:xls_users"],
     deps = [
         ":conversion_info",

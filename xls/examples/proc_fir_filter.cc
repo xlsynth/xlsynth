@@ -25,6 +25,7 @@
 #include "xls/ir/nodes.h"
 #include "xls/ir/package.h"
 #include "xls/ir/source_location.h"
+#include "xls/ir/type.h"
 #include "xls/ir/value.h"
 #include "xls/ir/value_utils.h"
 
@@ -115,7 +116,7 @@ absl::StatusOr<Proc*> CreateFirFilter(std::string_view name,
   // The output channel gives us the output of the FIR filter.
   BValue out = pb.Send(output_channel, tok, result);
 
-  BValue after_all = pb.AfterAll({out,  pb.TupleIndex(in, 0)});
+  BValue after_all = pb.AfterAll({out, pb.TupleIndex(in, 0)});
   XLS_ASSIGN_OR_RETURN(Proc * proc, pb.Build({after_all, x}));
   return proc;
 }

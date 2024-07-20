@@ -53,6 +53,7 @@ cc_library(
         "//xls/ir:source_location",
         "//xls/ir:value",
         "//xls/ir:value_utils",
+        "@com_google_absl//absl/base:log_severity",
         "@com_google_absl//absl/container:btree",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
@@ -120,9 +121,6 @@ cc_test(
 cc_test(
     name = "translator_memory_test",
     srcs = ["translator_memory_test.cc"],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     shard_count = 32,
     deps = [
         ":unit_test",
@@ -135,6 +133,7 @@ cc_test(
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
         "@com_google_googletest//:gtest",
+        "@com_google_protobuf//:differencer",
         "@com_google_protobuf//:protobuf",
     ],
 )
@@ -142,9 +141,6 @@ cc_test(
 cc_test(
     name = "translator_proc_test",
     srcs = ["translator_proc_test.cc"],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     shard_count = 32,
     deps = [
         ":unit_test",
@@ -168,6 +164,7 @@ cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_googletest//:gtest",
+        "@com_google_protobuf//:differencer",
         "@com_google_protobuf//:protobuf",
     ],
 )
@@ -212,9 +209,6 @@ cc_test(
         "//xls/contrib/xlscc:synth_only_headers",
         "@com_github_hlslibs_ac_types//:ac_types_as_data",
     ],
-    features = [
-        "-layering_check",  # TODO(google/xls#1411) Protobuf Dependency
-    ],
     deps = [
         ":unit_test",
         "//xls/common:xls_gunit_main",
@@ -222,6 +216,7 @@ cc_test(
         "//xls/contrib/xlscc:metadata_output_cc_proto",
         "//xls/contrib/xlscc:translator",
         "@com_google_googletest//:gtest",
+        "@com_google_protobuf//:differencer",
         "@com_google_protobuf//:protobuf",
     ],
 )
@@ -239,7 +234,7 @@ cc_test(
         "//xls/codegen:codegen_pass",
         "//xls/codegen:module_signature",
         "//xls/codegen:signature_generator",
-        "//xls/codegen:vast",
+        "//xls/codegen/vast",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
         "//xls/contrib/xlscc:cc_parser",
@@ -308,6 +303,9 @@ cc_test(
         ":unit_test",
         "//xls/common:source_location",
         "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -409,7 +407,7 @@ xls_ac_fuzz_binaries(
     test_ac_int = True,
     deps = [
         "//xls/codegen:codegen_options",
-        "//xls/codegen:vast",
+        "//xls/codegen/vast",
         "//xls/common:source_location",
         "//xls/ir:bits",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -426,7 +424,7 @@ xls_ac_fuzz_binaries(
     test_ac_int = False,
     deps = [
         "//xls/codegen:codegen_options",
-        "//xls/codegen:vast",
+        "//xls/codegen/vast",
         "//xls/common:source_location",
         "//xls/ir:bits",
         "@com_google_absl//absl/container:flat_hash_map",

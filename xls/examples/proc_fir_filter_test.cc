@@ -26,6 +26,7 @@
 #include "xls/interpreter/interpreter_proc_runtime.h"
 #include "xls/interpreter/serial_proc_runtime.h"
 #include "xls/ir/bits.h"
+#include "xls/ir/channel_ops.h"
 #include "xls/ir/ir_test_base.h"
 #include "xls/ir/package.h"
 #include "xls/ir/value.h"
@@ -50,15 +51,15 @@ TEST_F(ProcFirFilterTest, FIRSimpleTest) {
   std::string_view name = "fir_proc";
   Type* kernel_type = p->GetTypeForValue(kernel_value.element(0));
 
-  XLS_ASSERT_OK_AND_ASSIGN(StreamingChannel* x_in,
-                           p->CreateStreamingChannel(
-                           absl::StrFormat("%s_x_in", name),
-                           ChannelOps::kReceiveOnly, kernel_type));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      StreamingChannel * x_in,
+      p->CreateStreamingChannel(absl::StrFormat("%s_x_in", name),
+                                ChannelOps::kReceiveOnly, kernel_type));
 
-  XLS_ASSERT_OK_AND_ASSIGN(StreamingChannel* filter_out,
-                           p->CreateStreamingChannel(
-                           absl::StrFormat("%s_out", name),
-                           ChannelOps::kSendOnly, kernel_type));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      StreamingChannel * filter_out,
+      p->CreateStreamingChannel(absl::StrFormat("%s_out", name),
+                                ChannelOps::kSendOnly, kernel_type));
 
   XLS_ASSERT_OK(
       CreateFirFilter(name, kernel_value, x_in, filter_out, p.get()).status());
@@ -66,12 +67,10 @@ TEST_F(ProcFirFilterTest, FIRSimpleTest) {
   XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<SerialProcRuntime> pi,
                            CreateInterpreterSerialProcRuntime(p.get()));
 
-  XLS_ASSERT_OK_AND_ASSIGN(Channel* send,
-                           p.get()->GetChannel(
-                               absl::StrFormat("%s_out", name)));
-  XLS_ASSERT_OK_AND_ASSIGN(Channel* recv,
-                           p.get()->GetChannel(
-                               absl::StrFormat("%s_x_in", name)));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Channel * send, p.get()->GetChannel(absl::StrFormat("%s_out", name)));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Channel * recv, p.get()->GetChannel(absl::StrFormat("%s_x_in", name)));
 
   ChannelQueue& send_queue = pi->queue_manager().GetQueue(send);
   ChannelQueue& recv_queue = pi->queue_manager().GetQueue(recv);
@@ -110,23 +109,23 @@ TEST_F(ProcFirFilterTest, FIRSimpleTest) {
 
 // Test FIR filter with accumulator kernel = {1, 10, 100, 1000, 10000, 100000}.
 TEST_F(ProcFirFilterTest, FIRAccumulator) {
-    auto p = CreatePackage();
-  XLS_ASSERT_OK_AND_ASSIGN(Value kernel_value,
-                           Value::UBitsArray({1, 10, 100, 1000, 10000, 100000},
-                                             32));
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Value kernel_value,
+      Value::UBitsArray({1, 10, 100, 1000, 10000, 100000}, 32));
   // ProcFirFilter pff;
   std::string_view name = "fir_proc";
   Type* kernel_type = p->GetTypeForValue(kernel_value.element(0));
 
-  XLS_ASSERT_OK_AND_ASSIGN(StreamingChannel* x_in,
-                           p->CreateStreamingChannel(
-                           absl::StrFormat("%s_x_in", name),
-                           ChannelOps::kReceiveOnly, kernel_type));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      StreamingChannel * x_in,
+      p->CreateStreamingChannel(absl::StrFormat("%s_x_in", name),
+                                ChannelOps::kReceiveOnly, kernel_type));
 
-  XLS_ASSERT_OK_AND_ASSIGN(StreamingChannel* filter_out,
-                           p->CreateStreamingChannel(
-                           absl::StrFormat("%s_out", name),
-                           ChannelOps::kSendOnly, kernel_type));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      StreamingChannel * filter_out,
+      p->CreateStreamingChannel(absl::StrFormat("%s_out", name),
+                                ChannelOps::kSendOnly, kernel_type));
 
   XLS_ASSERT_OK(
       CreateFirFilter(name, kernel_value, x_in, filter_out, p.get()).status());
@@ -134,12 +133,10 @@ TEST_F(ProcFirFilterTest, FIRAccumulator) {
   XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<SerialProcRuntime> pi,
                            CreateInterpreterSerialProcRuntime(p.get()));
 
-  XLS_ASSERT_OK_AND_ASSIGN(Channel* send,
-                           p.get()->GetChannel(
-                               absl::StrFormat("%s_out", name)));
-  XLS_ASSERT_OK_AND_ASSIGN(Channel* recv,
-                           p.get()->GetChannel(
-                               absl::StrFormat("%s_x_in", name)));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Channel * send, p.get()->GetChannel(absl::StrFormat("%s_out", name)));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Channel * recv, p.get()->GetChannel(absl::StrFormat("%s_x_in", name)));
 
   ChannelQueue& send_queue = pi->queue_manager().GetQueue(send);
   ChannelQueue& recv_queue = pi->queue_manager().GetQueue(recv);
@@ -167,22 +164,21 @@ TEST_F(ProcFirFilterTest, FIRAccumulator) {
 // TODO (kmanav) 2021-10-20: Allow for a single element kernel.
 
 TEST_F(ProcFirFilterTest, DISABLED_FIRScaleFactor) {
-    auto p = CreatePackage();
-  XLS_ASSERT_OK_AND_ASSIGN(Value kernel_value,
-                           Value::UBitsArray({2}, 32));
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(Value kernel_value, Value::UBitsArray({2}, 32));
   // ProcFirFilter pff;
   std::string_view name = "fir_proc";
   Type* kernel_type = p->GetTypeForValue(kernel_value.element(0));
 
-  XLS_ASSERT_OK_AND_ASSIGN(StreamingChannel* x_in,
-                           p->CreateStreamingChannel(
-                           absl::StrFormat("%s_x_in", name),
-                           ChannelOps::kReceiveOnly, kernel_type));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      StreamingChannel * x_in,
+      p->CreateStreamingChannel(absl::StrFormat("%s_x_in", name),
+                                ChannelOps::kReceiveOnly, kernel_type));
 
-  XLS_ASSERT_OK_AND_ASSIGN(StreamingChannel* filter_out,
-                           p->CreateStreamingChannel(
-                           absl::StrFormat("%s_out", name),
-                           ChannelOps::kSendOnly, kernel_type));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      StreamingChannel * filter_out,
+      p->CreateStreamingChannel(absl::StrFormat("%s_out", name),
+                                ChannelOps::kSendOnly, kernel_type));
 
   XLS_ASSERT_OK(
       CreateFirFilter(name, kernel_value, x_in, filter_out, p.get()).status());
@@ -190,12 +186,10 @@ TEST_F(ProcFirFilterTest, DISABLED_FIRScaleFactor) {
   XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<SerialProcRuntime> pi,
                            CreateInterpreterSerialProcRuntime(p.get()));
 
-  XLS_ASSERT_OK_AND_ASSIGN(Channel* send,
-                           p.get()->GetChannel(
-                               absl::StrFormat("%s_out", name)));
-  XLS_ASSERT_OK_AND_ASSIGN(Channel* recv,
-                           p.get()->GetChannel(
-                               absl::StrFormat("%s_x_in", name)));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Channel * send, p.get()->GetChannel(absl::StrFormat("%s_out", name)));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Channel * recv, p.get()->GetChannel(absl::StrFormat("%s_x_in", name)));
 
   ChannelQueue& send_queue = pi->queue_manager().GetQueue(send);
   ChannelQueue& recv_queue = pi->queue_manager().GetQueue(recv);
@@ -228,15 +222,15 @@ TEST_F(ProcFirFilterTest, FIRTriangularBlur) {
   std::string_view name = "fir_proc";
   Type* kernel_type = p->GetTypeForValue(kernel_value.element(0));
 
-  XLS_ASSERT_OK_AND_ASSIGN(StreamingChannel* x_in,
-                           p->CreateStreamingChannel(
-                           absl::StrFormat("%s_x_in", name),
-                           ChannelOps::kReceiveOnly, kernel_type));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      StreamingChannel * x_in,
+      p->CreateStreamingChannel(absl::StrFormat("%s_x_in", name),
+                                ChannelOps::kReceiveOnly, kernel_type));
 
-  XLS_ASSERT_OK_AND_ASSIGN(StreamingChannel* filter_out,
-                           p->CreateStreamingChannel(
-                           absl::StrFormat("%s_out", name),
-                           ChannelOps::kSendOnly, kernel_type));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      StreamingChannel * filter_out,
+      p->CreateStreamingChannel(absl::StrFormat("%s_out", name),
+                                ChannelOps::kSendOnly, kernel_type));
 
   XLS_ASSERT_OK(
       CreateFirFilter(name, kernel_value, x_in, filter_out, p.get()).status());
@@ -244,12 +238,10 @@ TEST_F(ProcFirFilterTest, FIRTriangularBlur) {
   XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<SerialProcRuntime> pi,
                            CreateInterpreterSerialProcRuntime(p.get()));
 
-  XLS_ASSERT_OK_AND_ASSIGN(Channel* send,
-                           p.get()->GetChannel(
-                               absl::StrFormat("%s_out", name)));
-  XLS_ASSERT_OK_AND_ASSIGN(Channel* recv,
-                           p.get()->GetChannel(
-                               absl::StrFormat("%s_x_in", name)));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Channel * send, p.get()->GetChannel(absl::StrFormat("%s_out", name)));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Channel * recv, p.get()->GetChannel(absl::StrFormat("%s_x_in", name)));
 
   ChannelQueue& send_queue = pi->queue_manager().GetQueue(send);
   ChannelQueue& recv_queue = pi->queue_manager().GetQueue(recv);

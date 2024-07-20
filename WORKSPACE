@@ -20,6 +20,15 @@ workspace(name = "com_google_xls")
 # files because it's not allowed to use `load` inside of a function.
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
+# Released 2023-09-20, current as of 2024-06-26 (but there is already a 0.0.10rc1)
+# Needs to be loaded first, as llvm toolchain has an ancient version of this.
+http_archive(
+    name = "rules_cc",
+    urls = ["https://github.com/bazelbuild/rules_cc/releases/download/0.0.9/rules_cc-0.0.9.tar.gz"],
+    sha256 = "2037875b9a4456dce4a79d112a8ae885bbc4aad968e6587dca6e64f3a0900cdf",
+    strip_prefix = "rules_cc-0.0.9",
+)
+
 # Commit on  2024-02-13, current as of 2024-02-13.
 http_archive(
     name = "toolchains_llvm",
@@ -33,14 +42,13 @@ load("@toolchains_llvm//toolchain:deps.bzl", "bazel_toolchain_dependencies")
 bazel_toolchain_dependencies()
 
 # We disable the use of hermetic LLVM toolchain as it does not work on OS X.
-#load("@toolchains_llvm//toolchain:rules.bzl", "llvm_toolchain")
-#
 #llvm_toolchain(
 #    name = "llvm_toolchain",
-#    llvm_version = "17.0.2",
+#    llvm_version = "17.0.6",
 #)
-
+#
 #load("@llvm_toolchain//:toolchains.bzl", "llvm_register_toolchains")
+#
 #llvm_register_toolchains()
 
 load("//dependency_support:load_external.bzl", "load_external_repositories")
@@ -53,11 +61,13 @@ load(
   "python_register_toolchains",
 )
 
+# Must be called before using anything from rules_python.
+# https://github.com/bazelbuild/rules_python/issues/1560#issuecomment-1815118394
 py_repositories()
 
 python_register_toolchains(
-    name = "python39",
-    python_version = "3.9",
+    name = "project_python",
+    python_version = "3.11",
 
     # Required for our containerized CI environments; we do not recommend
     # building XLS as root normally.
@@ -73,10 +83,6 @@ grpc_deps()
 load("//dependency_support:initialize_external.bzl", "initialize_external_repositories")
 
 initialize_external_repositories()
-
-load("@rules_hdl_pip_deps//:requirements.bzl", rules_hdl_pip_install_deps = "install_deps")
-
-rules_hdl_pip_install_deps()
 
 load("@xls_pip_deps//:requirements.bzl", xls_pip_install_deps = "install_deps")
 

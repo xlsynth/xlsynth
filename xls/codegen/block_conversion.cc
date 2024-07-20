@@ -47,7 +47,7 @@
 #include "xls/codegen/codegen_wrapper_pass.h"
 #include "xls/codegen/concurrent_stage_groups.h"
 #include "xls/codegen/register_legalization_pass.h"
-#include "xls/codegen/vast.h"
+#include "xls/codegen/vast/vast.h"
 #include "xls/common/casts.h"
 #include "xls/common/logging/log_lines.h"
 #include "xls/common/status/ret_check.h"
@@ -58,6 +58,7 @@
 #include "xls/ir/channel_ops.h"
 #include "xls/ir/function_base.h"
 #include "xls/ir/instantiation.h"
+#include "xls/ir/name_uniquer.h"
 #include "xls/ir/node.h"
 #include "xls/ir/node_util.h"
 #include "xls/ir/nodes.h"
@@ -73,7 +74,6 @@
 #include "xls/ir/xls_ir_interface.pb.h"
 #include "xls/passes/dataflow_simplification_pass.h"
 #include "xls/passes/dce_pass.h"
-#include "xls/passes/pass_base.h"
 #include "xls/scheduling/pipeline_schedule.h"
 #include "xls/scheduling/scheduling_options.h"
 #include "re2/re2.h"
@@ -134,6 +134,21 @@ static absl::Status MaybeAddResetPort(Block* block,
   // TODO(tedhong): 2021-09-18 Combine this with AddValidSignal
   if (options.reset().has_value()) {
     XLS_RET_CHECK_OK(block->AddResetPort(options.reset()->name()));
+  }
+
+  // Connect reset to FIFO instantiations.
+  for (xls::Instantiation* instantiation : block->GetInstantiations()) {
+    if (instantiation->kind() != InstantiationKind::kFifo) {
+      continue;
+    }
+    XLS_RET_CHECK(options.reset().has_value())
+        << "Fifo instantiations require reset.";
+    XLS_RETURN_IF_ERROR(block
+                            ->MakeNode<xls::InstantiationInput>(
+                                SourceInfo(), block->GetResetPort().value(),
+                                instantiation,
+                                xls::FifoInstantiation::kResetPortName)
+                            .status());
   }
 
   return absl::OkStatus();
@@ -288,8 +303,10 @@ static absl::Status UpdateStateRegisterWithReset(
   }
 
   if (state_register.reg != nullptr) {
-    CHECK_NE(state_register.reg_write, nullptr);
-    CHECK_NE(state_register.reg_read, nullptr);
+    CHECK_NE(state_register.reg_write, nullptr)
+        << "reg_write is null for " << state_register.name;
+    CHECK_NE(state_register.reg_read, nullptr)
+        << "reg_read is null for " << state_register.name;
   }
   if (state_register.reg_full) {
     CHECK_NE(state_register.reg_full_write, nullptr);
@@ -2012,7 +2029,7 @@ static absl::Status RemoveDeadTokenNodes(CodegenPassUnit* unit) {
   // TODO: We really shouldn't be running passes like this during block
   // conversion. These should be fully in the pipeline. This is work for the
   // future.
-  PassResults pass_results;
+  CodegenPassResults pass_results;
   CodegenPassOptions pass_options;
   CodegenCompoundPass ccp("block_conversion_dead_token_removal",
                           "Dead token removal during block-conversion process");
@@ -2051,6 +2068,11 @@ absl::StatusOr<ConcurrentStageGroups> CalculateConcurrentGroupsFromStateWrites(
       continue;
     }
     auto start = reg->read_stage;
+    if (reg->next_values.empty()) {
+      // If empty, absl::c_min_element()->stage will dereference the end
+      // iterator. Skip instead.
+      continue;
+    }
     auto end = absl::c_min_element(reg->next_values,
                                    [](const StateRegister::NextValue& l,
                                       const StateRegister::NextValue& r) {
@@ -3371,13 +3393,23 @@ absl::StatusOr<CodegenPassUnit> PackageToPipelinedBlocks(
   // Make `unit` optional because we haven't created the top block yet. We will
   // create it on the first iteration and emplace `unit`.
   std::string module_name(
-      options.module_name().value_or(SanitizeIdentifier(top->name())));
+      SanitizeIdentifier(options.module_name().value_or(top->name())));
   Block* top_block =
       package->AddBlock(std::make_unique<Block>(module_name, package));
+  // We use a uniquer here because the top block name comes from the codegen
+  // option's `module_name` field (if set). A non-top proc could have the same
+  // name, so the name uniquer will ensure that the sub-block gets a suffix if
+  // needed. Note that the NameUniquer's sanitize performs a different function
+  // from `SanitizeIdentifier()`, which is used to ensure that identifiers are
+  // OK for RTL.
+  NameUniquer block_name_uniquer("__");
+  XLS_RET_CHECK_EQ(block_name_uniquer.GetSanitizedUniqueName(module_name),
+                   module_name);
   CodegenPassUnit unit(package, top_block);
 
   for (const auto& [fb, schedule] : sorted_schedules) {
-    std::string sub_block_name = SanitizeIdentifier(fb->name());
+    std::string sub_block_name = block_name_uniquer.GetSanitizedUniqueName(
+        SanitizeIdentifier(fb->name()));
     Block* sub_block;
     if (fb == top) {
       sub_block = top_block;

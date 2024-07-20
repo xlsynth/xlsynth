@@ -26,7 +26,7 @@
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
 #include "xls/codegen/codegen_pass.h"
-#include "xls/codegen/vast.h"
+#include "xls/codegen/vast/vast.h"
 #include "xls/common/casts.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/ir/function.h"
@@ -34,7 +34,6 @@
 #include "xls/ir/node.h"
 #include "xls/ir/nodes.h"
 #include "xls/ir/type.h"
-#include "xls/passes/pass_base.h"
 
 namespace xls::verilog {
 
@@ -121,7 +120,7 @@ static absl::Status InvocationReturnToInstOutputs(
 
 absl::StatusOr<bool> FfiInstantiationPass::RunInternal(
     CodegenPassUnit* unit, const CodegenPassOptions& options,
-    PassResults* results) const {
+    CodegenPassResults* results) const {
   std::vector<Node*> to_remove;
   for (const std::unique_ptr<Block>& block : unit->package->blocks()) {
     for (Node* node : block->nodes()) {

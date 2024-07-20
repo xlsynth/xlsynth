@@ -137,8 +137,7 @@ std::string YosysSynthesisServiceImpl::BuildYosysTcl(
       "yosys log {*}$::env(DONT_USE_ARGS)";
   const std::string read_verilog_rtl =
       absl::StrFormat("read_verilog %s", verilog_path.string());
-  const std::string delete_print_cells =
-      "delete {*/t:$print}";
+  const std::string delete_print_cells = "delete {*/t:$print}";
 
   const std::string perform_generic_synthesis =
       absl::StrFormat("synth -top %s", request->top_module_name());
@@ -153,15 +152,20 @@ std::string YosysSynthesisServiceImpl::BuildYosysTcl(
       delay_target, synthesis_libraries_, delay_target, delay_target,
       abc_constr_path.string());
   const std::string perform_cleanup =
-      "setundef -zero\n" "splitnets";
+      "setundef -zero\n"
+      "splitnets";
   const std::string perform_optimizations =
-      "opt\n" "clean\n" "yosys rename -enumerate";
+      "opt\n"
+      "clean\n"
+      "yosys rename -enumerate";
+  const std::string print_statistics =
+      absl::StrFormat("yosys stat -liberty %s -top %s;", synthesis_libraries_,
+                      request->top_module_name());
 
   const std::string write_json_netlist =
       absl::StrFormat("write_json %s", json_path.string());
-  const std::string write_verilog_netlist =
-      absl::StrFormat("write_verilog -noattr -noexpr -nohex -nodec %s",
-                      netlist_path.string());
+  const std::string write_verilog_netlist = absl::StrFormat(
+      "write_verilog -noattr -noexpr -nohex -nodec %s", netlist_path.string());
 
   // Build yosys commandfile
   yosys_tcl_vec.push_back(yosys_import);
@@ -174,6 +178,7 @@ std::string YosysSynthesisServiceImpl::BuildYosysTcl(
   yosys_tcl_vec.push_back(perform_abc_mapping);
   yosys_tcl_vec.push_back(perform_cleanup);
   yosys_tcl_vec.push_back(perform_optimizations);
+  yosys_tcl_vec.push_back(print_statistics);
 
   yosys_tcl_vec.push_back(write_json_netlist);
   yosys_tcl_vec.push_back(write_verilog_netlist);
@@ -188,7 +193,6 @@ std::string YosysSynthesisServiceImpl::BuildYosysTcl(
 // CompileRequest.
 absl::Status YosysSynthesisServiceImpl::RunSynthesis(
     const CompileRequest* request, CompileResponse* result) const {
-
   // This tells the timing client that the achieved implementation freq
   //  doesn't depend on the requested frequency, which is true
   //  for Yosys with the current script.

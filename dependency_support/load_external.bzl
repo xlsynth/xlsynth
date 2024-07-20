@@ -38,7 +38,7 @@ def load_external_repositories():
     repo_llvm()
     repo_rules_hdl()
 
-    # Release 2024-01-22, current as of 2024-03-14
+    # Release 2024-01-22, current as of 2024-06-26
     # zlib is added automatically by gRPC, but the zlib BUILD file used by gRPC
     # does not include all the source code (e.g., gzread is missing) which
     # breaks other users of zlib like iverilog. So add zlib explicitly here with
@@ -55,15 +55,7 @@ def load_external_repositories():
         build_file = "//dependency_support/zlib:bundled.BUILD.bazel",
     )
 
-    # Released 2023-09-20, current as of 2024-03-14
-    http_archive(
-        name = "rules_cc",
-        urls = ["https://github.com/bazelbuild/rules_cc/releases/download/0.0.9/rules_cc-0.0.9.tar.gz"],
-        sha256 = "2037875b9a4456dce4a79d112a8ae885bbc4aad968e6587dca6e64f3a0900cdf",
-        strip_prefix = "rules_cc-0.0.9",
-    )
-
-    # V 1.14.0 (released 2023-08-02, current as of 2024-03-14)
+    # V 1.14.0 (released 2023-08-02, current as of 2024-06-26)
     http_archive(
         name = "com_google_googletest",
         urls = ["https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip"],
@@ -71,33 +63,33 @@ def load_external_repositories():
         sha256 = "1f357c27ca988c3f7c6b4bf68a9395005ac6761f034046e9dde0896e3aba00e4",
     )
 
-    # LTS 20240116.1 (released 2024-02-12, current as of 2024-03-14)
+    # LTS 20240116.2 (released 2024-04-08, current as of 2024-06-26)
     http_archive(
         name = "com_google_absl",
-        urls = ["https://github.com/abseil/abseil-cpp/archive/refs/tags/20240116.1.tar.gz"],
-        strip_prefix = "abseil-cpp-20240116.1",
-        sha256 = "3c743204df78366ad2eaf236d6631d83f6bc928d1705dd0000b872e53b73dc6a",
+        urls = ["https://github.com/abseil/abseil-cpp/archive/refs/tags/20240116.2.tar.gz"],
+        strip_prefix = "abseil-cpp-20240116.2",
+        sha256 = "733726b8c3a6d39a4120d7e45ea8b41a434cdacde401cba500f14236c49b39dc",
     )
 
-    # Released 2023-11-06, current as of 2024-03-14
+    # Released 2024-06-03, current as of 2024-06-26
     # Protobuf depends on Skylib
     # Load bazel skylib as per
     # https://github.com/bazelbuild/bazel-skylib/releases
     http_archive(
         name = "bazel_skylib",
         urls = [
-            "https://github.com/bazelbuild/bazel-skylib/releases/download/1.5.0/bazel-skylib-1.5.0.tar.gz",
+            "https://github.com/bazelbuild/bazel-skylib/releases/download/1.7.1/bazel-skylib-1.7.1.tar.gz",
         ],
-        sha256 = "cd55a062e763b9349921f0f5db8c3933288dc8ba4f76dd9416aac68acee3cb94",
+        sha256 = "bc283cdfcd526a52c3201279cda4bc298652efa898b10b4db0837dc51652756f",
     )
 
     http_archive(
         name = "boringssl",
-        # Commit date: 2024-03-13
+        # Commit date: 2024-06-24
         # Note for updating: we need to use a commit from the main-with-bazel branch.
-        strip_prefix = "boringssl-b84aa830c43eeac47374b2a179063250a39496ef",
-        sha256 = "c1b8d25b76d31877066650554c18049fe647f8f996fe3ed2fa61aea171bc34d1",
-        urls = ["https://github.com/google/boringssl/archive/b84aa830c43eeac47374b2a179063250a39496ef.tar.gz"],
+        strip_prefix = "boringssl-e6b03733628149a89a1d18b3ef8f39aa1055aba8",
+        sha256 = "006596f84d9cc142d9d6c48600cf6208f9d24426943b05e8bcda06e523f69dc8",
+        urls = ["https://github.com/google/boringssl/archive/e6b03733628149a89a1d18b3ef8f39aa1055aba8.tar.gz"],
     )
 
     # Commit on 2023-02-09
@@ -131,13 +123,13 @@ def load_external_repositories():
         sha256 = "0fb3a4916a157eb48124ef309231cecdfdd96ff54adf1660b39c0d4a9790a2c0",
     )
 
-    # Released on 2024-03-01, current as of 2024-03-14
+    # Released on 2024-06-01, current as of 2024-06-26
     http_archive(
         name = "com_googlesource_code_re2",
-        strip_prefix = "re2-2024-03-01",
-        sha256 = "7b2b3aa8241eac25f674e5b5b2e23d4ac4f0a8891418a2661869f736f03f57f4",
+        strip_prefix = "re2-2024-06-01",
+        sha256 = "7326c74cddaa90b12090fcfc915fe7b4655723893c960ee3c2c66e85c5504b6c",
         urls = [
-            "https://github.com/google/re2/archive/refs/tags/2024-03-01.tar.gz",
+            "https://github.com/google/re2/archive/refs/tags/2024-06-01.tar.gz",
         ],
         repo_mapping = {
             "@abseil-cpp": "@com_google_absl",
@@ -145,7 +137,7 @@ def load_external_repositories():
     )
 
     # Released on 2022-12-27.
-    # Current as of 2024-03-14 would be 6.0.0rc2, but that does not work yet
+    # Current as of 2024-06-26 would be 6.0.2, but that does not work yet
     # with rules_hdl (it assumes rules_proto_toolchains is in repositories.bzl)
     # https://github.com/bazelbuild/rules_proto/releases/tag/5.3.0-21.7
     http_archive(
@@ -157,13 +149,12 @@ def load_external_repositories():
         ],
     )
 
-    # Released on 2023-08-22, current as of 2023-09-26
-    # https://github.com/bazelbuild/rules_python/releases/tag/0.25.0
+    # Released on 2024-06-19, current as of 2024-06-26
     http_archive(
         name = "rules_python",
-        sha256 = "5868e73107a8e85d8f323806e60cad7283f34b32163ea6ff1020cf27abef6036",
-        strip_prefix = "rules_python-0.25.0",
-        url = "https://github.com/bazelbuild/rules_python/releases/download/0.25.0/rules_python-0.25.0.tar.gz",
+        sha256 = "e3f1cc7a04d9b09635afb3130731ed82b5f58eadc8233d4efb59944d92ffc06f",
+        strip_prefix = "rules_python-0.33.2",
+        url = "https://github.com/bazelbuild/rules_python/releases/download/0.33.2/rules_python-0.33.2.tar.gz",
     )
 
     http_archive(
@@ -172,12 +163,9 @@ def load_external_repositories():
         sha256 = "9f58f3710bd2094085951a75791550f547903d75fe7e2fcb373c5f03fc761b8f",
         strip_prefix = "z3-z3-4.12.2",
         build_file = "//dependency_support/z3:bundled.BUILD.bazel",
-        # Fix gcc 13.x build failure
-        # https://github.com/Z3Prover/z3/issues/6722
-        patches = ["//dependency_support/z3:6723.patch"],
     )
 
-    # Release 2024-02-23, current as of 2023-03-14
+    # Release 2024-02-23, current as of 2024-06-26
     http_archive(
         name = "io_bazel_rules_closure",
         sha256 = "70ef2b4da987bf0d266e663d7c251eac509ff70dd65bba02d41d1e86e840a569",
@@ -187,7 +175,7 @@ def load_external_repositories():
         ],
     )
 
-    # Commit from 2024-02-22
+    # Commit from 2024-02-22, current as of 2024-06-26
     http_archive(
         name = "linenoise",
         sha256 = "839ed407fe0dfa5fd7dd103abfc695dee72fea2840df8d4250ad42b0e64839e8",
@@ -196,134 +184,95 @@ def load_external_repositories():
         build_file = "//dependency_support/linenoise:bundled.BUILD.bazel",
     )
 
-    # Commit from 2023-11-02
+    # Commit from 2024-06-26
     http_archive(
         name = "com_google_riegeli",
-        sha256 = "f8386e44e16d044c1d7151c0b553bb7075d79583d4fa9e613a4be452599e0795",
-        strip_prefix = "riegeli-411cda7f6aa81f8b8591b04cf141b1decdcc928c",
-        url = "https://github.com/google/riegeli/archive/411cda7f6aa81f8b8591b04cf141b1decdcc928c.tar.gz",
+        sha256 = "38fd4b6bc24958ae51e1a5a0eb57ce9c3dbbaf5034a78453a4d133597fbf31e4",
+        strip_prefix = "riegeli-cb68d579f108c96831b6a7815da43ff24b4e5242",
+        url = "https://github.com/google/riegeli/archive/cb68d579f108c96831b6a7815da43ff24b4e5242.tar.gz",
     )
 
-    # Needed by fuzztest.
+    # Needed by fuzztest. Release 2024-03-30, current as of 2024-06-26
     http_archive(
         name = "net_zstd",
         build_file = "@com_google_riegeli//third_party:net_zstd.BUILD",
-        sha256 = "b6c537b53356a3af3ca3e621457751fa9a6ba96daf3aebb3526ae0f610863532",
-        strip_prefix = "zstd-1.4.5/lib",
-        urls = ["https://github.com/facebook/zstd/archive/v1.4.5.zip"],
+        sha256 = "30f35f71c1203369dc979ecde0400ffea93c27391bfd2ac5a9715d2173d92ff7",
+        strip_prefix = "zstd-1.5.6/lib",
+        urls = ["https://github.com/facebook/zstd/archive/v1.5.6.tar.gz"],
     )
 
-    # Needed by fuzztest.
+    # Needed by fuzztest. Release 2024-05-21, current as of 2024-06-26
     http_archive(
         name = "snappy",
+        sha256 = "736aeb64d86566d2236ddffa2865ee5d7a82d26c9016b36218fcc27ea4f09f86",
         build_file = "@com_google_riegeli//third_party:snappy.BUILD",
-        sha256 = "38b4aabf88eb480131ed45bfb89c19ca3e2a62daeb081bdf001cfb17ec4cd303",
-        strip_prefix = "snappy-1.1.8",
-        urls = ["https://github.com/google/snappy/archive/1.1.8.zip"],
+        strip_prefix = "snappy-1.2.1",
+        urls = ["https://github.com/google/snappy/archive/1.2.1.tar.gz"],
     )
 
-    # Needed by fuzztest.
+    # Needed by fuzztest. Release 2023-08-31, current as of 2024-06-26
     http_archive(
         name = "org_brotli",
-        sha256 = "84a9a68ada813a59db94d83ea10c54155f1d34399baf377842ff3ab9b3b3256e",
-        strip_prefix = "brotli-3914999fcc1fda92e750ef9190aa6db9bf7bdb07",
-        urls = ["https://github.com/google/brotli/archive/3914999fcc1fda92e750ef9190aa6db9bf7bdb07.zip"],
+        sha256 = "e720a6ca29428b803f4ad165371771f5398faba397edf6778837a18599ea13ff",
+        strip_prefix = "brotli-1.1.0",
+        urls = ["https://github.com/google/brotli/archive/refs/tags/v1.1.0.tar.gz"],
     )
 
-    # Needed by fuzztest.
+    # Needed by fuzztest. Commit from 2024-04-18, current as of 2024-06-26
     http_archive(
         name = "highwayhash",
         build_file = "@com_google_riegeli//third_party:highwayhash.BUILD",
-        sha256 = "cf891e024699c82aabce528a024adbe16e529f2b4e57f954455e0bf53efae585",
-        strip_prefix = "highwayhash-276dd7b4b6d330e4734b756e97ccfb1b69cc2e12",
-        urls = ["https://github.com/google/highwayhash/archive/276dd7b4b6d330e4734b756e97ccfb1b69cc2e12.zip"],
+        sha256 = "d564c621618ef734e0ae68545f59526e97dfe4912612f80b2b8b9b31b9bb02b5",
+        strip_prefix = "highwayhash-f8381f3331d9c56a9792f9b4a35f61c41108c39e",
+        urls = ["https://github.com/google/highwayhash/archive/f8381f3331d9c56a9792f9b4a35f61c41108c39e.tar.gz"],
     )
 
-    # Needed by or-tools.
-    http_archive(
-        name = "glpk",
-        build_file = "@com_google_ortools//bazel:glpk.BUILD.bazel",
-        sha256 = "4a1013eebb50f728fc601bdd833b0b2870333c3b3e5a816eeba921d95bec6f15",
-        url = "http://ftp.gnu.org/gnu/glpk/glpk-5.0.tar.gz",
-    )
-
-    # Needed by or-tools.
-    http_archive(
-        name = "scip",
-        build_file = "@com_google_ortools//bazel:scip.BUILD.bazel",
-        patches = ["@com_google_ortools//bazel:scip.patch"],
-        patch_args = ["-p1"],
-        sha256 = "b6daf54c37d02564b12fb32ec3bb7a105710eb0026adeafc602af4435fa94685",
-        strip_prefix = "scip-810",
-        url = "https://github.com/scipopt/scip/archive/refs/tags/v810.tar.gz",
-    )
-
-    http_archive(
-        name = "bliss",
-        build_file = "@com_google_ortools//bazel:bliss.BUILD.bazel",
-        patches = ["@com_google_ortools//bazel:bliss-0.73.patch"],
-        sha256 = "f57bf32804140cad58b1240b804e0dbd68f7e6bf67eba8e0c0fa3a62fd7f0f84",
-        url = "https://github.com/google/or-tools/releases/download/v9.0/bliss-0.73.zip",
-    )
-
-    # Released on 2023-11-28, current as of 2024-02-01.
-    # https://github.com/grpc/grpc/releases/tag/v1.60.0
-    # Can be updated to latest once https://github.com/grpc/grpc/issues/36132
-    # is fixed and made it into a grpc release.
-    # TODO(google/xls#1408) Once updated, fix related TODOs.
+    # Released 2024-06-07, current as of 2024-06-26.
     http_archive(
         name = "com_github_grpc_grpc",
-        urls = ["https://github.com/grpc/grpc/archive/v1.60.0.tar.gz"],
-        integrity = "sha256-Q3BouLd307M52pTTSY8dwgZCrJv6dttDq91SIYaxVCs=",
-        strip_prefix = "grpc-1.60.0",
+        urls = ["https://github.com/grpc/grpc/archive/v1.64.2.tar.gz"],
+        sha256 = "c682fc39baefc6e804d735e6b48141157b7213602cc66dbe0bf375b904d8b5f9",
+        strip_prefix = "grpc-1.64.2",
         repo_mapping = {
-            "@local_config_python": "@python39",
-            "@system_python": "@python39",
+            "@local_config_python": "@project_python",
+            "@system_python": "@project_python",
         },
     )
 
-    # Used by xlscc.
+    # Used by xlscc. Tagged 2024-02-16 (note: release is lagging tag), current as of 2024-06-26
     http_archive(
         name = "com_github_hlslibs_ac_types",
-        urls = ["https://github.com/hlslibs/ac_types/archive/57d89634cb5034a241754f8f5347803213dabfca.tar.gz"],
-        sha256 = "7ab5e2ee4c675ef6895fdd816c32349b3070dc8211b7d412242c66d0c6e8edca",
-        strip_prefix = "ac_types-57d89634cb5034a241754f8f5347803213dabfca",
+        urls = ["https://github.com/hlslibs/ac_types/archive/refs/tags/4.8.0.tar.gz"],
+        sha256 = "238197203f8c6254a1d6ac6884e89e6f4c060bffb7473d336df4a1fb53ba7fab",
+        strip_prefix = "ac_types-4.8.0",
         build_file = "//dependency_support/com_github_hlslibs_ac_types:bundled.BUILD.bazel",
     )
 
-    # Released 2023-10-18, current as of 2024-03-14
+    # Released 2024-04-25, current as of 2024-06-26
     http_archive(
         name = "platforms",
         urls = [
-            "https://mirror.bazel.build/github.com/bazelbuild/platforms/releases/download/0.0.8/platforms-0.0.8.tar.gz",
-            "https://github.com/bazelbuild/platforms/releases/download/0.0.8/platforms-0.0.8.tar.gz",
+            "https://mirror.bazel.build/github.com/bazelbuild/platforms/releases/download/0.0.10/platforms-0.0.10.tar.gz",
+            "https://github.com/bazelbuild/platforms/releases/download/0.0.10/platforms-0.0.10.tar.gz",
         ],
-        sha256 = "8150406605389ececb6da07cbcb509d5637a3ab9a24bc69b1101531367d89d74",
+        sha256 = "218efe8ee736d26a3572663b374a253c012b716d8af0c07e842e82f238a0a7ee",
     )
 
-    # Released 2024-02-22, current as of 2024-02-22.
-    # TODO(rigge): switch back to stable releases when or-tools cuts a release
-    # against abseil w/ VLOG.
-    ORTOOLS_COMMIT = "05aa100b904d23da218b6f41bfab9d20b930a3b4"
+    # Released 2024-05-08, current as of 2024-06-26.
+    ORTOOLS_VERSION = "9.10"
     http_archive(
         name = "com_google_ortools",
-        urls = ["https://github.com/google/or-tools/archive/{commit}.tar.gz".format(commit = ORTOOLS_COMMIT)],
-        sha256 = "f0db745dca2da71038f1dffe58319906842d449e4d7f55823495be159d40c7f0",
-        strip_prefix = "or-tools-" + ORTOOLS_COMMIT,
-        patch_args = ["-p1"],
-        # Removes undesired dependencies like Eigen, BLISS, SCIP
-        patches = [
-            "//dependency_support/com_google_ortools:0001-Fix-GLPK-Eigen-and-SCIP-deps.patch",
-            "//dependency_support/com_google_ortools:0002-Remove-duplicate-logtostderr-flag.patch",
-        ],
+        urls = ["https://github.com/google/or-tools/archive/refs/tags/v{tag}.tar.gz".format(tag = ORTOOLS_VERSION)],
+        sha256 = "e7c27a832f3595d4ae1d7e53edae595d0347db55c82c309c8f24227e675fd378",
+        strip_prefix = "or-tools-" + ORTOOLS_VERSION,
     )
 
-    # Released 2023-08-31, current as of 2024-03-14.
+    # Released 2024-05-23, current as of 2024-06-26.
     http_archive(
         name = "com_google_benchmark",
-        urls = ["https://github.com/google/benchmark/archive/refs/tags/v1.8.3.tar.gz"],
-        sha256 = "6bc180a57d23d4d9515519f92b0c83d61b05b5bab188961f36ac7b06b0d9e9ce",
-        strip_prefix = "benchmark-1.8.3",
+        urls = ["https://github.com/google/benchmark/archive/refs/tags/v1.8.4.tar.gz"],
+        sha256 = "3e7059b6b11fb1bbe28e33e02519398ca94c1818874ebed18e504dc6f709be45",
+        strip_prefix = "benchmark-1.8.4",
     )
 
     # Updated to head on 2024-03-14
@@ -337,7 +286,7 @@ def load_external_repositories():
         patches = ["//dependency_support/com_google_fuzztest:e317d5277e34948ae7048cb5e48309e0288e8df3.patch"],
     )
 
-    # Released 2024-01-24, current as of 2024-03-14
+    # Released 2024-01-24, current as of 2024-06-26
     http_archive(
         name = "rules_license",
         urls = [
@@ -354,17 +303,17 @@ def load_external_repositories():
         urls = ["https://github.com/grailbio/bazel-compilation-database/archive/940cedacdb8a1acbce42093bf67f3a5ca8b265f7.tar.gz"],
     )
 
-    # 2024-05-28
+    # Tagged 2024-06-19, current as of 2024-06-26
     http_archive(
         name = "verible",
-        sha256 = "a72b9e351f893ac62fac3c72227dc809e29460eb4ddac35e673d73627e9fab1f",
-        strip_prefix = "verible-0.0-3665-ga9394662",
-        urls = ["https://github.com/chipsalliance/verible/archive/refs/tags/v0.0-3665-ga9394662.tar.gz"],
+        sha256 = "8c5d13bdc4f4bc756b0f6d31b61cc8aba75dfcfcf22822244ac9c0ccb43db814",
+        strip_prefix = "verible-0.0-3704-g1d393d43",
+        urls = ["https://github.com/chipsalliance/verible/archive/refs/tags/v0.0-3704-g1d393d43.tar.gz"],
         patch_args = ["-p1"],
         patches = ["//dependency_support/verible:visibility.patch"],
     )
 
-    # Same as Verible as of 2024-05-28
+    # Used by Verible; current as of 2024-06-26
     http_archive(
         name = "jsonhpp",
         build_file = "@verible//bazel:jsonhpp.BUILD",
@@ -375,20 +324,9 @@ def load_external_repositories():
         ],
     )
 
-    # Version 1.4.7 released on 17.12.2020
-    # https://github.com/facebook/zstd/releases/tag/v1.4.7
-    # Updated 23.11.2023
-    http_archive(
-        name = "com_github_facebook_zstd",
-        sha256 = "192cbb1274a9672cbcceaf47b5c4e9e59691ca60a357f1d4a8b2dfa2c365d757",
-        strip_prefix = "zstd-1.4.7",
-        urls = ["https://github.com/facebook/zstd/releases/download/v1.4.7/zstd-1.4.7.tar.gz"],
-        build_file = "//dependency_support/com_github_facebook_zstd:bundled.BUILD.bazel",
-    )
-
-    # 2024-02-09
+    # Released 2024-06-03, current as of 2024-06-26
     http_archive(
         name = "rules_pkg",
-        urls = ["https://github.com/bazelbuild/rules_pkg/releases/download/0.10.1/rules_pkg-0.10.1.tar.gz"],
-        sha256 = "d250924a2ecc5176808fc4c25d5cf5e9e79e6346d79d5ab1c493e289e722d1d0",
+        urls = ["https://github.com/bazelbuild/rules_pkg/releases/download/1.0.0/rules_pkg-1.0.0.tar.gz"],
+        sha256 = "cad05f864a32799f6f9022891de91ac78f30e0fa07dc68abac92a628121b5b11",
     )

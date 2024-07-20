@@ -159,6 +159,11 @@ class Block : public FunctionBase {
   // to calling this method
   absl::Status RemoveInstantiation(Instantiation* instantiation);
 
+  // Replaces all uses of old_isnt with new_inst and removes old_inst. Both must
+  // be currently owned by this block.
+  absl::Status ReplaceInstantiationWith(Instantiation* old_inst,
+                                        Instantiation* new_inst);
+
   // Returns all instantiations owned by this block.
   absl::Span<Instantiation* const> GetInstantiations() const {
     return instantiation_vec_;
@@ -191,10 +196,16 @@ class Block : public FunctionBase {
   // Creates a clone of the block with the new name 'new_name'.
   // reg_name_map is a map from old register names to new ones. If a register
   // name is not present it is an identity mapping.
+  //
+  // If a block is present in 'block_instantiation_map' the corresponding block
+  // is used to provide an instantiation implementation. All instantiated blocks
+  // must be present if target_package is not null and not the existing block
+  // package.
   absl::StatusOr<Block*> Clone(
       std::string_view new_name, Package* target_package = nullptr,
-      const absl::flat_hash_map<std::string, std::string>& reg_name_map = {})
-      const;
+      const absl::flat_hash_map<std::string, std::string>& reg_name_map = {},
+      const absl::flat_hash_map<const Block*, Block*>& block_instantiation_map =
+          {}) const;
 
   std::string DumpIr() const override;
 

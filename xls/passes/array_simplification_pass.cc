@@ -20,6 +20,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
@@ -35,6 +36,7 @@
 #include "xls/ir/node.h"
 #include "xls/ir/node_util.h"
 #include "xls/ir/nodes.h"
+#include "xls/ir/op.h"
 #include "xls/ir/topo_sort.h"
 #include "xls/ir/type.h"
 #include "xls/ir/value.h"
@@ -294,45 +296,71 @@ absl::StatusOr<SimplifyResult> SimplifyArrayIndex(
   //     => select(p, array_index(A0, {idx}), array_index(A1, {idx}))
   //
   // This reduces the width of the resulting mux.
-  // TODO(meheff): generalize to arbitrary selects.
-  if (IsBinarySelect(array_index->array())) {
-    Select* select = array_index->array()->As<Select>();
-    if (select->get_case(0) == select->get_case(1)) {
-      VLOG(2) << absl::StrFormat(
-          "Replacing array-index of select with select of array-indexes (same "
-          "operand): %s",
-          array_index->ToString());
-      XLS_ASSIGN_OR_RETURN(ArrayIndex * new_array_index,
-                           array_index->ReplaceUsesWithNew<ArrayIndex>(
-                               select->get_case(0), array_index->indices()));
-      return SimplifyResult::Changed({new_array_index});
+  //
+  // Only perform this optimization if the array_index is the only user.
+  // Otherwise the array index(es) are duplicated which can outweigh the benefit
+  // of selecting the smaller element.
+  // TODO(meheff): Consider cases where selects with multiple users are still
+  // advantageous to transform.
+  if ((array_index->array()->Is<Select>() ||
+       array_index->array()->Is<PrioritySelect>()) &&
+      HasSingleUse(array_index->array())) {
+    VLOG(2) << absl::StrFormat(
+        "Replacing array-index of select with select of array-indexes: %s",
+        array_index->ToString());
+    absl::Span<Node* const> original_cases;
+    std::optional<Node*> original_default_value;
+    if (array_index->array()->Is<Select>()) {
+      Select* select = array_index->array()->As<Select>();
+      original_cases = select->cases();
+      original_default_value = select->default_value();
+    } else {
+      XLS_RET_CHECK(array_index->array()->Is<PrioritySelect>());
+      PrioritySelect* select = array_index->array()->As<PrioritySelect>();
+      original_cases = select->cases();
+      original_default_value = select->default_value();
     }
-    // Only perform this optimization if the array_index is the only
-    // user. Otherwise the array index(es) are duplicated which can outweigh the
-    // benefit of selecting the smaller element.
-    // TODO(meheff): Consider cases where selects with multiple users are still
-    // advantageous to transform.
-    if (select->users().size() == 1) {
-      VLOG(2) << absl::StrFormat(
-          "Replacing array-index of select with select of array-indexes: %s",
-          array_index->ToString());
+
+    std::vector<Node*> cases;
+    cases.reserve(original_cases.size());
+    for (Node* case_value : original_cases) {
       XLS_ASSIGN_OR_RETURN(
-          ArrayIndex * on_false_index,
+          ArrayIndex * case_array_index,
           array_index->function_base()->MakeNode<ArrayIndex>(
-              array_index->loc(), select->get_case(0), array_index->indices()));
-      XLS_ASSIGN_OR_RETURN(
-          ArrayIndex * on_true_index,
-          array_index->function_base()->MakeNode<ArrayIndex>(
-              array_index->loc(), select->get_case(1), array_index->indices()));
-      XLS_ASSIGN_OR_RETURN(
-          Select * new_select,
-          array_index->ReplaceUsesWithNew<Select>(
-              select->selector(),
-              /*cases=*/std::vector<Node*>({on_false_index, on_true_index}),
-              /*default=*/std::nullopt));
-      return SimplifyResult::Changed(
-          {new_select, on_false_index, on_true_index});
+              array_index->loc(), case_value, array_index->indices()));
+      cases.push_back(case_array_index);
     }
+
+    std::optional<Node*> default_value;
+    if (original_default_value.has_value()) {
+      XLS_ASSIGN_OR_RETURN(default_value,
+                           array_index->function_base()->MakeNode<ArrayIndex>(
+                               array_index->loc(), *original_default_value,
+                               array_index->indices()));
+    }
+
+    Node* new_select;
+    if (array_index->array()->Is<Select>()) {
+      XLS_ASSIGN_OR_RETURN(
+          new_select, array_index->ReplaceUsesWithNew<Select>(
+                          array_index->array()->As<Select>()->selector(), cases,
+                          default_value));
+    } else {
+      XLS_RET_CHECK(array_index->array()->Is<PrioritySelect>());
+      XLS_RET_CHECK(default_value.has_value());
+      XLS_ASSIGN_OR_RETURN(
+          new_select,
+          array_index->ReplaceUsesWithNew<PrioritySelect>(
+              array_index->array()->As<PrioritySelect>()->selector(), cases,
+              *default_value));
+    }
+
+    std::vector<Node*> changed = std::move(cases);
+    if (default_value.has_value()) {
+      changed.push_back(*default_value);
+    }
+    changed.push_back(new_select);
+    return SimplifyResult::Changed(changed);
   }
 
   // If this array index operation indexes into the output of an array update
@@ -842,9 +870,13 @@ absl::StatusOr<SimplifyResult> SimplifyArray(Array* array,
     VLOG(2) << absl::StrFormat("Replace array of array-indexes with array: %s",
                                array->ToString());
     if (common_index_prefix->empty()) {
+      VLOG(3) << absl::StrFormat("  Replacing with original array %s",
+                                 origin_array->ToString());
       XLS_RETURN_IF_ERROR(array->ReplaceUsesWith(origin_array));
       return SimplifyResult::Changed({origin_array});
     }
+    VLOG(3) << absl::StrFormat("  Replacing with index on origin array %s",
+                               origin_array->ToString());
     XLS_ASSIGN_OR_RETURN(ArrayIndex * array_index,
                          array->ReplaceUsesWithNew<ArrayIndex>(
                              origin_array, common_index_prefix.value()));
@@ -855,7 +887,7 @@ absl::StatusOr<SimplifyResult> SimplifyArray(Array* array,
 
 // Simplify the conditional updating of an array element of the following form:
 //
-//   Select(p, cases=[A, array_update(A, v {idx})])
+//   Select(p, cases=[A, array_update(A, v, {idx})])
 //
 // This pattern is replaced with:
 //
@@ -863,48 +895,139 @@ absl::StatusOr<SimplifyResult> SimplifyArray(Array* array,
 //
 // The advantage is the select (mux) is only selecting an array element rather
 // than the entire array.
-absl::StatusOr<SimplifyResult> SimplifyConditionalAssign(Select* select) {
-  XLS_RET_CHECK(IsBinarySelect(select));
-  bool update_on_true;
-  ArrayUpdate* array_update;
-  if (select->get_case(0)->Is<ArrayUpdate>() &&
-      select->get_case(0)->As<ArrayUpdate>()->array_to_update() ==
-          select->get_case(1)) {
-    array_update = select->get_case(0)->As<ArrayUpdate>();
-    update_on_true = false;
-  } else if (select->get_case(1)->Is<ArrayUpdate>() &&
-             select->get_case(1)->As<ArrayUpdate>()->array_to_update() ==
-                 select->get_case(0)) {
-    array_update = select->get_case(1)->As<ArrayUpdate>();
-    update_on_true = true;
+absl::StatusOr<SimplifyResult> SimplifyConditionalAssign(Node* select) {
+  absl::Span<Node* const> original_cases;
+  std::optional<Node*> original_default_value;
+  if (select->Is<Select>()) {
+    original_cases = select->As<Select>()->cases();
+    original_default_value = select->As<Select>()->default_value();
   } else {
+    XLS_RET_CHECK(select->Is<PrioritySelect>());
+    original_cases = select->As<PrioritySelect>()->cases();
+    original_default_value = select->As<PrioritySelect>()->default_value();
+  }
+
+  struct IdentityValue : std::monostate {};
+  Node* array_to_update = nullptr;
+  std::optional<absl::Span<Node* const>> idx = std::nullopt;
+  std::vector<std::variant<Node*, IdentityValue>> cases;
+  cases.reserve(original_cases.size());
+  std::optional<std::variant<Node*, IdentityValue>> default_case = std::nullopt;
+  auto extract_case =
+      [&](Node* sel_case) -> std::optional<std::variant<Node*, IdentityValue>> {
+    if (!sel_case->Is<ArrayUpdate>()) {
+      if (array_to_update == nullptr) {
+        array_to_update = sel_case;
+      } else if (array_to_update != sel_case) {
+        // Not just a select of array updates to the same array.
+        return std::nullopt;
+      }
+      return IdentityValue();
+    }
+
+    ArrayUpdate* update = sel_case->As<ArrayUpdate>();
+    if (!HasSingleUse(update)) {
+      // Multiple uses for the array update; we don't want to replace just one.
+      return std::nullopt;
+    }
+    if (array_to_update == nullptr) {
+      array_to_update = update->array_to_update();
+    } else if (array_to_update != update->array_to_update()) {
+      // Not just a select of array updates to the same array.
+      return std::nullopt;
+    }
+    if (idx == std::nullopt) {
+      idx = update->indices();
+    } else if (*idx != update->indices()) {
+      // Not just a select of array updates to the same index.
+      return std::nullopt;
+    }
+    return update->update_value();
+  };
+  for (Node* sel_case : original_cases) {
+    std::optional<std::variant<Node*, IdentityValue>> case_value =
+        extract_case(sel_case);
+    if (!case_value.has_value()) {
+      // Doesn't match the pattern; this simplification doesn't apply.
+      return SimplifyResult::Unchanged();
+    }
+    cases.push_back(*case_value);
+  }
+  if (original_default_value.has_value()) {
+    std::optional<std::variant<Node*, IdentityValue>> default_case_value =
+        extract_case(*original_default_value);
+    if (!default_case_value.has_value()) {
+      // Doesn't match the pattern; this simplification doesn't apply.
+      return SimplifyResult::Unchanged();
+    }
+    default_case = *default_case_value;
+  }
+  if (array_to_update == nullptr || !idx.has_value()) {
+    // Doesn't match the pattern; this simplification doesn't apply.
     return SimplifyResult::Unchanged();
   }
-  if (array_update->users().size() != 1) {
-    return SimplifyResult::Unchanged();
+
+  VLOG(2) << absl::StrFormat("Hoist select above array-update(s): %s",
+                             select->ToString());
+
+  std::vector<Node*> case_values;
+  std::optional<Node*> default_value;
+  std::optional<Node*> shared_original_value;
+  auto get_original_value = [&]() -> absl::StatusOr<Node*> {
+    if (!shared_original_value.has_value()) {
+      XLS_ASSIGN_OR_RETURN(shared_original_value,
+                           select->function_base()->MakeNode<ArrayIndex>(
+                               select->loc(), array_to_update, *idx));
+    }
+    return *shared_original_value;
+  };
+  for (std::variant<Node*, IdentityValue> c : cases) {
+    if (std::holds_alternative<Node*>(c)) {
+      case_values.push_back(std::get<Node*>(c));
+      continue;
+    }
+    XLS_RET_CHECK(std::holds_alternative<IdentityValue>(c));
+    XLS_ASSIGN_OR_RETURN(Node * original_value, get_original_value());
+    case_values.push_back(original_value);
+  }
+  if (default_case.has_value()) {
+    if (std::holds_alternative<Node*>(*default_case)) {
+      default_value = std::get<Node*>(*default_case);
+    } else {
+      XLS_RET_CHECK(std::holds_alternative<IdentityValue>(*default_case));
+      XLS_ASSIGN_OR_RETURN(Node * original_value, get_original_value());
+      default_value = original_value;
+    }
   }
 
-  VLOG(2) << absl::StrFormat("Hoist select above array-update: %s",
-                             array_update->ToString());
+  Node* selected_value;
+  if (select->Is<Select>()) {
+    XLS_ASSIGN_OR_RETURN(selected_value,
+                         select->function_base()->MakeNode<Select>(
+                             select->loc(), select->As<Select>()->selector(),
+                             /*cases=*/
+                             case_values,
+                             /*default_value=*/default_value));
+  } else {
+    XLS_RET_CHECK(select->Is<PrioritySelect>());
+    XLS_RET_CHECK(default_value.has_value());
+    XLS_ASSIGN_OR_RETURN(
+        selected_value,
+        select->function_base()->MakeNode<PrioritySelect>(
+            select->loc(), select->As<PrioritySelect>()->selector(),
+            /*cases=*/
+            case_values,
+            /*default_value=*/*default_value));
+  }
 
-  XLS_ASSIGN_OR_RETURN(ArrayIndex * original_value,
-                       select->function_base()->MakeNode<ArrayIndex>(
-                           array_update->loc(), array_update->array_to_update(),
-                           array_update->indices()));
-  XLS_ASSIGN_OR_RETURN(
-      Select * selected_value,
-      select->function_base()->MakeNode<Select>(
-          select->loc(), select->selector(),
-          /*cases=*/
-          std::vector<Node*>(
-              {update_on_true ? original_value : array_update->update_value(),
-               update_on_true ? array_update->update_value() : original_value}),
-          /*default_value=*/std::nullopt));
-
-  XLS_RETURN_IF_ERROR(array_update->ReplaceOperandNumber(1, selected_value));
-  XLS_RETURN_IF_ERROR(select->ReplaceUsesWith(array_update));
-  return SimplifyResult::Changed(
-      {selected_value, original_value, array_update});
+  XLS_ASSIGN_OR_RETURN(ArrayUpdate * overall_update,
+                       select->ReplaceUsesWithNew<ArrayUpdate>(
+                           array_to_update, selected_value, *idx));
+  if (shared_original_value.has_value()) {
+    return SimplifyResult::Changed(
+        {*shared_original_value, selected_value, overall_update});
+  }
+  return SimplifyResult::Changed({selected_value, overall_update});
 }
 
 // Simplify a select of arrays to an array of select.
@@ -912,15 +1035,34 @@ absl::StatusOr<SimplifyResult> SimplifyConditionalAssign(Select* select) {
 //   Sel(p, cases=[Array(), Array()]) => Array(Sel(p, ...), Sel(p, ...))
 //
 // The advantage is that hoisting the selects may be open opportunities for
-// further optimization.
-absl::StatusOr<SimplifyResult> SimplifySelectOfArrays(Select* select) {
-  for (Node* sel_case : select->cases()) {
+// further optimization.  On the other hand, this can replicate the select
+// logic, which can be expensive in area, so we limit by the number of cases.
+absl::StatusOr<SimplifyResult> SimplifySelectOfArrays(Node* select) {
+  absl::Span<Node* const> original_cases;
+  std::optional<Node*> original_default_value;
+  if (select->Is<Select>()) {
+    original_cases = select->As<Select>()->cases();
+    original_default_value = select->As<Select>()->default_value();
+  } else {
+    XLS_RET_CHECK(select->Is<PrioritySelect>());
+    original_cases = select->As<PrioritySelect>()->cases();
+    original_default_value = select->As<PrioritySelect>()->default_value();
+  }
+
+  for (Node* sel_case : original_cases) {
     if (!sel_case->Is<Array>()) {
       return SimplifyResult::Unchanged();
     }
   }
-  // TODO(meheff): Handle default.
-  if (select->default_value().has_value()) {
+  if (original_default_value.has_value() &&
+      !original_default_value.value()->Is<Array>()) {
+    return SimplifyResult::Unchanged();
+  }
+
+  constexpr int64_t kMaxSelectCopies = 2;
+  const int64_t num_cases =
+      original_cases.size() + (original_default_value.has_value() ? 1 : 0);
+  if (num_cases > kMaxSelectCopies) {
     return SimplifyResult::Unchanged();
   }
 
@@ -931,13 +1073,29 @@ absl::StatusOr<SimplifyResult> SimplifySelectOfArrays(Select* select) {
   std::vector<Node*> selected_elements;
   for (int64_t i = 0; i < array_type->size(); ++i) {
     std::vector<Node*> elements;
-    for (Node* sel_case : select->cases()) {
+    std::optional<Node*> default_element;
+    for (Node* sel_case : original_cases) {
       elements.push_back(sel_case->operand(i));
     }
-    XLS_ASSIGN_OR_RETURN(Node * selected_element,
-                         select->function_base()->MakeNode<Select>(
-                             select->loc(), select->selector(),
-                             /*cases=*/elements, /*default=*/std::nullopt));
+    if (original_default_value.has_value()) {
+      default_element = original_default_value.value()->operand(i);
+    }
+    Node* selected_element;
+    if (select->Is<Select>()) {
+      XLS_ASSIGN_OR_RETURN(
+          selected_element,
+          select->function_base()->MakeNode<Select>(
+              select->loc(), select->As<Select>()->selector(),
+              /*cases=*/elements, /*default=*/default_element));
+    } else {
+      XLS_RET_CHECK(select->Is<PrioritySelect>());
+      XLS_RET_CHECK(default_element.has_value());
+      XLS_ASSIGN_OR_RETURN(
+          selected_element,
+          select->function_base()->MakeNode<PrioritySelect>(
+              select->loc(), select->As<PrioritySelect>()->selector(),
+              /*cases=*/elements, /*default=*/*default_element));
+    }
     selected_elements.push_back(selected_element);
   }
   XLS_ASSIGN_OR_RETURN(Array * new_array,
@@ -949,12 +1107,11 @@ absl::StatusOr<SimplifyResult> SimplifySelectOfArrays(Select* select) {
   return SimplifyResult::Changed(selected_elements);
 }
 
-// Simplify various forms of a binary select of array-typed values.
-absl::StatusOr<SimplifyResult> SimplifySelect(Select* select,
+// Simplify various forms of a select of array-typed values.
+absl::StatusOr<SimplifyResult> SimplifySelect(Node* select,
                                               const QueryEngine& query_engine) {
-  if (!IsBinarySelect(select)) {
-    return SimplifyResult::Unchanged();
-  }
+  XLS_RET_CHECK(select->Is<Select>() || select->Is<PrioritySelect>());
+
   XLS_ASSIGN_OR_RETURN(SimplifyResult conditional_assign_result,
                        SimplifyConditionalAssign(select));
   if (conditional_assign_result.changed) {
@@ -967,41 +1124,7 @@ absl::StatusOr<SimplifyResult> SimplifySelect(Select* select,
     return select_of_arrays_result;
   }
 
-  // Simplify a select between two array update operations which update the same
-  // index of the same array:
-  //
-  //   Sel(p, {ArrayUpdate(A, v0, {idx}), ArrayUpdate(A, v1, {idx})})
-  //
-  //     => ArrayUpdate(A, Select(p, {v0, v1}), {idx})
-  if (!select->get_case(0)->Is<ArrayUpdate>() ||
-      !select->get_case(1)->Is<ArrayUpdate>()) {
-    return SimplifyResult::Unchanged();
-  }
-  ArrayUpdate* false_update = select->get_case(0)->As<ArrayUpdate>();
-  ArrayUpdate* true_update = select->get_case(1)->As<ArrayUpdate>();
-  if (false_update->array_to_update() != true_update->array_to_update() ||
-      !IndicesAreDefinitelyEqual(false_update->indices(),
-                                 true_update->indices(), query_engine)) {
-    return SimplifyResult::Unchanged();
-  }
-
-  VLOG(2) << absl::StrFormat(
-      "Replace select of array updates with single array update: %s",
-      select->ToString());
-
-  XLS_ASSIGN_OR_RETURN(Select * selected_value,
-                       select->function_base()->MakeNode<Select>(
-                           select->loc(), select->selector(),
-                           /*cases=*/
-                           std::vector<Node*>({false_update->update_value(),
-                                               true_update->update_value()}),
-                           /*default_value=*/std::nullopt));
-
-  XLS_ASSIGN_OR_RETURN(ArrayUpdate * new_array_update,
-                       select->ReplaceUsesWithNew<ArrayUpdate>(
-                           false_update->array_to_update(), selected_value,
-                           false_update->indices()));
-  return SimplifyResult::Changed({selected_value, new_array_update});
+  return SimplifyResult::Unchanged();
 }
 
 }  // namespace
@@ -1056,14 +1179,15 @@ absl::StatusOr<bool> ArraySimplificationPass::RunOnFunctionBaseInternal(
     return n;
   };
 
-  // Seed the worklist with all Array, ArrayIndex, ArrayUpdate, and Select
-  // operations. Inserting them in a topo sort has a dramatic effect on compile
-  // time due to interactions between the optimization which replaces
-  // array-indexes of select with selects of array-indexes, and other
+  // Seed the worklist with all Array, ArrayIndex, ArrayUpdate, Select, and
+  // PrioritySelect operations. Inserting them in a topo sort has a dramatic
+  // effect on compile time due to interactions between the optimization which
+  // replaces array-indexes of select with selects of array-indexes, and other
   // optimizations.
   for (Node* node : TopoSort(func)) {
-    if (!node->IsDead() && (node->Is<ArrayIndex>() || node->Is<ArrayUpdate>() ||
-                            node->Is<Array>() || node->Is<Select>())) {
+    if (!node->IsDead() &&
+        node->OpIn({Op::kArray, Op::kArrayIndex, Op::kArrayUpdate, Op::kSel,
+                    Op::kPrioritySel})) {
       add_to_worklist(node, false);
     }
   }
@@ -1086,9 +1210,8 @@ absl::StatusOr<bool> ArraySimplificationPass::RunOnFunctionBaseInternal(
     } else if (node->Is<Array>()) {
       XLS_ASSIGN_OR_RETURN(result,
                            SimplifyArray(node->As<Array>(), query_engine));
-    } else if (node->Is<Select>()) {
-      XLS_ASSIGN_OR_RETURN(result,
-                           SimplifySelect(node->As<Select>(), query_engine));
+    } else if (node->Is<Select>() || node->Is<PrioritySelect>()) {
+      XLS_ASSIGN_OR_RETURN(result, SimplifySelect(node, query_engine));
     }
 
     // Add newly changed nodes to the worklist.

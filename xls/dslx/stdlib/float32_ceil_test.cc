@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Random-sampling test for the DSLX 32 to 64 bit floating-point upcast.
+// Random-sampling test for the DSLX 32 bit floating-point ceiling.
 #include <cmath>
 #include <cstdint>
 
