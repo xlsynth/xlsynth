@@ -22,6 +22,7 @@ build --copt "-D_HAS_AUTO_PTR_ETC=0"   --host_copt "-D_HAS_AUTO_PTR_ETC=0"
 # Disable a couple of warnings we're not interested in.
 build --copt "-Wno-sign-compare"       --host_copt "-Wno-sign-compare"
 build --copt "-Wno-comment"            --host_copt "-Wno-comment"
+build --copt "-Wno-deprecated-declarations" --host_copt "-Wno-deprecated-declarations"
 
 # Use absl in googletest to work around
 # https://github.com/google/googletest/issues/4383
