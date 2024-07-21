@@ -29,7 +29,7 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        bazelisk build -c opt //xls/public:libxls.dylib //xls/public:c_api
+        bazelisk build -c opt //xls/public:libxls.dylib //xls/public:c_api //xls/dslx:interpreter_main
 
     - name: Create artifact directory
       run: mkdir -p osx-artifacts
@@ -76,15 +76,16 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main
 
     - name: Create artifact directory
       run: mkdir -p ubuntu2004-artifacts
 
     - name: Copy Bazel target to ubuntu2004-artifacts
       run: |
-        cp -r bazel-bin/xls/public/libxls.so ubuntu2004-artifacts/libxls-ubuntu22.04.so
+        cp -r bazel-bin/xls/public/libxls.so ubuntu2004-artifacts/libxls-ubuntu20.04.so
         cp -r bazel-bin/xls/public/libc_api.a ubuntu2004-artifacts/libxls-ubuntu20.04.a
+        cp -r bazel-bin/xls/dslx/interpreter_main ubuntu2004-artifacts/interpreter_main-ubuntu20.04
 
     - name: Tarball stdlib files to ubuntu2004-artifacts
       run: tar -czvvf ubuntu2004-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
@@ -128,7 +129,7 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main
 
     - name: Create artifact directory
       run: mkdir -p ubuntu2204-artifacts
@@ -137,6 +138,7 @@ jobs:
       run: |
         cp -r bazel-bin/xls/public/libxls.so ubuntu2204-artifacts/libxls-ubuntu22.04.so
         cp -r bazel-bin/xls/public/libc_api.a ubuntu2204-artifacts/libxls-ubuntu22.04.a
+        cp -r bazel-bin/xls/dslx/interpreter_main ubuntu2204-artifacts/interpreter_main-ubuntu22.04
 
     - name: Tarball stdlib files to ubuntu2204-artifacts
       run: tar -czvvf ubuntu2204-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
@@ -194,4 +196,4 @@ jobs:
         TAG_NAME: ${{ env.TAG_NAME }}
       run: |
         export GH_TOKEN=${{ secrets.GITHUB_TOKEN }}
-        gh release create "$TAG_NAME" osx-artifacts/libxls.dylib ubuntu2004-artifacts/dslx_stdlib.tar.gz ubuntu2004-artifacts/libxls-ubuntu20.04.so ubuntu2204-artifacts/libxls-ubuntu22.04.so --title "Release $TAG_NAME" --notes "Automated release of $TAG_NAME"
+        gh release create "$TAG_NAME" osx-artifacts/libxls.dylib ubuntu2004-artifacts/dslx_stdlib.tar.gz ubuntu2004-artifacts/libxls-ubuntu20.04.so ubuntu2004-artifacts/interpreter_main-ubuntu20.04 ubuntu2204-artifacts/libxls-ubuntu22.04.so ubuntu2204-artifacts/interpreter_main-ubuntu22.04 --title "Release $TAG_NAME" --notes "Automated release of $TAG_NAME"
