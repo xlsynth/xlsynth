@@ -62,21 +62,21 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-bazel-
 
-    - name: Install Clang-17
+    - name: Install Clang-18
       run: |
         sudo apt-get update
         sudo apt-get install -y wget gnupg
         wget https://apt.llvm.org/llvm.sh
         chmod +x llvm.sh
-        sudo ./llvm.sh 17
-        sudo apt-get install -y clang-17
+        sudo ./llvm.sh 18
+        sudo apt-get install -y clang-18
 
     - name: Note Clang version
-      run: clang-17 --version
+      run: clang-18 --version
 
     - name: Build Bazel target
       run: |
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main
+        CC=clang-18 CXX=clang++-18 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main
 
     - name: Create artifact directory
       run: mkdir -p ubuntu2004-artifacts
@@ -115,21 +115,21 @@ jobs:
           ${{ runner.os }}-bazel-
 
 
-    - name: Install Clang-17
+    - name: Install Clang-18
       run: |
         sudo apt-get update
         sudo apt-get install -y wget gnupg
         wget https://apt.llvm.org/llvm.sh
         chmod +x llvm.sh
-        sudo ./llvm.sh 17
-        sudo apt-get install -y clang-17
+        sudo ./llvm.sh 18
+        sudo apt-get install -y clang-18
 
     - name: Note Clang version
-      run: clang-17 --version
+      run: clang-18 --version
 
     - name: Build Bazel target
       run: |
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main
+        CC=clang-18 CXX=clang++-18 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main
 
     - name: Create artifact directory
       run: mkdir -p ubuntu2204-artifacts
