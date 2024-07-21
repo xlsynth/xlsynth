@@ -9,6 +9,9 @@ build --action_env=RULES_PYTHON_ENABLE_PYSTAR=0
 build --cxxopt "-std=c++20"            --host_cxxopt "-std=c++20"
 build --action_env=BAZEL_CXXOPTS=-std=c++20
 
+# google/xls development assumes libc++
+build --cxxopt="-stdlib=libc++" --linkopt="-stdlib=libc++"
+
 # Depending on the installation, clang or clang-tidy need to be told that
 # a c++ file is, indeed, containing c++ (bazel just invokes clang, not clang++)
 build --cxxopt "-xc++"                 --host_cxxopt "-xc++"
