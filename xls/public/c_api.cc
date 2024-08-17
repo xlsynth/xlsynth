@@ -208,6 +208,9 @@ void xls_package_free(struct xls_package* p) {
 }
 
 void xls_c_str_free(char* c_str) {
+  if (c_str == nullptr) {
+    return;
+  }
   free(c_str);
 }
 
