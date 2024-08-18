@@ -29,7 +29,12 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        bazelisk build -c opt //xls/public:libxls.dylib //xls/public:c_api //xls/dslx:interpreter_main
+        bazelisk build -c opt --macos_cpus=x86_64,arm64 //xls/public:libxls.dylib //xls/public:c_api //xls/dslx:interpreter_main
+
+    - name: Verify universal binaries
+      run: |
+        lipo -info bazel-bin/xls/public/libxls.dylib
+        lipo -info bazel-bin/xls/public/libc_api.a
 
     - name: Create artifact directory
       run: mkdir -p osx-artifacts
