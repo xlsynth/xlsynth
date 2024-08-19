@@ -27,11 +27,28 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-bazel-
 
+    - name: Build for arm64
+      run: |
+        wget -q https://github.com/bazelbuild/bazel/releases/download/7.3.1rc2/bazel-7.3.1rc2-darwin-arm64
+        mv bazel-7.3.1rc2-darwin-arm64 bazel-arm64
+        chmod +x bazel-arm64
+        ./bazel-arm64 info
+        ./bazel-arm64 build -c opt --host_cpu=darwin_arm64 //xls/public:libxls.dylib
+
+    - name: Verify arm64 binaries
+      run: |
+        lipo -info bazel-bin/xls/public/libxls.dylib
+
+    - name: Collect arm64 artifacts
+      run: |
+        cp bazel-bin/xls/public/libxls.dylib osx-artifacts/libxls-arm64.dylib
+
     - name: Build for x86_64
       run: |
         wget -q https://github.com/bazelbuild/bazel/releases/download/7.3.1rc2/bazel-7.3.1rc2-darwin-x86_64
         mv bazel-7.3.1rc2-darwin-x86_64 bazel-x86_64
         chmod +x bazel-x86_64
+        ./bazel-x86_64 info
         ./bazel-x86_64 build -c opt //xls/public:libxls.dylib
 
     - name: Create artifact directory
@@ -44,21 +61,6 @@ jobs:
     - name: Collect x86_64 artifacts
       run: |
         cp bazel-bin/xls/public/libxls.dylib osx-artifacts/libxls-x64.dylib
-
-    - name: Build for arm64
-      run: |
-        wget -q https://github.com/bazelbuild/bazel/releases/download/7.3.1rc2/bazel-7.3.1rc2-darwin-arm64
-        mv bazel-7.3.1rc2-darwin-arm64 bazel-arm64
-        chmod +x bazel-arm64
-        ./bazel-arm64 build -c opt //xls/public:libxls.dylib
-
-    - name: Verify arm64 binaries
-      run: |
-        lipo -info bazel-bin/xls/public/libxls.dylib
-
-    - name: Collect arm64 artifacts
-      run: |
-        cp bazel-bin/xls/public/libxls.dylib osx-artifacts/libxls-arm64.dylib
 
     - name: Make fat library
       run: |
