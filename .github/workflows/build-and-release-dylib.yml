@@ -29,10 +29,10 @@ jobs:
 
     - name: Build for x86_64
       run: |
-        wget https://github.com/bazelbuild/bazel/releases/download/7.3.1rc2/bazel-7.3.1rc2-darwin-x86_64
+        wget -q https://github.com/bazelbuild/bazel/releases/download/7.3.1rc2/bazel-7.3.1rc2-darwin-x86_64
         mv bazel-7.3.1rc2-darwin-x86_64 bazel-x86_64
         chmod +x bazel-x86_64
-        bazel-x86_64 build -c opt //xls/public:libxls.dylib
+        ./bazel-x86_64 build -c opt //xls/public:libxls.dylib
 
     - name: Create artifact directory
       run: mkdir -p osx-artifacts
@@ -47,10 +47,10 @@ jobs:
 
     - name: Build for arm64
       run: |
-        wget https://github.com/bazelbuild/bazel/releases/download/7.3.1rc2/bazel-7.3.1rc2-darwin-arm64
+        wget -q https://github.com/bazelbuild/bazel/releases/download/7.3.1rc2/bazel-7.3.1rc2-darwin-arm64
         mv bazel-7.3.1rc2-darwin-arm64 bazel-arm64
         chmod +x bazel-arm64
-        bazel-arm64 build -c opt //xls/public:libxls.dylib
+        ./bazel-arm64 build -c opt //xls/public:libxls.dylib
 
     - name: Verify arm64 binaries
       run: |
