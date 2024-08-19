@@ -27,6 +27,9 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-bazel-
 
+    - name: Create artifact directory
+      run: mkdir -p osx-artifacts
+
     - name: Build for arm64
       run: |
         wget -q https://github.com/bazelbuild/bazel/releases/download/7.3.1rc2/bazel-7.3.1rc2-darwin-arm64
@@ -50,9 +53,6 @@ jobs:
         chmod +x bazel-x86_64
         ./bazel-x86_64 info
         ./bazel-x86_64 build -c opt //xls/public:libxls.dylib
-
-    - name: Create artifact directory
-      run: mkdir -p osx-artifacts
 
     - name: Verify x86_64 binaries
       run: |
