@@ -9,7 +9,7 @@ permissions:
   contents: write  # Ensure the token has write permission for contents
 
 jobs:
-  build-osx:
+  build-osx-arm64:
     runs-on: macos-latest
 
     steps:
@@ -28,7 +28,7 @@ jobs:
           ${{ runner.os }}-bazel-
 
     - name: Create artifact directory
-      run: mkdir -p osx-artifacts
+      run: mkdir -p osx-artifacts-arm64
 
     - name: Build for arm64
       run: |
@@ -44,7 +44,34 @@ jobs:
 
     - name: Collect arm64 artifacts
       run: |
-        cp bazel-bin/xls/public/libxls.dylib osx-artifacts/libxls-arm64.dylib
+        cp bazel-bin/xls/public/libxls.dylib osx-artifacts-arm64/libxls-arm64.dylib
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v2
+      with:
+        name: osx-artifacts-arm64
+        path: osx-artifacts-arm64/
+
+  build-osx-x64:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Cache Bazel output
+      uses: actions/cache@v2
+      id: cache-bazel
+      with:
+        path: |
+          ~/.cache/bazel
+          bazel-out
+        key: ${{ runner.os }}-bazel-${{ hashFiles('**/BUILD') }}
+        restore-keys: |
+          ${{ runner.os }}-bazel-
+
+    - name: Create artifact directory
+      run: mkdir -p osx-artifacts-x64
 
     - name: Build for x86_64
       run: |
@@ -60,17 +87,13 @@ jobs:
 
     - name: Collect x86_64 artifacts
       run: |
-        cp bazel-bin/xls/public/libxls.dylib osx-artifacts/libxls-x64.dylib
-
-    - name: Make fat library
-      run: |
-        lipo -create -output osx-artifacts/libxls.dylib osx-artifacts/libxls-arm64.dylib osx-artifacts/libxls-x64.dylib
+        cp bazel-bin/xls/public/libxls.dylib osx-artifacts-x64/libxls-x64.dylib
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v2
       with:
-        name: osx-artifacts
-        path: osx-artifacts/
+        name: osx-artifacts-x64
+        path: osx-artifacts-x64/
 
   build-ubuntu2004:
     runs-on: ubuntu-20.04
@@ -176,7 +199,8 @@ jobs:
 
   release:
     needs:
-      - build-osx
+      - build-osx-arm64
+      - build-osx-x64
       - build-ubuntu2004
       - build-ubuntu2204
     runs-on: ubuntu-latest
@@ -184,11 +208,17 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v2
 
-    - name: Download osx-artifacts
+    - name: Download osx-artifacts-arm64
       uses: actions/download-artifact@v2
       with:
-        name: osx-artifacts
-        path: osx-artifacts
+        name: osx-artifacts-arm64
+        path: osx-artifacts-arm64
+
+    - name: Download osx-artifacts-x64
+      uses: actions/download-artifact@v2
+      with:
+        name: osx-artifacts-x64
+        path: osx-artifacts-x64
 
     - name: Download ubuntu2004-artifacts
       uses: actions/download-artifact@v2
@@ -221,4 +251,4 @@ jobs:
         TAG_NAME: ${{ env.TAG_NAME }}
       run: |
         export GH_TOKEN=${{ secrets.GITHUB_TOKEN }}
-        gh release create "$TAG_NAME" osx-artifacts/libxls.dylib osx-artifacts/libxls-arm64.dylib osx-artifacts/libxls-x64.dylib ubuntu2004-artifacts/dslx_stdlib.tar.gz ubuntu2004-artifacts/libxls-ubuntu20.04.so ubuntu2004-artifacts/interpreter_main-ubuntu20.04 ubuntu2204-artifacts/libxls-ubuntu22.04.so ubuntu2204-artifacts/interpreter_main-ubuntu22.04 --title "Release $TAG_NAME" --notes "Automated release of $TAG_NAME"
+        gh release create "$TAG_NAME" osx-artifacts-arm64/libxls-arm64.dylib osx-artifacts-x64/libxls-x64.dylib ubuntu2004-artifacts/dslx_stdlib.tar.gz ubuntu2004-artifacts/libxls-ubuntu20.04.so ubuntu2004-artifacts/interpreter_main-ubuntu20.04 ubuntu2204-artifacts/libxls-ubuntu22.04.so ubuntu2204-artifacts/interpreter_main-ubuntu22.04 --title "Release $TAG_NAME" --notes "Automated release of $TAG_NAME"
