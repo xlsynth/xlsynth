@@ -145,6 +145,7 @@ void xls_package_free(struct xls_package* p);
 // This function is primarily useful when the underlying allocator may be
 // different between the caller and the XLS library (otherwise the caller could
 // just call `free` directly).
+XLS_DLL_EXPORT
 void xls_c_str_free(char* c_str);
 
 // Returns a string representation of the given IR package `p`.
