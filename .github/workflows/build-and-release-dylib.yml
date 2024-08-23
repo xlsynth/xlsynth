@@ -36,7 +36,7 @@ jobs:
         mv bazel-7.3.1rc2-darwin-arm64 bazel-arm64
         chmod +x bazel-arm64
         ./bazel-arm64 info
-        ./bazel-arm64 build -c opt --host_cpu=darwin_arm64 //xls/public:libxls.dylib
+        ./bazel-arm64 build -c opt --host_cpu=darwin_arm64 //xls/public:libxls.dylib //xls/dslx:interpreter_main
 
     - name: Verify arm64 binaries
       run: |
@@ -45,6 +45,7 @@ jobs:
     - name: Collect arm64 artifacts
       run: |
         cp bazel-bin/xls/public/libxls.dylib osx-artifacts-arm64/libxls-arm64.dylib
+        cp bazel-bin/xls/dslx/interpreter_main osx-artifacts-arm64/dslx_interpreter_main-arm64
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v2
@@ -79,7 +80,7 @@ jobs:
         mv bazel-7.3.1rc2-darwin-x86_64 bazel-x86_64
         chmod +x bazel-x86_64
         ./bazel-x86_64 info
-        ./bazel-x86_64 build -c opt //xls/public:libxls.dylib
+        ./bazel-x86_64 build -c opt //xls/public:libxls.dylib //xls/dslx:interpreter_main
 
     - name: Verify x86_64 binaries
       run: |
@@ -88,6 +89,7 @@ jobs:
     - name: Collect x86_64 artifacts
       run: |
         cp bazel-bin/xls/public/libxls.dylib osx-artifacts-x64/libxls-x64.dylib
+        cp bazel-bin/xls/dslx/interpreter_main osx-artifacts-x64/dslx_interpreter_main-x64
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v2
@@ -134,7 +136,7 @@ jobs:
     - name: Copy Bazel target to ubuntu2004-artifacts
       run: |
         cp -r bazel-bin/xls/public/libxls.so ubuntu2004-artifacts/libxls-ubuntu20.04.so
-        cp -r bazel-bin/xls/dslx/interpreter_main ubuntu2004-artifacts/interpreter_main-ubuntu20.04
+        cp -r bazel-bin/xls/dslx/interpreter_main ubuntu2004-artifacts/dslx_interpreter_main-ubuntu20.04
 
     - name: Tarball stdlib files to ubuntu2004-artifacts
       run: tar -czvvf ubuntu2004-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
@@ -186,7 +188,7 @@ jobs:
     - name: Copy Bazel target to ubuntu2204-artifacts
       run: |
         cp -r bazel-bin/xls/public/libxls.so ubuntu2204-artifacts/libxls-ubuntu22.04.so
-        cp -r bazel-bin/xls/dslx/interpreter_main ubuntu2204-artifacts/interpreter_main-ubuntu22.04
+        cp -r bazel-bin/xls/dslx/interpreter_main ubuntu2204-artifacts/dslx_interpreter_main-ubuntu22.04
 
     - name: Tarball stdlib files to ubuntu2204-artifacts
       run: tar -czvvf ubuntu2204-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
@@ -251,4 +253,15 @@ jobs:
         TAG_NAME: ${{ env.TAG_NAME }}
       run: |
         export GH_TOKEN=${{ secrets.GITHUB_TOKEN }}
-        gh release create "$TAG_NAME" osx-artifacts-arm64/libxls-arm64.dylib osx-artifacts-x64/libxls-x64.dylib ubuntu2004-artifacts/dslx_stdlib.tar.gz ubuntu2004-artifacts/libxls-ubuntu20.04.so ubuntu2004-artifacts/interpreter_main-ubuntu20.04 ubuntu2204-artifacts/libxls-ubuntu22.04.so ubuntu2204-artifacts/interpreter_main-ubuntu22.04 --title "Release $TAG_NAME" --notes "Automated release of $TAG_NAME"
+        gh release create "$TAG_NAME" \
+          osx-artifacts-arm64/libxls-arm64.dylib \
+          osx-artifacts-arm64/dslx_interpreter_main-arm64 \
+          osx-artifacts-x64/libxls-x64.dylib \
+          osx-artifacts-x64/dslx_interpreter_main-x64 \
+          ubuntu2004-artifacts/dslx_stdlib.tar.gz \
+          ubuntu2004-artifacts/libxls-ubuntu20.04.so \
+          ubuntu2004-artifacts/dslx_interpreter_main-ubuntu20.04 \
+          ubuntu2204-artifacts/libxls-ubuntu22.04.so \
+          ubuntu2204-artifacts/dslx_interpreter_main-ubuntu22.04 \
+          --title "Release $TAG_NAME" \
+          --notes "Automated release of $TAG_NAME"
