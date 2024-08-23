@@ -1167,10 +1167,10 @@ def _xls_ir_cc_library_impl(ctx):
     ctx.actions.run_shell(
         inputs = [unformatted_header_file],
         outputs = [header_file],
-        tools = [ctx.executable._clang_format],
+        #tools = [ctx.executable._clang_format],
         progress_message = "Formatting %s" % header_file.short_path,
-        command = "{clang_format} {unformatted} > {formatted}".format(
-            clang_format = ctx.executable._clang_format.path,
+        command = "cat {unformatted} > {formatted}".format(
+            #clang_format = ctx.executable._clang_format.path,
             unformatted = unformatted_header_file.path,
             formatted = header_file.path,
         ),
@@ -1181,10 +1181,10 @@ def _xls_ir_cc_library_impl(ctx):
     ctx.actions.run_shell(
         inputs = [unformatted_source_file],
         outputs = [source_file],
-        tools = [ctx.executable._clang_format],
+        #tools = [ctx.executable._clang_format],
         progress_message = "Formatting %s" % source_file.short_path,
-        command = "{clang_format} {unformatted} > {formatted}".format(
-            clang_format = ctx.executable._clang_format.path,
+        command = "cat {unformatted} > {formatted}".format(
+            #clang_format = ctx.executable._clang_format.path,
             unformatted = unformatted_source_file.path,
             formatted = source_file.path,
         ),
