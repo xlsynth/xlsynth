@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - release-dylib-workflow
+      - cdleary/release-dylib-workflow
     paths:
       - .github/workflows/build-rocky8.yml  # Only trigger on changes to this specific file
 
