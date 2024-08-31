@@ -44,18 +44,23 @@ jobs:
     - name: Note Clang version
       run: clang-17 --version
 
+    - name: Install build essentials
+      run: |
+        dnf groupinstall -y "Development Tools"
+        dnf install libstdc++-devel
+
     - name: Install Python3
       run: |
         dnf install -y epel-release
         # Provides newer versions of Python.
         dnf install -y https://repo.ius.io/ius-release-el8.rpm
         dnf install -y python310
-	# Set Python 3.10 as the default python3
-	sudo alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
-	# Automatically set python3 to point to Python 3.10
-	sudo alternatives --set python3 /usr/bin/python3.10
-	# Verify the Python version
-	python3 --version
+        # Set Python 3.10 as the default python3
+        sudo alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
+        # Automatically set python3 to point to Python 3.10
+        sudo alternatives --set python3 /usr/bin/python3.10
+        # Verify the Python version
+        python3 --version
 
     - name: Build Bazel target
       run: |
