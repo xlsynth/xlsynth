@@ -1,4 +1,7 @@
 # For experimenting with the Rocky8 linux build.
+#
+# We can alter this file to trigger the workflow, note that we can't get the UI
+# element to manually trigger since it lives on a non-default branch.
 
 name: Rocky8 Build
 
