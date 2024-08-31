@@ -4,6 +4,11 @@ name: Rocky8 Build
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - release-dylib-workflow
+    paths:
+      - .github/workflows/build-rocky8.yml  # Only trigger on changes to this specific file
 
 jobs:
   build-rocky8:
