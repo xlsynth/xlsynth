@@ -1,0 +1,42 @@
+# For experimenting with the Rocky8 linux build.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-rocky8:
+    runs-on: rockylinux:8
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Cache Bazel output
+      uses: actions/cache@v2
+      id: cache-bazel
+      with:
+        path: |
+          ~/.cache/bazel
+          bazel-out
+        key: ${{ runner.os }}-bazel-${{ hashFiles('**/BUILD') }}
+        restore-keys: |
+          ${{ runner.os }}-bazel-
+
+    - name: Install bazelisk
+      run: |
+        sudo dnf install -y curl unzip
+        curl -Lo bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
+        chmod +x bazelisk
+        sudo mv bazelisk /usr/local/bin/
+        bazelisk version
+
+    - name: Install Clang-17
+      run: |
+        sudo dnf install -y llvm-toolset
+
+    - name: Note Clang version
+      run: clang-17 --version
+
+    - name: Build Bazel target
+      run: |
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls
+

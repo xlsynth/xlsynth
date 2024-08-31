@@ -99,6 +99,57 @@ jobs:
         name: osx-artifacts-x64
         path: osx-artifacts-x64/
 
+  build-rocky8:
+    runs-on: rockylinux:8
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Cache Bazel output
+      uses: actions/cache@v2
+      id: cache-bazel
+      with:
+        path: |
+          ~/.cache/bazel
+          bazel-out
+        key: ${{ runner.os }}-bazel-${{ hashFiles('**/BUILD') }}
+        restore-keys: |
+          ${{ runner.os }}-bazel-
+
+    - name: Install bazelisk
+      run: |
+        sudo dnf install -y curl unzip
+        curl -Lo bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
+        chmod +x bazelisk
+        sudo mv bazelisk /usr/local/bin/
+        bazelisk version
+
+    - name: Install Clang-17
+      run: |
+        sudo dnf install -y llvm-toolset
+
+    - name: Note Clang version
+      run: clang-17 --version
+
+    - name: Build Bazel target
+      run: |
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls
+
+    - name: Create artifact directory
+      run: mkdir -p rocky8-artifacts
+
+    - name: Copy Bazel target to rocky8-artifacts
+      run: |
+        cp -r bazel-bin/xls/public/libxls.so rocky8-artifacts/libxls-rocky8.so
+        cp -r bazel-bin/xls/dslx/interpreter_main rocky8-artifacts/dslx_interpreter_main-rocky8
+        cp -r bazel-bin/xls/dslx/lsp/dslx_ls rocky8-artifacts/dslx_ls-rocky8
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v2
+      with:
+        name: rocky8-artifacts
+        path: rocky8-artifacts/
+
   build-ubuntu2004:
     runs-on: ubuntu-20.04
     steps:
