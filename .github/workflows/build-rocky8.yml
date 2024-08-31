@@ -1,5 +1,7 @@
 # For experimenting with the Rocky8 linux build.
 
+name: Rocky8 Build
+
 on:
   workflow_dispatch:
 
