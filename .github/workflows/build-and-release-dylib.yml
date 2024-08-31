@@ -100,7 +100,8 @@ jobs:
         path: osx-artifacts-x64/
 
   build-rocky8:
-    runs-on: rockylinux:8
+    runs-on: ubuntu-latest  # Use a GitHub-hosted runner
+    container: rockylinux:8 # Specify the Docker container
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
@@ -118,18 +119,24 @@ jobs:
 
     - name: Install bazelisk
       run: |
-        sudo dnf install -y curl unzip
+        dnf install -y curl unzip
         curl -Lo bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
         chmod +x bazelisk
-        sudo mv bazelisk /usr/local/bin/
+        mv bazelisk /usr/local/bin/
         bazelisk version
 
     - name: Install Clang-17
       run: |
-        sudo dnf install -y llvm-toolset
+        dnf install -y llvm-toolset
 
     - name: Note Clang version
       run: clang-17 --version
+
+    - name: Install build essentials
+      run: |
+        dnf groupinstall -y "Development Tools"
+        dnf install -y libstdc++-devel
+        dnf install -y python3
 
     - name: Build Bazel target
       run: |
@@ -289,6 +296,12 @@ jobs:
         name: ubuntu2204-artifacts
         path: ubuntu2204-artifacts
 
+    - name: Download rocky8-artifacts
+      uses: actions/download-artifact@v2
+      with:
+        name: rocky8-artifacts
+        path: rocky8-artifacts
+
     - name: Extract tag name
       id: extract_tag
       run: |
@@ -322,5 +335,8 @@ jobs:
           ubuntu2204-artifacts/libxls-ubuntu22.04.so \
           ubuntu2204-artifacts/dslx_interpreter_main-ubuntu22.04 \
           ubuntu2204-artifacts/dslx_ls-ubuntu22.04 \
+          rocky8-artifacts/libxls-ubuntu22.04.so \
+          rocky8-artifacts/dslx_interpreter_main-ubuntu22.04 \
+          rocky8-artifacts/dslx_ls-ubuntu22.04 \
           --title "Release $TAG_NAME" \
           --notes "Automated release of $TAG_NAME"
