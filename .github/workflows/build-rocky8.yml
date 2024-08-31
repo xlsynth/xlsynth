@@ -7,7 +7,8 @@ on:
 
 jobs:
   build-rocky8:
-    runs-on: rockylinux:8
+    runs-on: ubuntu-latest  # Use a GitHub-hosted runner
+    container: rockylinux:8 # Specify the Docker container
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
