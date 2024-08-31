@@ -47,8 +47,8 @@ jobs:
     - name: Install build essentials
       run: |
         dnf groupinstall -y "Development Tools"
-        dnf install libstdc++-devel
-        dnf install python3
+        dnf install -y libstdc++-devel
+        dnf install -y python3
 
     - name: Build Bazel target
       run: |
