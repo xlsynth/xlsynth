@@ -31,15 +31,15 @@ jobs:
 
     - name: Install bazelisk
       run: |
-        sudo dnf install -y curl unzip
+        dnf install -y curl unzip
         curl -Lo bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
         chmod +x bazelisk
-        sudo mv bazelisk /usr/local/bin/
+        mv bazelisk /usr/local/bin/
         bazelisk version
 
     - name: Install Clang-17
       run: |
-        sudo dnf install -y llvm-toolset
+        dnf install -y llvm-toolset
 
     - name: Note Clang version
       run: clang-17 --version
