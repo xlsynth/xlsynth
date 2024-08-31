@@ -267,6 +267,7 @@ jobs:
       - build-osx-x64
       - build-ubuntu2004
       - build-ubuntu2204
+      - build-rocky8
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
