@@ -44,6 +44,10 @@ jobs:
     - name: Note Clang version
       run: clang-17 --version
 
+    - name: Install Python3
+      run: |
+        dnf install -y python3
+
     - name: Build Bazel target
       run: |
         CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls
