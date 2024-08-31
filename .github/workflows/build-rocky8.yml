@@ -46,7 +46,10 @@ jobs:
 
     - name: Install Python3
       run: |
-        dnf install -y python3
+        dnf install -y epel-release
+        # Provides newer versions of Python.
+        dnf install -y https://repo.ius.io/ius-release-el8.rpm
+        dnf install -y python310
 
     - name: Build Bazel target
       run: |
