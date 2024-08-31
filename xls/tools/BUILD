@@ -14,9 +14,9 @@
 
 # pytype binary and test
 load("@rules_python//python:proto.bzl", "py_proto_library")
-# cc_proto_library is used in this file
-
 load("@xls_pip_deps//:requirements.bzl", "requirement")
+load("//xls/build_rules:xls_build_defs.bzl", "xls_ir_equivalence_test")
+# cc_proto_library is used in this file
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -431,6 +431,19 @@ cc_binary(
     ],
 )
 
+xls_ir_equivalence_test(
+    name = "equiv_test",
+    src_0 = "testdata/add_big.ir",
+    src_1 = "testdata/add_big.ir",
+)
+
+xls_ir_equivalence_test(
+    name = "not_equiv_test",
+    expect_equivalent = False,
+    src_0 = "testdata/add_big.ir",
+    src_1 = "testdata/add_small.ir",
+)
+
 filegroup(
     name = "check_ir_equivalence_sh",
     srcs = ["check_ir_equivalence.sh"],
@@ -507,6 +520,7 @@ cc_binary(
         "//xls/ir:bits_ops",
         "//xls/ir:format_preference",
         "//xls/ir:ir_parser",
+        "//xls/ir:type",
         "//xls/ir:value",
         "//xls/netlist",
         "//xls/netlist:cell_library",
@@ -1381,6 +1395,7 @@ cc_binary(
         "//xls/ir:events",
         "//xls/ir:ir_parser",
         "//xls/ir:op",
+        "//xls/ir:type",
         "//xls/ir:value",
         "//xls/jit:block_jit",
         "//xls/jit:function_jit",

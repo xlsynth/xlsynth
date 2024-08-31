@@ -790,7 +790,6 @@ cc_library(
         "//xls/ir:op",
         "//xls/ir:ternary",
         "//xls/ir:type",
-        "//xls/ir:value",
     ],
 )
 
@@ -809,6 +808,7 @@ cc_library(
         "//xls/ir:bits",
         "//xls/ir:op",
         "//xls/ir:ternary",
+        "//xls/ir:type",
         "//xls/ir:value",
         "//xls/ir:value_utils",
     ],
@@ -1642,6 +1642,7 @@ cc_library(
         "//xls/ir:interval_set",
         "//xls/ir:op",
         "//xls/ir:ternary",
+        "//xls/ir:type",
         "//xls/ir:value",
         "//xls/ir:value_utils",
     ],
@@ -2574,7 +2575,6 @@ cc_test(
         "//xls/ir:interval_set",
         "//xls/ir:ir_test_base",
         "//xls/ir:type",
-        "//xls/ir:value",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -2951,7 +2951,6 @@ cc_library(
         "//xls/data_structures:leaf_type_tree",
         "//xls/ir",
         "//xls/ir:type",
-        "//xls/ir:value",
     ],
 )
 

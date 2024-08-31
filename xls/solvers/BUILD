@@ -60,13 +60,13 @@ cc_library(
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:span",
+        "//xls/common:visitor",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
         "//xls/ir",
         "//xls/ir:function_builder",
         "//xls/ir:op",
         "//xls/ir:source_location",
-        "//xls/ir:value",
     ],
 )
 
@@ -99,6 +99,7 @@ cc_test(
     deps = [
         ":z3_ir_equivalence",
         ":z3_ir_equivalence_testutils",
+        ":z3_ir_translator",
         ":z3_ir_translator_matchers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -109,7 +110,9 @@ cc_test(
         "//xls/ir",
         "//xls/ir:bits",
         "//xls/ir:function_builder",
+        "//xls/ir:ir_matcher",
         "//xls/ir:ir_test_base",
+        "//xls/ir:value",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -331,6 +334,7 @@ cc_test(
         "//xls/common/status:matchers",
         "//xls/ir",
         "//xls/ir:bits",
+        "//xls/ir:type",
         "//xls/ir:value",
         "@z3//:api",
         "@com_google_googletest//:gtest",
