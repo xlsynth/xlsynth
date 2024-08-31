@@ -15,35 +15,6 @@ jobs:
     runs-on: ubuntu-latest  # Use a GitHub-hosted runner
     container: rockylinux:8 # Specify the Docker container
     steps:
-    - name: Set up Python 3.10
-      run: |
-        # Enable EPEL repository
-        dnf install -y epel-release
-
-        # Attempt to enable CRB repository
-        if ! dnf config-manager --set-enabled crb; then
-          echo "Failed to enable CRB automatically. Trying manual configuration."
-          echo "[crb]" > /etc/yum.repos.d/Rocky-CRB.repo
-          echo "name=Rocky Linux \$releasever - CRB" >> /etc/yum.repos.d/Rocky-CRB.repo
-          echo "baseurl=http://download.rockylinux.org/\$contentdir/\$releasever/BaseOS/\$basearch/os/" >> /etc/yum.repos.d/Rocky-CRB.repo
-          echo "enabled=1" >> /etc/yum.repos.d/Rocky-CRB.repo
-          echo "gpgcheck=1" >> /etc/yum.repos.d/Rocky-CRB.repo
-          echo "gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-rockyofficial" >> /etc/yum.repos.d/Rocky-CRB.repo
-          dnf makecache
-        fi
-
-        # Install Python 3.10
-        dnf module reset python36
-        dnf module enable python310
-        dnf install -y python3.10
-
-        # Set Python 3.10 as the default python3
-        alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
-        alternatives --set python3 /usr/bin/python3.10
-
-        # Verify the Python version
-        python3 --version
-
     - name: Checkout repository
       uses: actions/checkout@v2
 
@@ -77,6 +48,7 @@ jobs:
       run: |
         dnf groupinstall -y "Development Tools"
         dnf install libstdc++-devel
+        dnf install python3
 
     - name: Build Bazel target
       run: |
