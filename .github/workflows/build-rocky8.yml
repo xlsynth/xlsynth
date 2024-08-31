@@ -15,15 +15,34 @@ jobs:
     runs-on: ubuntu-latest  # Use a GitHub-hosted runner
     container: rockylinux:8 # Specify the Docker container
     steps:
-    - name: Install Python3
+    - name: Set up Python 3.10
       run: |
+        # Enable EPEL repository
         dnf install -y epel-release
-        dnf config-manager --set-enabled crb
+
+        # Attempt to enable CRB repository
+        if ! dnf config-manager --set-enabled crb; then
+          echo "Failed to enable CRB automatically. Trying manual configuration."
+          bash -c 'cat <<EOF > /etc/yum.repos.d/Rocky-CRB.repo
+[crb]
+name=Rocky Linux \$releasever - CRB
+baseurl=http://download.rockylinux.org/\$contentdir/\$releasever/BaseOS/\$basearch/os/
+enabled=1
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-rockyofficial
+EOF'
+          dnf makecache
+        fi
+
+        # Install Python 3.10
         dnf module reset python36
         dnf module enable python310
         dnf install -y python3.10
+
+        # Set Python 3.10 as the default python3
         alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
         alternatives --set python3 /usr/bin/python3.10
+
         # Verify the Python version
         python3 --version
 
