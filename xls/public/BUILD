@@ -201,6 +201,10 @@ cc_binary(
         "-fvisibility=hidden",
         "-fno-exceptions",
     ],
+    target_compatible_with = select({
+        "@platforms//os:osx": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
 )
 
 cc_binary(
@@ -208,6 +212,7 @@ cc_binary(
     srcs = ["c_api.cc", "c_api.h"],
     linkshared = True,
     deps = [
+        "@com_google_absl//absl/log",
         ":runtime_build_actions",
         "//xls/common:init_xls",
         "@com_google_absl//absl/log:check",

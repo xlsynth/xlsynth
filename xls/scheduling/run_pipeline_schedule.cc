@@ -575,7 +575,8 @@ absl::StatusOr<PipelineSchedule> RunPipelineSchedule(
         cycle_map[node] = cycle;
       }
     } else {
-      XLS_RET_CHECK(options.strategy() == SchedulingStrategy::ASAP);
+      XLS_RET_CHECK(options.strategy() == SchedulingStrategy::ASAP)
+	      << "scheduling strategy: " << static_cast<int64_t>(options.strategy());
       XLS_RET_CHECK(!options.pipeline_stages().has_value());
       // Just schedule everything as soon as possible.
       for (Node* node : f->nodes()) {
