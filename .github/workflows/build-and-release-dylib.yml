@@ -336,8 +336,8 @@ jobs:
           ubuntu2204-artifacts/libxls-ubuntu22.04.so \
           ubuntu2204-artifacts/dslx_interpreter_main-ubuntu22.04 \
           ubuntu2204-artifacts/dslx_ls-ubuntu22.04 \
-          rocky8-artifacts/libxls-ubuntu22.04.so \
-          rocky8-artifacts/dslx_interpreter_main-ubuntu22.04 \
-          rocky8-artifacts/dslx_ls-ubuntu22.04 \
+          rocky8-artifacts/libxls-rocky8.so \
+          rocky8-artifacts/dslx_interpreter_main-rocky8 \
+          rocky8-artifacts/dslx_ls-rocky8 \
           --title "Release $TAG_NAME" \
           --notes "Automated release of $TAG_NAME"
