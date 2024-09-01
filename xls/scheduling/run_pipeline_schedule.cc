@@ -412,10 +412,11 @@ absl::StatusOr<PipelineSchedule> RunPipelineSchedule(
   }
 
   ScheduleCycleMap cycle_map;
-#if 0
   if (options.strategy() == SchedulingStrategy::SDC) {
     // Enable iterative SDC scheduling when use_fdo is true
     if (options.use_fdo()) {
+      LOG(FATAL) << "Iterative SDC (FDO) is not supported in this release.";
+#if 0
       if (!options.clock_period_ps().has_value()) {
         return absl::UnimplementedError(
             "Iterative SDC scheduling is only supported when a clock period is "
@@ -450,6 +451,7 @@ absl::StatusOr<PipelineSchedule> RunPipelineSchedule(
 
       XLS_VLOG_LINES(3, "Schedule\n" + schedule.ToString());
       return schedule;
+#endif
     }
 
     absl::StatusOr<ScheduleCycleMap> schedule_cycle_map =
@@ -547,7 +549,6 @@ absl::StatusOr<PipelineSchedule> RunPipelineSchedule(
     }
     cycle_map = *std::move(schedule_cycle_map);
   } else {
-#endif
     // Run an initial ASAP/ALAP scheduling pass, which we'll refine with the
     // chosen scheduler.
     sched::ScheduleBounds bounds(f, TopoSort(f), clock_period_ps,
@@ -587,9 +588,7 @@ absl::StatusOr<PipelineSchedule> RunPipelineSchedule(
         cycle_map[node] = bounds.lb(node);
       }
     }
-#if 0
   }
-#endif
 
   auto schedule = PipelineSchedule(f, cycle_map, options.pipeline_stages(),
                                    min_clock_period_ps_for_tracing);
