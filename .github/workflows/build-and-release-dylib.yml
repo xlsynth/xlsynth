@@ -36,7 +36,7 @@ jobs:
         mv bazel-7.3.1rc2-darwin-arm64 bazel-arm64
         chmod +x bazel-arm64
         ./bazel-arm64 info
-        ./bazel-arm64 build -c opt --host_cpu=darwin_arm64 //xls/public:libxls.dylib //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls
+        ./bazel-arm64 build -c opt --host_cpu=darwin_arm64 //xls/public:libxls.dylib //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main
 
     - name: Verify arm64 binaries
       run: |
@@ -47,6 +47,9 @@ jobs:
         cp bazel-bin/xls/public/libxls.dylib osx-artifacts-arm64/libxls-arm64.dylib
         cp bazel-bin/xls/dslx/interpreter_main osx-artifacts-arm64/dslx_interpreter_main-arm64
         cp bazel-bin/xls/dslx/lsp/dslx_ls osx-artifacts-arm64/dslx_ls-arm64
+        cp bazel-bin/xls/tools/opt_main osx-artifacts-arm64/opt_main-arm64
+        cp bazel-bin/xls/tools/codegen_main osx-artifacts-arm64/codegen_main-arm64
+        cp bazel-bin/xls/dslx/ir_convert/ir_converter_main osx-artifacts-arm64/ir_converter_main-arm64
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v2
@@ -81,7 +84,7 @@ jobs:
         mv bazel-7.3.1rc2-darwin-x86_64 bazel-x86_64
         chmod +x bazel-x86_64
         ./bazel-x86_64 info
-        ./bazel-x86_64 build -c opt //xls/public:libxls.dylib //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls
+        ./bazel-x86_64 build -c opt //xls/public:libxls.dylib //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main
 
     - name: Verify x86_64 binaries
       run: |
@@ -92,6 +95,9 @@ jobs:
         cp bazel-bin/xls/public/libxls.dylib osx-artifacts-x64/libxls-x64.dylib
         cp bazel-bin/xls/dslx/interpreter_main osx-artifacts-x64/dslx_interpreter_main-x64
         cp bazel-bin/xls/dslx/lsp/dslx_ls osx-artifacts-x64/dslx_ls-x64
+        cp bazel-bin/xls/tools/opt_main osx-artifacts-x64/opt_main-x64
+        cp bazel-bin/xls/tools/codegen_main osx-artifacts-x64/codegen_main-x64
+        cp bazel-bin/xls/dslx/ir_convert/ir_converter_main osx-artifacts-x64/ir_converter_main-x64
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v2
@@ -140,16 +146,19 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main
 
     - name: Create artifact directory
       run: mkdir -p rocky8-artifacts
 
     - name: Copy Bazel target to rocky8-artifacts
       run: |
-        cp -r bazel-bin/xls/public/libxls.so rocky8-artifacts/libxls-rocky8.so
-        cp -r bazel-bin/xls/dslx/interpreter_main rocky8-artifacts/dslx_interpreter_main-rocky8
-        cp -r bazel-bin/xls/dslx/lsp/dslx_ls rocky8-artifacts/dslx_ls-rocky8
+        cp bazel-bin/xls/public/libxls.so rocky8-artifacts/libxls-rocky8.so
+        cp bazel-bin/xls/dslx/interpreter_main rocky8-artifacts/dslx_interpreter_main-rocky8
+        cp bazel-bin/xls/dslx/lsp/dslx_ls rocky8-artifacts/dslx_ls-rocky8
+        cp bazel-bin/xls/tools/opt_main rocky8-artifacts/opt_main-rocky8
+        cp bazel-bin/xls/tools/codegen_main rocky8-artifacts/codegen_main-rocky8
+        cp bazel-bin/xls/dslx/ir_convert/ir_converter_main rocky8-artifacts/ir_converter_main-rocky8
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v2
@@ -188,16 +197,19 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main
 
     - name: Create artifact directory
       run: mkdir -p ubuntu2004-artifacts
 
     - name: Copy Bazel target to ubuntu2004-artifacts
       run: |
-        cp -r bazel-bin/xls/public/libxls.so ubuntu2004-artifacts/libxls-ubuntu20.04.so
-        cp -r bazel-bin/xls/dslx/interpreter_main ubuntu2004-artifacts/dslx_interpreter_main-ubuntu20.04
-        cp -r bazel-bin/xls/dslx/lsp/dslx_ls ubuntu2004-artifacts/dslx_ls-ubuntu20.04
+        cp bazel-bin/xls/public/libxls.so                  ubuntu2004-artifacts/libxls-ubuntu2004.so
+        cp bazel-bin/xls/dslx/interpreter_main             ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004
+        cp bazel-bin/xls/dslx/lsp/dslx_ls                  ubuntu2004-artifacts/dslx_ls-ubuntu2004
+        cp bazel-bin/xls/tools/opt_main                    ubuntu2004-artifacts/opt_main-ubuntu2004
+        cp bazel-bin/xls/tools/codegen_main                ubuntu2004-artifacts/codegen_main-ubuntu2004
+        cp bazel-bin/xls/dslx/ir_convert/ir_converter_main ubuntu2004-artifacts/ir_converter_main-ubuntu2004
 
     - name: Tarball stdlib files to ubuntu2004-artifacts
       run: tar -czvvf ubuntu2004-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
@@ -241,16 +253,19 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main
 
     - name: Create artifact directory
       run: mkdir -p ubuntu2204-artifacts
 
     - name: Copy Bazel target to ubuntu2204-artifacts
       run: |
-        cp -r bazel-bin/xls/public/libxls.so ubuntu2204-artifacts/libxls-ubuntu22.04.so
-        cp -r bazel-bin/xls/dslx/interpreter_main ubuntu2204-artifacts/dslx_interpreter_main-ubuntu22.04
-        cp -r bazel-bin/xls/dslx/lsp/dslx_ls ubuntu2204-artifacts/dslx_ls-ubuntu22.04
+        cp bazel-bin/xls/public/libxls.so                  ubuntu2204-artifacts/libxls-ubuntu2204.so
+        cp bazel-bin/xls/dslx/interpreter_main             ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204
+        cp bazel-bin/xls/dslx/lsp/dslx_ls                  ubuntu2204-artifacts/dslx_ls-ubuntu2204
+        cp bazel-bin/xls/tools/opt_main                    ubuntu2204-artifacts/opt_main-ubuntu2204
+        cp bazel-bin/xls/tools/codegen_main                ubuntu2204-artifacts/codegen_main-ubuntu2204
+        cp bazel-bin/xls/dslx/ir_convert/ir_converter_main ubuntu2204-artifacts/ir_converter_main-ubuntu2204
 
     - name: Tarball stdlib files to ubuntu2204-artifacts
       run: tar -czvvf ubuntu2204-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
@@ -323,21 +338,41 @@ jobs:
       run: |
         export GH_TOKEN=${{ secrets.GITHUB_TOKEN }}
         gh release create "$TAG_NAME" \
-          osx-artifacts-arm64/libxls-arm64.dylib \
+          osx-artifacts-arm64/libxls-arm64.dylib          \
           osx-artifacts-arm64/dslx_interpreter_main-arm64 \
-          osx-artifacts-arm64/dslx_ls-arm64 \
-          osx-artifacts-x64/libxls-x64.dylib \
-          osx-artifacts-x64/dslx_interpreter_main-x64 \
-          osx-artifacts-x64/dslx_ls-x64 \
-          ubuntu2004-artifacts/dslx_stdlib.tar.gz \
-          ubuntu2004-artifacts/libxls-ubuntu20.04.so \
-          ubuntu2004-artifacts/dslx_interpreter_main-ubuntu20.04 \
-          ubuntu2004-artifacts/dslx_ls-ubuntu20.04 \
-          ubuntu2204-artifacts/libxls-ubuntu22.04.so \
-          ubuntu2204-artifacts/dslx_interpreter_main-ubuntu22.04 \
-          ubuntu2204-artifacts/dslx_ls-ubuntu22.04 \
-          rocky8-artifacts/libxls-rocky8.so \
+          osx-artifacts-arm64/dslx_ls-arm64               \
+          osx-artifacts-arm64/opt_main-arm64              \
+          osx-artifacts-arm64/codegen_main-arm64          \
+          osx-artifacts-arm64/ir_converter_main-arm64     \
+          \
+          osx-artifacts-x64/libxls-x64.dylib              \
+          osx-artifacts-x64/dslx_interpreter_main-x64     \
+          osx-artifacts-x64/dslx_ls-x64                   \
+          osx-artifacts-x64/opt_main-x64                  \
+          osx-artifacts-x64/codegen_main-x64              \
+          osx-artifacts-x64/ir_converter_main-x64         \
+          \
+          ubuntu2004-artifacts/dslx_stdlib.tar.gz                 \
+          ubuntu2004-artifacts/libxls-ubuntu2004.so               \
+          ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004   \
+          ubuntu2004-artifacts/dslx_ls-ubuntu2004                 \
+          ubuntu2004-artifacts/opt_main-ubuntu2004                \
+          ubuntu2004-artifacts/codegen_main-ubuntu2004            \
+          ubuntu2004-artifacts/ir_converter_main-ubuntu2004       \
+          \
+          ubuntu2204-artifacts/libxls-ubuntu2204.so               \
+          ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204   \
+          ubuntu2204-artifacts/dslx_ls-ubuntu2204                 \
+          ubuntu2204-artifacts/opt_main-ubuntu2204                \
+          ubuntu2204-artifacts/codegen_main-ubuntu2204            \
+          ubuntu2204-artifacts/ir_converter_main-ubuntu2204       \
+          \
+          rocky8-artifacts/libxls-rocky8.so             \
           rocky8-artifacts/dslx_interpreter_main-rocky8 \
-          rocky8-artifacts/dslx_ls-rocky8 \
+          rocky8-artifacts/dslx_ls-rocky8               \
+          rocky8-artifacts/opt_main-rocky8              \
+          rocky8-artifacts/codegen_main-rocky8          \
+          rocky8-artifacts/ir_converter_main-rocky8     \
+          \
           --title "Release $TAG_NAME" \
           --notes "Automated release of $TAG_NAME"
