@@ -55,5 +55,4 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls
-
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main
