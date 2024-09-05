@@ -213,6 +213,7 @@ cc_binary(
     srcs = ["c_api.cc", "c_api.h"],
     linkshared = True,
     deps = [
+        "//xls/codegen/vast",
         "@com_google_absl//absl/log",
         ":runtime_build_actions",
         "//xls/common:init_xls",
