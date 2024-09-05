@@ -236,37 +236,47 @@ enum {
 
 // Note: caller owns the returned verilog file object, to be freed by
 // `xls_vast_verilog_file_free`.
+XLS_DLL_EXPORT
 struct xls_vast_verilog_file* xls_vast_make_verilog_file(
     xls_vast_file_type file_type);
 
+XLS_DLL_EXPORT
 void xls_vast_verilog_file_free(struct xls_vast_verilog_file* f);
 
+XLS_DLL_EXPORT
 struct xls_vast_verilog_module* xls_vast_verilog_file_add_module(
     struct xls_vast_verilog_file* f, const char* name);
 
+XLS_DLL_EXPORT
 struct xls_vast_data_type* xls_vast_verilog_file_make_scalar_type(
     struct xls_vast_verilog_file* f);
 
+XLS_DLL_EXPORT
 struct xls_vast_data_type* xls_vast_verilog_file_make_bit_vector_type(
     struct xls_vast_verilog_file* f, int64_t bit_count, bool is_signed);
 
+XLS_DLL_EXPORT
 struct xls_vast_logic_ref* xls_vast_verilog_module_add_input(
     struct xls_vast_verilog_module* m, const char* name,
     struct xls_vast_data_type* type);
+XLS_DLL_EXPORT
 struct xls_vast_logic_ref* xls_vast_verilog_module_add_output(
     struct xls_vast_verilog_module* m, const char* name,
     struct xls_vast_data_type* type);
+XLS_DLL_EXPORT
 struct xls_vast_logic_ref* xls_vast_verilog_module_add_wire(
     struct xls_vast_verilog_module* m, const char* name,
     struct xls_vast_data_type* type);
 // TODO(cdleary): 2024-09-05 Add xls_vast_verilog_module_add_wire_with_expr
 
+XLS_DLL_EXPORT
 void xls_vast_verilog_file_add_include(struct xls_vast_verilog_file* f,
                                        const char* path);
 
 // Emits/formats the contents of the given verilog file to a string.
 //
 // Note: caller owns the returned string, to be freed by `xls_c_str_free`.
+XLS_DLL_EXPORT
 char* xls_vast_verilog_file_emit(const struct xls_vast_verilog_file* f);
 
 }  // extern "C"
