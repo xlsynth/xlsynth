@@ -32,6 +32,7 @@
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/parse_and_typecheck.h"
+#include "xls/dslx/type_system/type_info.h"
 
 namespace xls::dslx {
 
@@ -65,7 +66,7 @@ class LanguageServerAdapter {
 
   // Note: the return type is slightly unintuitive, but the latest LSP protocol
   // supports multiple defining locations for a single reference.
-  std::vector<verible::lsp::Location> FindDefinitions(
+  absl::StatusOr<std::vector<verible::lsp::Location>> FindDefinitions(
       std::string_view uri, const verible::lsp::Position& position) const;
 
   // Implements the functionality for full document formatting:
@@ -80,11 +81,14 @@ class LanguageServerAdapter {
   std::vector<verible::lsp::DocumentLink> ProvideImportLinks(
       std::string_view uri) const;
 
+  absl::StatusOr<std::vector<verible::lsp::InlayHint>> InlayHint(
+      std::string_view uri, const verible::lsp::Range& range) const;
+
  private:
   struct ParseData;
 
   // Find parse result of opened file with given URI or nullptr, if not opened.
-  const ParseData* FindParsedForUri(std::string_view uri) const;
+  ParseData* FindParsedForUri(std::string_view uri) const;
 
   struct TypecheckedModuleWithComments {
     TypecheckedModule tm;
@@ -104,6 +108,10 @@ class LanguageServerAdapter {
     const Module& module() const {
       CHECK_OK(tmc.status());
       return *tmc->tm.module;
+    }
+    const TypeInfo& type_info() const {
+      CHECK_OK(tmc.status());
+      return *tmc->tm.type_info;
     }
     const Comments& comments() const {
       CHECK_OK(tmc.status());

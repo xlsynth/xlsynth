@@ -106,6 +106,17 @@ std::vector<const AstNode*> Module::FindIntercepting(const Pos& target) const {
   return found;
 }
 
+std::vector<const AstNode*> Module::FindContained(const Span& target) const {
+  std::vector<const AstNode*> found;
+  for (const auto& node : nodes_) {
+    if (std::optional<Span> node_span = node->GetSpan();
+        node_span.has_value() && target.Contains(node_span.value())) {
+      found.push_back(node.get());
+    }
+  }
+  return found;
+}
+
 std::optional<Function*> Module::GetFunction(std::string_view target_name) {
   for (ModuleMember& member : top_) {
     if (std::holds_alternative<Function*>(member)) {
@@ -392,6 +403,24 @@ Pos GetPos(const ModuleMember& module_member) {
   std::optional<Span> span = n->GetSpan();
   CHECK(span.has_value());
   return span->start();
+}
+
+NameDef* ModuleMemberGetNameDef(const ModuleMember& mm) {
+  return absl::visit(
+      Visitor{
+          [](Function* n) -> NameDef* { return n->name_def(); },
+          [](Proc* n) -> NameDef* { return n->name_def(); },
+          [](TestFunction* n) -> NameDef* { return n->name_def(); },
+          [](TestProc* n) -> NameDef* { return n->name_def(); },
+          [](QuickCheck* n) -> NameDef* { return n->name_def(); },
+          [](TypeAlias* n) -> NameDef* { return &n->name_def(); },
+          [](StructDef* n) -> NameDef* { return n->name_def(); },
+          [](ConstantDef* n) -> NameDef* { return n->name_def(); },
+          [](EnumDef* n) -> NameDef* { return n->name_def(); },
+          [](Import* n) -> NameDef* { return &n->name_def(); },
+          [](ConstAssert* n) -> NameDef* { return nullptr; },
+      },
+      mm);
 }
 
 Conditional* MakeTernary(Module* module, const Span& span, Expr* test,

@@ -71,6 +71,7 @@ InitializeResult InitializeServer(const nlohmann::json& params) {
       {"change", 2},        // Incremental updates
   };
   capabilities["documentSymbolProvider"] = true;
+  capabilities["inlayHintProvider"] = true;
   capabilities["definitionProvider"] = {
       {"dynamicRegistration", false},
       {"linkSupport", true},
@@ -180,20 +181,26 @@ absl::Status RealMain() {
   dispatcher.AddRequestHandler(
       "textDocument/definition",
       [&](const verible::lsp::DefinitionParams& params) {
-        return language_server_adapter.FindDefinitions(params.textDocument.uri,
-                                                       params.position);
+        auto values_or = language_server_adapter.FindDefinitions(
+            params.textDocument.uri, params.position);
+        if (values_or.ok()) {
+          return values_or.value();
+        }
+        LspLog() << "could not find definition(s); status: "
+                 << values_or.status() << "\n";
+        return std::vector<verible::lsp::Location>{};
       });
 
   dispatcher.AddRequestHandler(
       "textDocument/formatting",
       [&](const verible::lsp::DocumentFormattingParams& params) {
-        auto text_edits_or =
+        auto values_or =
             language_server_adapter.FormatDocument(params.textDocument.uri);
-        if (text_edits_or.ok()) {
-          return text_edits_or.value();
+        if (values_or.ok()) {
+          return values_or.value();
         }
-        LspLog() << "could not format document; status: "
-                 << text_edits_or.status() << "\n";
+        LspLog() << "could not format document; status: " << values_or.status()
+                 << "\n";
         return std::vector<verible::lsp::TextEdit>{};
       });
 
@@ -202,6 +209,19 @@ absl::Status RealMain() {
       [&](const verible::lsp::DocumentLinkParams& params) {
         return language_server_adapter.ProvideImportLinks(
             params.textDocument.uri);
+      });
+
+  dispatcher.AddRequestHandler(
+      "textDocument/inlayHint",
+      [&](const verible::lsp::InlayHintParams& params) {
+        auto inlay_hints_or = language_server_adapter.InlayHint(
+            params.textDocument.uri, params.range);
+        if (inlay_hints_or.ok()) {
+          return std::move(inlay_hints_or).value();
+        }
+        LspLog() << "could not determine inlay hints; status: "
+                 << inlay_hints_or.status() << "\n";
+        return std::vector<verible::lsp::InlayHint>{};
       });
 
   // Main loop. Feeding the stream-splitter that then calls the dispatcher.

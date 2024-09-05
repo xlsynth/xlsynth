@@ -21,7 +21,7 @@
 #include "gtest/gtest.h"
 #include "absl/status/statusor.h"
 #include "xls/common/status/matchers.h"
-#include "xls/delay_model/delay_estimator.h"
+#include "xls/estimators/delay_model/delay_estimator.h"
 #include "xls/ir/function_builder.h"
 #include "xls/ir/ir_test_base.h"
 #include "xls/ir/op.h"
@@ -42,6 +42,7 @@ class TestDelayEstimator : public DelayEstimator {
       case Op::kLiteral:
       case Op::kBitSlice:
       case Op::kConcat:
+      case Op::kMinDelay:
         return 0;
       default:
         return 1;

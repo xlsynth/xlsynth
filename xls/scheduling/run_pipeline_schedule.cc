@@ -40,7 +40,7 @@
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/data_structures/binary_search.h"
-#include "xls/delay_model/delay_estimator.h"
+#include "xls/estimators/delay_model/delay_estimator.h"
 #include "xls/fdo/delay_manager.h"
 //#include "xls/fdo/iterative_sdc_scheduler.h"
 #include "xls/fdo/synthesizer.h"
@@ -411,8 +411,14 @@ absl::StatusOr<PipelineSchedule> RunPipelineSchedule(
               << "': " << *worst_case_throughput;
   }
 
+  SchedulingStrategy strategy = options.strategy();
+  if (options.pipeline_stages() == 1) {
+    // No scheduling to be done, so use the scheduler with the least overhead.
+    strategy = SchedulingStrategy::ASAP;
+  }
+
   ScheduleCycleMap cycle_map;
-  if (options.strategy() == SchedulingStrategy::SDC) {
+  if (strategy == SchedulingStrategy::SDC) {
     // Enable iterative SDC scheduling when use_fdo is true
     if (options.use_fdo()) {
       LOG(FATAL) << "Iterative SDC (FDO) is not supported in this release.";
@@ -555,14 +561,14 @@ absl::StatusOr<PipelineSchedule> RunPipelineSchedule(
                                  input_delay_added);
     XLS_RETURN_IF_ERROR(TightenBounds(bounds, f, options.pipeline_stages()));
 
-    if (options.strategy() == SchedulingStrategy::MIN_CUT) {
+    if (strategy == SchedulingStrategy::MIN_CUT) {
       XLS_ASSIGN_OR_RETURN(cycle_map,
                            MinCutScheduler(f,
                                            options.pipeline_stages().value_or(
                                                bounds.max_lower_bound() + 1),
                                            clock_period_ps, input_delay_added,
                                            &bounds, options.constraints()));
-    } else if (options.strategy() == SchedulingStrategy::RANDOM) {
+    } else if (strategy == SchedulingStrategy::RANDOM) {
       std::mt19937_64 gen(options.seed().value_or(0));
 
       cycle_map = ScheduleCycleMap();
@@ -576,15 +582,11 @@ absl::StatusOr<PipelineSchedule> RunPipelineSchedule(
         cycle_map[node] = cycle;
       }
     } else {
-      XLS_RET_CHECK(options.strategy() == SchedulingStrategy::ASAP)
-	      << "scheduling strategy: " << static_cast<int64_t>(options.strategy());
-      XLS_RET_CHECK(!options.pipeline_stages().has_value());
+      XLS_RET_CHECK(strategy == SchedulingStrategy::ASAP);
+      XLS_RET_CHECK(!options.pipeline_stages().has_value() ||
+                    options.pipeline_stages() == 1);
       // Just schedule everything as soon as possible.
       for (Node* node : f->nodes()) {
-        if (node->Is<MinDelay>()) {
-          return absl::InternalError(
-              "The ASAP scheduler doesn't support min_delay nodes.");
-        }
         cycle_map[node] = bounds.lb(node);
       }
     }

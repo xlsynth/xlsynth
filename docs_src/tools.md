@@ -109,7 +109,7 @@ Package "fp32_add_2"
     Nodes: 252
 ```
 
-## [`check_ir_equivalence`](https://github.com/google/xls/tree/main/xls/tools/check_ir_equivalence_main.cc)
+## [`check_ir_equivalence`](https://github.com/google/xls/tree/main/xls/dev_tools/check_ir_equivalence_main.cc)
 
 Verifies that two IR files (for example, optimized and unoptimized IR from the
 same source) are logically equivalent.
@@ -263,8 +263,8 @@ BOM_KIND_COMPARISON,ne,25,1,1
 
 Interpreter for DSLX code and test-runner.
 
-When tests are run this also cross-checks that the conversion to IR and JIT
-compilation of the IR produces the same values.
+The `--compare` flag allows to also cross-checks that the conversion to IR and
+JIT compilation of the IR produces the same values.
 
 ```
 $ bazel run -c opt //xls/dslx:interpreter_main -- $PWD/xls/dslx/stdlib/std.x
@@ -485,14 +485,14 @@ For C++ development, you might need a compilation database to have good support
 in your IDE. You can create the `compile_commands.json` by running this script.
 
 ```
-dev_utils/make-compilation-db.sh
+xls/dev_tools/make-compilation-db.sh
 ```
 
 To run clang-tidy and create a report of things that might be worthwhile fixing,
 use the following script:
 
 ```
-dev_utils/run-clang-tidy-cached.sh
+xls/dev_tools/run-clang-tidy-cached.sh
 ```
 
 (Note, this will be pretty slow on the first run, but it caches results and will
@@ -510,10 +510,10 @@ To re-generate golden reference files (for all test targets that use golden
 reference file comparisons), run:
 
 ```
-dev_utils/rebuild_golden_files.sh
+xls/dev_tools/rebuild_golden_files.sh
 ```
 
-## [`extract_interface_main`](https://github.com/google/xls/tree/main/xls/tools/extract_interface_main.cc)
+## [`extract_interface_main`](https://github.com/google/xls/tree/main/xls/dev_tools/extract_interface_main.cc)
 
 Reads an `ir` file and prints a protobuf describing the interfaces of the
 contained code. The interfaces consist of the names of the `procs`, `blocks`,

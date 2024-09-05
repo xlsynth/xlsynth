@@ -165,7 +165,7 @@ fn test_min_normal_exp() {
 }
 
 // Returns the unbiased exponent. For normal numbers it is
-// `bexp - 2^EXP_SZ + 1`` and for subnormals it is, `2 - 2^EXP_SZ``. For
+// `bexp - 2^(EXP_SZ - 1) + 1` and for subnormals it is, `2 - 2^(EXP_SZ-1)`. For
 // infinity and `NaN``, there are no guarantees, as the unbiased exponent has
 // no meaning in that case.
 //
@@ -721,6 +721,142 @@ fn upcast_test() {
     assert_eq(upcast<BF16_EXP_SZ, BF16_FRACTION_SZ>(neg_denormal_bf16), neg_zero_bf16);
     assert_eq(upcast<BF16_EXP_SZ, BF16_FRACTION_SZ>(zero_bf16), zero_bf16);
     assert_eq(upcast<BF16_EXP_SZ, BF16_FRACTION_SZ>(one_bf16), one_bf16);
+}
+
+// Round the apfloat to lower precision in fractional bits, while the exponent size remains fixed.
+// Ties round to even (LSB = 0) and denormal inputs get flushed to zero.
+pub fn downcast_fractional_rne<TO_FRACTION_SZ: u32, FROM_FRACTION_SZ: u32, EXP_SZ: u32>
+    (f: APFloat<EXP_SZ, FROM_FRACTION_SZ>) -> APFloat<EXP_SZ, TO_FRACTION_SZ> {
+    const_assert!(FROM_FRACTION_SZ > TO_FRACTION_SZ);
+
+    let lsb_index = FROM_FRACTION_SZ - TO_FRACTION_SZ;
+
+    // Extract the bits of the input fraction used to decide the direction of rounding.
+    let lsb = f.fraction[lsb_index+:u1];
+    let round = f.fraction[lsb_index - u32:1+:u1];
+    let sticky = std::or_reduce_lsb(f.fraction, lsb_index - u32:1);
+
+    let truncated_fraction = f.fraction[lsb_index as s32:FROM_FRACTION_SZ as s32];
+
+    //  L R S
+    //  X 0 X   --> Round down (less than half)
+    //  0 1 0   --> Round down (half, already even)
+    //  1 1 0   --> Round up (half, to even)
+    //  X 1 1   --> Round up (greater than half)
+    let round_up = (round && sticky) || (round && lsb);
+
+    let renormalize = round_up && and_reduce(truncated_fraction);
+
+    if is_nan(f) {
+        qnan<EXP_SZ, TO_FRACTION_SZ>()
+    } else if is_zero_or_subnormal(f) {
+        // flush denormals to zero
+        zero<EXP_SZ, TO_FRACTION_SZ>(f.sign)
+    } else {
+        // bexp: If the fraction rolled over when rounded up, then need to increment the exponent.
+        // Rollover from the largest representable value will naturally go to infinity as desired.
+        APFloat {
+            sign: f.sign,
+            bexp: if renormalize { f.bexp + uN[EXP_SZ]:1 } else { f.bexp },
+            fraction:
+            if round_up {
+                truncated_fraction + uN[TO_FRACTION_SZ]:1
+            } else {
+                truncated_fraction
+            }
+        }
+    }
+}
+
+#[test]
+fn downcast_fractional_rne_test() {
+    const BF16_EXP_SZ = u32:8;
+    const BF16_FRACTION_SZ = u32:7;
+    const F32_EXP_SZ = u32:8;
+    const F32_FRACTION_SZ = u32:23;
+
+    // qnan -> qnan
+    let qnan_f32 = qnan<F32_EXP_SZ, F32_FRACTION_SZ>();
+    let qnan_bf16 = qnan<BF16_EXP_SZ, BF16_FRACTION_SZ>();
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(qnan_f32), qnan_bf16);
+
+    // inf -> inf
+    let inf_f32 = inf<F32_EXP_SZ, F32_FRACTION_SZ>(u1:0);
+    let inf_bf16 = inf<BF16_EXP_SZ, BF16_FRACTION_SZ>(u1:0);
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(inf_f32), inf_bf16);
+
+    let minus_inf_f32 = inf<F32_EXP_SZ, F32_FRACTION_SZ>(u1:1);
+    let minus_inf_bf16 = inf<BF16_EXP_SZ, BF16_FRACTION_SZ>(u1:1);
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(minus_inf_f32), minus_inf_bf16);
+
+    // +/- 0.0 -> same-signed 0
+    let zero_f32 = zero<F32_EXP_SZ, F32_FRACTION_SZ>(u1:0);
+    let zero_bf16 = zero<BF16_EXP_SZ, BF16_FRACTION_SZ>(u1:0);
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(zero_f32), zero_bf16);
+
+    let minus_zero_f32 = zero<F32_EXP_SZ, F32_FRACTION_SZ>(u1:1);
+    let minus_zero_bf16 = zero<BF16_EXP_SZ, BF16_FRACTION_SZ>(u1:1);
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(minus_zero_f32), minus_zero_bf16);
+
+    // subnormals flushed to same-signed 0.0
+    let subnormal_f32 =
+        APFloat<F32_EXP_SZ, F32_FRACTION_SZ> { sign: u1:0, bexp: u8:0, fraction: u23:0x7fffff };
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(subnormal_f32), zero_bf16);
+
+    let minus_subnormal_f32 = APFloat<F32_EXP_SZ, F32_FRACTION_SZ> { sign: u1:1, ..subnormal_f32 };
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(minus_subnormal_f32), minus_zero_bf16);
+
+    // normals
+    let one_bf16 = one<BF16_EXP_SZ, BF16_FRACTION_SZ>(u1:0);
+    let one_f32 = one<F32_EXP_SZ, F32_FRACTION_SZ>(u1:0);
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(one_f32), one_bf16);
+
+    let minus_one_bf16 = APFloat<BF16_EXP_SZ, BF16_FRACTION_SZ> { sign: u1:1, ..one_bf16 };
+    let minus_one_f32 = APFloat<F32_EXP_SZ, F32_FRACTION_SZ> { sign: u1:1, ..one_f32 };
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(minus_one_f32), minus_one_bf16);
+
+    // fraction with no rounding necessary
+    let one_dot_5_f32 = APFloat<F32_EXP_SZ, F32_FRACTION_SZ> { fraction: u23:0x400000, ..one_f32 };
+    let one_dot_5_bf16 = APFloat<BF16_EXP_SZ, BF16_FRACTION_SZ> { fraction: u7:0x40, ..one_bf16 };
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(one_dot_5_f32), one_dot_5_bf16);
+
+    // rounds down
+    let pi_f32 =
+        APFloat<F32_EXP_SZ, F32_FRACTION_SZ> { sign: u1:0, bexp: u8:0x80, fraction: u23:0x490fdb };
+    let pi_bf16 =
+        APFloat<BF16_EXP_SZ, BF16_FRACTION_SZ> { sign: u1:0, bexp: u8:0x80, fraction: u7:0x49 };
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(pi_f32), pi_bf16);
+
+    // rounds up
+    let one_third_f32 =
+        APFloat<F32_EXP_SZ, F32_FRACTION_SZ> { sign: u1:0, bexp: u8:0x7d, fraction: u23:0x2aaaab };
+    let one_third_bf16 =
+        APFloat<BF16_EXP_SZ, BF16_FRACTION_SZ> { sign: u1:0, bexp: u8:0x7d, fraction: u7:0x2b };
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(one_third_f32), one_third_bf16);
+
+    // rounds down, tie to even
+    let rne_down_f32 =
+        APFloat<F32_EXP_SZ, F32_FRACTION_SZ> { sign: u1:0, bexp: u8:0x80, fraction: u23:0x408000 };
+    let rne_down_bf16 =
+        APFloat<BF16_EXP_SZ, BF16_FRACTION_SZ> { sign: u1:0, bexp: u8:0x80, fraction: u7:0x40 };
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(rne_down_f32), rne_down_bf16);
+
+    // rounds up, tie to even
+    let rne_up_f32 =
+        APFloat<F32_EXP_SZ, F32_FRACTION_SZ> { sign: u1:0, bexp: u8:0x80, fraction: u23:0x418000 };
+    let rne_up_bf16 =
+        APFloat<BF16_EXP_SZ, BF16_FRACTION_SZ> { sign: u1:0, bexp: u8:0x80, fraction: u7:0x42 };
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(rne_up_f32), rne_up_bf16);
+
+    // round up to inf
+    let max_normal_f32 =
+        APFloat<F32_EXP_SZ, F32_FRACTION_SZ> { sign: u1:0, bexp: u8:0xfe, fraction: u23:0x7fffff };
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(max_normal_f32), inf_bf16);
+
+    let minus_max_normal_f32 =
+        APFloat<F32_EXP_SZ, F32_FRACTION_SZ> { sign: u1:1, bexp: u8:0xfe, fraction: u23:0x7fffff };
+    let minus_inf_bf16 = inf<BF16_EXP_SZ, BF16_FRACTION_SZ>(u1:1);
+    assert_eq(downcast_fractional_rne<BF16_FRACTION_SZ>(minus_max_normal_f32), minus_inf_bf16);
 }
 
 // Returns a normalized APFloat with the given components.
@@ -1295,107 +1431,79 @@ fn test_fp_lt_2() {
     assert_eq(lt_2(nan, nan), u1:0);
 }
 
-// Returns an APFloat with all its bits past the decimal point set to 0.
-pub fn round_towards_zero<EXP_SZ: u32, FRACTION_SZ: u32>
-    (x: APFloat<EXP_SZ, FRACTION_SZ>) -> APFloat<EXP_SZ, FRACTION_SZ> {
-    const EXTENDED_FRACTION_SZ: u32 = FRACTION_SZ + u32:1;
-    let exp = unbiased_exponent(x) as s32;
-    let mask = !((u32:1 << ((FRACTION_SZ as u32) - (exp as u32))) - u32:1);
-    let trunc_fraction = x.fraction & (mask as uN[FRACTION_SZ]);
-    let result =
-        APFloat<EXP_SZ, FRACTION_SZ> { sign: x.sign, bexp: x.bexp, fraction: trunc_fraction };
+// Helper to convert to a signed or unsigned integer as raw bits.
+// to_int and to_uint to interpret the bits as signed or unsigned, respectively.
+fn to_signed_or_unsigned_int<RESULT_SZ: u32, RESULT_SIGNED: bool, EXP_SZ: u32, FRACTION_SZ: u32>
+    (x: APFloat<EXP_SZ, FRACTION_SZ>) -> bits[RESULT_SZ] {
+    const WIDE_FRACTION: u32 = FRACTION_SZ + u32:1;
+    const MAX_FRACTION_SZ: u32 = std::umax(RESULT_SZ, WIDE_FRACTION);
 
-    let result = if exp >= (FRACTION_SZ as s32) { x } else { result };
-    let result = if exp < s32:0 { zero<EXP_SZ, FRACTION_SZ>(x.sign) } else { result };
-    let result = if is_nan<EXP_SZ, FRACTION_SZ>(x) { qnan<EXP_SZ, FRACTION_SZ>() } else { result };
-    let result = if x.bexp == (bits[EXP_SZ]:255) { x } else { result };
-    result
-}
+    const INT_MIN = if RESULT_SIGNED {
+        (uN[MAX_FRACTION_SZ]:1 << (RESULT_SZ - u32:1))  // or rather, its negative.
+    } else {
+        uN[MAX_FRACTION_SZ]:0
+    };
+    const INT_MAX = if RESULT_SIGNED {
+        (uN[MAX_FRACTION_SZ]:1 << (RESULT_SZ - u32:1)) - uN[MAX_FRACTION_SZ]:1
+    } else {
+        (uN[MAX_FRACTION_SZ]:1 << RESULT_SZ) - uN[MAX_FRACTION_SZ]:1
+    };
 
-#[test]
-fn round_towards_zero_test() {
-    // Special cases.
-    assert_eq(round_towards_zero(zero<u32:8, u32:23>(u1:0)), zero<u32:8, u32:23>(u1:0));
-    assert_eq(round_towards_zero(zero<u32:8, u32:23>(u1:1)), zero<u32:8, u32:23>(u1:1));
-    assert_eq(round_towards_zero(qnan<u32:8, u32:23>()), qnan<u32:8, u32:23>());
-    assert_eq(round_towards_zero(inf<u32:8, u32:23>(u1:0)), inf<u32:8, u32:23>(u1:0));
-    assert_eq(round_towards_zero(inf<u32:8, u32:23>(u1:1)), inf<u32:8, u32:23>(u1:1));
+    let exp = unbiased_exponent(x);
 
-    // Truncate all.
-    let fraction = APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:50, fraction: u23:0x7fffff };
-    assert_eq(round_towards_zero(fraction), zero<u32:8, u32:23>(u1:0));
+    // True significand (including implicit leading bit) as an integer. Will need to be shifted
+    // so that MSB represents the value 1 based on the effective exponent (exp - FRACTION_SZ).
+    let fraction = (x.fraction as uN[WIDE_FRACTION] | (uN[WIDE_FRACTION]:1 << FRACTION_SZ)) as
+                   uN[MAX_FRACTION_SZ];
 
-    let fraction = APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:126, fraction: u23:0x7fffff };
-    assert_eq(round_towards_zero(fraction), zero<u32:8, u32:23>(u1:0));
+    let max_exp = if RESULT_SIGNED { RESULT_SZ as s32 - s32:1 } else { RESULT_SZ as s32 };
+    let exp_oob = exp as s32 >= max_exp;
+    let result = if exp_oob || is_inf(x) || (!RESULT_SIGNED && x.sign) {
+        // Clamp if out of bounds, infinite.
+        if x.sign { INT_MIN } else { INT_MAX }
+    } else if is_nan(x) {
+        uN[MAX_FRACTION_SZ]:0
+    } else if exp < sN[EXP_SZ]:0 {
+        uN[MAX_FRACTION_SZ]:0
+    } else if exp == sN[EXP_SZ]:0 {
+        uN[MAX_FRACTION_SZ]:1
+    } else {
+        // For most cases, we need to either shift the "ones" place from FRACTION_SZ + 1 bits down
+        // closer to 0 (if the effective exponent is negative) else we need to move it away from 0
+        // if the effective exponent is positive.
+        let effective_exp = (exp as s32) - (FRACTION_SZ as s32);
+        if effective_exp < s32:0 {
+            (fraction >> (-effective_exp as u32))
+        } else if effective_exp > s32:0 {
+            (fraction << effective_exp as u32)
+        } else {
+            fraction
+        }
+    };
 
-    // Truncate all but hidden bit.
-    let fraction = APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:127, fraction: u23:0x7fffff };
-    assert_eq(round_towards_zero(fraction), one<u32:8, u32:23>(u1:0));
-
-    // Truncate some.
-    let fraction = APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:128, fraction: u23:0x7fffff };
-    let trunc_fraction =
-        APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:128, fraction: u23:0x400000 };
-    assert_eq(round_towards_zero(fraction), trunc_fraction);
-
-    let fraction = APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:149, fraction: u23:0x7fffff };
-    let trunc_fraction =
-        APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:149, fraction: u23:0x7ffffe };
-    assert_eq(round_towards_zero(fraction), trunc_fraction);
-
-    // Truncate none.
-    let fraction = APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:200, fraction: u23:0x7fffff };
-    assert_eq(round_towards_zero(fraction), fraction);
-
-    let fraction = APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:200, fraction: u23:0x7fffff };
-    assert_eq(round_towards_zero(fraction), fraction);
+    if RESULT_SIGNED {
+        // Reduce to the target size, preserving signedness.
+        let result = result as sN[RESULT_SZ];
+        let result = if !x.sign { result } else { -result };
+        result as bits[RESULT_SZ]
+    } else {
+        // Already unsigned, just size correctly.
+        result as bits[RESULT_SZ]
+    }
 }
 
 // Returns the signed integer part of the input float, truncating any
 // fractional bits if necessary.
+// Exceptional cases (note: MIN does not yet exist but used for clarity):
+// NaN                  -> sN[RESULT_SZ]::ZERO
+// +Inf                 -> sN[RESULT_SZ]::MAX
+// -Inf                 -> sN[RESULT_SZ]::MIN
+// +0, -0, subnormal    -> sN[RESULT_SZ]::ZERO
+// > sN[RESULT_SZ]::MAX -> sN[RESULT_SZ]::MAX
+// < sN[RESULT_SZ]::MIN -> sN[RESULT_SZ]::MIN
 pub fn to_int<EXP_SZ: u32, FRACTION_SZ: u32, RESULT_SZ: u32>
     (x: APFloat<EXP_SZ, FRACTION_SZ>) -> sN[RESULT_SZ] {
-    const WIDE_FRACTION: u32 = FRACTION_SZ + u32:1;
-    const MAX_FRACTION_SZ: u32 = std::umax(RESULT_SZ, WIDE_FRACTION);
-    let exp = unbiased_exponent(x);
-
-    let fraction = (x.fraction as uN[WIDE_FRACTION] | (uN[WIDE_FRACTION]:1 << FRACTION_SZ)) as
-                   uN[MAX_FRACTION_SZ];
-
-    // Switch between base special cases before doing fancier cases below.
-    // Default case: exponent == FRACTION_SZ.
-    let result = match (exp, x.fraction) {
-        (sN[EXP_SZ]:0, _) => uN[MAX_FRACTION_SZ]:1,
-        (sN[EXP_SZ]:1, uN[FRACTION_SZ]:0) => uN[MAX_FRACTION_SZ]:0,
-        (sN[EXP_SZ]:1, uN[FRACTION_SZ]:1) => uN[MAX_FRACTION_SZ]:1,
-        _ => fraction,
-    };
-
-    let result = if exp < sN[EXP_SZ]:0 { uN[MAX_FRACTION_SZ]:0 } else { result };
-
-    // For most cases, we need to either shift the "ones" place from
-    // FRACTION_SZ + 1 bits down closer to 0 (if exp < FRACTION_SZ) else we
-    // need to move it away from 0 if the exponent is bigger.
-    let result = if (exp as u32) < FRACTION_SZ {
-        (fraction >> (FRACTION_SZ - (exp as u32)))
-    } else {
-        result
-    };
-    let result =
-        if exp as u32 > FRACTION_SZ { (fraction << ((exp as u32) - FRACTION_SZ)) } else { result };
-
-    // Clamp high if out of bounds, infinite, or NaN.
-    let exp_oob = exp as s32 >= (RESULT_SZ as s32 - s32:1);
-    let result = if exp_oob || is_inf(x) || is_nan(x) {
-        (uN[MAX_FRACTION_SZ]:1 << (RESULT_SZ - u32:1))
-    } else {
-        result
-    };
-
-    // Reduce to the target size, preserving signedness.
-    let result = result as sN[MAX_FRACTION_SZ];
-    let result = if !x.sign { result } else { -result };
-    result as sN[RESULT_SZ]
+    to_signed_or_unsigned_int<RESULT_SZ, true>(x) as sN[RESULT_SZ]
 }
 
 // TODO(rspringer): Create a broadly-applicable normalize test, that
@@ -1404,14 +1512,51 @@ pub fn to_int<EXP_SZ: u32, FRACTION_SZ: u32, RESULT_SZ: u32>
 
 #[test]
 fn to_int_test() {
+    // +0
+    let expected = s32:0;
+    let actual = to_int<u32:8, u32:23, u32:32>(
+        APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x0, fraction: u23:0x0 });
+    assert_eq(expected, actual);
+
+    // smallest positive subnormal
+    let expected = s32:0;
+    let actual = to_int<u32:8, u32:23, u32:32>(
+        APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x0, fraction: u23:0x1 });
+    assert_eq(expected, actual);
+
+    // largest subnormal
+    let expected = s32:0;
+    let actual = to_int<u32:8, u32:23, u32:32>(
+        APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x0, fraction: u23:0x7fffff });
+    assert_eq(expected, actual);
+
+    // smallest positive normal
     let expected = s32:0;
     let actual = to_int<u32:8, u32:23, u32:32>(
         APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x1, fraction: u23:0x0 });
     assert_eq(expected, actual);
 
+    // largest < 1
+    let expected = s32:0;
+    let actual = to_int<u32:8, u32:23, u32:32>(
+        APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x7e, fraction: u23:0x7fffff });
+    assert_eq(expected, actual);
+
+    // 1
+    let expected = s32:1;
+    let actual = to_int<u32:8, u32:23, u32:32>(
+        APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x7f, fraction: u23:0x0 });
+    assert_eq(expected, actual);
+
     let expected = s32:1;
     let actual = to_int<u32:8, u32:23, u32:32>(
         APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x7f, fraction: u23:0xa5a5 });
+    assert_eq(expected, actual);
+
+    // 2
+    let expected = s32:2;
+    let actual = to_int<u32:8, u32:23, u32:32>(
+        APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x80, fraction: u23:0x0 });
     assert_eq(expected, actual);
 
     let expected = s32:2;
@@ -1427,6 +1572,12 @@ fn to_int_test() {
     let expected = s32:23;
     let actual = to_int<u32:8, u32:23, u32:32>(
         APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x83, fraction: u23:0x380000 });
+    assert_eq(expected, actual);
+
+    // unbiased exp == EXP_SZ = 23
+    let expected = s32:0xffffff;
+    let actual = to_int<u32:8, u32:23, u32:32>(
+        APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x96, fraction: u23:0x7fffff });
     assert_eq(expected, actual);
 
     let expected = s16:0xa5a;
@@ -1449,7 +1600,7 @@ fn to_int_test() {
         APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x88, fraction: u23:0x25a5a5 });
     assert_eq(expected, actual);
 
-    let expected = s16:0x8000;
+    let expected = s16::MAX;
     let actual = to_int<u32:8, u32:23, u32:16>(
         APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x8f, fraction: u23:0x25a5a5 });
     assert_eq(expected, actual);
@@ -1474,15 +1625,184 @@ fn to_int_test() {
         APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x81, fraction: u23:0x25a5a5 });
     assert_eq(expected, actual);
 
-    let expected = s32:0x80000000;
+    // s32::MAX + 1.0
+    let expected = s32::MAX;
     let actual = to_int<u32:8, u32:23, u32:32>(
         APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x9e, fraction: u23:0x0 });
     assert_eq(expected, actual);
 
-    let expected = s32:0x80000000;
+    // s32::MAX + 1.0, fits in s64 so no clamping
+    let expected = (s32::MAX as s64) + s64:1;
+    let actual = to_int<u32:8, u32:23, u32:64>(
+        APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x9e, fraction: u23:0x0 });
+    assert_eq(expected, actual);
+
+    // large s64 sized integer as exact float32
+    let expected = s64:0x1234_5000_0000_0000;
+    let actual = to_int<u32:8, u32:23, u32:64>(
+        APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0xbb, fraction: u23:0x11a280 });
+    assert_eq(expected, actual);
+
+    // largest normal
+    let expected = s32::MAX;
+    let actual = to_int<u32:8, u32:23, u32:32>(
+        APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0xfe, fraction: u23:0x7fffff });
+    assert_eq(expected, actual);
+
+    // inf
+    let expected = s32::MAX;
     let actual = to_int<u32:8, u32:23, u32:32>(
         APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0xff, fraction: u23:0x0 });
     assert_eq(expected, actual);
+
+    // -0
+    let expected = s32:0;
+    let actual = to_int<u32:8, u32:23, u32:32>(
+        APFloat<u32:8, u32:23> { sign: u1:1, bexp: u8:0x0, fraction: u23:0x0 });
+    assert_eq(expected, actual);
+
+    // negative subnormal
+    let expected = s32:0;
+    let actual = to_int<u32:8, u32:23, u32:32>(
+        APFloat<u32:8, u32:23> { sign: u1:1, bexp: u8:0x0, fraction: u23:0x7fffff });
+    assert_eq(expected, actual);
+
+    // -2
+    let expected = s32:-2;
+    let actual = to_int<u32:8, u32:23, u32:32>(
+        APFloat<u32:8, u32:23> { sign: u1:1, bexp: u8:0x80, fraction: u23:0x0 });
+    assert_eq(expected, actual);
+
+    let expected = s32:-2;
+    let actual = to_int<u32:8, u32:23, u32:32>(
+        APFloat<u32:8, u32:23> { sign: u1:1, bexp: u8:0x80, fraction: u23:0x1 });
+    assert_eq(expected, actual);
+
+    // -inf
+    const S32_MIN = s32:1 << 31;
+    let expected = S32_MIN;
+    let actual = to_int<u32:8, u32:23, u32:32>(
+        APFloat<u32:8, u32:23> { sign: u1:1, bexp: u8:0xff, fraction: u23:0x0 });
+    assert_eq(expected, actual);
+
+    // nan
+    let expected = s32:0;
+    let actual = to_int<u32:8, u32:23, u32:32>(qnan<u32:8, u32:23>());
+    assert_eq(expected, actual);
+}
+
+// Cast the input float to an unsigned integer. Any fractional bits are truncated
+// and negative values are clamped to 0.
+// Exceptional cases:
+// NaN                   -> uN[RESULT_SZ]::ZERO
+// +Inf                  -> uN[RESULT_SZ]::MAX
+// -Inf                  -> uN[RESULT_SZ]::ZERO
+// +0, -0, subnormal     -> uN[RESULT_SZ]::ZERO
+// > uN[RESULT_SZ]::MAX  -> uN[RESULT_SZ]::MAX
+// < uN[RESULT_SZ]::ZERO -> uN[RESULT_SZ]::ZERO
+pub fn to_uint<RESULT_SZ: u32, EXP_SZ: u32, FRACTION_SZ: u32>
+    (x: APFloat<EXP_SZ, FRACTION_SZ>) -> uN[RESULT_SZ] {
+    to_signed_or_unsigned_int<RESULT_SZ, false>(x)
+}
+
+#[test]
+fn to_uint_test() {
+    // +0
+    assert_eq(
+        u32:0,
+        to_uint<u32:32>(APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x0, fraction: u23:0x0 }));
+
+    // smallest positive subnormal
+    assert_eq(
+        u32:0,
+        to_uint<u32:32>(APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x0, fraction: u23:0x1 }));
+
+    // largest subnormal
+    assert_eq(
+        u32:0,
+        to_uint<u32:32>(APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x0, fraction: u23:0x7fffff }));
+
+    // smallest positive normal
+    assert_eq(
+        u32:0,
+        to_uint<u32:32>(APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x1, fraction: u23:0x0 }));
+
+    // largest < 1
+    assert_eq(
+        u32:0,
+        to_uint<u32:32>(
+            APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x7e, fraction: u23:0x7fffff }));
+
+    // 1
+    assert_eq(
+        u32:1,
+        to_uint<u32:32>(APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x7f, fraction: u23:0x0 }));
+
+    // smallest > 1
+    assert_eq(
+        u32:1,
+        to_uint<u32:32>(APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x7f, fraction: u23:0x1 }));
+
+    // pi
+    assert_eq(
+        u32:3,
+        to_uint<u32:32>(
+            APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x80, fraction: u23:0x490fdb }));
+
+    // largest normal
+    assert_eq(
+        u32::MAX,
+        to_uint<u32:32>(
+            APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0xfe, fraction: u23:0x7fffff }));
+
+    // inf
+    assert_eq(u32::MAX, to_uint<u32:32>(inf<u32:8, u32:23>(u1:0)));
+
+    // -0
+    assert_eq(
+        u32:0,
+        to_uint<u32:32>(APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x0, fraction: u23:0x0 }));
+
+    // -2
+    assert_eq(
+        u32:0,
+        to_uint<u32:32>(APFloat<u32:8, u32:23> { sign: u1:1, bexp: u8:0x80, fraction: u23:0x0 }));
+
+    // -2
+    assert_eq(
+        u32:0,
+        to_uint<u32:32>(APFloat<u32:8, u32:23> { sign: u1:1, bexp: u8:0x80, fraction: u23:0x0 }));
+
+    // largest < -2
+    assert_eq(
+        u32:0,
+        to_uint<u32:32>(APFloat<u32:8, u32:23> { sign: u1:1, bexp: u8:0x80, fraction: u23:0x1 }));
+
+    // -inf
+    assert_eq(u32:0, to_uint<u32:32>(inf<u32:8, u32:23>(u1:1)));
+
+    // nan
+    assert_eq(u32:0, to_uint<u32:32>(qnan<u32:8, u32:23>()));
+
+    // s32::MAX + 1.0, should fit as uint32.
+    assert_eq(
+        u32:0x80000000,
+        to_uint<u32:32>(APFloat<u32:8, u32:23> { sign: u1:0, bexp: u8:0x9e, fraction: u23:0x0 }));
+
+    // basic spot check with different format (bfloat16)
+    // smallest > 1
+    assert_eq(
+        u16:1,
+        to_uint<u32:16>(APFloat<u32:8, u32:7> { sign: u1:0, bexp: u8:0x7f, fraction: u7:0x1 }));
+
+    // largest normal
+    assert_eq(
+        u16::MAX,
+        to_uint<u32:16>(APFloat<u32:8, u32:7> { sign: u1:0, bexp: u8:0x0fe, fraction: u7:0x7f }));
+
+    // -2
+    assert_eq(
+        u4:0, to_uint<u32:4>(APFloat<u32:8, u32:7> { sign: u1:1, bexp: u8:0x80, fraction: u7:0 }));
 }
 
 fn compound_adder<WIDTH: u32>(a: uN[WIDTH], b: uN[WIDTH]) -> (uN[WIDTH], uN[WIDTH]) {
@@ -2899,4 +3219,100 @@ fn floor_zero_fractional_test() {
     let minus_one_f32 = one<EXP_SZ, FRACTION_SZ>(u1:1);
     let minus_zero_dot_5_f32 = F32 { sign: u1:1, ..zero_dot_5_f32 };
     assert_eq(floor(minus_zero_dot_5_f32), minus_one_f32);
+}
+
+// Returns an `APFloat` with all its `fraction` bits past the decimal point set to `0`.
+pub fn trunc<EXP_SZ: u32, FRACTION_SZ: u32>
+    (f: APFloat<EXP_SZ, FRACTION_SZ>) -> APFloat<EXP_SZ, FRACTION_SZ> {
+
+    match tag(f) {
+        APFloatTag::NAN => qnan<EXP_SZ, FRACTION_SZ>(),
+        APFloatTag::INFINITY => inf<EXP_SZ, FRACTION_SZ>(f.sign),
+        APFloatTag::ZERO => zero<EXP_SZ, FRACTION_SZ>(f.sign),
+        _ => {
+            if !has_fractional_part(f) {
+                f  // if no fractional part: already truncated.
+            } else if has_negative_exponent(f) {
+                zero<EXP_SZ, FRACTION_SZ>(f.sign)
+            } else {
+                round_down_no_sign_positive_exp(f)
+            }
+        },
+    }
+}
+
+#[test]
+fn trunc_fractional_midpoint_test() {
+    const EXP_SZ = u32:8;
+    const FRACTION_SZ = u32:23;
+    type F32 = APFloat<EXP_SZ, FRACTION_SZ>;
+    let one_f32 = one<EXP_SZ, FRACTION_SZ>(u1:0);
+    let two_f32 = add(one_f32, one_f32);
+    let two_dot_5_f32 = F32 { fraction: uN[FRACTION_SZ]:1 << (FRACTION_SZ - u32:2), ..two_f32 };
+    let minus_two_f32 = F32 { sign: u1:1, ..two_f32 };
+    let minus_two_dot_5_f32 = F32 { sign: u1:1, ..two_dot_5_f32 };
+    assert_eq(trunc(two_dot_5_f32), two_f32);
+    assert_eq(trunc(minus_two_dot_5_f32), minus_two_f32);
+}
+
+#[test]
+fn trunc_fractional_test() {
+    const EXP_SZ = u32:8;
+    const FRACTION_SZ = u32:23;
+    type F32 = APFloat<EXP_SZ, FRACTION_SZ>;
+    let one_f32 = one<EXP_SZ, FRACTION_SZ>(u1:0);
+    let two_f32 = add(one_f32, one_f32);
+    let two_dot_5000002_f32 =
+        F32 { fraction: uN[FRACTION_SZ]:1 << (FRACTION_SZ - u32:2) | uN[FRACTION_SZ]:1, ..two_f32 };
+    let minus_two_f32 = F32 { sign: u1:1, ..two_f32 };
+    let minus_two_dot_0000002_f32 = F32 { sign: u1:1, ..two_dot_5000002_f32 };
+    assert_eq(trunc(two_dot_5000002_f32), two_f32);
+    assert_eq(trunc(minus_two_dot_0000002_f32), minus_two_f32);
+}
+
+#[test]
+fn trunc_big_integral_test() {
+    const EXP_SZ = u32:8;
+    const FRACTION_SZ = u32:23;
+    type F32 = APFloat<EXP_SZ, FRACTION_SZ>;
+    let big_f32 = F32 { sign: u1:0, bexp: bias(sN[EXP_SZ]:32), fraction: uN[FRACTION_SZ]:0x123 };
+    assert_eq(trunc(big_f32), big_f32);
+}
+
+#[test]
+fn trunc_already_round_test() {
+    const EXP_SZ = u32:8;
+    const FRACTION_SZ = u32:23;
+    let one_f32 = one<EXP_SZ, FRACTION_SZ>(u1:0);
+    assert_eq(trunc(one_f32), one_f32);
+}
+
+#[test]
+fn trunc_special() {
+    const EXP_SZ = u32:8;
+    const FRACTION_SZ = u32:23;
+    type F32 = APFloat<EXP_SZ, FRACTION_SZ>;
+    let inf_f32 = inf<EXP_SZ, FRACTION_SZ>(u1:0);
+    assert_eq(trunc(inf_f32), inf_f32);
+    let minus_inf_f32 = F32 { sign: u1:1, ..inf_f32 };
+    assert_eq(trunc(minus_inf_f32), minus_inf_f32);
+    let zero_f32 = zero<EXP_SZ, FRACTION_SZ>(u1:0);
+    assert_eq(trunc(zero_f32), zero_f32);
+    let minus_zero_f32 = F32 { sign: u1:1, ..zero_f32 };
+    assert_eq(trunc(minus_zero_f32), minus_zero_f32);
+    let qnan_f32 = qnan<EXP_SZ, FRACTION_SZ>();
+    assert_eq(trunc(qnan_f32), qnan_f32);
+}
+
+#[test]
+fn trunc_zero_fractional_test() {
+    const EXP_SZ = u32:8;
+    const FRACTION_SZ = u32:23;
+    type F32 = APFloat<EXP_SZ, FRACTION_SZ>;
+    let zero_f32 = zero<EXP_SZ, FRACTION_SZ>(u1:0);
+    let zero_dot_5_f32 = F32 { fraction: uN[FRACTION_SZ]:1 << (FRACTION_SZ - u32:1), ..zero_f32 };
+    assert_eq(trunc(zero_dot_5_f32), zero_f32);
+    let minus_zero_f32 = zero<EXP_SZ, FRACTION_SZ>(u1:1);
+    let minus_zero_dot_5_f32 = F32 { sign: u1:1, ..zero_dot_5_f32 };
+    assert_eq(trunc(minus_zero_dot_5_f32), minus_zero_f32);
 }

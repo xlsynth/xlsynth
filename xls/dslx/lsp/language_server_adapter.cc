@@ -16,6 +16,7 @@
 
 #include <filesystem>  // NOLINT
 #include <memory>
+#include <new>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -25,11 +26,18 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
+#include "absl/strings/str_join.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
+#include "absl/types/span.h"
 #include "external/verible/common/lsp/lsp-file-utils.h"
 #include "external/verible/common/lsp/lsp-protocol-enums.h"
 #include "external/verible/common/lsp/lsp-protocol.h"
+#include "xls/common/casts.h"
+#include "xls/common/status/status_macros.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/extract_module_name.h"
 #include "xls/dslx/fmt/ast_fmt.h"
@@ -42,6 +50,8 @@
 #include "xls/dslx/lsp/find_definition.h"
 #include "xls/dslx/lsp/lsp_type_utils.h"
 #include "xls/dslx/parse_and_typecheck.h"
+#include "xls/dslx/type_system/type.h"
+#include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/warning_collector.h"
 #include "xls/dslx/warning_kind.h"
 
@@ -82,6 +92,46 @@ void AppendDiagnosticFromTypecheck(
   }
 }
 
+// If the span's filename is a relative path, we map it into a URI by finding
+// its path on disk.
+//
+// Note: there may be a more holistic way to do this long term -- the LSP
+// effectively requires us to create a filesystem overlay that mixes real files
+// and in-memory files with modifications. For now, this at least enables
+// things like go-to-definition in files that have not yet been loaded into the
+// language server.
+absl::StatusOr<std::string> MaybeRelpathToUri(
+    std::string_view path_or_uri,
+    absl::Span<const std::filesystem::path> dslx_paths) {
+  if (absl::StartsWith(path_or_uri, "file://") ||
+      absl::StartsWith(path_or_uri, "memfile://")) {
+    return std::string{path_or_uri};
+  }
+
+  std::vector<std::string> results;
+  for (std::filesystem::path dirpath : dslx_paths) {
+    if (dirpath.empty()) {
+      dirpath = std::filesystem::current_path();
+    }
+    std::filesystem::path full = dirpath / path_or_uri;
+    if (std::filesystem::exists(full)) {
+      results.push_back(absl::StrCat("file://", full.c_str()));
+    }
+  }
+
+  if (results.empty()) {
+    return absl::NotFoundError(absl::StrFormat(
+        "Could not find path to convert to URI: `%s`", path_or_uri));
+  }
+
+  if (results.size() > 1) {
+    LspLog() << "Found more than one URI for path: " << path_or_uri
+             << " results: " << absl::StrJoin(results, " :: ");
+  }
+
+  return results.at(0);
+}
+
 }  // namespace
 
 LanguageServerAdapter::LanguageServerAdapter(
@@ -89,7 +139,7 @@ LanguageServerAdapter::LanguageServerAdapter(
     const std::vector<std::filesystem::path>& dslx_paths)
     : stdlib_(stdlib), dslx_paths_(dslx_paths) {}
 
-const LanguageServerAdapter::ParseData* LanguageServerAdapter::FindParsedForUri(
+LanguageServerAdapter::ParseData* LanguageServerAdapter::FindParsedForUri(
     std::string_view uri) const {
   if (auto found = uri_parse_data_.find(uri); found != uri_parse_data_.end()) {
     return found->second.get();
@@ -161,21 +211,25 @@ LanguageServerAdapter::GenerateDocumentSymbols(std::string_view uri) const {
   return {};
 }
 
-std::vector<verible::lsp::Location> LanguageServerAdapter::FindDefinitions(
+absl::StatusOr<std::vector<verible::lsp::Location>>
+LanguageServerAdapter::FindDefinitions(
     std::string_view uri, const verible::lsp::Position& position) const {
   const Pos pos = ConvertLspPositionToPos(uri, position);
   VLOG(1) << "FindDefinition; uri: " << uri << " pos: " << pos;
-  if (const ParseData* parsed = FindParsedForUri(uri); parsed && parsed->ok()) {
-    std::optional<Span> maybe_definition_span =
-        xls::dslx::FindDefinition(parsed->module(), pos);
+  if (ParseData* parsed = FindParsedForUri(uri); parsed && parsed->ok()) {
+    std::optional<Span> maybe_definition_span = xls::dslx::FindDefinition(
+        parsed->module(), pos, parsed->type_info(), parsed->import_data);
     if (maybe_definition_span.has_value()) {
+      VLOG(1) << "FindDefinition; span: " << maybe_definition_span.value();
       verible::lsp::Location location =
           ConvertSpanToLspLocation(maybe_definition_span.value());
-      location.uri = uri;
-      return {location};
+      XLS_ASSIGN_OR_RETURN(
+          location.uri,
+          MaybeRelpathToUri(maybe_definition_span->filename(), dslx_paths_));
+      return std::vector<verible::lsp::Location>{location};
     }
   }
-  return {};
+  return std::vector<verible::lsp::Location>{};
 }
 
 absl::StatusOr<std::vector<verible::lsp::TextEdit>>
@@ -211,6 +265,47 @@ LanguageServerAdapter::ProvideImportLinks(std::string_view uri) const {
     }
   }
   return result;
+}
+
+absl::StatusOr<std::vector<verible::lsp::InlayHint>>
+LanguageServerAdapter::InlayHint(std::string_view uri,
+                                 const verible::lsp::Range& range) const {
+  std::vector<verible::lsp::InlayHint> results;
+  if (const ParseData* parsed = FindParsedForUri(uri); parsed && parsed->ok()) {
+    const Span want_span = ConvertLspRangeToSpan(uri, range);
+    const Module& module = parsed->module();
+    const TypeInfo& type_info = parsed->type_info();
+    // Get let bindings in the AST that fall in the given range.
+    const std::vector<const AstNode*> contained =
+        module.FindContained(want_span);
+    for (const AstNode* node : contained) {
+      if (node->kind() == AstNodeKind::kLet) {
+        const auto* let = down_cast<const Let*>(node);
+        if (let->type_annotation() != nullptr) {
+          // Already has a type annotated, no need for inlay.
+          continue;
+        }
+        const auto* name_def_tree = let->name_def_tree();
+        std::optional<Type*> maybe_type = type_info.GetItem(name_def_tree);
+        if (!maybe_type.has_value()) {
+          // Should not happen, but if it does somehow we don't want to crash
+          // the language server.
+          LspLog() << "No type information available for: "
+                   << name_def_tree->ToString() << " @ "
+                   << name_def_tree->span();
+          continue;
+        }
+        const Type& type = *maybe_type.value();
+        results.push_back(verible::lsp::InlayHint{
+            .position = ConvertPosToLspPosition(name_def_tree->span().limit()),
+            .label = absl::StrCat(": ", type.ToInlayHintString()),
+            .kind = verible::lsp::InlayHintKind::kType,
+            .paddingRight = true,
+        });
+      }
+    }
+  }
+  return results;
 }
 
 }  // namespace xls::dslx

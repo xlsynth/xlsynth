@@ -14,9 +14,9 @@
 
 # pytype binary and test
 load("@rules_python//python:proto.bzl", "py_proto_library")
-load("@xls_pip_deps//:requirements.bzl", "requirement")
-load("//xls/build_rules:xls_build_defs.bzl", "xls_ir_equivalence_test")
 # cc_proto_library is used in this file
+
+load("@xls_pip_deps//:requirements.bzl", "requirement")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -26,447 +26,6 @@ package(
         "parse_headers",
     ],
     licenses = ["notice"],  # Apache 2.0
-)
-
-cc_library(
-    name = "tool_timeout",
-    srcs = ["tool_timeout.cc"],
-    hdrs = ["tool_timeout.h"],
-    deps = [
-        "//xls/common:timeout_support",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/time",
-    ],
-)
-
-cc_binary(
-    name = "tool_timeout_test_main",
-    testonly = True,
-    srcs = ["tool_timeout_test_main.cc"],
-    deps = [
-        ":tool_timeout",
-        "//xls/common:exit_status",
-        "//xls/common:init_xls",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/time",
-    ],
-)
-
-py_test(
-    name = "tool_timeout_test",
-    srcs = ["tool_timeout_test.py"],
-    data = [":tool_timeout_test_main"],
-    python_version = "PY3",
-    srcs_version = "PY3",
-    deps = [
-        "//xls/common:runfiles",
-        "@com_google_absl_py//absl/testing:absltest",
-    ],
-)
-
-py_binary(
-    name = "package_bazel_build",
-    srcs = ["package_bazel_build.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
-    deps = [
-        "@com_google_absl_py//absl:app",
-        "@com_google_absl_py//absl/flags",
-        "@com_google_absl_py//absl/logging",
-    ],
-)
-
-sh_test(
-    name = "package_bazel_build_test",
-    srcs = ["package_bazel_build_test.sh"],
-    data = glob(["package_bazel_build_testdata/**"]) + [
-        ":package_bazel_build",
-    ],
-)
-
-py_binary(
-    name = "generate_vvp_runner",
-    srcs = ["generate_vvp_runner.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
-    deps = [
-        "@com_google_absl_py//absl:app",
-    ],
-)
-
-cc_library(
-    name = "booleanifier",
-    srcs = ["booleanifier.cc"],
-    hdrs = ["booleanifier.h"],
-    deps = [
-        "//xls/common/status:ret_check",
-        "//xls/common/status:status_macros",
-        "//xls/data_structures:leaf_type_tree",
-        "//xls/ir",
-        "//xls/ir:abstract_evaluator",
-        "//xls/ir:abstract_node_evaluator",
-        "//xls/ir:bits",
-        "//xls/ir:function_builder",
-        "//xls/ir:op",
-        "//xls/ir:type",
-        "//xls/ir:value",
-        "@com_google_absl//absl/algorithm:container",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:span",
-    ],
-)
-
-cc_test(
-    name = "booleanifier_test",
-    srcs = ["booleanifier_test.cc"],
-    data = ["//xls/examples/crc32:crc32.opt.ir"],
-    # 2021-01-29: //xls/tools/booleanifier_test --gtest_list_tests
-    # shows 4
-    shard_count = 4,
-    deps = [
-        ":booleanifier",
-        "//xls/common:xls_gunit_main",
-        "//xls/common/file:filesystem",
-        "//xls/common/file:get_runfile_path",
-        "//xls/common/status:matchers",
-        "//xls/common/status:status_macros",
-        "//xls/interpreter:ir_interpreter",
-        "//xls/ir",
-        "//xls/ir:bits",
-        "//xls/ir:events",
-        "//xls/ir:function_builder",
-        "//xls/ir:ir_test_base",
-        "//xls/ir:value",
-        "//xls/ir:value_builder",
-        "//xls/jit:function_jit",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/time",
-        "@com_google_googletest//:gtest",
-    ],
-)
-
-cc_library(
-    name = "extract_interface",
-    srcs = ["extract_interface.cc"],
-    hdrs = ["extract_interface.h"],
-    deps = [
-        "//xls/ir",
-        "//xls/ir:channel",
-        "//xls/ir:register",
-        "//xls/ir:xls_ir_interface_cc_proto",
-    ],
-)
-
-cc_binary(
-    name = "extract_interface_main",
-    srcs = ["extract_interface_main.cc"],
-    deps = [
-        ":extract_interface",
-        "//xls/common:exit_status",
-        "//xls/common:init_xls",
-        "//xls/common/file:filesystem",
-        "//xls/common/status:ret_check",
-        "//xls/common/status:status_macros",
-        "//xls/ir:xls_ir_interface_cc_proto",
-        "//xls/public:ir_parser",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/status",
-        "@com_google_protobuf//:protobuf",
-    ],
-)
-
-cc_test(
-    name = "extract_interface_test",
-    srcs = ["extract_interface_test.cc"],
-    deps = [
-        ":extract_interface",
-        "//xls/common:proto_test_utils",
-        "//xls/common:xls_gunit_main",
-        "//xls/common/status:matchers",
-        "//xls/ir:bits",
-        "//xls/ir:function_builder",
-        "//xls/ir:ir_test_base",
-        "//xls/ir:source_location",
-        "@com_google_googletest//:gtest",
-    ],
-)
-
-cc_binary(
-    name = "extract_sample_points_from_ir_main",
-    srcs = ["extract_sample_points_from_ir_main.cc"],
-    deps = [
-        "//xls/common:exit_status",
-        "//xls/common:init_xls",
-        "//xls/common/file:filesystem",
-        "//xls/common/status:status_macros",
-        "//xls/delay_model:delay_estimator",
-        "//xls/delay_model:delay_estimators",
-        "//xls/delay_model:delay_model_cc_proto",
-        "//xls/delay_model:sample_point_extraction_utils",
-        "//xls/ir:ir_parser",
-        "@com_google_absl//absl/algorithm:container",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/functional:any_invocable",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:str_format",
-        "@com_google_protobuf//:protobuf",
-    ],
-)
-
-py_test(
-    name = "extract_sample_points_from_ir_main_test",
-    srcs = ["extract_sample_points_from_ir_main_test.py"],
-    data = [":extract_sample_points_from_ir_main"],
-    python_version = "PY3",
-    srcs_version = "PY3",
-    deps = [
-        "//xls/common:gfile",
-        "//xls/common:runfiles",
-        "//xls/common:test_base",
-        "//xls/delay_model:delay_model_py_pb2",
-        "@com_google_absl_py//absl/testing:absltest",
-        "@com_google_protobuf//:protobuf_python",
-    ],
-)
-
-cc_library(
-    name = "extract_segment",
-    srcs = ["extract_segment.cc"],
-    hdrs = ["extract_segment.h"],
-    deps = [
-        "//xls/common/status:ret_check",
-        "//xls/common/status:status_macros",
-        "//xls/ir",
-        "//xls/ir:bits",
-        "//xls/ir:function_builder",
-        "//xls/ir:type",
-        "//xls/passes:node_dependency_analysis",
-        "@com_google_absl//absl/algorithm:container",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings:str_format",
-        "@com_google_absl//absl/types:span",
-    ],
-)
-
-cc_binary(
-    name = "extract_segment_main",
-    srcs = ["extract_segment_main.cc"],
-    deps = [
-        ":extract_segment",
-        "//xls/common:exit_status",
-        "//xls/common:init_xls",
-        "//xls/common/file:filesystem",
-        "//xls/common/status:ret_check",
-        "//xls/common/status:status_macros",
-        "//xls/ir",
-        "//xls/public:ir_parser",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-    ],
-)
-
-py_test(
-    name = "extract_segment_main_test",
-    srcs = ["extract_segment_main_test.py"],
-    data = [":extract_segment_main"],
-    python_version = "PY3",
-    srcs_version = "PY3",
-    deps = [
-        "//xls/common:runfiles",
-        "@com_google_absl_py//absl/testing:absltest",
-    ],
-)
-
-cc_test(
-    name = "extract_segment_test",
-    srcs = ["extract_segment_test.cc"],
-    deps = [
-        ":extract_segment",
-        "//xls/common:xls_gunit_main",
-        "//xls/common/status:matchers",
-        "//xls/ir:bits",
-        "//xls/ir:function_builder",
-        "//xls/ir:ir_matcher",
-        "//xls/ir:ir_test_base",
-        "@com_google_googletest//:gtest",
-    ],
-)
-
-cc_binary(
-    name = "booleanify_main",
-    srcs = ["booleanify_main.cc"],
-    visibility = ["//xls:xls_users"],
-    deps = [
-        ":booleanifier",
-        "//xls/common:exit_status",
-        "//xls/common:init_xls",
-        "//xls/common/file:filesystem",
-        "//xls/common/status:status_macros",
-        "//xls/ir",
-        "//xls/ir:ir_parser",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/status",
-    ],
-)
-
-cc_library(
-    name = "verilog_include",
-    hdrs = ["verilog_include.h"],
-)
-
-cc_library(
-    name = "remove_identifiers",
-    srcs = ["remove_identifiers.cc"],
-    hdrs = ["remove_identifiers.h"],
-    deps = [
-        "//xls/common/status:status_macros",
-        "//xls/ir",
-        "//xls/ir:channel",
-        "//xls/ir:op",
-        "//xls/ir:register",
-        "//xls/ir:source_location",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings:str_format",
-    ],
-)
-
-cc_test(
-    name = "remove_identifiers_test",
-    srcs = ["remove_identifiers_test.cc"],
-    deps = [
-        ":remove_identifiers",
-        "//xls/common:xls_gunit_main",
-        "//xls/common/status:matchers",
-        "//xls/ir",
-        "//xls/ir:bits",
-        "//xls/ir:function_builder",
-        "//xls/ir:ir_test_base",
-        "//xls/ir:register",
-        "//xls/ir:source_location",
-        "//xls/ir:value",
-        "@com_google_absl//absl/algorithm:container",
-        "@com_google_googletest//:gtest",
-    ],
-)
-
-cc_binary(
-    name = "remove_identifiers_main",
-    srcs = ["remove_identifiers_main.cc"],
-    deps = [
-        ":remove_identifiers",
-        "//xls/common:exit_status",
-        "//xls/common:init_xls",
-        "//xls/common/file:filesystem",
-        "//xls/common/status:status_macros",
-        "//xls/ir",
-        "//xls/ir:ir_parser",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/strings:str_format",
-    ],
-)
-
-cc_binary(
-    name = "ir_stats_main",
-    srcs = ["ir_stats_main.cc"],
-    deps = [
-        "//xls/common:exit_status",
-        "//xls/common:init_xls",
-        "//xls/common/file:filesystem",
-        "//xls/common/status:status_macros",
-        "//xls/ir:ir_parser",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/status",
-    ],
-)
-
-cc_binary(
-    name = "check_ir_equivalence_main",
-    srcs = ["check_ir_equivalence_main.cc"],
-    visibility = ["//xls:xls_users"],
-    deps = [
-        "//xls/common:exit_status",
-        "//xls/common:init_xls",
-        "//xls/common/file:filesystem",
-        "//xls/common/status:ret_check",
-        "//xls/common/status:status_macros",
-        "//xls/ir",
-        "//xls/ir:format_preference",
-        "//xls/ir:ir_parser",
-        "//xls/ir:value",
-        "//xls/passes:dce_pass",
-        "//xls/passes:inlining_pass",
-        "//xls/passes:map_inlining_pass",
-        "//xls/passes:optimization_pass",
-        "//xls/passes:pass_base",
-        "//xls/passes:unroll_pass",
-        "//xls/solvers:z3_ir_equivalence",
-        "//xls/solvers:z3_ir_translator",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/time",
-    ],
-)
-
-xls_ir_equivalence_test(
-    name = "equiv_test",
-    src_0 = "testdata/add_big.ir",
-    src_1 = "testdata/add_big.ir",
-)
-
-xls_ir_equivalence_test(
-    name = "not_equiv_test",
-    expect_equivalent = False,
-    src_0 = "testdata/add_big.ir",
-    src_1 = "testdata/add_small.ir",
-)
-
-filegroup(
-    name = "check_ir_equivalence_sh",
-    srcs = ["check_ir_equivalence.sh"],
-    visibility = ["//xls:xls_users"],
-)
-
-cc_binary(
-    name = "extract_stage_main",
-    srcs = ["extract_stage_main.cc"],
-    deps = [
-        "//xls/common:exit_status",
-        "//xls/common:init_xls",
-        "//xls/common/file:filesystem",
-        "//xls/common/status:status_macros",
-        "//xls/ir",
-        "//xls/ir:ir_parser",
-        "//xls/scheduling:extract_stage",
-        "//xls/scheduling:pipeline_schedule",
-        "//xls/scheduling:pipeline_schedule_cc_proto",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/status",
-    ],
 )
 
 cc_binary(
@@ -502,60 +61,6 @@ cc_binary(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/synchronization",
         "@z3//:api",
-    ],
-)
-
-cc_binary(
-    name = "netlist_interpreter_main",
-    srcs = ["netlist_interpreter_main.cc"],
-    deps = [
-        "//xls/codegen:flattening",
-        "//xls/common:exit_status",
-        "//xls/common:init_xls",
-        "//xls/common/file:filesystem",
-        "//xls/common/status:ret_check",
-        "//xls/common/status:status_macros",
-        "//xls/ir",
-        "//xls/ir:bits",
-        "//xls/ir:bits_ops",
-        "//xls/ir:format_preference",
-        "//xls/ir:ir_parser",
-        "//xls/ir:type",
-        "//xls/ir:value",
-        "//xls/netlist",
-        "//xls/netlist:cell_library",
-        "//xls/netlist:function_extractor",
-        "//xls/netlist:interpreter",
-        "//xls/netlist:lib_parser",
-        "//xls/netlist:netlist_cc_proto",
-        "//xls/netlist:netlist_parser",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:span",
-    ],
-)
-
-netlist_interpreter_main_test_data = [
-    "testdata/sqrt.v",
-    "testdata/ifte.v",
-    "testdata/simple_cell.lib",
-]
-
-py_test(
-    name = "netlist_interpreter_main_test",
-    srcs = ["netlist_interpreter_main_test.py"],
-    data = glob(netlist_interpreter_main_test_data) + [
-        ":netlist_interpreter_main",
-    ],
-    main = "netlist_interpreter_main_test.py",
-    python_version = "PY3",
-    srcs_version = "PY3",
-    deps = [
-        "//xls/common:runfiles",
-        "//xls/common:test_base",
     ],
 )
 
@@ -923,11 +428,11 @@ cc_binary(
     visibility = ["//xls:xls_users"],
     deps = [
         ":opt",
-        ":tool_timeout",
         "//xls/common:exit_status",
         "//xls/common:init_xls",
         "//xls/common/file:filesystem",
         "//xls/common/status:status_macros",
+        "//xls/dev_tools:tool_timeout",
         "//xls/passes:optimization_pass",
         "//xls/passes:optimization_pass_pipeline",
         "@com_google_absl//absl/cleanup",
@@ -962,7 +467,6 @@ cc_binary(
         ":opt_main",
     ],
     deps = [
-        ":extract_segment",
         "//xls/common:exit_status",
         "//xls/common:init_xls",
         "//xls/common:subprocess",
@@ -973,6 +477,7 @@ cc_binary(
         "//xls/common/status:status_macros",
         "//xls/data_structures:binary_search",
         "//xls/data_structures:inline_bitmap",
+        "//xls/dev_tools:extract_segment",
         "//xls/interpreter:ir_interpreter",
         "//xls/ir",
         "//xls/ir:channel",
@@ -1164,8 +669,8 @@ cc_library(
         ":scheduling_options_flags_cc_proto",
         "//xls/common/file:filesystem",
         "//xls/common/status:status_macros",
-        "//xls/delay_model:delay_estimator",
-        "//xls/delay_model:delay_estimators",
+        "//xls/estimators/delay_model:delay_estimator",
+        "//xls/estimators/delay_model:delay_estimators",
         "//xls/fdo:synthesizer",
         "//xls/ir",
         "//xls/scheduling:scheduling_options",
@@ -1231,8 +736,8 @@ cc_library(
         "//xls/common:stopwatch",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
-        "//xls/delay_model:delay_estimator",
-        "//xls/delay_model:ffi_delay_estimator",
+        "//xls/estimators/delay_model:delay_estimator",
+        "//xls/estimators/delay_model:ffi_delay_estimator",
         "//xls/fdo:synthesizer",
         "//xls/ir",
         "//xls/ir:op",
@@ -1261,13 +766,13 @@ cc_binary(
         ":codegen_flags_cc_proto",
         ":scheduling_options_flags",
         ":scheduling_options_flags_cc_proto",
-        ":tool_timeout",
         "//xls/codegen:module_signature",
         "//xls/common:exit_status",
         "//xls/common:init_xls",
         "//xls/common/file:filesystem",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
+        "//xls/dev_tools:tool_timeout",
         "//xls/ir",
         "//xls/ir:ir_parser",
         "//xls/ir:verifier",
@@ -1382,9 +887,9 @@ cc_binary(
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
         "//xls/data_structures:binary_decision_diagram",
-        "//xls/delay_model:analyze_critical_path",
-        "//xls/delay_model:delay_estimator",
-        "//xls/delay_model:delay_estimators",
+        "//xls/estimators/delay_model:analyze_critical_path",
+        "//xls/estimators/delay_model:delay_estimator",
+        "//xls/estimators/delay_model:delay_estimators",
         "//xls/fdo:grpc_synthesizer",
         "//xls/fdo:synthesized_delay_diff_utils",
         "//xls/fdo:synthesizer",
@@ -1651,10 +1156,10 @@ cc_binary(
         "//xls/common:init_xls",
         "//xls/common/file:filesystem",
         "//xls/common/status:status_macros",
-        "//xls/delay_model:analyze_critical_path",
-        "//xls/delay_model:delay_estimator",
-        "//xls/delay_model:delay_estimators",
-        "//xls/delay_model:delay_info_cc_proto",
+        "//xls/estimators/delay_model:analyze_critical_path",
+        "//xls/estimators/delay_model:delay_estimator",
+        "//xls/estimators/delay_model:delay_estimators",
+        "//xls/estimators/delay_model:delay_info_cc_proto",
         "//xls/fdo:grpc_synthesizer",
         "//xls/fdo:synthesized_delay_diff_utils",
         "//xls/fdo:synthesizer",
@@ -1711,7 +1216,7 @@ cc_binary(
         "//xls/common/file:filesystem",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
-        "//xls/delay_model:delay_estimator",
+        "//xls/estimators/delay_model:delay_estimator",
         "//xls/ir",
         "//xls/ir:ir_parser",
         "//xls/scheduling:pipeline_schedule",
@@ -1820,8 +1325,8 @@ py_binary(
     srcs_version = "PY3",
     deps = [
         requirement("numpy"),
-        "//xls/delay_model",
-        "//xls/delay_model:delay_model_py_pb2",
+        "//xls/estimators/delay_model",
+        "//xls/estimators/delay_model:delay_model_py_pb2",
         "@com_google_absl_py//absl:app",
         "@com_google_absl_py//absl/flags",
         "@com_google_absl_py//absl/logging",

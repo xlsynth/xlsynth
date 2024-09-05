@@ -254,12 +254,23 @@ as the [rounding mode](https://en.wikipedia.org/wiki/Rounding).
 ### `apfloat::upcast`
 
 ```dslx-snippet
-fn upcast<TO_EXP_SZ: u32, TO_FRACTION_SZ: u32, FROM_EXP_SZ: u32, FROM_FRACTION_SZ: u32>
+pub fn upcast<TO_EXP_SZ: u32, TO_FRACTION_SZ: u32, FROM_EXP_SZ: u32, FROM_FRACTION_SZ: u32>
     (f: APFloat<FROM_EXP_SZ, FROM_FRACTION_SZ>) -> APFloat<TO_EXP_SZ, TO_FRACTION_SZ> {
 ```
 
 Upcast the given apfloat to another (larger) apfloat representation. Note:
 denormal inputs get flushed to zero.
+
+### `apfloat::downcast_fractional_rne`
+
+```dslx-snippet
+pub fn downcast_fractional_rne<TO_FRACTION_SZ: u32, FROM_FRACTION_SZ: u32, EXP_SZ: u32>
+    (f: APFloat<EXP_SZ, FROM_FRACTION_SZ>) -> APFloat<EXP_SZ, TO_FRACTION_SZ> {
+```
+
+Round the apfloat to lower precision in fractional bits, while the exponent size
+remains fixed. Ties round to even (LSB = 0) and denormal inputs get flushed to
+zero.
 
 ### `apfloat::normalize`
 
@@ -352,16 +363,6 @@ pub fn lt_2<EXP_SZ: u32, FRACTION_SZ: u32>(
 Returns `true` if `x < y`. Denormals are Zero (DAZ). Always returns `false` if
 `x` or `y` is `NaN`.
 
-### `apfloat::round_towards_zero`
-
-```dslx-snippet
-pub fn round_towards_zero<EXP_SZ:u32, FRACTION_SZ:u32>(
-                          x: APFloat<EXP_SZ, FRACTION_SZ>)
-    -> APFloat<EXP_SZ, FRACTION_SZ>
-```
-
-Returns an `APFloat` with all its bits past the decimal point set to `0`.
-
 ### `apfloat::to_int`
 
 ```dslx-snippet
@@ -371,6 +372,41 @@ pub fn to_int<EXP_SZ: u32, FRACTION_SZ: u32, RESULT_SZ:u32>(
 
 Returns the signed integer part of the input float, truncating any fractional
 bits if necessary.
+
+Exceptional cases:
+
+X operand                          | `sN[RESULT_SZ]` value
+---------------------------------- | -----------------------
+`NaN`                              | `sN[RESULT_SZ]::ZERO`
+`+Inf`                             | `sN[RESULT_SZ]::MAX`
+`-Inf`                             | `sN[RESULT_SZ]::MIN`[^1]
++0.0, -0.0 or any subnormal number | `sN[RESULT_SZ]::ZERO`
+`> sN[RESULT_SZ]::MAX`             | `sN[RESULT_SZ]::MAX`
+`< sN[RESULT_SZ]::MIN`             | `sN[RESULT_SZ]::MIN`
+
+[^1]: Does not exist yet (https://github.com/google/xls/issues/1556) but used
+    here for clarity.
+
+### `apfloat::to_uint`
+
+```dslx-snippet
+pub fn to_uint<RESULT_SZ:u32, EXP_SZ: u32, FRACTION_SZ: u32>(
+               x: APFloat<EXP_SZ, FRACTION_SZ>) -> uN[RESULT_SZ]
+```
+
+Casts the input float to the nearest unsigned integer. Any fractional bits are
+truncated and negative floats are clamped to 0.
+
+Exceptional cases:
+
+X operand                          | `uN[RESULT_SZ]` value
+---------------------------------- | ---------------------
+`NaN`                              | `uN[RESULT_SZ]::ZERO`
+`+Inf`                             | `uN[RESULT_SZ]::MAX`
+`-Inf`                             | `uN[RESULT_SZ]::ZERO`
++0.0, -0.0 or any subnormal number | `uN[RESULT_SZ]::ZERO`
+`> uN[RESULT_SZ]::MAX`             | `uN[RESULT_SZ]::MAX`
+`< uN[RESULT_SZ]::ZERO`            | `uN[RESULT_SZ]::ZERO`
 
 ### `apfloat::add/sub`
 
@@ -418,7 +454,8 @@ pub fn ceil<EXP_SZ: u32, FRACTION_SZ: u32>
     (f: APFloat<EXP_SZ, FRACTION_SZ>) -> APFloat<EXP_SZ, FRACTION_SZ>
 ```
 
-Finds the nearest integral `APFloat` greater than or equal to `f`.
+Returns the nearest integral `APFloat` of the same precision as `f` whose value
+is greater than or equal to `f`.
 
 ### `apfloat::floor`
 
@@ -427,7 +464,19 @@ pub fn floor<EXP_SZ: u32, FRACTION_SZ: u32>
     (f: APFloat<EXP_SZ, FRACTION_SZ>) -> APFloat<EXP_SZ, FRACTION_SZ>
 ```
 
-Finds the nearest integral `APFloat` lesser than or equal to `f`.
+Returns the nearest integral `APFloat` of the same precision as `f` whose value
+is lesser than or equal to `f`.
+
+### `apfloat::trunc`
+
+```dslx-snippet
+pub fn trunc<EXP_SZ:u32, FRACTION_SZ:u32>(
+                          x: APFloat<EXP_SZ, FRACTION_SZ>)
+    -> APFloat<EXP_SZ, FRACTION_SZ>
+```
+
+Returns an `APFloat` of the same precision as `f` with all the fractional bits
+set to `0`.
 
 #### Implementation details
 
@@ -618,12 +667,16 @@ pub const F32_ONE_FLAT = u32:0x3f800000;
 Besides `float32` specializations of the functions in `apfloat.x`, the following
 functions are defined just for `float32`.
 
-### `float32::to_int32`, `float32::from_int32`
+### `float32::to_int32`, `float32::to_uint32`, `float32::from_int32`
+
 ```dslx-snippet
 pub fn to_int32(x: F32) -> s32
+pub fn to_uint32(x: F32) -> u32
 pub fn from_int32(x: s32) -> F32
 ```
-Convert the `F32` struct to and from a 32bit integer.
+
+Convert the `F32` struct to a 32 bit signed/unsigned integer, or from a 32 bit
+signed integer to an `F32`.
 
 # `float32::fixed_fraction`
 ```dslx-snippet
@@ -671,19 +724,14 @@ pub type TaggedBF16 = (FloatTag, BF16);
 Besides `bfloat16` specializations of the functions in `apfloat.x`, the following
 functions are defined just for `bfloat16`.
 
-### `bfloat16:to_int16`
+### `bfloat16:to_int16`, `bfloat16:to_uint16`
+
 ```dslx-snippet
 pub fn to_int16(x: BF16) -> s16
-```
-Convert the the `BF16` struct into a 16 bit integer.
-
-### `bfloat16:increment_fraction`
-```dslx-snippet
-pub fn increment_fraction(input: BF16) -> BF16
+pub fn to_uint16(x: BF16) -> u16
 ```
 
-Increments the fraction of the input BF16 by one and returns the normalized
-result. Input must be a normal *non-zero* number.
+Convert the `BF16` struct to a 16 bit signed/unsigned integer.
 
 ### `bfloat16::from_int8`
 ```dslx-snippet
@@ -692,6 +740,22 @@ pub fn from_int8(x: s8) -> BF16
 
 Converts the given signed integer to bfloat16. For s8, all values can be
 captured exactly, so no need to round or handle overflow.
+
+### `bfloat16::from_float32`
+```dslx-snippet
+pub fn from_float32(x: F32) -> BF16
+```
+
+Converts the given float32 to bfloat16. Ties round to even (LSB = 0) and
+denormal inputs get flushed to zero.
+
+### `bfloat16:increment_fraction`
+```dslx-snippet
+pub fn increment_fraction(input: BF16) -> BF16
+```
+
+Increments the fraction of the input BF16 by one and returns the normalized
+result. Input must be a normal *non-zero* number.
 
 ## Testing
 
@@ -706,11 +770,11 @@ When comparing to a reference, a natural question is the stability of the
 reference, i.e., is the reference answer the same across all versions or
 environments? Will the answer given by glibc/libm on AArch64 be the same as one
 given by a hardware FMA unit on a GPU? Fortunately, all "correct"
-implementations will give the same results for the same inputs. [^1] In
+implementations will give the same results for the same inputs. [^2] In
 addition, POSIX has the same result-precision language. It's worth noting that
 -ffast-math doesn't currently affect FMA emission/fusion/fission/etc.
 
-[^1]: There are operations for which this is not true. Transcendental ops may
+[^2]: There are operations for which this is not true. Transcendental ops may
 
 differ between implementations due to the
 [*table maker's dilemma*](https://en.wikipedia.org/wiki/Rounding).

@@ -308,6 +308,7 @@ def get_ir_equivalence_test_cmd(
     ir_equivalence_tool = ctx.executable._xls_ir_equivalence_tool
     IR_EQUIVALENCE_FLAGS = (
         "timeout",
+        "activation_count",
     )
 
     ir_equivalence_args = dict(ctx.attr.ir_equivalence_args)
@@ -879,7 +880,7 @@ xls_ir_equivalence_test_attrs = {
     "ir_equivalence_args": attr.string_dict(
         doc = "Arguments of the IR equivalence tool. For details on the " +
               "arguments, refer to the check_ir_equivalence_main application " +
-              "at //xls/tools/check_ir_equivalence_main.cc. " +
+              "at //xls/dev_tools/check_ir_equivalence_main.cc. " +
               "The 'function' argument is not assigned using this attribute.",
     ),
     "expect_equivalent": attr.bool(

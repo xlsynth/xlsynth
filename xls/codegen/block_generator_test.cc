@@ -46,8 +46,8 @@
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
-#include "xls/delay_model/delay_estimator.h"
-#include "xls/delay_model/delay_estimators.h"
+#include "xls/estimators/delay_model/delay_estimator.h"
+#include "xls/estimators/delay_model/delay_estimators.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/block.h"
 #include "xls/ir/channel.h"
@@ -70,11 +70,11 @@
 #include "xls/simulation/module_testbench.h"
 #include "xls/simulation/module_testbench_thread.h"
 #include "xls/simulation/testbench_signal_capture.h"
+#include "xls/simulation/verilog_include.h"
 #include "xls/simulation/verilog_test_base.h"
 #include "xls/tools/codegen.h"
 #include "xls/tools/codegen_flags.pb.h"
 #include "xls/tools/scheduling_options_flags.pb.h"
-#include "xls/tools/verilog_include.h"
 
 namespace xls {
 namespace verilog {
@@ -530,7 +530,7 @@ TEST_P(BlockGeneratorTest, BlockWithAssertNoLabel) {
       EXPECT_THAT(
           verilog,
           HasSubstr(
-              R"(assert property (@(posedge my_clk) disable iff ($sampled(my_rst)) a_d < 32'h0000_002a) else $fatal(0, "a is not greater than 42");)"));
+              R"(assert property (@(posedge my_clk) disable iff ($sampled(my_rst || $isunknown(a_d < 32'h0000_002a))) a_d < 32'h0000_002a) else $fatal(0, "a is not greater than 42");)"));
     } else {
       EXPECT_THAT(verilog, Not(HasSubstr("assert")));
     }

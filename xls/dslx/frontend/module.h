@@ -44,6 +44,10 @@ using ModuleMember =
                  TypeAlias*, StructDef*, ConstantDef*, EnumDef*, Import*,
                  ConstAssert*>;
 
+// Note: this returns nullptr for constructs that do not define a name, e.g.
+// `ConstAssert`.
+NameDef* ModuleMemberGetNameDef(const ModuleMember& mm);
+
 // Returns the starting position of the given module member.
 //
 // This is sometimes used in reporting; e.g. for test metadata, instead of a
@@ -227,6 +231,9 @@ class Module : public AstNode {
   // Finds all the AST nodes in the module with spans that intercept the given
   // "target" position.
   std::vector<const AstNode*> FindIntercepting(const Pos& target) const;
+
+  // Finds all the AST nodes that fall within the given span.
+  std::vector<const AstNode*> FindContained(const Span& target) const;
 
   // Tags this module as having the given module-level annotation "annotation".
   void AddAnnotation(ModuleAnnotation annotation) {
