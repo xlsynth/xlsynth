@@ -52,7 +52,7 @@ jobs:
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main osx-artifacts-arm64/ir_converter_main-arm64
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: osx-artifacts-arm64
         path: osx-artifacts-arm64/
@@ -100,7 +100,7 @@ jobs:
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main osx-artifacts-x64/ir_converter_main-x64
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: osx-artifacts-x64
         path: osx-artifacts-x64/
@@ -161,7 +161,7 @@ jobs:
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main rocky8-artifacts/ir_converter_main-rocky8
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: rocky8-artifacts
         path: rocky8-artifacts/
@@ -215,7 +215,7 @@ jobs:
       run: tar -czvvf ubuntu2004-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: ubuntu2004-artifacts
         path: ubuntu2004-artifacts/
@@ -271,7 +271,7 @@ jobs:
       run: tar -czvvf ubuntu2204-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: ubuntu2204-artifacts
         path: ubuntu2204-artifacts/
