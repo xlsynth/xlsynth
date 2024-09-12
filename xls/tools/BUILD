@@ -104,6 +104,7 @@ cc_binary(
         "//xls/common/file:filesystem",
         "//xls/common/status:status_macros",
         "//xls/dslx/frontend:module",
+        "//xls/dslx/frontend:pos",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
@@ -121,6 +122,7 @@ cc_test(
         "//xls/common/file:temp_file",
         "//xls/common/status:matchers",
         "//xls/dslx/frontend:module",
+        "//xls/dslx/frontend:pos",
         "@com_google_googletest//:gtest",
         "@com_google_protobuf//:protobuf",
     ],
@@ -393,6 +395,7 @@ cc_binary(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:span",
     ],
 )
@@ -457,73 +460,6 @@ py_test(
     deps = [
         "//xls/common:runfiles",
         "//xls/common:test_base",
-    ],
-)
-
-cc_binary(
-    name = "ir_minimizer_main",
-    srcs = ["ir_minimizer_main.cc"],
-    data = [
-        ":opt_main",
-    ],
-    deps = [
-        "//xls/common:exit_status",
-        "//xls/common:init_xls",
-        "//xls/common:subprocess",
-        "//xls/common/file:filesystem",
-        "//xls/common/file:temp_file",
-        "//xls/common/logging:log_lines",
-        "//xls/common/status:ret_check",
-        "//xls/common/status:status_macros",
-        "//xls/data_structures:binary_search",
-        "//xls/data_structures:inline_bitmap",
-        "//xls/dev_tools:extract_segment",
-        "//xls/interpreter:ir_interpreter",
-        "//xls/ir",
-        "//xls/ir:channel",
-        "//xls/ir:channel_ops",
-        "//xls/ir:events",
-        "//xls/ir:function_builder",
-        "//xls/ir:ir_parser",
-        "//xls/ir:node_util",
-        "//xls/ir:op",
-        "//xls/ir:source_location",
-        "//xls/ir:type",
-        "//xls/ir:value",
-        "//xls/ir:value_utils",
-        "//xls/ir:verifier",
-        "//xls/jit:function_jit",
-        "//xls/passes:arith_simplification_pass",
-        "//xls/passes:array_simplification_pass",
-        "//xls/passes:bit_slice_simplification_pass",
-        "//xls/passes:concat_simplification_pass",
-        "//xls/passes:constant_folding_pass",
-        "//xls/passes:cse_pass",
-        "//xls/passes:dataflow_simplification_pass",
-        "//xls/passes:dce_pass",
-        "//xls/passes:dfe_pass",
-        "//xls/passes:inlining_pass",
-        "//xls/passes:map_inlining_pass",
-        "//xls/passes:optimization_pass",
-        "//xls/passes:optimization_pass_pipeline",
-        "//xls/passes:pass_base",
-        "//xls/passes:proc_state_flattening_pass",
-        "//xls/passes:proc_state_optimization_pass",
-        "//xls/passes:unroll_pass",
-        "@com_google_absl//absl/algorithm:container",
-        "@com_google_absl//absl/container:btree",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/random:bit_gen_ref",
-        "@com_google_absl//absl/random:distributions",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:str_format",
-        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -669,15 +605,10 @@ cc_library(
         ":scheduling_options_flags_cc_proto",
         "//xls/common/file:filesystem",
         "//xls/common/status:status_macros",
-        "//xls/estimators/delay_model:delay_estimator",
-        "//xls/estimators/delay_model:delay_estimators",
-        "//xls/fdo:synthesizer",
-        "//xls/ir",
-        "//xls/scheduling:scheduling_options",
+        "//xls/passes:optimization_pass",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
     ],
 )
@@ -725,7 +656,6 @@ cc_library(
     hdrs = ["codegen.h"],
     deps = [
         ":codegen_flags_cc_proto",
-        ":scheduling_options_flags",
         ":scheduling_options_flags_cc_proto",
         "//xls/codegen:codegen_options",
         "//xls/codegen:combinational_generator",
@@ -777,6 +707,7 @@ cc_binary(
         "//xls/ir:ir_parser",
         "//xls/ir:verifier",
         "//xls/scheduling:pipeline_schedule_cc_proto",
+        "//xls/scheduling:scheduling_options",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
@@ -855,89 +786,6 @@ py_test(
         "@com_google_absl_py//absl/testing:absltest",
         "@com_google_absl_py//absl/testing:parameterized",
         "@com_google_protobuf//:protobuf_python",
-    ],
-)
-
-filegroup(
-    name = "benchmark_test_sh",
-    srcs = ["benchmark_test.sh"],
-    visibility = ["//xls:xls_users"],
-)
-
-filegroup(
-    name = "benchmark_eval_test_sh",
-    srcs = ["benchmark_eval_test.sh"],
-    visibility = ["//xls:xls_users"],
-)
-
-cc_binary(
-    name = "benchmark_main",
-    srcs = ["benchmark_main.cc"],
-    visibility = ["//xls:xls_users"],
-    deps = [
-        ":codegen",
-        ":codegen_flags",
-        ":codegen_flags_cc_proto",
-        ":scheduling_options_flags",
-        ":scheduling_options_flags_cc_proto",
-        "//xls/codegen:module_signature",
-        "//xls/common:exit_status",
-        "//xls/common:init_xls",
-        "//xls/common/file:filesystem",
-        "//xls/common/status:ret_check",
-        "//xls/common/status:status_macros",
-        "//xls/data_structures:binary_decision_diagram",
-        "//xls/estimators/delay_model:analyze_critical_path",
-        "//xls/estimators/delay_model:delay_estimator",
-        "//xls/estimators/delay_model:delay_estimators",
-        "//xls/fdo:grpc_synthesizer",
-        "//xls/fdo:synthesized_delay_diff_utils",
-        "//xls/fdo:synthesizer",
-        "//xls/interpreter:block_evaluator",
-        "//xls/interpreter:ir_interpreter",
-        "//xls/interpreter:random_value",
-        "//xls/ir",
-        "//xls/ir:events",
-        "//xls/ir:ir_parser",
-        "//xls/ir:op",
-        "//xls/ir:type",
-        "//xls/ir:value",
-        "//xls/jit:block_jit",
-        "//xls/jit:function_jit",
-        "//xls/jit:jit_channel_queue",
-        "//xls/jit:jit_runtime",
-        "//xls/jit:orc_jit",
-        "//xls/jit:proc_jit",
-        "//xls/passes:bdd_function",
-        "//xls/passes:bdd_query_engine",
-        "//xls/passes:optimization_pass",
-        "//xls/passes:optimization_pass_pipeline",
-        "//xls/passes:pass_base",
-        "//xls/passes:query_engine",
-        "//xls/scheduling:pipeline_schedule",
-        "@com_google_absl//absl/algorithm:container",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:str_format",
-        "@com_google_absl//absl/time",
-        "@com_google_absl//absl/types:span",
-    ],
-)
-
-py_test(
-    name = "ir_minimizer_main_test",
-    srcs = ["ir_minimizer_main_test.py"],
-    data = ["ir_minimizer_main"],
-    python_version = "PY3",
-    srcs_version = "PY3",
-    deps = [
-        "//xls/common:runfiles",
-        "@com_google_absl_py//absl/testing:absltest",
     ],
 )
 
@@ -1127,6 +975,7 @@ cc_binary(
         "//xls/dslx:warning_kind",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:parser",
+        "//xls/dslx/frontend:pos",
         "//xls/dslx/frontend:scanner",
         "//xls/dslx/ir_convert:conversion_info",
         "//xls/dslx/ir_convert:convert_options",
@@ -1196,57 +1045,6 @@ cc_binary(
     ],
 )
 
-cc_binary(
-    name = "benchmark_codegen_main",
-    srcs = ["benchmark_codegen_main.cc"],
-    deps = [
-        ":codegen",
-        ":codegen_flags",
-        ":codegen_flags_cc_proto",
-        ":scheduling_options_flags",
-        ":scheduling_options_flags_cc_proto",
-        "//xls/codegen:block_metrics",
-        "//xls/codegen:codegen_options",
-        "//xls/codegen:combinational_generator",
-        "//xls/codegen:module_signature",
-        "//xls/codegen:pipeline_generator",
-        "//xls/codegen:xls_metrics_cc_proto",
-        "//xls/common:exit_status",
-        "//xls/common:init_xls",
-        "//xls/common/file:filesystem",
-        "//xls/common/status:ret_check",
-        "//xls/common/status:status_macros",
-        "//xls/estimators/delay_model:delay_estimator",
-        "//xls/ir",
-        "//xls/ir:ir_parser",
-        "//xls/scheduling:pipeline_schedule",
-        "//xls/scheduling:run_pipeline_schedule",
-        "//xls/scheduling:scheduling_options",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:str_format",
-        "@com_google_absl//absl/time",
-    ],
-)
-
-py_test(
-    name = "benchmark_codegen_main_test",
-    srcs = ["benchmark_codegen_main_test.py"],
-    data = [
-        ":benchmark_codegen_main",
-    ],
-    python_version = "PY3",
-    srcs_version = "PY3",
-    deps = [
-        "//xls/common:runfiles",
-        "//xls/common:test_base",
-        "@com_google_absl_py//absl/testing:absltest",
-    ],
-)
-
 py_test(
     name = "delay_info_main_test",
     srcs = ["delay_info_main_test.py"],
@@ -1262,8 +1060,8 @@ py_test(
 )
 
 py_binary(
-    name = "run_timing_characterization",
-    srcs = ["run_timing_characterization.py"],
+    name = "run_op_characterization",
+    srcs = ["run_op_characterization.py"],
     python_version = "PY3",
     srcs_version = "PY3",
     deps = [
@@ -1319,14 +1117,14 @@ py_test(
 )
 
 py_binary(
-    name = "delay_model_stats",
-    srcs = ["delay_model_stats.py"],
+    name = "estimator_model_stats",
+    srcs = ["estimator_model_stats.py"],
     python_version = "PY3",
     srcs_version = "PY3",
     deps = [
         requirement("numpy"),
-        "//xls/estimators/delay_model",
-        "//xls/estimators/delay_model:delay_model_py_pb2",
+        "//xls/estimators:estimator_model",
+        "//xls/estimators:estimator_model_py_pb2",
         "@com_google_absl_py//absl:app",
         "@com_google_absl_py//absl/flags",
         "@com_google_absl_py//absl/logging",
@@ -1335,8 +1133,8 @@ py_binary(
 )
 
 py_test(
-    name = "delay_model_stats_test",
-    srcs = ["delay_model_stats_test.py"],
+    name = "estimator_model_stats_test",
+    srcs = ["estimator_model_stats_test.py"],
     data = [
         "testdata/asap7_delay_data_points.textproto",
         "testdata/asap7_delay_model_stats.csv",
@@ -1344,7 +1142,7 @@ py_test(
         "testdata/sky130_delay_model_stats.csv",
         "testdata/unit_delay_data_points.textproto",
         "testdata/unit_delay_model_stats.csv",
-        ":delay_model_stats",
+        ":estimator_model_stats",
     ],
     python_version = "PY3",
     srcs_version = "PY3",
@@ -1354,4 +1152,9 @@ py_test(
         "//xls/common:test_base",
         "@com_google_absl_py//absl/testing:absltest",
     ],
+)
+
+py_binary(
+    name = "make_release",
+    srcs = ["make_release.py"],
 )

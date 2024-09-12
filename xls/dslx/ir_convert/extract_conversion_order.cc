@@ -41,6 +41,7 @@
 #include "xls/dslx/frontend/ast_utils.h"
 #include "xls/dslx/frontend/builtins_metadata.h"
 #include "xls/dslx/frontend/module.h"
+#include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type_info.h"
 
@@ -189,6 +190,8 @@ class InvocationVisitor : public ExprVisitor {
 
   ~InvocationVisitor() override = default;
 
+  const FileTable& file_table() const { return *module_->file_table(); }
+
   // Helper type used to hold callee information for different forms of
   // invocations.
   struct CalleeInfo {
@@ -330,7 +333,7 @@ class InvocationVisitor : public ExprVisitor {
     // See if there are parametric bindings to use in the callee for this
     // invocation.
     VLOG(5) << "Getting callee bindings for invocation: " << node->ToString()
-            << " @ " << node->span()
+            << " @ " << node->span().ToString(file_table())
             << " caller bindings: " << bindings_.ToString();
 
     std::optional<const ParametricEnv*> callee_bindings =
@@ -773,30 +776,32 @@ static absl::StatusOr<std::vector<ConversionRecord>> GetOrderForProc(
 }
 
 absl::StatusOr<std::vector<ConversionRecord>> GetOrder(Module* module,
-                                                       TypeInfo* type_info) {
+                                                       TypeInfo* type_info,
+                                                       bool include_tests) {
   CHECK_EQ(type_info->module(), module);
   std::vector<ConversionRecord> ready;
 
+  auto handle_function = [&](Function* f) -> absl::Status {
+    // NOTE: Proc creation is driven by Spawn instantiations - the
+    // required constant args are only specified there, so we can't
+    // convert Procs as encountered at top level.
+    if (f->IsParametric() || f->proc().has_value()) {
+      return absl::OkStatus();
+    }
+
+    return AddToReady(f, /*invocation=*/nullptr, module, type_info,
+                      ParametricEnv(), &ready, {});
+  };
   for (ModuleMember member : module->top()) {
     absl::Status status = absl::visit(
         Visitor{
+            handle_function,
             [&](QuickCheck* quickcheck) -> absl::Status {
               Function* function = quickcheck->f();
               XLS_RET_CHECK(!function->IsParametric()) << function->ToString();
 
               return AddToReady(function, /*invocation=*/nullptr, module,
                                 type_info, ParametricEnv(), &ready, {});
-            },
-            [&](Function* f) -> absl::Status {
-              // NOTE: Proc creation is driven by Spawn instantiations - the
-              // required constant args are only specified there, so we can't
-              // convert Procs as encountered at top level.
-              if (f->IsParametric() || f->proc().has_value()) {
-                return absl::OkStatus();
-              }
-
-              return AddToReady(f, /*invocation=*/nullptr, module, type_info,
-                                ParametricEnv(), &ready, {});
             },
             [&](ConstantDef* constant_def) -> absl::Status {
               XLS_ASSIGN_OR_RETURN(const std::vector<Callee> callees,
@@ -809,7 +814,13 @@ absl::StatusOr<std::vector<ConversionRecord>> GetOrder(Module* module,
             [](Proc*) { return absl::OkStatus(); },
             [](TestProc*) { return absl::OkStatus(); },
 
-            [](TestFunction*) { return absl::OkStatus(); },
+            [&](TestFunction* test) {
+              if (!include_tests) {
+                // Nothing to do.
+                return absl::OkStatus();
+              }
+              return handle_function(&test->fn());
+            },
             [](TypeAlias*) { return absl::OkStatus(); },
             [](StructDef*) { return absl::OkStatus(); },
             [](EnumDef*) { return absl::OkStatus(); },

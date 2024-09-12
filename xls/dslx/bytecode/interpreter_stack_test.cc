@@ -18,13 +18,15 @@
 #include "gtest/gtest.h"
 #include "absl/status/status.h"
 #include "xls/common/status/matchers.h"
+#include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/interp_value.h"
 
 namespace xls::dslx {
 namespace {
 
 TEST(InterpreterStackTest, PushThenDoublePop) {
-  InterpreterStack stack;
+  FileTable file_table;
+  InterpreterStack stack(file_table);
   EXPECT_TRUE(stack.empty());
   stack.Push(InterpValue::MakeU32(42));
   EXPECT_FALSE(stack.empty());

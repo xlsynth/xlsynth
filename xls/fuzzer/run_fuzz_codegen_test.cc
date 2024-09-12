@@ -29,6 +29,7 @@
 #include "xls/common/file/temp_directory.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
+#include "xls/dslx/frontend/pos.h"
 #include "xls/fuzzer/ast_generator.h"
 #include "xls/fuzzer/run_fuzz.h"
 #include "xls/fuzzer/sample.h"
@@ -134,12 +135,13 @@ class RunFuzzCodegenTest : public ::testing::Test {
 
   absl::StatusOr<Sample> RunFuzz(int64_t seed) {
     std::mt19937_64 rng(seed);
-    return GenerateSampleAndRun(rng, GetAstGeneratorOptions(),
+    return GenerateSampleAndRun(file_table_, rng, GetAstGeneratorOptions(),
                                 GetSampleOptions(), /*run_dir=*/GetTempPath(),
                                 crasher_dir_);
   }
 
  private:
+  dslx::FileTable file_table_;
   std::optional<std::filesystem::path> crasher_dir_;
   std::optional<TempDirectory> temp_dir_;
 };

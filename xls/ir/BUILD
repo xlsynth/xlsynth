@@ -16,9 +16,9 @@
 # Description Language.
 
 load("@rules_python//python:proto.bzl", "py_proto_library")
-# cc_proto_library is used in this file
-
 load("@xls_pip_deps//:requirements.bzl", "requirement")
+load("//xls/build_rules:genrule_wrapper.bzl", "genrule_wrapper")
+# cc_proto_library is used in this file
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -821,6 +821,50 @@ cc_test(
         "//xls/common/status:matchers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "ir_parser_error_test",
+    size = "small",
+    srcs = ["ir_parser_error_test.cc"],
+    deps = [
+        ":bits",
+        ":channel",
+        ":channel_cc_proto",
+        ":channel_ops",
+        ":ir",
+        ":ir_parser",
+        ":op",
+        ":type",
+        ":value",
+        "//xls/common:casts",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "ir_parser_round_trip_test",
+    size = "small",
+    srcs = ["ir_parser_round_trip_test.cc"],
+    data = glob([
+        "testdata/ir_parser_round_trip_test_*.ir",
+    ]),
+    deps = [
+        ":ir",
+        ":ir_parser",
+        "//xls/common:golden_files",
+        "//xls/common:source_location",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/file:filesystem",
+        "//xls/common/file:get_runfile_path",
+        "//xls/common/status:matchers",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_googletest//:gtest",
     ],
@@ -855,7 +899,7 @@ cc_test(
     name = "node_util_test",
     size = "small",
     srcs = ["node_util_test.cc"],
-    data = glob(["testdata/*.ir"]),
+    data = glob(["testdata/node_util_test_*.ir"]),
     deps = [
         ":bits",
         ":channel",
@@ -891,27 +935,15 @@ cc_library(
     hdrs = ["ir_test_base.h"],
     deps = [
         ":bits",
-        ":events",
         ":ir",
         ":ir_parser",
         ":op",
         ":type",
         ":value",
-        ":value_test_util",
         ":verifier",
-        "//xls/codegen:codegen_options",
-        "//xls/codegen:combinational_generator",
-        "//xls/codegen:module_signature",
-        "//xls/codegen/vast",
-        "//xls/common:source_location",
-        "//xls/common/status:matchers",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
         "//xls/estimators/delay_model:delay_estimator",
-        "//xls/interpreter:ir_interpreter",
-        "//xls/passes:optimization_pass_pipeline",
-        "//xls/simulation:default_verilog_simulator",
-        "//xls/simulation:module_simulator",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
@@ -941,10 +973,13 @@ cc_test(
     name = "verifier_test",
     srcs = ["verifier_test.cc"],
     deps = [
+        ":bits",
         ":channel",
         ":function_builder",
         ":ir",
         ":ir_test_base",
+        ":source_location",
+        ":value",
         ":verifier",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
@@ -2094,4 +2129,47 @@ cc_library(
     name = "op_list",
     hdrs = ["op_list.h"],
     visibility = ["//visibility:private"],
+)
+
+proto_library(
+    name = "xls_op_name_proto",
+    srcs = ["xls_op_name.proto"],
+)
+
+cc_proto_library(
+    name = "xls_op_name_cc_proto",
+    deps = [":xls_op_name_proto"],
+)
+
+py_proto_library(
+    name = "xls_op_name_py_pb2",
+    deps = [":xls_op_name_proto"],
+)
+
+cc_binary(
+    name = "generate_op_name_proto_main",
+    srcs = ["generate_op_name_proto_main.cc"],
+    deps = [
+        ":op_list",
+        ":xls_op_name_cc_proto",
+        "//xls/common:init_xls",
+        "@com_google_protobuf//:protobuf",
+        "@com_google_protobuf//src/google/protobuf/io",
+    ],
+)
+
+genrule_wrapper(
+    name = "generate_op_name_representations_proto",
+    srcs = [],
+    outs = ["op_name_representations.textproto"],
+    cmd = "$(location :generate_op_name_proto_main) > $(OUTS)",
+    tools = [
+        ":generate_op_name_proto_main",
+    ],
+)
+
+filegroup(
+    name = "op_name_representations_proto",
+    srcs = ["op_name_representations.textproto"],
+    visibility = ["//xls/synthesis:__subpackages__"],
 )

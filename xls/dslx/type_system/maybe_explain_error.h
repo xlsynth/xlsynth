@@ -16,6 +16,7 @@
 #define XLS_DSLX_TYPE_SYSTEM_MAYBE_EXPLAIN_ERROR_H_
 
 #include "absl/status/status.h"
+#include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/type_system/type_mismatch_error_data.h"
 
 namespace xls::dslx {
@@ -24,7 +25,8 @@ namespace xls::dslx {
 // positional and there are additional diagnostics for it. Otherwise, passes the
 // original error data back as an absl::Status form similar to other DSLX
 // errors.
-absl::Status MaybeExplainError(const TypeMismatchErrorData& data);
+absl::Status MaybeExplainError(const TypeMismatchErrorData& data,
+                               const FileTable& file_table);
 
 }  // namespace xls::dslx
 

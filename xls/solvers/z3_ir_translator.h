@@ -35,6 +35,7 @@
 #include "absl/strings/str_format.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
+#include "xls/data_structures/leaf_type_tree.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/dfs_visitor.h"
 #include "xls/ir/function_base.h"
@@ -253,14 +254,31 @@ class IrTranslator : public DfsVisitorWithDefault {
 
   // Translates a OneHotSelect or Sel node whose (non-selector) operands are
   // Tuple typed. Accepts a function to actually call into the AbstractEvaluator
-  // for that node. "FlatValue" is a helper to represent a value as a
-  // vector of individual Z3 bits.
-  using FlatValue = std::vector<Z3_ast>;
-  template <typename NodeT>
-  absl::Status HandleSelect(
-      NodeT* node, std::function<FlatValue(const FlatValue& selector,
-                                           const std::vector<FlatValue>& cases)>
-                       evaluator);
+  // for that node.
+  template <typename NodeT, typename Handler>
+    requires(std::is_invocable_r_v<absl::StatusOr<Z3_ast>, Handler, Z3_ast,
+                                   absl::Span<Z3_ast const>,
+                                   absl::Span<int64_t const>>)
+  absl::Status HandleSelect(NodeT* node, Handler evaluator);
+
+  // Turn a single possibly compound typed z3 value into a leaf-type-tree of
+  // bits values.
+  absl::StatusOr<LeafTypeTree<Z3_ast>> ToLeafTypeTree(Node* node) {
+    return ToLeafTypeTree(node->GetType(), GetValue(node));
+  }
+  // Turn a single possibly compound typed z3 value into a leaf-type-tree of
+  // bits values.
+  absl::StatusOr<LeafTypeTree<Z3_ast>> ToLeafTypeTree(Type* type, Z3_ast ast);
+  // Turn a shattered z3 leaf-type-tree back into a single z3 value.
+  absl::StatusOr<Z3_ast> FromLeafTypeTree(LeafTypeTreeView<Z3_ast> ast);
+
+  // Get a single element from the LeafTypeTree representation of the given z3
+  // value without actually creating the entire tree.
+  absl::StatusOr<Z3_ast> GetLttElement(Type* type, Z3_ast value,
+                                       absl::Span<int64_t const> index);
+
+  absl::StatusOr<Z3_ast> HandleBitSlice(Z3_ast value, int64_t start,
+                                        int64_t width);
 
   // Handles the translation of the given unary op using the AbstractEvaluator.
   absl::Status HandleUnaryViaAbstractEval(Node* op);

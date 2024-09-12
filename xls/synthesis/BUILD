@@ -97,28 +97,28 @@ py_binary(
 )
 
 py_binary(
-    name = "timing_characterization_client_main",
-    srcs = ["timing_characterization_client_main.py"],
+    name = "op_characterization_client_main",
+    srcs = ["op_characterization_client_main.py"],
     python_version = "PY3",
     srcs_version = "PY3",
     deps = [
         ":client_credentials",
+        ":op_characterization_client",
         ":synthesis_service_py_pb2_grpc",
-        ":timing_characterization_client",
         "@com_google_absl_py//absl:app",
         "@com_google_absl_py//absl/flags",
     ],
 )
 
 py_test(
-    name = "timing_characterization_client_test",
-    srcs = ["timing_characterization_client_test.py"],
+    name = "op_characterization_client_test",
+    srcs = ["op_characterization_client_test.py"],
     python_version = "PY3",
     srcs_version = "PY3",
     deps = [
-        ":timing_characterization_client",
-        "//xls/estimators/delay_model:delay_model_py_pb2",
-        "//xls/estimators/delay_model:delay_model_utils",
+        ":op_characterization_client",
+        "//xls/estimators:estimator_model_py_pb2",
+        "//xls/estimators:estimator_model_utils",
         "@com_google_absl_py//absl/testing:absltest",
     ],
 )
@@ -188,16 +188,21 @@ py_library(
 )
 
 py_library(
-    name = "timing_characterization_client",
-    srcs = ["timing_characterization_client.py"],
+    name = "op_characterization_client",
+    srcs = ["op_characterization_client.py"],
+    data = [
+        "//xls/ir:op_name_representations_proto",
+    ],
     srcs_version = "PY3",
     deps = [
         ":synthesis_py_pb2",
         ":synthesis_service_py_pb2_grpc",
         "//xls/common:gfile",
-        "//xls/estimators/delay_model:delay_model_py_pb2",
-        "//xls/estimators/delay_model:delay_model_utils",
-        "//xls/estimators/delay_model:op_module_generator",
+        "//xls/common:runfiles",
+        "//xls/estimators:estimator_model_py_pb2",
+        "//xls/estimators:estimator_model_utils",
+        "//xls/estimators:op_module_generator",
+        "//xls/ir:xls_op_name_py_pb2",
         "@com_google_absl_py//absl/flags",
         "@com_google_absl_py//absl/logging",
         "@com_google_protobuf//:protobuf_python",

@@ -159,6 +159,8 @@ class FunctionConverter {
   // Helper class used for chaining on/off control predicates.
   friend class ScopedControlPredicate;
 
+  const FileTable& file_table() const { return import_data_->file_table(); }
+
   // Wraps up a type so it is (token, u1, type).
   static xls::Type* WrapIrForImplicitTokenType(xls::Type* type,
                                                Package* package) {
@@ -358,6 +360,13 @@ class FunctionConverter {
   absl::Status HandleAssertBuiltin(const Invocation* node, BValue predicate,
                                    Expr* label_expr);
 
+  // Handles the `assert_eq` builtin invocation.
+  absl::Status HandleAssertEqBuiltin(const Invocation* node, BValue lhs,
+                                     BValue rhs);
+
+  // Handles the `assert_lt` builtin invocation.
+  absl::Status HandleAssertLtBuiltin(const Invocation* node, BValue lhs,
+                                     BValue rhs);
   // Handles the `cover!()` builtin invocation.
   absl::Status HandleCoverBuiltin(const Invocation* node, BValue condition);
 
@@ -456,7 +465,7 @@ class FunctionConverter {
     Colno colno(start_pos.colno());
     // TODO(leary): 2020-12-20 Figure out the fileno based on the module owner
     // of node.
-    return SourceInfo(SourceLocation{fileno_, lineno, colno});
+    return SourceInfo(SourceLocation{ir_fileno_, lineno, colno});
   }
 
   // Defines "node" to map the result of running "ir_func" with "args" -- if
@@ -520,7 +529,7 @@ class FunctionConverter {
   absl::flat_hash_map<std::string, InterpValue> parametric_env_map_;
 
   // File number for use in source positions.
-  Fileno fileno_;
+  xls::Fileno ir_fileno_;
 
   // This is only set for procs; it holds the final recurrent state.
   BValue next_value_;

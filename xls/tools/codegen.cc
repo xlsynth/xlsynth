@@ -49,7 +49,6 @@
 #include "xls/scheduling/scheduling_pass.h"
 #include "xls/scheduling/scheduling_pass_pipeline.h"
 #include "xls/tools/codegen_flags.pb.h"
-#include "xls/tools/scheduling_options_flags.h"
 #include "xls/tools/scheduling_options_flags.pb.h"
 
 namespace xls {
@@ -81,7 +80,7 @@ absl::StatusOr<PipelineScheduleOrGroup> RunSchedulingPipeline(
   sched_options.delay_estimator = delay_estimator;
   sched_options.synthesizer = synthesizer;
   std::unique_ptr<SchedulingCompoundPass> scheduling_pipeline =
-      CreateSchedulingPassPipeline();
+      CreateSchedulingPassPipeline(scheduling_options.opt_level());
   SchedulingPassResults results;
   XLS_RETURN_IF_ERROR(main->package()->SetTop(main));
   auto scheduling_unit =
@@ -267,19 +266,19 @@ absl::StatusOr<CodegenResult> CodegenPipeline(
   PackagePipelineSchedulesProto package_pipeline_schedules_proto;
   if (std::holds_alternative<PipelineSchedule>(schedules)) {
     const PipelineSchedule& schedule = std::get<PipelineSchedule>(schedules);
+    package_pipeline_schedules_proto.mutable_schedules()->insert(
+        {schedule.function_base()->name(), schedule.ToProto(*delay_estimator)});
     XLS_ASSIGN_OR_RETURN(
         result, verilog::ToPipelineModuleText(
                     schedule, *p->GetTop(), codegen_options, delay_estimator));
-    package_pipeline_schedules_proto.mutable_schedules()->insert(
-        {schedule.function_base()->name(), schedule.ToProto(*delay_estimator)});
   } else if (std::holds_alternative<PackagePipelineSchedules>(schedules)) {
     const PackagePipelineSchedules& schedule_group =
         std::get<PackagePipelineSchedules>(schedules);
+    package_pipeline_schedules_proto =
+        PackagePipelineSchedulesToProto(schedule_group, *delay_estimator);
     XLS_ASSIGN_OR_RETURN(
         result, verilog::ToPipelineModuleText(
                     schedule_group, p, codegen_options, delay_estimator));
-    package_pipeline_schedules_proto =
-        PackagePipelineSchedulesToProto(schedule_group, *delay_estimator);
   } else {
     LOG(FATAL) << absl::StreamFormat("Unknown schedules type (%d).",
                                      schedules.index());

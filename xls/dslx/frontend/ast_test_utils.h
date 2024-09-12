@@ -16,9 +16,10 @@
 #define XLS_DSLX_FRONTEND_AST_TEST_UTILS_H_
 
 #include <cstdint>
-#include <utility>
+#include <tuple>
 
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/pos.h"
 
 namespace xls::dslx {
 
@@ -28,7 +29,7 @@ namespace xls::dslx {
 //
 // We have to parenthesize the LHS to avoid ambiguity that the RHS of the cast
 // might be a parametric type we're instantiating.
-std::pair<Module, Binop*> MakeCastWithinLtComparison();
+std::tuple<FileTable, Module, Binop*> MakeCastWithinLtComparison();
 
 // Returns an AST node with the following structure:
 //
@@ -36,7 +37,7 @@ std::pair<Module, Binop*> MakeCastWithinLtComparison();
 //
 // This is an interesting test case for parenthesization purposes similar to the
 // above example.
-std::pair<Module, Index*> MakeCastWithinIndexExpression();
+std::tuple<FileTable, Module, Index*> MakeCastWithinIndexExpression();
 
 // Returns an AST node with the following structure:
 //
@@ -44,7 +45,8 @@ std::pair<Module, Index*> MakeCastWithinIndexExpression();
 //
 // This is an interesting test case for parenthesization purposes similar to the
 // above example.
-std::pair<Module, TupleIndex*> MakeIndexWithinTupleIndexExpression();
+std::tuple<FileTable, Module, TupleIndex*>
+MakeIndexWithinTupleIndexExpression();
 
 // Returns an AST node with the following structure:
 //
@@ -52,7 +54,7 @@ std::pair<Module, TupleIndex*> MakeIndexWithinTupleIndexExpression();
 //
 // This can be used to test that tuples of various sizes with or without
 // trailing commas are formatted correctly.
-std::pair<Module, XlsTuple*> MakeNElementTupleExpression(
+std::tuple<FileTable, Module, XlsTuple*> MakeNElementTupleExpression(
     int64_t n, bool has_trailing_comma);
 
 // Returns an AST node with the following structure:
@@ -61,7 +63,7 @@ std::pair<Module, XlsTuple*> MakeNElementTupleExpression(
 //
 // This is an interesting test case for parenthesization purposes similar to the
 // above example.
-std::pair<Module, Unop*> MakeCastWithinNegateExpression();
+std::tuple<FileTable, Module, Unop*> MakeCastWithinNegateExpression();
 
 // Returns an AST node with the following structure:
 //
@@ -69,7 +71,7 @@ std::pair<Module, Unop*> MakeCastWithinNegateExpression();
 //
 // This is an interesting test case for parenthesization purposes similar to the
 // above example.
-std::pair<Module, Attr*> MakeArithWithinAttrExpression();
+std::tuple<FileTable, Module, Attr*> MakeArithWithinAttrExpression();
 
 }  // namespace xls::dslx
 

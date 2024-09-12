@@ -63,7 +63,8 @@ absl::Status CheckTestProc(const TestProc* test_proc, Module* module,
   if (config_params.size() != 1) {
     return TypeInferenceErrorStatus(
         proc->span(), nullptr,
-        "Test proc `config` functions should only take a terminator channel.");
+        "Test proc `config` functions should only take a terminator channel.",
+        ctx->file_table());
   }
 
   ChannelTypeAnnotation* channel_type =
@@ -71,7 +72,8 @@ absl::Status CheckTestProc(const TestProc* test_proc, Module* module,
   if (channel_type == nullptr) {
     return TypeInferenceErrorStatus(proc->config().span(), nullptr,
                                     "Test proc 'config' functions should "
-                                    "only take a terminator channel.");
+                                    "only take a terminator channel.",
+                                    ctx->file_table());
   }
   BuiltinTypeAnnotation* payload_type =
       dynamic_cast<BuiltinTypeAnnotation*>(channel_type->payload());
@@ -80,12 +82,14 @@ absl::Status CheckTestProc(const TestProc* test_proc, Module* module,
     return TypeInferenceErrorStatus(
         proc->config().span(), nullptr,
         "Test proc 'config' terminator channel must be outgoing "
-        "and have boolean payload.");
+        "and have boolean payload.",
+        ctx->file_table());
   }
 
   if (proc->IsParametric()) {
-    return TypeInferenceErrorStatus(
-        proc->span(), nullptr, "Test proc functions cannot be parametric.");
+    return TypeInferenceErrorStatus(proc->span(), nullptr,
+                                    "Test proc functions cannot be parametric.",
+                                    ctx->file_table());
   }
 
   {
@@ -117,16 +121,17 @@ absl::Status CheckTestProc(const TestProc* test_proc, Module* module,
     XLS_ASSIGN_OR_RETURN(Type * init_metatype,
                          type_info->GetItemOrError(proc->init().return_type()));
     XLS_RET_CHECK(init_metatype->IsMeta());
-    XLS_ASSIGN_OR_RETURN(
-        std::unique_ptr<Type> init_type,
-        UnwrapMetaType(init_metatype->CloneToUnique(),
-                       proc->init().return_type()->span(), "init return type"));
+    XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> init_type,
+                         UnwrapMetaType(init_metatype->CloneToUnique(),
+                                        proc->init().return_type()->span(),
+                                        "init return type", ctx->file_table()));
 
     if (*state_type != *init_type) {
       return TypeInferenceErrorStatus(
           proc->next().span(), nullptr,
           absl::StrFormat("'next' state param and init types differ: %s vs %s.",
-                          state_type->ToString(), init_type->ToString()));
+                          state_type->ToString(), init_type->ToString()),
+          ctx->file_table());
     }
   }
 
@@ -180,7 +185,8 @@ static absl::Status TypecheckQuickcheck(QuickCheck* qc, DeduceCtx* ctx) {
     return TypeInferenceErrorStatus(
         quickcheck_f.span(), nullptr,
         "Quickchecking parametric functions is unsupported; see "
-        "https://github.com/google/xls/issues/81");
+        "https://github.com/google/xls/issues/81",
+        ctx->file_table());
   }
 
   VLOG(2) << "Typechecking quickcheck function: " << quickcheck_f.ToString();
@@ -207,6 +213,9 @@ absl::Status TypecheckModuleMember(const ModuleMember& member, Module* module,
                                    ImportData* import_data, DeduceCtx* ctx) {
   VLOG(5) << "TypecheckModuleMember; member: `" << ToAstNode(member)->ToString()
           << "`";
+  XLS_RET_CHECK_EQ(ctx->fn_stack().size(), 1);
+  XLS_RET_CHECK_EQ(ctx->fn_stack().back().f(), nullptr);
+
   if (std::holds_alternative<Import*>(member)) {
     Import* import = std::get<Import*>(member);
     XLS_ASSIGN_OR_RETURN(
@@ -242,31 +251,36 @@ absl::Status TypecheckModuleMember(const ModuleMember& member, Module* module,
     }
 
     VLOG(2) << "Typechecking function: `" << f.ToString() << "`";
+
+    // Note: we push a function stack entry on top of the "top" entry for the
+    // module as we go in to typecheck this function.
     ScopedFnStackEntry scoped_entry(
         f, ctx, within_proc ? WithinProc::kYes : WithinProc::kNo);
     XLS_RETURN_IF_ERROR(TypecheckFunction(f, ctx));
     scoped_entry.Finish();
+
     VLOG(2) << "Finished typechecking function: " << f.ToString();
   } else if (std::holds_alternative<Proc*>(member)) {
     // Just skip procs, as we typecheck their config & next functions (see the
     // previous else/if arm).
-    return absl::OkStatus();
   } else if (std::holds_alternative<QuickCheck*>(member)) {
     QuickCheck* qc = std::get<QuickCheck*>(member);
     XLS_RETURN_IF_ERROR(TypecheckQuickcheck(qc, ctx));
   } else if (std::holds_alternative<StructDef*>(member)) {
     StructDef* struct_def = std::get<StructDef*>(member);
     VLOG(2) << "Typechecking struct: " << struct_def->ToString();
-    ScopedFnStackEntry scoped(ctx, module);
     XLS_RETURN_IF_ERROR(ctx->Deduce(ToAstNode(member)).status());
-    scoped.Finish();
     VLOG(2) << "Finished typechecking struct: " << struct_def->ToString();
   } else if (std::holds_alternative<TestFunction*>(member)) {
     TestFunction* tf = std::get<TestFunction*>(member);
     if (tf->fn().IsParametric()) {
       return TypeInferenceErrorStatus(tf->fn().span(), nullptr,
-                                      "Test functions cannot be parametric.");
+                                      "Test functions cannot be parametric.",
+                                      ctx->file_table());
     }
+
+    // Note: we push a function stack entry on top of the "top" entry for the
+    // module as we go in to typecheck this test function.
     ScopedFnStackEntry scoped_entry(tf->fn(), ctx, WithinProc::kNo);
     XLS_RETURN_IF_ERROR(TypecheckFunction(tf->fn(), ctx));
     scoped_entry.Finish();
@@ -276,9 +290,7 @@ absl::Status TypecheckModuleMember(const ModuleMember& member, Module* module,
   } else if (std::holds_alternative<TypeAlias*>(member)) {
     TypeAlias* type_alias = std::get<TypeAlias*>(member);
     VLOG(2) << "Typechecking type alias: " << type_alias->ToString();
-    ScopedFnStackEntry scoped(ctx, module);
     XLS_RETURN_IF_ERROR(ctx->Deduce(ToAstNode(member)).status());
-    scoped.Finish();
     VLOG(2) << "Finished typechecking type alias: " << type_alias->ToString();
   } else if (std::holds_alternative<ConstAssert*>(member)) {
     XLS_RETURN_IF_ERROR(ctx->Deduce(ToAstNode(member)).status());
@@ -288,6 +300,8 @@ absl::Status TypecheckModuleMember(const ModuleMember& member, Module* module,
                      ToAstNode(member)->GetNodeTypeName()));
   }
 
+  XLS_RET_CHECK_EQ(ctx->fn_stack().size(), 1);
+  XLS_RET_CHECK_EQ(ctx->fn_stack().back().f(), nullptr);
   return absl::OkStatus();
 }
 
@@ -304,7 +318,7 @@ absl::Status MaybeExpandTypeErrorData(absl::Status orig, const DeduceCtx& ctx) {
         << "Internal error: type mismatch error "
            "was not accompanied by detail data; original status: "
         << orig;
-    return MaybeExplainError(data.value());
+    return MaybeExplainError(data.value(), ctx.file_table());
   }
 
   return orig;
@@ -329,7 +343,10 @@ absl::StatusOr<TypeInfo*> TypecheckModule(Module* module,
                 /*typecheck_module=*/typecheck_module,
                 /*typecheck_invocation=*/&TypecheckInvocation, import_data,
                 warnings, /*parent=*/nullptr);
+
+  XLS_RET_CHECK(ctx.fn_stack().empty());
   ctx.AddFnStackEntry(FnStackEntry::MakeTop(module));
+  XLS_RET_CHECK_EQ(ctx.fn_stack().back().f(), nullptr);
 
   for (const ModuleMember& member : module->top()) {
     absl::Status status =
@@ -337,6 +354,10 @@ absl::StatusOr<TypeInfo*> TypecheckModule(Module* module,
     if (!status.ok()) {
       return MaybeExpandTypeErrorData(status, ctx);
     }
+    // Should just be the module-top entry on the function stack when we're
+    // done with each member.
+    XLS_RET_CHECK_EQ(ctx.fn_stack().size(), 1);
+    XLS_RET_CHECK_EQ(ctx.fn_stack().back().f(), nullptr);
   }
 
   return type_info;

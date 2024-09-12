@@ -9,7 +9,7 @@ various statistics about the BDD. BDD construction can be very slow in
 pathological cases and this utility is useful for identifying the underlying
 causes. Accepts arbitrary IR as input or a benchmark specified by name.
 
-## [`benchmark_main`](https://github.com/google/xls/tree/main/xls/tools/benchmark_main.cc)
+## [`benchmark_main`](https://github.com/google/xls/tree/main/xls/dev_tools/benchmark_main.cc)
 
 Prints numerous metrics and other information about an XLS IR file including:
 total delay, critical path, codegen information, optimization time, etc. This
@@ -17,7 +17,7 @@ tool may be run against arbitrary IR not just the fixed set of XLS benchmarks.
 The output of this tool is scraped by `run_benchmarks` to construct a table
 comparing metrics against a mint CL across the benchmark suite.
 
-## [`booleanify_main`](https://github.com/google/xls/tree/main/xls/tools/booleanify_main.cc)
+## [`booleanify_main`](https://github.com/google/xls/tree/main/xls/dev_tools/booleanify_main.cc)
 
 Rewrites an XLS IR function in terms of its ops' fundamental AND/OR/NOT
 constituents, i.e., makes all operations boolean, thus it's "booleanifying" the
@@ -85,7 +85,7 @@ between versions. If possible, LLVM tools built at the same commit as the JIT
 should be used to interact with the generated llvm bytecode. This can be done by
 building the LLVM tools using `bazel build` from the XLS repo.
 
-## [`ir_minimizer_main`](https://github.com/google/xls/tree/main/xls/tools/ir_minimizer_main.cc)
+## [`ir_minimizer_main`](https://github.com/google/xls/tree/main/xls/dev_tools/ir_minimizer_main.cc)
 
 Tool for reducing IR to a minimal test case based on an external test.
 

@@ -749,6 +749,47 @@ fn f(x: u32) -> (u32, u8) {
                     "For-loop annotated type did not match inferred type."))));
 }
 
+TEST(TypecheckTest, DerivedParametricStruct) {
+  XLS_EXPECT_OK(Typecheck(R"(
+struct StructFoo<A: u32, B: u32 = {u32:32}, C:u32 = {B / u32:2}> {
+  a: uN[A],
+  b: uN[B],
+  c: uN[C],
+}
+
+fn Foo() {
+  let a = zero!<StructFoo<u32:32>>();
+  let b = StructFoo<u32:32>{a: u32:0, b: u32:1, c: u16:4};
+}
+)"));
+}
+
+TEST(TypecheckTest, DerivedParametricStructUsingNonDefault) {
+  XLS_EXPECT_OK(Typecheck(R"(
+struct StructFoo<A: u32, B:u32 = {A * u32:2}> {
+  x: uN[B],
+}
+
+fn Foo() {
+  let b = StructFoo<u32:8>{x: u16:0};
+}
+)"));
+}
+
+TEST(TypecheckTest, DerivedParametricStructValueMissing) {
+  EXPECT_THAT(Typecheck(R"(
+struct StructFoo<A: u32, B: u32, C:u32 = {B * u32:2}> {
+  x: uN[C],
+}
+
+fn Foo() {
+  let b = StructFoo<u32:8>{x: u16:0};
+}
+)"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("No parametric value provided for 'B'")));
+}
+
 TEST(TypecheckTest, DerivedExprTypeMismatch) {
   EXPECT_THAT(
       Typecheck(R"(
@@ -1322,10 +1363,11 @@ TEST(TypecheckErrorTest, BadTypeForConstantArrayOfNumbers) {
 }
 
 TEST(TypecheckErrorTest, ConstantArrayEmptyMembersWrongCountVsDecl) {
-  EXPECT_THAT(Typecheck("const MY_ARRAY = u32[1]:[];"),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("uN[32][1] Annotated array size 1 does not "
-                                 "match inferred array size 0.")));
+  auto result = Typecheck("const MY_ARRAY = u32[1]:[];");
+  EXPECT_THAT(result, StatusIs(absl::StatusCode::kInvalidArgument,
+                               HasSubstr("uN[32][1] Array has zero elements "
+                                         "but type annotation size is 1")))
+      << result.status();
 }
 
 TEST(TypecheckTest, MatchNoArms) {
@@ -1449,6 +1491,21 @@ enum MyEnum : u2 {
 
 TEST(TypecheckTest, ArrayEllipsis) {
   XLS_EXPECT_OK(Typecheck("fn main() -> u8[2] { u8[2]:[0, ...] }"));
+}
+
+// See https://github.com/google/xls/issues/1587 #1
+TEST(TypecheckErrorTest, ArrayEllipsisTypeSmallerThanElements) {
+  auto result =
+      Typecheck("fn main() -> u32[2] { u32[2]:[u32:0, u32:1, u32:0, ...] }");
+  EXPECT_THAT(result, StatusIs(absl::StatusCode::kInvalidArgument,
+                               HasSubstr("Annotated array size 2 is too small "
+                                         "for observed array member count 3")));
+}
+
+// See https://github.com/google/xls/issues/1587 #2
+TEST(TypecheckErrorTest, ArrayEllipsisTypeEqElementCount) {
+  XLS_EXPECT_OK(
+      Typecheck("fn main() -> u32[2] { u32[2]:[u32:0, u32:1, ...] }"));
 }
 
 TEST(TypecheckErrorTest, ArrayEllipsisNoTrailingElement) {
@@ -2315,11 +2372,13 @@ struct S {
 }
 fn f(s: S) -> S { S{x: u32:4, y: u32:8, ..s} }
 )";
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm, Typecheck(program));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult tr, Typecheck(program));
+  TypecheckedModule& tm = tr.tm;
+  Fileno fileno = tr.import_data->file_table().GetOrCreate("fake.x");
+
   ASSERT_THAT(tm.warnings.warnings().size(), 1);
-  std::string filename = "fake.x";
   EXPECT_EQ(tm.warnings.warnings().at(0).span,
-            Span(Pos(filename, 5, 42), Pos(filename, 5, 43)));
+            Span(Pos(fileno, 5, 42), Pos(fileno, 5, 43)));
   EXPECT_EQ(tm.warnings.warnings().at(0).message,
             "'Splatted' struct instance has all members of struct defined, "
             "consider removing the `..s`");
@@ -2327,7 +2386,7 @@ fn f(s: S) -> S { S{x: u32:4, y: u32:8, ..s} }
       tm.warnings.warnings().at(0).span, tm.warnings.warnings().at(0).message,
       std::cerr,
       [&](std::string_view) -> absl::StatusOr<std::string> { return program; },
-      PositionalErrorColor::kWarningColor));
+      PositionalErrorColor::kWarningColor, tr.import_data->file_table()));
 }
 
 TEST(TypecheckTest, LetWithWildcardMatchGivesWarning) {
@@ -2337,11 +2396,14 @@ fn f(x: u32) -> u32 {
   x
 }
 )";
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm, Typecheck(program));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult tr, Typecheck(program));
+  TypecheckedModule& tm = tr.tm;
+  FileTable& file_table = tr.import_data->file_table();
+  Fileno fileno = file_table.GetOrCreate("fake.x");
+
   ASSERT_THAT(tm.warnings.warnings().size(), 1);
-  std::string filename = "fake.x";
   EXPECT_EQ(tm.warnings.warnings().at(0).span,
-            Span(Pos(filename, 2, 6), Pos(filename, 2, 7)));
+            Span(Pos(fileno, 2, 6), Pos(fileno, 2, 7)));
   EXPECT_EQ(tm.warnings.warnings().at(0).message,
             "`let _ = expr;` statement can be simplified to `expr;` -- there "
             "is no need for a `let` binding here");
@@ -2349,7 +2411,7 @@ fn f(x: u32) -> u32 {
       tm.warnings.warnings().at(0).span, tm.warnings.warnings().at(0).message,
       std::cerr,
       [&](std::string_view) -> absl::StatusOr<std::string> { return program; },
-      PositionalErrorColor::kWarningColor));
+      PositionalErrorColor::kWarningColor, file_table));
 }
 
 TEST(TypecheckTest, UselessTrailingNilGivesWarning) {
@@ -2359,11 +2421,14 @@ fn f() -> () {
   ()
 }
 )";
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm, Typecheck(program));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult tr, Typecheck(program));
+  TypecheckedModule& tm = tr.tm;
+  FileTable& file_table = tr.import_data->file_table();
+  Fileno fileno = file_table.GetOrCreate("fake.x");
+
   ASSERT_THAT(tm.warnings.warnings().size(), 1);
-  std::string filename = "fake.x";
   EXPECT_EQ(tm.warnings.warnings().at(0).span,
-            Span(Pos(filename, 3, 2), Pos(filename, 3, 4)));
+            Span(Pos(fileno, 3, 2), Pos(fileno, 3, 4)));
   EXPECT_EQ(tm.warnings.warnings().at(0).message,
             "Block has a trailing nil (empty) tuple after a semicolon -- this "
             "is implied, please remove it");
@@ -2371,12 +2436,13 @@ fn f() -> () {
       tm.warnings.warnings().at(0).span, tm.warnings.warnings().at(0).message,
       std::cerr,
       [&](std::string_view) -> absl::StatusOr<std::string> { return program; },
-      PositionalErrorColor::kWarningColor));
+      PositionalErrorColor::kWarningColor, file_table));
 }
 
 TEST(TypecheckTest, NonstandardConstantNamingGivesWarning) {
   const std::string program = R"(const mol = u32:42;)";
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm, Typecheck(program));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult tr, Typecheck(program));
+  TypecheckedModule& tm = tr.tm;
   ASSERT_THAT(tm.warnings.warnings().size(), 1);
   EXPECT_EQ(tm.warnings.warnings().at(0).message,
             "Standard style is SCREAMING_SNAKE_CASE for constant identifiers; "
@@ -2386,7 +2452,8 @@ TEST(TypecheckTest, NonstandardConstantNamingGivesWarning) {
 TEST(TypecheckTest, NonstandardConstantNamingOkViaAllow) {
   const std::string program = R"(#![allow(nonstandard_constant_naming)]
 const mol = u32:42;)";
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm, Typecheck(program));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult tr, Typecheck(program));
+  TypecheckedModule& tm = tr.tm;
   ASSERT_TRUE(tm.warnings.warnings().empty());
 }
 
@@ -2453,6 +2520,61 @@ fn main() -> u32 {
       StatusIs(absl::StatusCode::kInvalidArgument,
                HasSubstr("An invocation callee must be either a name reference "
                          "or a colon reference")));
+}
+
+// See https://github.com/google/xls/issues/1540#issuecomment-2297711953
+TEST(TypecheckTest, ProcWithImportedEnumParametricGithubIssue1540) {
+  constexpr std::string_view kImported = R"(
+pub enum MyEnum : bits[1] {
+  kA = 0,
+  kB = 1,
+}
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+proc foo_proc<N: imported::MyEnum> {
+    config() { () }
+    init { () }
+    next(state: ()) { () }
+}
+
+proc bar_proc {
+    config() {
+      spawn foo_proc<imported::MyEnum::kA>();
+    }
+    init { () }
+    next(state: ()) { () }
+})";
+  auto import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule imported,
+      ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule main,
+      ParseAndTypecheck(kProgram, "fake_main_path.x", "main", &import_data));
+}
+
+// See https://github.com/google/xls/issues/1540#issuecomment-2291819096
+TEST(TypecheckTest, ImportedTypeAliasAttributeGithubIssue1540) {
+  constexpr std::string_view kImported = R"(
+pub const W = s32:16;
+pub type T = bits[W as u32];
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn f() -> imported::T {
+  imported::T::MAX
+}
+)";
+  auto import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule imported,
+      ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule main,
+      ParseAndTypecheck(kProgram, "fake_main_path.x", "main", &import_data));
 }
 
 TEST(TypecheckTest, MissingWideningCastFromValueError) {
@@ -2762,7 +2884,8 @@ fn f(x: u32) -> u32 {
     x
 }
 )";
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm, Typecheck(program));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult tr, Typecheck(program));
+  TypecheckedModule& tm = tr.tm;
   ASSERT_THAT(tm.warnings.warnings().size(), 1);
   EXPECT_EQ(tm.warnings.warnings().at(0).message,
             "Definition of `y` (type `uN[32]`) is not used in function `f`");
@@ -2775,7 +2898,8 @@ fn f(t: (u32, u32, u32, u32, u32)) -> u32 {
     t.0
 }
 )";
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm, Typecheck(program));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult tr, Typecheck(program));
+  TypecheckedModule& tm = tr.tm;
   ASSERT_THAT(tm.warnings.warnings().size(), 5);
   EXPECT_EQ(tm.warnings.warnings().at(0).message,
             "Definition of `a` (type `uN[32]`) is not used in function `f`");
@@ -2797,7 +2921,8 @@ fn f(x: u32) -> u32 {
   }
 }
 )";
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm, Typecheck(program));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult tr, Typecheck(program));
+  TypecheckedModule& tm = tr.tm;
   ASSERT_THAT(tm.warnings.warnings().size(), 1);
   EXPECT_EQ(tm.warnings.warnings().at(0).message,
             "Definition of `y` (type `uN[32]`) is not used in function `f`");

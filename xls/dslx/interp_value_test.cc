@@ -26,6 +26,7 @@
 #include "absl/status/statusor.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/value_format_descriptor.h"
 #include "xls/ir/bits.h"
@@ -348,8 +349,9 @@ TEST(InterpValueTest, FormatEnum) {
     BAR = 1,
 })";
 
-  XLS_ASSERT_OK_AND_ASSIGN(auto module,
-                           ParseModule(kProgram, "fake_path.x", "the_module"));
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(auto module, ParseModule(kProgram, "fake_path.x",
+                                                    "the_module", file_table));
   XLS_ASSERT_OK_AND_ASSIGN(EnumDef * enum_def,
                            module->GetMemberOrError<EnumDef>("MyEnum"));
   InterpValue foo = InterpValue::MakeEnum(UBits(0, 32), false, enum_def);

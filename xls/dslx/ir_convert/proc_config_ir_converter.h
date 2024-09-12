@@ -21,6 +21,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/ir_convert/channel_scope.h"
 #include "xls/dslx/ir_convert/conversion_info.h"
@@ -82,6 +83,8 @@ class ProcConfigIrConverter : public AstNodeVisitorWithDefault {
   // Sets the mapping from the elements in the config-ending tuple to the
   // corresponding Proc members.
   absl::Status Finalize();
+
+  const FileTable& file_table() const { return import_data_->file_table(); }
 
  private:
   PackageConversionData* conversion_info_;

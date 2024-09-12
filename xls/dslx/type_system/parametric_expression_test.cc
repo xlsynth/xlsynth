@@ -26,7 +26,7 @@
 namespace xls::dslx {
 namespace {
 
-const Pos kFakePos("<fake>", 0, 0);
+const Pos kFakePos(Fileno(0), 0, 0);
 const Span kFakeSpan(kFakePos, kFakePos);
 
 TEST(ParametricExpressionTest, SampleEvaluation) {
@@ -59,6 +59,17 @@ TEST(ParametricExpressionTest, TestNonIdentityEquality) {
   auto add = std::make_unique<ParametricAdd>(std::move(s0), std::move(s1));
   EXPECT_EQ(add->ToRepr(),
             "ParametricAdd(ParametricSymbol(\"s\"), ParametricSymbol(\"s\"))");
+}
+
+TEST(ParametricExpressionTest, TestDiv) {
+  auto param_2 = InterpValue::MakeUBits(32, 2);
+  auto param_8 = InterpValue::MakeUBits(32, 8);
+  auto e = std::make_unique<ParametricDiv>(
+      std::make_unique<ParametricSymbol>("A", kFakeSpan),
+      std::make_unique<ParametricConstant>(param_2));
+  EXPECT_EQ(e->ToString(), "(A/u32:2)");
+  EXPECT_EQ(InterpValue::MakeUBits(32, 4),
+            std::get<InterpValue>(e->Evaluate({{"A", param_8}})));
 }
 
 }  // namespace

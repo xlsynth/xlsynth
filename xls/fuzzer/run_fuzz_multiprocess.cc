@@ -37,6 +37,7 @@
 #include "xls/common/status/status_macros.h"
 #include "xls/common/stopwatch.h"
 #include "xls/common/thread.h"
+#include "xls/dslx/frontend/pos.h"
 #include "xls/fuzzer/ast_generator.h"
 #include "xls/fuzzer/run_fuzz.h"
 #include "xls/fuzzer/sample.h"
@@ -80,6 +81,7 @@ absl::Status GenerateAndRunSamples(
               << absl::StreamFormat("0x%16X", rng_seed) << kDefaultColor;
   }
   std::mt19937_64 rng{rng_seed};
+  dslx::FileTable file_table;
 
   int64_t sample = 0;
   while (true) {
@@ -95,8 +97,9 @@ absl::Status GenerateAndRunSamples(
     }
 
     absl::Status sample_status =
-        GenerateSampleAndRun(rng, ast_generator_options, sample_options,
-                             run_dir, crasher_dir, summary_file, force_failure)
+        GenerateSampleAndRun(file_table, rng, ast_generator_options,
+                             sample_options, run_dir, crasher_dir, summary_file,
+                             force_failure)
             .status();
     if (!sample_status.ok()) {
       LOG(INFO) << kRedText

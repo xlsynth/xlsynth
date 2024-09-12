@@ -29,6 +29,7 @@
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/default_dslx_stdlib_path.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/warning_kind.h"
 #include "xls/interpreter/serial_proc_runtime.h"
@@ -91,6 +92,15 @@ class JitChannelQueueWrapper {
 // A class managing a dslx module and associated path.
 class DslxModuleAndPath {
  public:
+  // Take ownership of the dslx module and create a new object.
+  static absl::StatusOr<DslxModuleAndPath> Create(
+      std::unique_ptr<dslx::Module> module, std::string_view file_path);
+
+  // Parse dslx file from path and create a new object.
+  static absl::StatusOr<DslxModuleAndPath> Create(std::string_view module_name,
+                                                  std::string_view file_path,
+                                                  dslx::FileTable& file_table);
+
   // Gives up ownership the dslx module.
   std::unique_ptr<dslx::Module> GiveUpDslxModule() {
     return std::move(module_);
@@ -112,14 +122,6 @@ class DslxModuleAndPath {
 
   // Set new path of the dslx module.
   void SetFilePath(std::string_view path) { file_path_ = path; }
-
-  // Take ownership of the dslx module and create a new object.
-  static absl::StatusOr<DslxModuleAndPath> Create(
-      std::unique_ptr<dslx::Module> module, std::string_view file_path);
-
-  // Parse dslx file from path and create a new object.
-  static absl::StatusOr<DslxModuleAndPath> Create(std::string_view module_name,
-                                                  std::string_view file_path);
 
  private:
   DslxModuleAndPath() = default;

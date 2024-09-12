@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "absl/types/span.h"
+#include "xls/ir/bits.h"
 #include "external/z3/src/api/z3.h"  // IWYU pragma: keep
 #include "external/z3/src/api/z3_api.h"
 
@@ -46,6 +47,9 @@ class Z3OpTranslator {
   Z3_ast ReduceOr(Z3_ast arg) { return Z3_mk_bvredor(z3_ctx_, arg); }
   Z3_ast EqZero(Z3_ast arg) { return Not(Z3_mk_bvredor(z3_ctx_, arg)); }
   Z3_ast Eq(Z3_ast lhs, Z3_ast rhs) { return EqZero(Xor(lhs, rhs)); }
+  Z3_ast If(Z3_ast cond, Z3_ast consequent, Z3_ast alternate) {
+    return Cond(NeZeroBool(cond), consequent, alternate);
+  }
 
   // Returns a boolean-kinded result that says whether lhs == rhs.
   Z3_ast EqBool(Z3_ast lhs, Z3_ast rhs) { return Z3_mk_eq(z3_ctx_, lhs, rhs); }
@@ -61,6 +65,11 @@ class Z3OpTranslator {
 
   Z3_ast ZextBy1b(Z3_ast arg) { return Z3_mk_zero_ext(z3_ctx_, 1, arg); }
   Z3_ast SextBy1b(Z3_ast arg) { return Z3_mk_sign_ext(z3_ctx_, 1, arg); }
+
+  // Left shift by 'r'. Handles coercing types internally.
+  Z3_ast Shll(Z3_ast l, Z3_ast r);
+
+  Z3_ast Zext(Z3_ast bits, int64_t new_bit_count);
 
   // Extracts bit "bitno" from the given argument, returns a single-bit
   // bitvector result.

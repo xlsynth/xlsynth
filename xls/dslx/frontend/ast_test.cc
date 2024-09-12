@@ -34,7 +34,8 @@ using status_testing::StatusIs;
 using testing::HasSubstr;
 
 TEST(AstTest, ModuleWithConstant) {
-  Module m("test", /*fs_path=*/std::nullopt);
+  FileTable file_table;
+  Module m("test", /*fs_path=*/std::nullopt, file_table);
   const Span fake_span;
   Number* number = m.Make<Number>(fake_span, std::string("42"),
                                   NumberKind::kOther, /*type=*/nullptr);
@@ -53,32 +54,34 @@ TEST(AstTest, GetNumberAsInt64) {
     std::string text;
     uint64_t want;
   } kCases[] = {
-      {"0b0", 0},
-      {"0b1", 1},
-      {"0b10", 2},
-      {"0b11", 3},
-      {"0b100", 4},
-      {"0b1000", 8},
-      {"0b1011", 11},
-      {"0b1_1000", 24},
-      {"0b1_1001", 25},
-      {"0b1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_"
-       "1111_1111_1111",
-       static_cast<uint64_t>(-1)},
-      {"-1", static_cast<uint64_t>(-1)},
+      {.text = "0b0", .want = 0},
+      {.text = "0b1", .want = 1},
+      {.text = "0b10", .want = 2},
+      {.text = "0b11", .want = 3},
+      {.text = "0b100", .want = 4},
+      {.text = "0b1000", .want = 8},
+      {.text = "0b1011", .want = 11},
+      {.text = "0b1_1000", .want = 24},
+      {.text = "0b1_1001", .want = 25},
+      {.text = "0b1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_"
+               "1111_"
+               "1111_1111_1111",
+       .want = static_cast<uint64_t>(-1)},
+      {.text = "-1", .want = static_cast<uint64_t>(-1)},
   };
-  Module m("test", /*fs_path=*/std::nullopt);
+  FileTable file_table;
+  Module m("test", /*fs_path=*/std::nullopt, file_table);
   auto make_num = [&m](std::string text) {
     const Span fake_span;
     return m.Make<Number>(fake_span, text, NumberKind::kOther,
                           /*type=*/nullptr);
   };
   for (const Example& example : kCases) {
-    EXPECT_THAT(make_num(example.text)->GetAsUint64(),
+    EXPECT_THAT(make_num(example.text)->GetAsUint64(file_table),
                 IsOkAndHolds(example.want));
   }
 
-  EXPECT_THAT(make_num("0b")->GetAsUint64(),
+  EXPECT_THAT(make_num("0b")->GetAsUint64(file_table),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        HasSubstr("Could not convert 0b to a number")));
 }
@@ -86,20 +89,22 @@ TEST(AstTest, GetNumberAsInt64) {
 TEST(AstTest, CharacterNumberToStringTest) {
   struct Example {
     std::string text;
-    std::string expected;
+    std::string want;
   } kCases[] = {
-      {R"(4)", R"('4')"},  {R"(2)", R"('2')"},  {R"(X)", R"('X')"},
-      {R"(l)", R"('l')"},  {R"(S)", R"('S')"},  {R"(")", R"('"')"},
-      {R"(')", R"('\'')"}, {R"(\)", R"('\\')"},
+      {.text = R"(4)", .want = R"('4')"},  {.text = R"(2)", .want = R"('2')"},
+      {.text = R"(X)", .want = R"('X')"},  {.text = R"(l)", .want = R"('l')"},
+      {.text = R"(S)", .want = R"('S')"},  {.text = R"(")", .want = R"('"')"},
+      {.text = R"(')", .want = R"('\'')"}, {.text = R"(\)", .want = R"('\\')"},
   };
-  Module m("test", /*fs_path=*/std::nullopt);
+  FileTable file_table;
+  Module m("test", /*fs_path=*/std::nullopt, file_table);
   auto make_char_num = [&m](std::string text) {
     const Span fake_span;
     return m.Make<Number>(fake_span, text, NumberKind::kCharacter,
                           /*type=*/nullptr);
   };
   for (const Example& example : kCases) {
-    EXPECT_THAT(make_char_num(example.text)->ToString(), example.expected);
+    EXPECT_THAT(make_char_num(example.text)->ToString(), example.want);
   }
 }
 
@@ -158,7 +163,7 @@ TEST(AstTest, GetBuiltinTypeBitCount) {
 // See comment on `MakeCastWithinLtComparison()` -- we need to insert parens
 // appropriately here.
 TEST(AstTest, ToStringCastWithinLtComparison) {
-  auto [module, lt] = MakeCastWithinLtComparison();
+  auto [file_table, module, lt] = MakeCastWithinLtComparison();
 
   EXPECT_EQ(lt->ToString(), "(x as t) < x");
 }

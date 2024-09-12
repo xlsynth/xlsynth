@@ -22,6 +22,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/time/time.h"
+#include "xls/dslx/frontend/pos.h"
 #include "xls/fuzzer/ast_generator.h"
 #include "xls/fuzzer/sample.h"
 
@@ -38,7 +39,7 @@ absl::Status RunSample(
     std::optional<absl::Duration> generate_sample_elapsed = std::nullopt);
 
 absl::StatusOr<Sample> GenerateSampleAndRun(
-    absl::BitGenRef bit_gen,
+    dslx::FileTable& file_table, absl::BitGenRef bit_gen,
     const dslx::AstGeneratorOptions& ast_generator_options,
     const SampleOptions& sample_options, const std::filesystem::path& run_dir,
     const std::optional<std::filesystem::path>& crasher_dir = std::nullopt,

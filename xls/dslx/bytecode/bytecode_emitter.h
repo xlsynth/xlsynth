@@ -27,6 +27,7 @@
 #include "absl/status/statusor.h"
 #include "xls/dslx/bytecode/bytecode.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/parametric_env.h"
@@ -146,6 +147,8 @@ class BytecodeEmitter : public ExprVisitor {
 
   absl::Status DestructureLet(NameDefTree* tree,
                               std::variant<Type*, int64_t> type_or_size);
+
+  const FileTable& file_table() const { return import_data_->file_table(); }
 
   ImportData* import_data_;
   const TypeInfo* type_info_;

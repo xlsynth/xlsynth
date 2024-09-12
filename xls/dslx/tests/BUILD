@@ -14,6 +14,7 @@
 
 # Interpreter-based standalone tests.
 
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load(
     "//xls/build_rules:xls_build_defs.bzl",
@@ -25,7 +26,6 @@ load(
 )
 load("//xls/dslx:strip_comments.bzl", "dslx_strip_comments")
 load("//xls/dslx/tests:build_defs.bzl", "dslx_lang_test")
-load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -119,6 +119,11 @@ dslx_lang_test(
 
 dslx_lang_test(
     name = "derived_parametric",
+    convert_to_ir = False,
+)
+
+dslx_lang_test(
+    name = "derived_parametric_struct",
     convert_to_ir = False,
 )
 
@@ -687,6 +692,17 @@ xls_dslx_library(
 dslx_lang_test(
     name = "mod_importer_typedef",
     dslx_deps = [":mod_imported_typedef_dslx"],
+)
+
+# Library defined to be imported.
+xls_dslx_library(
+    name = "mod_u16_type_alias_dslx",
+    srcs = ["mod_u16_type_alias.x"],
+)
+
+dslx_lang_test(
+    name = "import_u16_type_alias",
+    dslx_deps = [":mod_u16_type_alias_dslx"],
 )
 
 # Library defined to be imported.

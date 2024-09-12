@@ -17,6 +17,7 @@
 
 #include "absl/random/bit_gen_ref.h"
 #include "absl/status/statusor.h"
+#include "xls/dslx/frontend/pos.h"
 #include "xls/fuzzer/ast_generator.h"
 #include "xls/fuzzer/sample.h"
 
@@ -25,7 +26,8 @@ namespace xls {
 // Generates and returns a random Sample with the given options.
 absl::StatusOr<Sample> GenerateSample(
     const dslx::AstGeneratorOptions& generator_options,
-    const SampleOptions& sample_options, absl::BitGenRef bit_gen);
+    const SampleOptions& sample_options, absl::BitGenRef bit_gen,
+    dslx::FileTable& file_table);
 
 }  // namespace xls
 

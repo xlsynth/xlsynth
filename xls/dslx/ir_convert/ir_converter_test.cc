@@ -45,6 +45,14 @@ namespace {
 using status_testing::StatusIs;
 using ::testing::HasSubstr;
 
+absl::StatusOr<TestResultData> ParseAndTest(
+    std::string_view program, std::string_view module_name,
+    std::string_view filename, const ParseAndTestOptions& options) {
+  // Other interpreters rely on ir_convert so we can't test with them.
+  return DslxInterpreterTestRunner().ParseAndTest(program, module_name,
+                                                  filename, options);
+}
+
 constexpr ConvertOptions kFailNoPos = {
     .emit_positions = false,
 };
@@ -880,6 +888,30 @@ fn f(outer_thing_1: u32, outer_thing_2: u32) -> u32 {
 TEST(IrConverterTest, ParametricDefaultInStruct) {
   const char* kProgram = R"(
 struct Foo <X: u32, Y: u32 = {X + u32:1}> {
+    a: uN[X],
+    b: uN[Y],
+}
+
+fn make_zero_foo<X: u32>() -> Foo<X> {
+  zero!<Foo<X>>()
+}
+
+fn test() -> Foo<u32:5> {
+ make_zero_foo<u32:5>()
+}
+)";
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string converted,
+      ConvertModuleForTest(kProgram, ConvertOptions{.emit_positions = false}));
+  ExpectIr(converted, TestName());
+}
+
+TEST(IrConverterTest, ParametricDefaultClog2InStruct) {
+  const char* kProgram = R"(
+import std;
+
+struct Foo <X: u32, Y: u32 = {std::clog2(X)}> {
     a: uN[X],
     b: uN[Y],
 }

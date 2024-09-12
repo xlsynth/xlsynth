@@ -161,7 +161,7 @@ absl::Status EagerlyPopulateParametricEnvMap(
     const absl::flat_hash_map<std::string, Expr*>& parametric_default_exprs,
     absl::flat_hash_map<std::string, InterpValue>& parametric_env_map,
     const std::optional<Span>& parametrics_span, const Span& span,
-    std::string_view kind_name, DeduceCtx* ctx) {
+    ParametricInstantiator* instantiator, DeduceCtx* ctx) {
   // If there are no parametric bindings being instantiated (in the callee) we
   // should have already typechecked that there are no parametrics being
   // applied by the caller.
@@ -217,7 +217,7 @@ absl::Status EagerlyPopulateParametricEnvMap(
           }
           const NameDef* name_def = std::get<const NameDef*>(any_name_def);
           Span definition_span = name_def->GetSpan().value();
-          if (definition_span.filename() != parametrics_span->filename()) {
+          if (definition_span.fileno() != parametrics_span->fileno()) {
             return false;
           }
           return parametrics_span->Contains(definition_span);
@@ -228,18 +228,25 @@ absl::Status EagerlyPopulateParametricEnvMap(
                                              keys_unsorted.end());
     for (const std::string& key : keys_sorted) {
       if (!parametric_env_map.contains(key)) {
-        return TypeInferenceErrorStatus(
-            freevars.GetFirstNameRefSpan(key), nullptr,
-            absl::StrFormat(
-                "Parametric expression `%s` refered to `%s` which is not "
-                "present in the parametric environment; instantiated from %s",
-                expr->ToString(), key, span.ToString()));
+        std::string message = absl::StrFormat(
+            "Parametric expression `%s` refered to `%s` which is not "
+            "present in the parametric environment; instantiated from %s",
+            expr->ToString(), key, span.ToString(ctx->file_table()));
+        // For structs, this is not an issue at this stage because the value
+        // must be defined once the struct is used.
+        if (dynamic_cast<StructInstantiator*>(instantiator) != nullptr) {
+          VLOG(5) << message;
+          return absl::OkStatus();
+        }
+        return TypeInferenceErrorStatus(freevars.GetFirstNameRefSpan(key),
+                                        nullptr, message, ctx->file_table());
       }
     }
 
     absl::StatusOr<InterpValue> result = InterpretExpr(ctx, expr, env);
 
-    VLOG(5) << "Interpreted expr: " << expr->ToString() << " @ " << expr->span()
+    VLOG(5) << "Interpreted expr: " << expr->ToString() << " @ "
+            << expr->span().ToString(ctx->file_table())
             << " to status: " << result.status();
 
     XLS_RETURN_IF_ERROR(result.status());
@@ -258,9 +265,10 @@ absl::Status EagerlyPopulateParametricEnvMap(
             "Inconsistent parametric instantiation of %s, first saw %s = %s; "
             "then saw %s = "
             "%s = %s",
-            kind_name, name, seen.ToString(), name, expr->ToString(),
-            result.value().ToString());
-        return TypeInferenceErrorStatus(span, nullptr, message);
+            instantiator->GetKindName(), name, seen.ToString(), name,
+            expr->ToString(), result.value().ToString());
+        return TypeInferenceErrorStatus(span, nullptr, message,
+                                        ctx->file_table());
       }
     } else {
       parametric_env_map.insert({std::string{name}, result.value()});
@@ -277,7 +285,8 @@ absl::Status EagerlyPopulateParametricEnvMap(
         return TypeInferenceErrorStatus(
             span, nullptr,
             absl::StrFormat("Caller did not supply parametric value for `%s`",
-                            parametric_binding_name));
+                            parametric_binding_name),
+            ctx->file_table());
       }
     }
   }
@@ -294,8 +303,8 @@ ParametricInstantiator::ParametricInstantiator(
     const absl::flat_hash_map<std::string, InterpValue>& explicit_parametrics,
     absl::Span<absl::Nonnull<const ParametricBinding*> const>
         parametric_bindings)
-    : span_(std::move(span)),
-      parametrics_span_(std::move(parametrics_span)),
+    : span_(span),
+      parametrics_span_(parametrics_span),
       args_(args),
       ctx_(ABSL_DIE_IF_NULL(ctx)),
       typed_parametrics_(typed_parametrics),
@@ -325,7 +334,8 @@ ParametricInstantiator::ParametricInstantiator(
     CHECK(explicit_parametrics.contains(identifier));
   }
 
-  VLOG(5) << "ParametricInstantiator; span: " << span_;
+  VLOG(5) << "ParametricInstantiator; span: "
+          << span_.ToString(ctx->file_table());
 
   for (const ParametricWithType& parametric : typed_parametrics) {
     if (parametric.expr() != nullptr) {
@@ -385,15 +395,15 @@ FunctionInstantiator::Make(
           << " with " << typed_parametrics.size() << " typed-parametrics and "
           << explicit_parametrics.size() << " explicit parametrics";
   if (args.size() != function_type.params().size()) {
-    return absl::InvalidArgumentError(
-        absl::StrFormat("ArgCountMismatchError: %s Expected %d parameter(s) "
-                        "for function %s, but got %d "
-                        "argument(s)",
-                        span.ToString(), function_type.params().size(),
-                        callee_fn.identifier(), args.size()));
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "ArgCountMismatchError: %s Expected %d parameter(s) "
+        "for function %s, but got %d "
+        "argument(s)",
+        span.ToString(ctx->file_table()), function_type.params().size(),
+        callee_fn.identifier(), args.size()));
   }
   return absl::WrapUnique(new FunctionInstantiator(
-      std::move(span), callee_fn, function_type, args, ctx, typed_parametrics,
+      span, callee_fn, function_type, args, ctx, typed_parametrics,
       explicit_parametrics, parametric_bindings));
 }
 
@@ -414,7 +424,7 @@ absl::StatusOr<TypeAndParametricEnv> FunctionInstantiator::Instantiate() {
 
   XLS_RETURN_IF_ERROR(EagerlyPopulateParametricEnvMap(
       typed_parametrics(), parametric_default_exprs(), parametric_env_map(),
-      parametrics_span(), span(), GetKindName(), &ctx()));
+      parametrics_span(), span(), this, &ctx()));
 
   // Phase 2: resolve and check.
   VLOG(10) << "Phase 2: resolve-and-check";
@@ -453,7 +463,8 @@ absl::StatusOr<TypeAndParametricEnv> FunctionInstantiator::Instantiate() {
         span(), resolved.get(),
         absl::StrCat("Instantiated return type did not have the "
                      "following parametrics resolved: ",
-                     absl::StrJoin(dim_exprs, ", ")));
+                     absl::StrJoin(dim_exprs, ", ")),
+        ctx().file_table());
   }
 
   parametric_env_expr_scope.Finish();
@@ -473,8 +484,8 @@ StructInstantiator::Make(
         parametric_bindings) {
   XLS_RET_CHECK_EQ(args.size(), member_types.size());
   return absl::WrapUnique(
-      new StructInstantiator(std::move(span), struct_type, args, member_types,
-                             ctx, typed_parametrics, parametric_bindings));
+      new StructInstantiator(span, struct_type, args, member_types, ctx,
+                             typed_parametrics, parametric_bindings));
 }
 
 absl::StatusOr<TypeAndParametricEnv> StructInstantiator::Instantiate() {
@@ -487,7 +498,7 @@ absl::StatusOr<TypeAndParametricEnv> StructInstantiator::Instantiate() {
 
   XLS_RETURN_IF_ERROR(EagerlyPopulateParametricEnvMap(
       typed_parametrics(), parametric_default_exprs(), parametric_env_map(),
-      parametrics_span(), span(), GetKindName(), &ctx()));
+      parametrics_span(), span(), this, &ctx()));
 
   // Phase 2: resolve and check.
   for (int64_t i = 0; i < member_types_.size(); ++i) {

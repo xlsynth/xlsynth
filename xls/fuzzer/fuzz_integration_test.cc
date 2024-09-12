@@ -33,6 +33,7 @@
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/common/stopwatch.h"
+#include "xls/dslx/frontend/pos.h"
 #include "xls/fuzzer/ast_generator.h"
 #include "xls/fuzzer/run_fuzz.h"
 #include "xls/fuzzer/sample.h"
@@ -100,6 +101,7 @@ TEST(FuzzIntegrationTest, Fuzzing) {
     LOG(INFO) << "Random seed specified via flag: " << seed;
   }
   std::mt19937_64 rng{seed};
+  dslx::FileTable file_table;
 
   dslx::AstGeneratorOptions ast_generator_options{
       .max_width_bits_types = absl::GetFlag(FLAGS_max_width_bits_types),
@@ -159,8 +161,8 @@ TEST(FuzzIntegrationTest, Fuzzing) {
     LOG(INFO) << "Running sample " << sample_count++;
     XLS_ASSERT_OK_AND_ASSIGN(TempDirectory run_dir, TempDirectory::Create());
     absl::Status status =
-        GenerateSampleAndRun(rng, ast_generator_options, sample_options,
-                             run_dir.path(), crasher_dir,
+        GenerateSampleAndRun(file_table, rng, ast_generator_options,
+                             sample_options, run_dir.path(), crasher_dir,
                              /*summary_file=*/std::nullopt,
                              absl::GetFlag(FLAGS_force_failure))
             .status();

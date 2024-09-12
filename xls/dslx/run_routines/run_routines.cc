@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/functional/bind_front.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -88,18 +89,20 @@ constexpr int kQuickcheckSpaces = 15;
 void HandleError(TestResultData& result, const absl::Status& status,
                  std::string_view test_name, const Pos& start_pos,
                  const absl::Time& start, const absl::Duration& duration,
-                 bool is_quickcheck) {
+                 bool is_quickcheck, FileTable& file_table) {
   VLOG(1) << "Handling error; status: " << status
           << " test_name: " << test_name;
-  absl::StatusOr<PositionalErrorData> data_or = GetPositionalErrorData(status);
+  absl::StatusOr<PositionalErrorData> data_or =
+      GetPositionalErrorData(status, std::nullopt, file_table);
 
   std::string one_liner;
   std::string suffix;
   if (data_or.ok()) {
     const auto& data = data_or.value();
-    CHECK_OK(PrintPositionalError(
-        data.span, data.GetMessageWithType(), std::cerr,
-        /*get_file_contents=*/nullptr, PositionalErrorColor::kErrorColor));
+    CHECK_OK(
+        PrintPositionalError(data.span, data.GetMessageWithType(), std::cerr,
+                             /*get_file_contents=*/nullptr,
+                             PositionalErrorColor::kErrorColor, file_table));
     one_liner = data.GetMessageWithType();
   } else {
     // If we can't extract positional data we log the error and put the error
@@ -112,7 +115,7 @@ void HandleError(TestResultData& result, const absl::Status& status,
   // Add to test tracking data.
   result.AddTestCase(
       test_xml::TestCase{.name = std::string(test_name),
-                         .file = start_pos.filename(),
+                         .file = std::string{start_pos.GetFilename(file_table)},
                          .line = start_pos.GetHumanLineno(),
                          .status = test_xml::RunStatus::kRun,
                          .result = test_xml::RunResult::kCompleted,
@@ -126,9 +129,9 @@ void HandleError(TestResultData& result, const absl::Status& status,
             << "\n";
 };
 
-absl::Status RunTestFunction(ImportData* import_data, TypeInfo* type_info,
-                             Module* module, TestFunction* tf,
-                             const BytecodeInterpreterOptions& options) {
+absl::Status RunDslxTestFunction(ImportData* import_data, TypeInfo* type_info,
+                                 Module* module, TestFunction* tf,
+                                 const BytecodeInterpreterOptions& options) {
   auto cache = std::make_unique<BytecodeCache>(import_data);
   import_data->SetBytecodeCache(std::move(cache));
   XLS_ASSIGN_OR_RETURN(
@@ -142,9 +145,9 @@ absl::Status RunTestFunction(ImportData* import_data, TypeInfo* type_info,
       .status();
 }
 
-absl::Status RunTestProc(ImportData* import_data, TypeInfo* type_info,
-                         Module* module, TestProc* tp,
-                         const BytecodeInterpreterOptions& options) {
+absl::Status RunDslxTestProc(ImportData* import_data, TypeInfo* type_info,
+                             Module* module, TestProc* tp,
+                             const BytecodeInterpreterOptions& options) {
   auto cache = std::make_unique<BytecodeCache>(import_data);
   import_data->SetBytecodeCache(std::move(cache));
 
@@ -178,8 +181,8 @@ absl::Status RunTestProc(ImportData* import_data, TypeInfo* type_info,
             run_result.blocked_channel_info.value();
         blocked_channels.push_back(absl::StrFormat(
             "%s: proc `%s` is blocked on receive on channel `%s`",
-            channel_info.span.ToString(), p.proc()->identifier(),
-            channel_info.name));
+            channel_info.span.ToString(import_data->file_table()),
+            p.proc()->identifier(), channel_info.name));
       }
       progress_made |= run_result.progress_made;
     }
@@ -195,12 +198,34 @@ absl::Status RunTestProc(ImportData* import_data, TypeInfo* type_info,
   XLS_RET_CHECK(ret_val.IsBool());
   if (!ret_val.IsTrue()) {
     return FailureErrorStatus(tp->proc()->span(),
-                              "Proc reported failure upon exit.");
+                              "Proc reported failure upon exit.",
+                              import_data->file_table());
   }
   return absl::OkStatus();
 }
 
 }  // namespace
+
+absl::StatusOr<std::unique_ptr<AbstractParsedTestRunner>>
+DslxInterpreterTestRunner ::CreateTestRunner(ImportData* import_data,
+                                             TypeInfo* type_info,
+                                             Module* module) const {
+  return std::make_unique<DslxInterpreterParsedTestRunner>(import_data,
+                                                           type_info, module);
+}
+absl::StatusOr<RunResult> DslxInterpreterParsedTestRunner::RunTestFunction(
+    std::string_view name, const BytecodeInterpreterOptions& options) {
+  XLS_ASSIGN_OR_RETURN(TestFunction * tf, entry_module_->GetTest(name));
+  return RunResult{.result = RunDslxTestFunction(import_data_, type_info_,
+                                                 entry_module_, tf, options)};
+}
+
+absl::StatusOr<RunResult> DslxInterpreterParsedTestRunner::RunTestProc(
+    std::string_view name, const BytecodeInterpreterOptions& options) {
+  XLS_ASSIGN_OR_RETURN(TestProc * tp, entry_module_->GetTestProc(name));
+  return RunResult{.result = RunDslxTestProc(import_data_, type_info_,
+                                             entry_module_, tp, options)};
+}
 
 TestResultData::TestResultData(absl::Time start_time,
                                std::vector<test_xml::TestCase> test_cases)
@@ -376,7 +401,8 @@ static absl::Status RunQuickCheck(AbstractRunComparator* run_comparator,
   return FailureErrorStatus(
       fn->span(),
       absl::StrFormat("Found falsifying example after %d tests: [%s]",
-                      results.size(), dslx_argset_str));
+                      results.size(), dslx_argset_str),
+      *fn->owner()->file_table());
 }
 
 static absl::Status RunQuickChecksIfJitEnabled(
@@ -395,6 +421,7 @@ static absl::Status RunQuickChecksIfJitEnabled(
     // for rationale.
     seed = static_cast<int64_t>(getpid()) * static_cast<int64_t>(time(nullptr));
   }
+  FileTable& file_table = *entry_module->file_table();
   bool any_quicktest_run = false;
   for (QuickCheck* quickcheck : entry_module->GetQuickChecks()) {
     const std::string& quickcheck_name = quickcheck->identifier();
@@ -402,14 +429,14 @@ static absl::Status RunQuickChecksIfJitEnabled(
     const absl::Time test_case_start = absl::Now();
     if (!TestMatchesFilter(quickcheck_name, test_filter)) {
       auto test_case_end = absl::Now();
-      result.AddTestCase(
-          test_xml::TestCase{.name = quickcheck_name,
-                             .file = start_pos.filename(),
-                             .line = start_pos.GetHumanLineno(),
-                             .status = test_xml::RunStatus::kRun,
-                             .result = test_xml::RunResult::kFiltered,
-                             .time = test_case_end - test_case_start,
-                             .timestamp = test_case_start});
+      result.AddTestCase(test_xml::TestCase{
+          .name = quickcheck_name,
+          .file = std::string{start_pos.GetFilename(file_table)},
+          .line = start_pos.GetHumanLineno(),
+          .status = test_xml::RunStatus::kRun,
+          .result = test_xml::RunResult::kFiltered,
+          .time = test_case_end - test_case_start,
+          .timestamp = test_case_start});
       continue;
     }
 
@@ -427,16 +454,16 @@ static absl::Status RunQuickChecksIfJitEnabled(
     if (!status.ok()) {
       HandleError(result, status, quickcheck_name, start_pos, test_case_start,
                   duration,
-                  /*is_quickcheck=*/true);
+                  /*is_quickcheck=*/true, file_table);
     } else {
-      result.AddTestCase(
-          test_xml::TestCase{.name = quickcheck_name,
-                             .file = start_pos.filename(),
-                             .line = start_pos.GetHumanLineno(),
-                             .status = test_xml::RunStatus::kRun,
-                             .result = test_xml::RunResult::kCompleted,
-                             .time = duration,
-                             .timestamp = test_case_start});
+      result.AddTestCase(test_xml::TestCase{
+          .name = quickcheck_name,
+          .file = std::string{start_pos.GetFilename(file_table)},
+          .line = start_pos.GetHumanLineno(),
+          .status = test_xml::RunStatus::kRun,
+          .result = test_xml::RunResult::kCompleted,
+          .time = duration,
+          .timestamp = test_case_start});
       std::cerr << "[                    OK ] " << quickcheck_name << "\n";
     }
   }
@@ -455,10 +482,11 @@ absl::StatusOr<ParseAndProveResult> ParseAndProve(
 
   auto import_data = CreateImportData(options.stdlib_path, options.dslx_paths,
                                       options.warnings);
+  FileTable& file_table = import_data.file_table();
   absl::StatusOr<TypecheckedModule> tm_or =
       ParseAndTypecheck(program, filename, module_name, &import_data);
   if (!tm_or.ok()) {
-    if (TryPrintError(tm_or.status())) {
+    if (TryPrintError(tm_or.status(), nullptr, file_table)) {
       result.Finish(TestResult::kParseOrTypecheckError, absl::Now() - start);
       return ParseAndProveResult{.test_result_data = result};
     }
@@ -470,7 +498,7 @@ absl::StatusOr<ParseAndProveResult> ParseAndProve(
   // files that had warnings suppressed at build time, which would gunk up build
   // logs unnecessarily.).
   if (options.warnings_as_errors) {
-    PrintWarnings(tm_or->warnings);
+    PrintWarnings(tm_or->warnings, file_table);
   }
 
   if (options.warnings_as_errors && !tm_or->warnings.warnings().empty()) {
@@ -501,14 +529,14 @@ absl::StatusOr<ParseAndProveResult> ParseAndProve(
 
     if (!TestMatchesFilter(quickcheck_name, options.test_filter)) {
       auto test_case_end = absl::Now();
-      result.AddTestCase(
-          test_xml::TestCase{.name = quickcheck_name,
-                             .file = start_pos.filename(),
-                             .line = start_pos.GetHumanLineno(),
-                             .status = test_xml::RunStatus::kRun,
-                             .result = test_xml::RunResult::kFiltered,
-                             .time = test_case_end - test_case_start,
-                             .timestamp = test_case_start});
+      result.AddTestCase(test_xml::TestCase{
+          .name = quickcheck_name,
+          .file = std::string{start_pos.GetFilename(file_table)},
+          .line = start_pos.GetHumanLineno(),
+          .status = test_xml::RunStatus::kRun,
+          .result = test_xml::RunResult::kFiltered,
+          .time = test_case_end - test_case_start,
+          .timestamp = test_case_start});
       continue;
     }
     dslx::PackageConversionData conv{
@@ -520,7 +548,7 @@ absl::StatusOr<ParseAndProveResult> ParseAndProve(
                                            ConvertOptions{}, &conv);
     if (!status.ok()) {
       HandleError(result, status, quickcheck_name, start_pos, test_case_start,
-                  absl::Now() - start, /*is_quickcheck=*/true);
+                  absl::Now() - start, /*is_quickcheck=*/true, file_table);
       continue;
     }
 
@@ -530,7 +558,7 @@ absl::StatusOr<ParseAndProveResult> ParseAndProve(
     status = RunOptimizationPassPipeline(&package).status();
     if (!status.ok()) {
       HandleError(result, status, quickcheck_name, start_pos, test_case_start,
-                  absl::Now() - start, /*is_quickcheck=*/true);
+                  absl::Now() - start, /*is_quickcheck=*/true, file_table);
       continue;
     }
 
@@ -538,7 +566,7 @@ absl::StatusOr<ParseAndProveResult> ParseAndProve(
         entry_module->name(), f->identifier(), CallingConvention::kTypical);
     if (!ir_function_name_or.ok()) {
       HandleError(result, status, quickcheck_name, start_pos, test_case_start,
-                  absl::Now() - start, /*is_quickcheck=*/true);
+                  absl::Now() - start, /*is_quickcheck=*/true, file_table);
       continue;
     }
 
@@ -546,7 +574,7 @@ absl::StatusOr<ParseAndProveResult> ParseAndProve(
         package.GetFunction(ir_function_name_or.value());
     if (!ir_function_or.ok()) {
       HandleError(result, status, quickcheck_name, start_pos, test_case_start,
-                  absl::Now() - start, /*is_quickcheck=*/true);
+                  absl::Now() - start, /*is_quickcheck=*/true, file_table);
       continue;
     }
 
@@ -558,7 +586,7 @@ absl::StatusOr<ParseAndProveResult> ParseAndProve(
 
     if (!proven_or.ok()) {
       HandleError(result, status, quickcheck_name, start_pos, test_case_start,
-                  absl::Now() - start, /*is_quickcheck=*/true);
+                  absl::Now() - start, /*is_quickcheck=*/true, file_table);
       continue;
     }
 
@@ -573,7 +601,7 @@ absl::StatusOr<ParseAndProveResult> ParseAndProve(
       absl::Duration duration = test_case_end - test_case_start;
       result.AddTestCase(test_xml::TestCase{
           .name = std::string(quickcheck_name),
-          .file = start_pos.filename(),
+          .file = std::string{start_pos.GetFilename(file_table)},
           .line = start_pos.GetHumanLineno(),
           .status = test_xml::RunStatus::kRun,
           .result = test_xml::RunResult::kCompleted,
@@ -597,12 +625,12 @@ absl::StatusOr<ParseAndProveResult> ParseAndProve(
     }
     std::string one_liner =
         absl::StrCat("counterexample: ", absl::StrJoin(counterexample, ", "));
-    status = ProofErrorStatus(quickcheck->span(), one_liner);
+    status = ProofErrorStatus(quickcheck->span(), one_liner, file_table);
     counterexamples[quickcheck_name] = std::move(counterexample);
     absl::Time test_case_end = absl::Now();
     absl::Duration duration = test_case_end - test_case_start;
     HandleError(result, status, quickcheck_name, start_pos, test_case_start,
-                duration, /*is_quickcheck=*/true);
+                duration, /*is_quickcheck=*/true, file_table);
   }
 
   result.Finish(TestResult::kSomeFailed, absl::Now() - start);
@@ -620,19 +648,20 @@ absl::StatusOr<ParseAndProveResult> ParseAndProve(
                              .counterexamples = std::move(counterexamples)};
 }
 
-absl::StatusOr<TestResultData> ParseAndTest(
+absl::StatusOr<TestResultData> AbstractTestRunner::ParseAndTest(
     std::string_view program, std::string_view module_name,
-    std::string_view filename, const ParseAndTestOptions& options) {
+    std::string_view filename, const ParseAndTestOptions& options) const {
   const absl::Time start = absl::Now();
   TestResultData result(start, /*test_cases=*/{});
 
   auto import_data = CreateImportData(options.stdlib_path, options.dslx_paths,
                                       options.warnings);
+  FileTable& file_table = import_data.file_table();
 
   absl::StatusOr<TypecheckedModule> tm_or =
       ParseAndTypecheck(program, filename, module_name, &import_data);
   if (!tm_or.ok()) {
-    if (TryPrintError(tm_or.status())) {
+    if (TryPrintError(tm_or.status(), nullptr, import_data.file_table())) {
       result.Finish(TestResult::kParseOrTypecheckError, absl::Now() - start);
       return result;
     }
@@ -644,7 +673,7 @@ absl::StatusOr<TestResultData> ParseAndTest(
   // files that had warnings suppressed at build time, which would gunk up build
   // logs unnecessarily.).
   if (options.execute || options.warnings_as_errors) {
-    PrintWarnings(tm_or->warnings);
+    PrintWarnings(tm_or->warnings, import_data.file_table());
   }
 
   if (options.warnings_as_errors && !tm_or->warnings.warnings().empty()) {
@@ -669,7 +698,8 @@ absl::StatusOr<TestResultData> ParseAndTest(
         ConvertModuleToPackage(entry_module, &import_data,
                                options.convert_options);
     if (!ir_package_or.ok()) {
-      if (TryPrintError(ir_package_or.status())) {
+      if (TryPrintError(ir_package_or.status(), nullptr,
+                        import_data.file_table())) {
         result.Finish(TestResult::kSomeFailed, absl::Now() - start);
         return result;
       }
@@ -695,6 +725,9 @@ absl::StatusOr<TestResultData> ParseAndTest(
     };
   }
 
+  XLS_ASSIGN_OR_RETURN(
+      std::unique_ptr<AbstractParsedTestRunner> runner,
+      CreateTestRunner(&import_data, tm_or.value().type_info, entry_module));
   // Run unit tests.
   for (const std::string& test_name : entry_module->GetTestNames()) {
     auto test_case_start = absl::Now();
@@ -703,51 +736,49 @@ absl::StatusOr<TestResultData> ParseAndTest(
 
     if (!TestMatchesFilter(test_name, options.test_filter)) {
       auto test_case_end = absl::Now();
-      result.AddTestCase(
-          test_xml::TestCase{.name = test_name,
-                             .file = start_pos.filename(),
-                             .line = start_pos.GetHumanLineno(),
-                             .status = test_xml::RunStatus::kRun,
-                             .result = test_xml::RunResult::kFiltered,
-                             .time = test_case_end - test_case_start,
-                             .timestamp = test_case_start});
+      result.AddTestCase(test_xml::TestCase{
+          .name = test_name,
+          .file = std::string{start_pos.GetFilename(file_table)},
+          .line = start_pos.GetHumanLineno(),
+          .status = test_xml::RunStatus::kRun,
+          .result = test_xml::RunResult::kFiltered,
+          .time = test_case_end - test_case_start,
+          .timestamp = test_case_start});
       continue;
     }
 
     std::cerr << "[ RUN UNITTEST  ] " << test_name << '\n';
-    absl::Status status;
+    RunResult out;
     BytecodeInterpreterOptions interpreter_options;
     interpreter_options.post_fn_eval_hook(post_fn_eval_hook)
-        .trace_hook(InfoLoggingTraceHook)
+        .trace_hook(absl::bind_front(InfoLoggingTraceHook, file_table))
         .trace_channels(options.trace_channels)
         .max_ticks(options.max_ticks)
         .format_preference(options.format_preference);
     if (std::holds_alternative<TestFunction*>(*member)) {
-      XLS_ASSIGN_OR_RETURN(TestFunction * tf, entry_module->GetTest(test_name));
-      status = RunTestFunction(&import_data, tm_or.value().type_info,
-                               entry_module, tf, interpreter_options);
+      XLS_ASSIGN_OR_RETURN(
+          out, runner->RunTestFunction(test_name, interpreter_options));
     } else {
-      XLS_ASSIGN_OR_RETURN(TestProc * tp, entry_module->GetTestProc(test_name));
-      status = RunTestProc(&import_data, tm_or.value().type_info, entry_module,
-                           tp, interpreter_options);
+      XLS_ASSIGN_OR_RETURN(out,
+                           runner->RunTestProc(test_name, interpreter_options));
     }
     auto test_case_end = absl::Now();
 
-    if (status.ok()) {
+    if (out.result.ok()) {
       // Add to the tracking data.
-      result.AddTestCase(
-          test_xml::TestCase{.name = test_name,
-                             .file = start_pos.filename(),
-                             .line = start_pos.GetHumanLineno(),
-                             .status = test_xml::RunStatus::kRun,
-                             .result = test_xml::RunResult::kCompleted,
-                             .time = test_case_end - test_case_start,
-                             .timestamp = test_case_start});
+      result.AddTestCase(test_xml::TestCase{
+          .name = test_name,
+          .file = std::string{start_pos.GetFilename(file_table)},
+          .line = start_pos.GetHumanLineno(),
+          .status = test_xml::RunStatus::kRun,
+          .result = test_xml::RunResult::kCompleted,
+          .time = test_case_end - test_case_start,
+          .timestamp = test_case_start});
       std::cerr << "[            OK ]" << '\n';
     } else {
-      HandleError(result, status, test_name, start_pos, test_case_start,
+      HandleError(result, out.result, test_name, start_pos, test_case_start,
                   test_case_end - test_case_start,
-                  /*is_quickcheck=*/false);
+                  /*is_quickcheck=*/false, file_table);
     }
   }
 

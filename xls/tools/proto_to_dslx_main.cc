@@ -24,6 +24,7 @@
 #include "xls/common/init_xls.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/frontend/module.h"
+#include "xls/dslx/frontend/pos.h"
 #include "xls/tools/proto_to_dslx.h"
 
 ABSL_FLAG(std::string, proto_def_path, "",
@@ -51,9 +52,10 @@ static absl::Status RealMain(const std::string& source_root_path,
                              const std::string& var_name,
                              const std::string& output_path) {
   XLS_ASSIGN_OR_RETURN(std::string textproto, GetFileContents(textproto_path));
+  dslx::FileTable file_table;
   XLS_ASSIGN_OR_RETURN(auto module,
                        ProtoToDslx(source_root_path, proto_def_path, proto_name,
-                                   textproto, var_name));
+                                   textproto, var_name, file_table));
   return SetFileContents(output_path, module->ToString());
 }
 

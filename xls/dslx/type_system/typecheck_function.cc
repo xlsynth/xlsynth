@@ -32,6 +32,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "xls/common/casts.h"
+#include "xls/common/logging/log_lines.h"
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/constexpr_evaluator.h"
@@ -95,7 +96,8 @@ absl::Status TypecheckParametric(
         absl::StrFormat(
             "Parametric argument of the returned value does not match the "
             "function return type. Expected %s; got %s.",
-            formal_dim.ToString(), actual_dim.ToString()));
+            formal_dim.ToString(), actual_dim.ToString()),
+        ctx->file_table());
   }
   return absl::OkStatus();
 }
@@ -135,6 +137,7 @@ absl::Status TypecheckStructParametrics(
 
 absl::Status TypecheckFunction(Function& f, DeduceCtx* ctx) {
   VLOG(2) << "Typechecking fn: " << f.identifier();
+  XLS_VLOG_LINES(2, ctx->GetFnStackDebugString());
 
   WarnIfConfusinglyNamedLikeTest(f, ctx);
 
@@ -148,12 +151,21 @@ absl::Status TypecheckFunction(Function& f, DeduceCtx* ctx) {
     absl::StatusOr<TypeInfo*> proc_ti =
         ctx->type_info()->GetTopLevelProcTypeInfo(f.proc().value());
     if (proc_ti.ok()) {
+      VLOG(5) << "Typchecking fn; " << f.identifier()
+              << "; found proc-level type info for proc: "
+              << f.proc().value()->identifier();
       XLS_RETURN_IF_ERROR(ctx->PushTypeInfo(proc_ti.value()));
       derived_type_info = proc_ti.value();
     } else {
+      VLOG(5) << "Typchecking fn; " << f.identifier()
+              << "; creating proc-level type info for proc: "
+              << f.proc().value()->identifier();
       derived_type_info = ctx->AddDerivedTypeInfo();
     }
   }
+
+  VLOG(2) << "Typechecking fn: " << f.identifier() << "; starting params";
+  XLS_VLOG_LINES(2, ctx->GetFnStackDebugString());
 
   XLS_ASSIGN_OR_RETURN(std::vector<std::unique_ptr<Type>> param_types,
                        TypecheckFunctionParams(f, ctx));
@@ -165,9 +177,10 @@ absl::Status TypecheckFunction(Function& f, DeduceCtx* ctx) {
     return_type = TupleType::MakeUnit();
   } else {
     XLS_ASSIGN_OR_RETURN(return_type, DeduceAndResolve(f.return_type(), ctx));
-    XLS_ASSIGN_OR_RETURN(return_type, UnwrapMetaType(std::move(return_type),
-                                                     f.return_type()->span(),
-                                                     "function return type"));
+    XLS_ASSIGN_OR_RETURN(
+        return_type,
+        UnwrapMetaType(std::move(return_type), f.return_type()->span(),
+                       "function return type", ctx->file_table()));
   }
 
   // Add proc members to the environment before typechecking the fn body.
@@ -187,7 +200,8 @@ absl::Status TypecheckFunction(Function& f, DeduceCtx* ctx) {
                              return_type->ToString(), body_type->ToString());
   if (body_type->IsMeta()) {
     return TypeInferenceErrorStatus(f.body()->span(), body_type.get(),
-                                    "Types cannot be returned from functions");
+                                    "Types cannot be returned from functions",
+                                    ctx->file_table());
   }
   if (*return_type != *body_type) {
     VLOG(5) << "return type: " << return_type->ToString()
@@ -226,7 +240,8 @@ absl::Status TypecheckFunction(Function& f, DeduceCtx* ctx) {
         f.return_type()->span(), return_type.get(),
         absl::StrFormat(
             "Parametric type being returned from function -- types must be "
-            "fully resolved, please fully instantiate the type"));
+            "fully resolved, please fully instantiate the type"),
+        ctx->file_table());
   }
   if (return_type->IsStruct() &&
       !body_type->AsStruct().nominal_type_dims_by_identifier().empty()) {

@@ -18,6 +18,7 @@
 #include <string>
 
 #include "absl/status/statusor.h"
+#include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/type_system/type.h"
 
 namespace xls::dslx {
@@ -36,8 +37,8 @@ namespace xls::dslx {
 //
 // The returned string should be assumed to be multi-line but not
 // newline-terminated.
-absl::StatusOr<std::string> FormatTypeMismatch(const Type& lhs,
-                                               const Type& rhs);
+absl::StatusOr<std::string> FormatTypeMismatch(const Type& lhs, const Type& rhs,
+                                               const FileTable& file_table);
 
 }  // namespace xls::dslx
 

@@ -14,14 +14,15 @@
 
 # Build rules for XLS RLE Encoder implementation.
 
-load("@rules_hdl//verilog:providers.bzl", "verilog_library")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_hdl//gds_write:build_defs.bzl", "gds_write")
 load("@rules_hdl//place_and_route:build_defs.bzl", "place_and_route")
 load("@rules_hdl//synthesis:build_defs.bzl", "synthesize_rtl")
-load("@rules_hdl//gds_write:build_defs.bzl", "gds_write")
-load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_hdl//verilog:providers.bzl", "verilog_library")
 load(
     "//xls/build_rules:xls_build_defs.bzl",
     "xls_benchmark_ir",
+    "xls_dslx_fmt_test",
     "xls_dslx_ir",
     "xls_dslx_library",
     "xls_dslx_test",
@@ -54,6 +55,48 @@ xls_dslx_library(
     deps = [
         ":rle_common_dslx",
     ],
+)
+
+xls_dslx_library(
+    name = "rle_enc_dslx_test_utils",
+    srcs = ["rle_enc_test_utils.x"],
+    deps = [":rle_enc_dslx"],
+)
+
+xls_dslx_fmt_test(
+    name = "rle_enc_dslx_test_utils_fmt_test",
+    src = "rle_enc_test_utils.x",
+)
+
+# Takes ~45 seconds with jit. Probably hours with dslx interpreter.
+xls_dslx_test(
+    name = "rle_enc_dslx_large_test",
+    srcs = ["rle_enc_large_test.x"],
+    dslx_test_args = {
+        "compare": "none",
+        "max_ticks": "10000000000",
+    },
+    evaluator = "ir-jit",
+    deps = [":rle_enc_dslx_test_utils"],
+)
+
+xls_dslx_fmt_test(
+    name = "rle_enc_dslx_large_test_fmt_test",
+    src = "rle_enc_large_test.x",
+)
+
+xls_dslx_test(
+    name = "rle_enc_dslx_small_test",
+    srcs = ["rle_enc_small_test.x"],
+    dslx_test_args = {
+        "compare": "jit",
+    },
+    deps = [":rle_enc_dslx_test_utils"],
+)
+
+xls_dslx_fmt_test(
+    name = "rle_enc_dslx_small_test_fmt_test",
+    src = "rle_enc_small_test.x",
 )
 
 xls_dslx_test(
