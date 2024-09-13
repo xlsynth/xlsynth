@@ -240,7 +240,8 @@ jobs:
 
     - name: Install bazelisk
       run: |
-        dnf install -y curl unzip
+        sudo apt-get update
+        sudo apt-get install -y curl
         curl -Lo bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
         chmod +x bazelisk
         mv bazelisk /usr/local/bin/
