@@ -297,31 +297,31 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Download osx-artifacts-arm64
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v4
       with:
         name: osx-artifacts-arm64
         path: osx-artifacts-arm64
 
     - name: Download osx-artifacts-x64
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v4
       with:
         name: osx-artifacts-x64
         path: osx-artifacts-x64
 
     - name: Download ubuntu2004-artifacts
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v4
       with:
         name: ubuntu2004-artifacts
         path: ubuntu2004-artifacts
 
     - name: Download ubuntu2204-artifacts
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v4
       with:
         name: ubuntu2204-artifacts
         path: ubuntu2204-artifacts
 
     - name: Download rocky8-artifacts
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v4
       with:
         name: rocky8-artifacts
         path: rocky8-artifacts
