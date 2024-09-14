@@ -22,7 +22,7 @@ def delay_model(
         precedence,
         srcs,
         **kwargs):
-    """Generates a delay model cc_library from a DelayModel protobuf.
+    """Generates a delay model cc_library from an EstimatorModel protobuf.
 
     Args:
 
@@ -30,7 +30,7 @@ def delay_model(
       model_name: Name of the model. This is the string that is used to access
         the model when calling xls::GetDelayEstimator.
       precedence: Precedence for the model in the delay model registry.
-      srcs: The pbtext file containing the DelayModel proto. There should only
+      srcs: The pbtext file containing the EstimatorModel proto. There should only
         be a single source file.
       **kwargs: Keyword args to pass to cc_library and genrule_wrapper rules.
     """
