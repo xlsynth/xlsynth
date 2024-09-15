@@ -49,6 +49,7 @@ struct xls_function;
 struct xls_type;
 struct xls_function_type;
 
+XLS_DLL_EXPORT
 void xls_init_xls(const char* usage, int argc, char* argv[]);
 
 XLS_DLL_EXPORT
@@ -89,9 +90,11 @@ struct xls_value* xls_value_make_true();
 // Attempts to extract a "bits" value from the given XLS value -- the resulting
 // `bits_out` is owned by the caller and must be freed via `xls_bits_free()` on
 // success.
+XLS_DLL_EXPORT
 bool xls_value_get_bits(const struct xls_value* value, char** error_out,
                         struct xls_bits** bits_out);
 
+XLS_DLL_EXPORT
 void xls_bits_free(struct xls_bits* bits);
 
 // Returns a new `bits[1]:0` XLS value which the caller must free.
@@ -323,6 +326,7 @@ struct xls_vast_literal* xls_vast_verilog_file_make_plain_literal(
 // Creates a VAST literal with an arbitrary bit count.
 //
 // Returns an error if the given format preference is invalid.
+XLS_DLL_EXPORT
 bool xls_vast_verilog_file_make_literal(struct xls_vast_verilog_file* f,
                                         struct xls_bits* bits,
                                         xls_format_preference format_preference,
