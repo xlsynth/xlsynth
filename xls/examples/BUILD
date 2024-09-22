@@ -597,10 +597,11 @@ xls_dslx_verilog(
     name = "tiny_adder_sv",
     codegen_args = {
         "module_name": "tiny_adder",
-        "generator": "combinational",
-        "delay_model": "unit",
+        "generator": "pipeline",
+        "delay_model": "sky130",
         "use_system_verilog": "true",
         "output_port_name": "result",
+        "pipeline_stages": "1",
     },
     dslx_top = "tiny_adder",
     library = ":tiny_adder_dslx",
@@ -1193,11 +1194,49 @@ filegroup(
     visibility = ["//xls:xls_internal"],
 )
 
+# ---
+
+xls_dslx_library(
+    name = "fp32_add_stack",
+    srcs = ["fp32_add_stack.x"],
+)
+
+[
+xls_dslx_verilog(
+        name = "fp32_add_stack_%d_stages_sv" % i,
+        codegen_args = {
+            "module_name": "main",
+            "generator": "pipeline",
+            "delay_model": "asap7",
+            "pipeline_stages": "%d" % i,
+            "use_system_verilog": "false",
+        },
+        dslx_top = "main",
+        library = ":fp32_add_stack",
+        verilog_file = "fp32_add_stack_%d_stages.v" % i,
+    )
+    for i in range(2, 6)
+]
+
+verilog_library(
+    name = "fp32_add_stack_5_stages_verilog",
+    srcs = [":fp32_add_stack_5_stages.v"],
+    tags = ["DSLX"],
+)
+
+synthesize_rtl(
+    name = "fp32_add_stack_5_stages_verilog_synth_asap7",
+    standard_cells = "@org_theopenroadproject_asap7sc7p5t_27//:asap7-sc7p5t_rev27_rvt_4x",
+    tags = ["manual"],
+    top_module = "main",
+    deps = [":fp32_add_stack_5_stages_verilog"],
+)
+
+# ---
+
 xls_dslx_library(
     name = "passthrough_dslx",
-    srcs = [
-        "passthrough.x",
-    ],
+    srcs = ["passthrough.x"],
 )
 
 xls_dslx_test(
