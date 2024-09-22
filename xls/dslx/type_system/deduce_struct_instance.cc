@@ -47,15 +47,6 @@
 
 namespace xls::dslx {
 
-// Forward declaration from sister implementation file as we are recursively
-// bound to the central deduce-and-resolve routine in our node deduction
-// routines.
-//
-// TODO(cdleary): 2024-01-16 We can break this circular resolution with a
-// virtual function on DeduceCtx when we get things refactored nicely.
-extern absl::StatusOr<std::unique_ptr<Type>> DeduceAndResolve(
-    const AstNode* node, DeduceCtx* ctx);
-
 namespace {
 
 struct ValidatedStructMembers {
@@ -99,18 +90,21 @@ absl::StatusOr<ValidatedStructMembers> ValidateStructMembersSubset(
           ctx->file_table());
     }
     XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> expr_type,
-                         DeduceAndResolve(expr, ctx));
+                         ctx->DeduceAndResolve(expr));
     XLS_RET_CHECK(!expr_type->IsMeta())
         << "name: " << name << " expr: " << expr->ToString()
         << " type: " << *expr_type;
 
     result.args.push_back(InstantiateArg{std::move(expr_type), expr->span()});
-    std::optional<const Type*> maybe_type =
+    std::optional<const Type*> maybe_member_type =
         struct_type.GetMemberTypeByName(name);
 
-    if (maybe_type.has_value()) {
-      XLS_RET_CHECK(!maybe_type.value()->IsMeta()) << *maybe_type.value();
-      result.member_types.push_back(maybe_type.value()->CloneToUnique());
+    if (maybe_member_type.has_value()) {
+      const Type* member_type = *maybe_member_type;
+      XLS_RET_CHECK(!member_type->IsMeta()) << *member_type;
+      XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> resolved_member,
+                           ctx->Resolve(*member_type));
+      result.member_types.push_back(resolved_member->CloneToUnique());
     } else {
       return TypeInferenceErrorStatus(
           expr->span(), nullptr,
@@ -128,7 +122,7 @@ absl::StatusOr<ValidatedStructMembers> ValidateStructMembersSubset(
 
 absl::StatusOr<std::unique_ptr<Type>> DeduceStructInstance(
     const StructInstance* node, DeduceCtx* ctx) {
-  VLOG(5) << "Deducing type for struct instance: " << node->ToString();
+  VLOG(5) << "DeduceStructInstance: " << node->ToString();
 
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> type,
                        ctx->Deduce(ToAstNode(node->struct_ref())));

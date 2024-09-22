@@ -262,6 +262,14 @@ fn f() -> (bool, u32)[2] { [p(u4:0), p(s8:0)] }
   XLS_EXPECT_OK(Typecheck(program));
 }
 
+TEST(TypecheckTest, XbitsCast) {
+  std::string program = R"(
+fn f(x: u1) -> s1 { x as xN[true][1] }
+fn g() -> s1 { u1:0 as xN[true][1] }
+)";
+  XLS_EXPECT_OK(Typecheck(program));
+}
+
 TEST(TypecheckTest, ParametricPlusGlobal) {
   std::string program = R"(
 const GLOBAL = u32:4;
@@ -788,6 +796,19 @@ fn Foo() {
 )"),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        HasSubstr("No parametric value provided for 'B'")));
+}
+
+TEST(TypecheckTest, DerivedParametricStructNoParametrics) {
+  XLS_EXPECT_OK(Typecheck(R"(
+struct StructFoo<A: u32> {
+  x: uN[A],
+}
+
+fn extract_field() -> u16 {
+  let foo = StructFoo{x: u16:0};
+  foo.x
+}
+)"));
 }
 
 TEST(TypecheckTest, DerivedExprTypeMismatch) {
@@ -2329,6 +2350,7 @@ fn main() {
 TEST(TypecheckTest, AttrViaColonRef) {
   XLS_EXPECT_OK(Typecheck("fn f() -> u8 { u8::ZERO }"));
   XLS_EXPECT_OK(Typecheck("fn f() -> u8 { u8::MAX }"));
+  XLS_EXPECT_OK(Typecheck("fn f() -> u8 { u8::MIN }"));
 }
 
 TEST(TypecheckTest, ColonRefTypeAlias) {
@@ -2336,6 +2358,14 @@ TEST(TypecheckTest, ColonRefTypeAlias) {
 type MyU8 = u8;
 fn f() -> u8 { MyU8::MAX }
 fn g() -> u8 { MyU8::ZERO }
+fn h() -> u8 { MyU8::MIN }
+)"));
+}
+
+TEST(TypecheckTest, MinAttrUsedInConstAsserts) {
+  XLS_EXPECT_OK(Typecheck(R"(
+const_assert!(u8::MIN == u8:0);
+const_assert!(s4::MIN == s4:-8);
 )"));
 }
 
@@ -2933,49 +2963,45 @@ TEST(TypecheckTest, ConcatU1U1) {
 }
 
 TEST(TypecheckErrorTest, ConcatU1S1) {
-  EXPECT_THAT(
-      Typecheck("fn f(x: u1, y: s1) -> u2 { x ++ y }").status(),
-      IsPosError("XlsTypeError", HasSubstr("Concatenation requires operand "
-                                           "types to both be unsigned bits")));
+  EXPECT_THAT(Typecheck("fn f(x: u1, y: s1) -> u2 { x ++ y }").status(),
+              IsPosError("TypeInferenceError",
+                         HasSubstr("Concatenation requires operand "
+                                   "types to both be unsigned bits")));
 }
 
 TEST(TypecheckErrorTest, ConcatS1S1) {
-  EXPECT_THAT(
-      Typecheck("fn f(x: s1, y: s1) -> u2 { x ++ y }").status(),
-      IsPosError("XlsTypeError", HasSubstr("Concatenation requires operand "
-                                           "types to both be unsigned bits")));
+  EXPECT_THAT(Typecheck("fn f(x: s1, y: s1) -> u2 { x ++ y }").status(),
+              IsPosError("TypeInferenceError",
+                         HasSubstr("Concatenation requires operand "
+                                   "types to both be unsigned bits")));
 }
 
 TEST(TypecheckTest, ConcatU2S1) {
-  EXPECT_THAT(
-      Typecheck("fn f(x: u2, y: s1) -> u3 { x ++ y }").status(),
-      IsPosError("XlsTypeError", HasSubstr("Concatenation requires operand "
-                                           "types to both be unsigned bits")));
+  EXPECT_THAT(Typecheck("fn f(x: u2, y: s1) -> u3 { x ++ y }").status(),
+              IsPosError("TypeInferenceError",
+                         HasSubstr("Concatenation requires operand "
+                                   "types to both be unsigned bits")));
 }
 
 TEST(TypecheckTest, ConcatU1Nil) {
-  EXPECT_THAT(
-      Typecheck("fn f(x: u1, y: ()) -> () { x ++ y }").status(),
-      IsPosError("XlsTypeError",
-                 HasSubstr("uN[1] vs (): Concatenation requires operand types "
-                           "to be either both-arrays or both-bits")));
+  EXPECT_THAT(Typecheck("fn f(x: u1, y: ()) -> () { x ++ y }").status(),
+              IsPosError("TypeInferenceError",
+                         HasSubstr("Concatenation requires operand types "
+                                   "to be either both-arrays or both-bits")));
 }
 
 TEST(TypecheckTest, ConcatS1Nil) {
-  EXPECT_THAT(
-      Typecheck("fn f(x: s1, y: ()) -> () { x ++ y }").status(),
-      IsPosError("XlsTypeError",
-                 AllOf(HasSubstr("Concatenation requires operand types "
-                                 "to be either both-arrays or both-bits"),
-                       HasSubstr("sN[1] vs ()"))));
+  EXPECT_THAT(Typecheck("fn f(x: s1, y: ()) -> () { x ++ y }").status(),
+              IsPosError("TypeInferenceError",
+                         HasSubstr("Concatenation requires operand types "
+                                   "to be either both-arrays or both-bits")));
 }
 
 TEST(TypecheckTest, ConcatNilNil) {
-  EXPECT_THAT(
-      Typecheck("fn f(x: (), y: ()) -> () { x ++ y }").status(),
-      IsPosError("XlsTypeError",
-                 HasSubstr("() vs (): Concatenation requires operand types to "
-                           "be either both-arrays or both-bits")));
+  EXPECT_THAT(Typecheck("fn f(x: (), y: ()) -> () { x ++ y }").status(),
+              IsPosError("TypeInferenceError",
+                         HasSubstr("Concatenation requires operand types to "
+                                   "be either both-arrays or both-bits")));
 }
 
 TEST(TypecheckTest, ConcatEnumU2) {
@@ -2987,9 +3013,9 @@ enum MyEnum : u2 {
 fn f(x: MyEnum, y: u2) -> () { x ++ y }
 )")
                   .status(),
-              IsPosError("XlsTypeError",
-                         HasSubstr("MyEnum vs uN[2]: Enum values must be cast "
-                                   "to unsigned bits before concatenation.")));
+              IsPosError("TypeInferenceError",
+                         HasSubstr("Enum values must be cast to unsigned bits "
+                                   "before concatenation")));
 }
 
 TEST(TypecheckTest, ConcatU2Enum) {
@@ -3001,9 +3027,9 @@ enum MyEnum : u2 {
 fn f(x: u2, y: MyEnum) -> () { x ++ y }
 )")
                   .status(),
-              IsPosError("XlsTypeError",
-                         HasSubstr("uN[2] vs MyEnum: Enum values must be cast "
-                                   "to unsigned bits before concatenation.")));
+              IsPosError("TypeInferenceError",
+                         HasSubstr("Enum values must be cast to unsigned bits "
+                                   "before concatenation")));
 }
 
 TEST(TypecheckTest, ConcatEnumEnum) {
@@ -3015,17 +3041,35 @@ enum MyEnum : u2 {
 fn f(x: MyEnum, y: MyEnum) -> () { x ++ y }
 )")
                   .status(),
-              IsPosError("XlsTypeError",
+              IsPosError("TypeInferenceError",
                          HasSubstr("Enum values must be cast "
-                                   "to unsigned bits before concatenation.")));
+                                   "to unsigned bits before concatenation")));
+}
+
+TEST(TypecheckTest, ConcatStructStruct) {
+  EXPECT_THAT(Typecheck(R"(
+struct S {}
+fn f(x: S, y: S) -> () { x ++ y }
+)")
+                  .status(),
+              IsPosError("TypeInferenceError",
+                         HasSubstr("Concatenation requires operand types to be "
+                                   "either both-arrays or both-bits")));
+}
+
+TEST(TypecheckTest, ConcatUnWithXn) {
+  XLS_ASSERT_OK(Typecheck(R"(
+fn f(x: u32, y: xN[false][32]) -> xN[false][64] { x ++ y }
+)"));
 }
 
 TEST(TypecheckTest, ConcatU1ArrayOfOneU8) {
-  EXPECT_THAT(Typecheck("fn f(x: u1, y: u8[1]) -> () { x ++ y }").status(),
-              IsPosError("XlsTypeError",
-                         AllOf(HasSubstr("uN[1]\nvs uN[8][1]"),
-                               HasSubstr("Attempting to concatenate "
-                                         "array/non-array values together"))));
+  EXPECT_THAT(
+      Typecheck("fn f(x: u1, y: u8[1]) -> () { x ++ y }").status(),
+      IsPosError(
+          "TypeInferenceError",
+          HasSubstr(
+              "Attempting to concatenate array/non-array values together")));
 }
 
 TEST(TypecheckTest, ConcatArrayOfThreeU8ArrayOfOneU8) {
@@ -3055,11 +3099,12 @@ TEST(TypecheckTest, AssertBuiltinIsUnitType) {
 }
 
 TEST(TypecheckTest, ConcatNilArrayOfOneU8) {
-  EXPECT_THAT(Typecheck("fn f(x: (), y: u8[1]) -> () { x ++ y }").status(),
-              IsPosError("XlsTypeError",
-                         AllOf(HasSubstr("()\nvs uN[8][1]"),
-                               HasSubstr("Attempting to concatenate "
-                                         "array/non-array values together"))));
+  EXPECT_THAT(
+      Typecheck("fn f(x: (), y: u8[1]) -> () { x ++ y }").status(),
+      IsPosError(
+          "TypeInferenceError",
+          HasSubstr(
+              "Attempting to concatenate array/non-array values together")));
 }
 
 TEST(TypecheckTest, ParametricStructWithoutAllParametricsBoundInReturnType) {
@@ -3072,6 +3117,97 @@ fn f(x: Point1D) -> Point1D { x }
           .status(),
       IsPosError("TypeInferenceError",
                  HasSubstr("Parametric type being returned from function")));
+}
+
+// See https://github.com/google/xls/issues/1030
+TEST(TypecheckTest, InstantiateImportedParametricStruct) {
+  constexpr std::string_view kImported = R"(
+pub struct my_struct<N: u32> {
+    my_field: uN[N],
+}
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn main() -> u5 {
+  const local_struct = imported::my_struct<5> { my_field: u5:10 };
+  local_struct.my_field
+}
+)";
+  auto import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(
+      ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+  XLS_EXPECT_OK(
+      ParseAndTypecheck(kProgram, "fake_main_path.x", "main", &import_data));
+}
+
+TEST(TypecheckTest, InstantiateImportedParametricStructNoParametrics) {
+  constexpr std::string_view kImported = R"(
+pub struct my_struct<N: u32> {
+    my_field: uN[N],
+}
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn main() -> u5 {
+  const local_struct = imported::my_struct { my_field: u5:10 };
+  local_struct.my_field
+}
+)";
+  auto import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(
+      ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+  XLS_EXPECT_OK(
+      ParseAndTypecheck(kProgram, "fake_main_path.x", "main", &import_data));
+}
+
+TEST(TypecheckTest, InstantiateImportedParametricStructTypeAlias) {
+  constexpr std::string_view kImported = R"(
+pub struct my_struct<N: u32> {
+    my_field: uN[N],
+}
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+type MyTypeAlias = imported::my_struct<5>;
+
+fn extract_field(x: MyTypeAlias) -> u5 {
+  x.my_field
+}
+
+fn main() -> u5 {
+  const local_struct = imported::my_struct<5> { my_field: u5:10 };
+  extract_field(local_struct)
+}
+)";
+  auto import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(
+      ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+  XLS_EXPECT_OK(
+      ParseAndTypecheck(kProgram, "fake_main_path.x", "main", &import_data));
+}
+
+TEST(TypecheckTest, CallImportedParametricFn) {
+  constexpr std::string_view kImported = R"(
+pub fn my_fn<N: u32>(x: uN[N]) -> uN[N] {
+   x+uN[N]:1
+}
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn main() -> u5 {
+  let x = imported::my_fn<u32:5>(u5:10);
+  x
+}
+)";
+  auto import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(
+      ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+  XLS_EXPECT_OK(
+      ParseAndTypecheck(kProgram, "fake_main_path.x", "main", &import_data));
 }
 
 TEST(TypecheckErrorTest, PrioritySelectOnNonBitsType) {

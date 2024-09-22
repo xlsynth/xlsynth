@@ -599,5 +599,103 @@ TEST_F(NodeUtilTest, GetNodeAtIndex) {
   RecordProperty("ir", fb.Build().value()->DumpIr());
 }
 
+TEST_F(NodeUtilTest, CompareLiteral) {
+  std::unique_ptr<Package> p = CreatePackage();
+  FunctionBuilder fb(TestName(), p.get());
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Node * big, CompareLiteral(fb.Param("foo", p->GetBitsType(300)).node(),
+                                 42, Op::kULt));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Node * little, CompareLiteral(fb.Param("foo2", p->GetBitsType(16)).node(),
+                                    42, Op::kULt));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Node * same, CompareLiteral(fb.Param("foo3", p->GetBitsType(64)).node(),
+                                  42, Op::kULt));
+  XLS_ASSERT_OK(
+      fb.BuildWithReturnValue(fb.Tuple({BValue(big, &fb), BValue(little, &fb),
+                                        BValue(same, &fb)}))
+          .status());
+  EXPECT_THAT(big, m::ULt(m::Param("foo"), m::Literal(UBits(42, 300))));
+  EXPECT_THAT(little, m::ULt(m::Param("foo2"), m::Literal(UBits(42, 16))));
+  EXPECT_THAT(same, m::ULt(m::Param("foo3"), m::Literal(UBits(42, 64))));
+}
+
+TEST_F(NodeUtilTest, CompareNumeric) {
+  std::unique_ptr<Package> p = CreatePackage();
+  FunctionBuilder fb(TestName(), p.get());
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Node * big,
+      CompareNumeric(fb.Param("foo", p->GetBitsType(100)).node(),
+                     fb.Param("bar", p->GetBitsType(16)).node(), Op::kULt));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Node * little,
+      CompareNumeric(fb.Param("foo2", p->GetBitsType(16)).node(),
+                     fb.Param("bar2", p->GetBitsType(100)).node(), Op::kULt));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Node * same,
+      CompareNumeric(fb.Param("foo3", p->GetBitsType(16)).node(),
+                     fb.Param("bar3", p->GetBitsType(16)).node(), Op::kULt));
+  XLS_ASSERT_OK(
+      fb.BuildWithReturnValue(fb.Tuple({BValue(big, &fb), BValue(little, &fb),
+                                        BValue(same, &fb)}))
+          .status());
+  EXPECT_THAT(big, m::ULt(m::Param("foo"), m::ZeroExt(m::Param("bar"))));
+  EXPECT_THAT(little, m::ULt(m::ZeroExt(m::Param("foo2")), m::Param("bar2")));
+  EXPECT_THAT(same, m::ULt(m::Param("foo3"), m::Param("bar3")));
+}
+
+TEST_F(NodeUtilTest, UnsignedUpperBoundLiteral) {
+  std::unique_ptr<Package> p = CreatePackage();
+  FunctionBuilder fb(TestName(), p.get());
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Node * big, UnsignedUpperBoundLiteral(
+                      fb.Param("foo", p->GetBitsType(100)).node(), 42));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Node * small, UnsignedUpperBoundLiteral(
+                        fb.Param("foo2", p->GetBitsType(10)).node(), 42));
+  // NB 0x2000 needs 14 bits at least.
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Node * impossible,
+      UnsignedUpperBoundLiteral(fb.Param("foo3", p->GetBitsType(10)).node(),
+                                0x2000));
+  XLS_ASSERT_OK(
+      fb.BuildWithReturnValue(fb.Tuple({BValue(big, &fb), BValue(small, &fb),
+                                        BValue(impossible, &fb)}))
+          .status());
+  EXPECT_THAT(big, m::PrioritySelect(
+                       m::UGt(m::Param("foo"), m::Literal(UBits(42, 100))),
+                       {m::Literal(UBits(42, 100))}, m::Param("foo")));
+  EXPECT_THAT(small, m::PrioritySelect(
+                         m::UGt(m::Param("foo2"), m::Literal(UBits(42, 10))),
+                         {m::Literal(UBits(42, 10))}, m::Param("foo2")));
+  EXPECT_THAT(impossible, m::Param("foo3"));
+}
+
+TEST_F(NodeUtilTest, UnsignedBoundByLiterals) {
+  std::unique_ptr<Package> p = CreatePackage();
+  FunctionBuilder fb(TestName(), p.get());
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Node * standard,
+      UnsignedBoundByLiterals(fb.Param("foo", p->GetBitsType(100)).node(), 10,
+                              42));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Node * no_high,
+      UnsignedBoundByLiterals(fb.Param("foo2", p->GetBitsType(10)).node(), 10,
+                              0x1000));
+  XLS_ASSERT_OK(fb.BuildWithReturnValue(
+                      fb.Tuple({BValue(standard, &fb), BValue(no_high, &fb)}))
+                    .status());
+  RecordProperty("ir", p->DumpIr());
+  EXPECT_THAT(
+      standard,
+      m::PrioritySelect(
+          m::Concat(m::UGt(m::Param("foo"), m::Literal(UBits(42, 100))),
+                    m::ULt(m::Param("foo"), m::Literal(UBits(10, 100)))),
+          {m::Literal(UBits(10, 100)), m::Literal(UBits(42, 100))},
+          m::Param("foo")));
+  EXPECT_THAT(no_high, m::PrioritySelect(
+                           m::ULt(m::Param("foo2"), m::Literal(UBits(10, 10))),
+                           {m::Literal(UBits(10, 10))}, m::Param("foo2")));
+}
 }  // namespace
 }  // namespace xls

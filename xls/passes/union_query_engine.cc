@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
 #include "absl/status/statusor.h"
@@ -35,6 +36,47 @@
 #include "xls/passes/query_engine.h"
 
 namespace xls {
+
+bool UnownedUnionQueryEngine::IsKnown(const TreeBitLocation& bit) const {
+  return absl::c_any_of(engines_, [&](const QueryEngine* qe) -> bool {
+    return qe->IsKnown(bit);
+  });
+}
+
+std::optional<bool> UnownedUnionQueryEngine::KnownValue(
+    const TreeBitLocation& bit) const {
+  for (const QueryEngine* engine : engines_) {
+    std::optional<bool> res = engine->KnownValue(bit);
+    if (res) {
+      return res;
+    }
+  }
+  return std::nullopt;
+}
+
+bool UnownedUnionQueryEngine::IsAllOnes(Node* n) const {
+  for (const QueryEngine* engine : engines_) {
+    if (engine->IsFullyKnown(n)) {
+      return engine->IsAllOnes(n);
+    }
+  }
+  if (engines_.size() <= 1) {
+    return false;
+  }
+  return QueryEngine::IsAllOnes(n);
+}
+
+bool UnownedUnionQueryEngine::IsAllZeros(Node* n) const {
+  for (const QueryEngine* engine : engines_) {
+    if (engine->IsFullyKnown(n)) {
+      return engine->IsAllZeros(n);
+    }
+  }
+  if (engines_.size() <= 1) {
+    return false;
+  }
+  return QueryEngine::IsAllZeros(n);
+}
 
 absl::StatusOr<ReachedFixpoint> UnownedUnionQueryEngine::Populate(
     FunctionBase* f) {
@@ -65,21 +107,22 @@ bool UnownedUnionQueryEngine::IsTracked(Node* node) const {
   return false;
 }
 
-LeafTypeTree<TernaryVector> UnownedUnionQueryEngine::GetTernary(
+std::optional<LeafTypeTree<TernaryVector>> UnownedUnionQueryEngine::GetTernary(
     Node* node) const {
-  LeafTypeTree<TernaryVector> result =
-      LeafTypeTree<TernaryVector>::CreateFromFunction(
-          node->GetType(),
-          [](Type* leaf_type,
-             absl::Span<const int64_t> index) -> absl::StatusOr<TernaryVector> {
-            return TernaryVector(leaf_type->GetFlatBitCount(),
-                                 TernaryValue::kUnknown);
-          })
-          .value();
+  std::optional<LeafTypeTree<TernaryVector>> result = std::nullopt;
   for (const auto& engine : engines_) {
     if (engine->IsTracked(node)) {
+      std::optional<LeafTypeTree<TernaryVector>> ternary =
+          engine->GetTernary(node);
+      if (!ternary.has_value()) {
+        continue;
+      }
+      if (!result.has_value()) {
+        result = std::move(ternary);
+        continue;
+      }
       leaf_type_tree::SimpleUpdateFrom<TernaryVector, TernaryVector>(
-          result.AsMutableView(), engine->GetTernary(node).AsView(),
+          result->AsMutableView(), ternary->AsView(),
           [](TernaryVector& lhs, const TernaryVector& rhs) {
             CHECK_OK(ternary_ops::UpdateWithUnion(lhs, rhs));
           });

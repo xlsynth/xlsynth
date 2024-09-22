@@ -394,11 +394,11 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceLet(const Let* node,
   VLOG(5) << "DeduceLet: " << node->ToString();
 
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> rhs,
-                       DeduceAndResolve(node->rhs(), ctx));
+                       ctx->DeduceAndResolve(node->rhs()));
 
   if (node->type_annotation() != nullptr) {
     XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> annotated,
-                         DeduceAndResolve(node->type_annotation(), ctx));
+                         ctx->DeduceAndResolve(node->type_annotation()));
     XLS_ASSIGN_OR_RETURN(
         annotated,
         UnwrapMetaType(std::move(annotated), node->type_annotation()->span(),
@@ -459,12 +459,12 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceFor(const For* node,
 
   // Type of the init value to the for loop (also the accumulator type).
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> init_type,
-                       DeduceAndResolve(node->init(), ctx));
+                       ctx->DeduceAndResolve(node->init()));
 
   // Type of the iterable (whose elements are being used as the induction
   // variable in the for loop).
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> iterable_type,
-                       DeduceAndResolve(node->iterable(), ctx));
+                       ctx->DeduceAndResolve(node->iterable()));
   auto* iterable_array_type = dynamic_cast<ArrayType*>(iterable_type.get());
   if (iterable_array_type == nullptr) {
     return TypeInferenceErrorStatus(
@@ -483,7 +483,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceFor(const For* node,
   // one.
   if (node->type_annotation() != nullptr) {
     XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> annotated_type,
-                         DeduceAndResolve(node->type_annotation(), ctx));
+                         ctx->DeduceAndResolve(node->type_annotation()));
     XLS_ASSIGN_OR_RETURN(
         annotated_type,
         UnwrapMetaType(std::move(annotated_type),
@@ -514,7 +514,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceFor(const For* node,
 
   // Now we can deduce the body.
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> body_type,
-                       DeduceAndResolve(node->body(), ctx));
+                       ctx->DeduceAndResolve(node->body()));
 
   if (*init_type != *body_type) {
     return ctx->TypeMismatchError(node->span(), node->init(), *init_type,
@@ -530,9 +530,9 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceUnrollFor(const UnrollFor* node,
                                                       DeduceCtx* ctx) {
   VLOG(5) << "DeduceUnrollFor: " << node->ToString();
 
-  XLS_RETURN_IF_ERROR(DeduceAndResolve(node->types(), ctx).status());
+  XLS_RETURN_IF_ERROR(ctx->DeduceAndResolve(node->type_annotation()).status());
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> iterable_type,
-                       DeduceAndResolve(node->iterable(), ctx));
+                       ctx->DeduceAndResolve(node->iterable()));
   absl::StatusOr<InterpValue> iterable =
       EvaluateConstexprValue(ctx, node->iterable(), iterable_type.get());
   if (!iterable.ok() || !iterable->HasValues()) {
@@ -540,7 +540,8 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceUnrollFor(const UnrollFor* node,
         "unroll_for! must use a constexpr iterable expression at: ",
         node->iterable()->span().ToString(ctx->file_table())));
   }
-  const auto* types = dynamic_cast<const TupleTypeAnnotation*>(node->types());
+  const auto* types =
+      dynamic_cast<const TupleTypeAnnotation*>(node->type_annotation());
   CHECK(types);
   CHECK_EQ(types->members().size(), 2);
   TypeAnnotation* index_type_annot = types->members()[0];
@@ -614,7 +615,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceUnrollFor(const UnrollFor* node,
   unrolled->SetParentNonLexical(node->parent());
   ctx->type_info()->NoteUnrolledLoop(node, ctx->GetCurrentParametricEnv(),
                                      unrolled);
-  return DeduceAndResolve(unrolled, ctx);
+  return ctx->DeduceAndResolve(unrolled);
 }
 
 // Returns true if the cast-conversion from "from" to "to" is acceptable (i.e.
@@ -651,13 +652,13 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceCast(const Cast* node,
   VLOG(5) << "DeduceCast: " << node->ToString();
 
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> type,
-                       DeduceAndResolve(node->type_annotation(), ctx));
+                       ctx->DeduceAndResolve(node->type_annotation()));
   XLS_ASSIGN_OR_RETURN(
       type, UnwrapMetaType(std::move(type), node->type_annotation()->span(),
                            "cast type", ctx->file_table()));
 
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> expr,
-                       DeduceAndResolve(node->expr(), ctx));
+                       ctx->DeduceAndResolve(node->expr()));
 
   if (!IsAcceptableCast(/*from=*/*expr, /*to=*/*type)) {
     return ctx->TypeMismatchError(
@@ -675,7 +676,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceConstAssert(const ConstAssert* node,
   VLOG(5) << "DeduceConstAssert: " << node->ToString();
 
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> type,
-                       DeduceAndResolve(node->arg(), ctx));
+                       ctx->DeduceAndResolve(node->arg()));
   auto want = BitsType::MakeU1();
   if (*type != *want) {
     return ctx->TypeMismatchError(
@@ -954,10 +955,7 @@ static absl::StatusOr<std::unique_ptr<Type>> DeduceColonRefToBuiltinNameDef(
   if (auto it = sized_type_keywords.find(builtin_name_def->identifier());
       it != sized_type_keywords.end()) {
     auto [is_signed, size] = it->second;
-    if (node->attr() == "MAX") {
-      return std::make_unique<BitsType>(is_signed, size);
-    }
-    if (node->attr() == "ZERO") {
+    if (IsBuiltinBitsTypeAttr(node->attr())) {
       return std::make_unique<BitsType>(is_signed, size);
     }
     return TypeInferenceErrorStatus(
@@ -989,15 +987,15 @@ static absl::StatusOr<std::unique_ptr<Type>> DeduceColonRefToArrayType(
                         resolved->ToString()),
         ctx->file_table());
   }
-  if (node->attr() != "MAX" && node->attr() != "ZERO") {
-    return TypeInferenceErrorStatus(
-        node->span(), nullptr,
-        absl::StrFormat("Type '%s' does not have attribute '%s'.",
-                        array_type->ToString(), node->attr()),
-        ctx->file_table());
+  if (IsBuiltinBitsTypeAttr(node->attr())) {
+    VLOG(5) << "DeduceColonRefToArrayType result: " << resolved->ToString();
+    return resolved;
   }
-  VLOG(5) << "DeduceColonRefToArrayType result: " << resolved->ToString();
-  return resolved;
+  return TypeInferenceErrorStatus(
+      node->span(), nullptr,
+      absl::StrFormat("Type '%s' does not have attribute '%s'.",
+                      array_type->ToString(), node->attr()),
+      ctx->file_table());
 }
 
 absl::StatusOr<std::unique_ptr<Type>> DeduceColonRef(const ColonRef* node,
@@ -1139,7 +1137,7 @@ static absl::StatusOr<std::unique_ptr<Type>> DeduceWidthSliceType(
     }
 
     XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> resolved_start_type,
-                         Resolve(*start_type, ctx));
+                         ctx->Resolve(*start_type));
     XLS_ASSIGN_OR_RETURN(TypeDim bit_count_ctd,
                          resolved_start_type->GetTotalBitCount());
     XLS_ASSIGN_OR_RETURN(int64_t bit_count, bit_count_ctd.GetAsInt64());
@@ -1476,7 +1474,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceIndex(const Index* node,
 static absl::Status Unify(NameDefTree* name_def_tree, const Type& other,
                           DeduceCtx* ctx) {
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> resolved_rhs_type,
-                       Resolve(other, ctx));
+                       ctx->Resolve(other));
   if (name_def_tree->is_leaf()) {
     NameDefTree::Leaf leaf = name_def_tree->leaf();
     if (std::holds_alternative<NameDef*>(leaf)) {
@@ -1489,7 +1487,7 @@ static absl::Status Unify(NameDefTree* name_def_tree, const Type& other,
                std::holds_alternative<ColonRef*>(leaf)) {
       // For a reference (or literal) the types must be consistent.
       XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> resolved_leaf_type,
-                           DeduceAndResolve(ToAstNode(leaf), ctx));
+                           ctx->DeduceAndResolve(ToAstNode(leaf)));
       if (*resolved_leaf_type != *resolved_rhs_type) {
         return ctx->TypeMismatchError(
             name_def_tree->span(), nullptr, *resolved_rhs_type, nullptr,
@@ -1587,7 +1585,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceMatch(const Match* node,
   std::vector<std::unique_ptr<Type>> arm_types;
   for (MatchArm* arm : node->arms()) {
     XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> arm_type,
-                         DeduceAndResolve(arm, ctx));
+                         ctx->DeduceAndResolve(arm));
     arm_types.push_back(std::move(arm_type));
   }
 
@@ -1887,9 +1885,20 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceTypeRefTypeAnnotation(
       node->span(), type_ref->ToString(), type_definition, ctx->type_info());
   if (struct_def_or.ok()) {
     auto* struct_def = struct_def_or.value();
+    VLOG(5) << "DeduceTypeRefTypeAnnotation struct_def "
+            << struct_def->ToString()
+            << " IsParametric: " << struct_def->IsParametric();
+    VLOG(5) << "DeduceTypeRefTypeAnnotation node " << node->ToString()
+            << " parametrics.empty: " << node->parametrics().empty();
+    VLOG(5) << "DeduceTypeRefTypeAnnotation base type "
+            << base_type->ToString();
+
     if (struct_def->IsParametric() && !node->parametrics().empty()) {
       XLS_ASSIGN_OR_RETURN(base_type, ConcretizeStructAnnotation(
                                           node, struct_def, *base_type, ctx));
+      VLOG(5)
+          << "DeduceTypeRefTypeAnnotation after concretize, base type is now "
+          << base_type->ToString();
     }
   }
   XLS_RET_CHECK(base_type->IsMeta());
@@ -2171,31 +2180,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceInternal(const AstNode* node,
   return std::move(visitor.result());
 }
 
-absl::StatusOr<std::unique_ptr<Type>> ResolveViaEnv(
-    const Type& type, const ParametricEnv& parametric_env) {
-  ParametricExpression::Env env;
-  for (const auto& [k, v] : parametric_env.bindings()) {
-    env[k] = v;
-  }
-
-  return type.MapSize([&](const TypeDim& dim) -> absl::StatusOr<TypeDim> {
-    if (std::holds_alternative<TypeDim::OwnedParametric>(dim.value())) {
-      const auto& parametric = std::get<TypeDim::OwnedParametric>(dim.value());
-      return TypeDim(parametric->Evaluate(env));
-    }
-    return dim;
-  });
-}
-
 }  // namespace
-
-absl::StatusOr<std::unique_ptr<Type>> Resolve(const Type& type,
-                                              DeduceCtx* ctx) {
-  XLS_RET_CHECK(!ctx->fn_stack().empty());
-  const FnStackEntry& entry = ctx->fn_stack().back();
-  const ParametricEnv& fn_parametric_env = entry.parametric_env();
-  return ResolveViaEnv(type, fn_parametric_env);
-}
 
 absl::StatusOr<std::unique_ptr<Type>> Deduce(const AstNode* node,
                                              DeduceCtx* ctx) {
@@ -2214,12 +2199,6 @@ absl::StatusOr<std::unique_ptr<Type>> Deduce(const AstNode* node,
       node, node->GetNodeTypeName(), type->ToString(), ctx->type_info());
 
   return type;
-}
-
-absl::StatusOr<std::unique_ptr<Type>> DeduceAndResolve(const AstNode* node,
-                                                       DeduceCtx* ctx) {
-  XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> deduced, ctx->Deduce(node));
-  return Resolve(*deduced, ctx);
 }
 
 absl::StatusOr<TypeDim> DimToConcreteUsize(const Expr* dim_expr,

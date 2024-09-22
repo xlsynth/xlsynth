@@ -215,7 +215,7 @@ TypecheckParametricBuiltinInvocation(DeduceCtx* ctx,
   for (Expr* arg : invocation->args()) {
     XLS_ASSIGN_OR_RETURN(auto arg_type, ctx->Deduce(arg));
     XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> resolved,
-                         Resolve(*arg_type, ctx));
+                         ctx->Resolve(*arg_type));
     arg_types.push_back(std::move(resolved));
     arg_spans.push_back(arg->span());
   }
@@ -362,7 +362,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
   instantiate_args.reserve(args.size());
   for (Expr* arg : args) {
     XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> type,
-                         DeduceAndResolve(arg, ctx));
+                         ctx->DeduceAndResolve(arg));
     arg_types.push_back(type->CloneToUnique());
     instantiate_args.push_back(InstantiateArg{std::move(type), arg->span()});
   }
@@ -444,7 +444,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
   if (callee_fn.proc().has_value()) {
     Proc* p = callee_fn.proc().value();
     for (auto* member : p->members()) {
-      XLS_ASSIGN_OR_RETURN(auto type, DeduceAndResolve(member, ctx));
+      XLS_ASSIGN_OR_RETURN(auto type, ctx->DeduceAndResolve(member));
       ctx->type_info()->SetItem(member, *type);
       ctx->type_info()->SetItem(member->name_def(), *type);
     }
@@ -477,7 +477,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
     std::optional<const Type*> param_type = ctx->type_info()->GetItem(param);
     XLS_RET_CHECK(param_type.has_value());
     XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> resolved_type,
-                         Resolve(*param_type.value(), ctx));
+                         ctx->Resolve(*param_type.value()));
     ctx->type_info()->SetItem(param, *resolved_type);
     ctx->type_info()->SetItem(param->name_def(), *resolved_type);
   }
@@ -485,7 +485,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> body_type,
                        ctx->Deduce(callee_fn.body()));
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> resolved_body_type,
-                       Resolve(*body_type, ctx));
+                       ctx->Resolve(*body_type));
   XLS_RET_CHECK(!resolved_body_type->IsMeta());
 
   const Type& annotated_return_type = *callee_tab.type;

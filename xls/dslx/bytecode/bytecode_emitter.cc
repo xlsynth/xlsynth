@@ -66,6 +66,16 @@
 namespace xls::dslx {
 namespace {
 
+// Determines the owning proc for `node` by walking the parent links.
+const Proc* GetContainingProc(const AstNode* node) {
+  AstNode* proc_node = node->parent();
+  while (dynamic_cast<const Proc*>(proc_node) == nullptr) {
+    proc_node = proc_node->parent();
+    CHECK(proc_node != nullptr);
+  }
+  return dynamic_cast<const Proc*>(proc_node);
+}
+
 // Find concrete type of channel's payload.
 absl::StatusOr<std::unique_ptr<Type>> GetChannelPayloadType(
     const TypeInfo* type_info, const Expr* channel) {
@@ -96,14 +106,8 @@ absl::StatusOr<Bytecode::ChannelData> CreateChannelData(
                        MakeValueFormatDescriptor(*channel_payload_type.get(),
                                                  format_preference));
 
-  // Determine the owning proc by walking the parent links.
-  AstNode* proc_node = channel->parent();
-  while (dynamic_cast<const Proc*>(proc_node) == nullptr) {
-    proc_node = proc_node->parent();
-    XLS_RET_CHECK(proc_node != nullptr);
-  }
-  std::string_view proc_name =
-      dynamic_cast<const Proc*>(proc_node)->identifier();
+  const Proc* proc_node = GetContainingProc(channel);
+  std::string_view proc_name = proc_node->identifier();
 
   return Bytecode::ChannelData(
       absl::StrFormat("%s::%s", proc_name, channel->ToString()),
@@ -463,6 +467,8 @@ static absl::Status MaybeCheckArrayToBitsCast(const AstNode* node,
     return absl::OkStatus();
   }
 
+  // Bits-constructor acts as a bits type, so we don't need to perform
+  // array-oriented cast checks.
   if (IsArrayOfBitsConstructor(*from_array)) {
     return absl::OkStatus();
   }
@@ -480,10 +486,10 @@ static absl::Status MaybeCheckArrayToBitsCast(const AstNode* node,
   XLS_ASSIGN_OR_RETURN(int64_t bits_bit_count, bit_count_dim.GetAsInt64());
 
   if (array_bit_count != bits_bit_count) {
-    return absl::InternalError(
-        absl::StrFormat("Array-to-bits cast bit counts must match. "
-                        "Saw %d vs %d.",
-                        array_bit_count, bits_bit_count));
+    return absl::InternalError(absl::StrFormat(
+        "Array-to-bits cast bit counts must match. "
+        "Saw %d for \"from\" type `%s` vs %d for \"to\" type `%s`.",
+        array_bit_count, from->ToString(), bits_bit_count, to->ToString()));
   }
 
   return absl::OkStatus();
@@ -517,11 +523,20 @@ static absl::Status MaybeCheckBitsToArrayCast(const AstNode* node,
     return absl::OkStatus();
   }
 
+  // Bits-constructor acts as a bits type, so we don't need to perform
+  // array-oriented cast checks.
+  if (IsArrayOfBitsConstructor(*to_array)) {
+    return absl::OkStatus();
+  }
+
   // Casting from bits to an array.
   if (to_array->element_type().GetAllDims().size() != 1) {
     return absl::InternalError(
         "Only casts to/from one-dimensional arrays are supported.");
   }
+
+  VLOG(5) << "from_bits: " << from_bits->ToString()
+          << " to_array: " << to_array->ToString();
 
   XLS_ASSIGN_OR_RETURN(TypeDim bit_count_dim, from_bits->GetTotalBitCount());
   XLS_ASSIGN_OR_RETURN(int64_t bits_bit_count, bit_count_dim.GetAsInt64());
@@ -530,10 +545,10 @@ static absl::Status MaybeCheckBitsToArrayCast(const AstNode* node,
   XLS_ASSIGN_OR_RETURN(int64_t array_bit_count, bit_count_dim.GetAsInt64());
 
   if (array_bit_count != bits_bit_count) {
-    return absl::InternalError(
-        absl::StrFormat("Bits-to-array cast bit counts must match. "
-                        "Saw %d vs %d.",
-                        bits_bit_count, array_bit_count));
+    return absl::InternalError(absl::StrFormat(
+        "Bits-to-array cast bit counts must match. "
+        "bits-type `%s` bit count: %d; array-type bit count for `%s`: %d.",
+        from->ToString(), bits_bit_count, to->ToString(), array_bit_count));
   }
 
   return absl::OkStatus();
@@ -1451,21 +1466,9 @@ absl::Status BytecodeEmitter::HandleRange(const Range* node) {
 
 absl::Status BytecodeEmitter::HandleSpawn(const Spawn* node) {
   XLS_ASSIGN_OR_RETURN(Proc * proc, ResolveProc(node->callee(), type_info_));
-
-  auto convert_args = [this](const absl::Span<Expr* const> args)
-      -> absl::StatusOr<std::vector<InterpValue>> {
-    std::vector<InterpValue> arg_values;
-    arg_values.reserve(args.size());
-    for (const auto* arg : args) {
-      XLS_ASSIGN_OR_RETURN(InterpValue arg_value,
-                           type_info_->GetConstExpr(arg));
-      arg_values.push_back(arg_value);
-    }
-    return arg_values;
-  };
-
-  XLS_ASSIGN_OR_RETURN(std::vector<InterpValue> config_args,
-                       convert_args(node->config()->args()));
+  for (const Expr* arg : node->config()->args()) {
+    XLS_RETURN_IF_ERROR(arg->AcceptExpr(this));
+  }
   XLS_RET_CHECK_EQ(node->next()->args().size(), 1);
   XLS_ASSIGN_OR_RETURN(InterpValue initial_state,
                        type_info_->GetConstExpr(node->next()->args()[0]));
@@ -1481,8 +1484,10 @@ absl::Status BytecodeEmitter::HandleSpawn(const Spawn* node) {
     final_bindings = *maybe_callee_bindings.value();
   }
 
-  Bytecode::SpawnData spawn_data{
-      node, proc, config_args, initial_state, caller_bindings, final_bindings};
+  Bytecode::SpawnFunctions spawn_functions = {.config = node->config(),
+                                              .next = node->next()};
+  Bytecode::SpawnData spawn_data{spawn_functions, proc, initial_state,
+                                 caller_bindings, final_bindings};
   Add(Bytecode::MakeSpawn(node->span(), spawn_data));
   return absl::OkStatus();
 }

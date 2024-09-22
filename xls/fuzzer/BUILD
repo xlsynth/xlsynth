@@ -70,6 +70,7 @@ cc_library(
         "//xls/common/status:status_macros",
         "//xls/dslx/frontend:pos",
         "@boringssl//:crypto",
+        "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/random:bit_gen_ref",
         "@com_google_absl//absl/status",
@@ -311,6 +312,7 @@ cc_library(
         "//xls/dslx/bytecode:bytecode_interpreter",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:module",
+        "//xls/dslx/frontend:proc_id",
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info",
         "//xls/ir:format_preference",
@@ -379,6 +381,8 @@ generate_crasher_regression_tests(
         "crashers/crasher_2023-10-02_7c14.x",
         # TODO(https://github.com/google/xls/issues/1512): Remove when fixed.
         "crashers/crasher_2024-07-14_b78c.x",
+        # TODO(https://github.com/google/xls/issues/1609): Remove when fixed.
+        "crashers/crasher_2024-09-14_6bbb.x",
     ],
     prefix = package_name(),
     tags = {

@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -373,6 +374,45 @@ inline absl::StatusOr<Op> SignedCompareToUnsigned(Op op) {
 absl::StatusOr<absl::flat_hash_map<Channel*, std::vector<Node*>>> ChannelUsers(
     Package* package);
 
+// Compare 'lhs' to the literal value 'rhs'.
+//
+// Both are considered signed if the operation is a signed operation and
+// unsigned if the operation is not signed. kEq and kNe are both considered
+// unsigned.
+absl::StatusOr<Node*> CompareLiteral(
+    Node* lhs, int64_t rhs, Op cmp,
+    const std::optional<std::string>& name = std::nullopt);
+
+// Compare 'lhs' to the 'rhs' extending the shorter value to the appropriate
+// size. Both are considered signed if the operation is a signed operation and
+// unsigned if the operation is not signed. kEq and kNe are both considered
+// unsigned.
+absl::StatusOr<Node*> CompareNumeric(
+    Node* lhs, Node* rhs, Op cmp,
+    const std::optional<std::string>& name = std::nullopt);
+
+// Makes a node which is the value 'v' bounded by (low_bound, high_bound). The
+// generated code is basically
+//
+// if (v < low_bound) {
+//    low_bound
+// } else if (v > high_bound) {
+//    high_bound
+// } else {
+//    v
+// }
+//
+// The node has the same width as 'v'.
+//
+// Bounding is unsigned.
+absl::StatusOr<Node*> UnsignedBoundByLiterals(Node* v, int64_t low_bound,
+                                              int64_t high_bound);
+
+// Bounds the value 'v' to be <= to high_bound.
+inline absl::StatusOr<Node*> UnsignedUpperBoundLiteral(Node* v,
+                                                       int64_t high_bound) {
+  return UnsignedBoundByLiterals(v, 0, high_bound);
+}
 }  // namespace xls
 
 #endif  // XLS_IR_NODE_UTIL_H_

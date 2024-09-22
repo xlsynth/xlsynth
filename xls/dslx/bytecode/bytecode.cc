@@ -475,48 +475,47 @@ DEF_UNARY_BUILDER(Swap);
 #undef DEF_UNARY_BUILDER
 
 /* static */ Bytecode Bytecode::MakeJumpRelIf(Span span, JumpTarget target) {
-  return Bytecode(std::move(span), Op::kJumpRelIf, target);
+  return Bytecode(span, Op::kJumpRelIf, target);
 }
 
 /* static */ Bytecode Bytecode::MakeJumpRel(Span span, JumpTarget target) {
-  return Bytecode(std::move(span), Op::kJumpRel, target);
+  return Bytecode(span, Op::kJumpRel, target);
 }
 
 /* static */ Bytecode Bytecode::MakeLiteral(
     Span span, InterpValue literal,
     std::optional<ValueFormatDescriptor> format_descriptor) {
-  return Bytecode(std::move(span), Op::kLiteral, std::move(literal),
+  return Bytecode(span, Op::kLiteral, std::move(literal),
                   std::move(format_descriptor));
 }
 
 /* static */ Bytecode Bytecode::MakeLoad(Span span, SlotIndex slot_index) {
-  return Bytecode(std::move(span), Op::kLoad, slot_index);
+  return Bytecode(span, Op::kLoad, slot_index);
 }
 
 /* static */ Bytecode Bytecode::MakeMatchArm(Span span, MatchArmItem item) {
-  return Bytecode(std::move(span), Op::kMatchArm, std::move(item));
+  return Bytecode(span, Op::kMatchArm, std::move(item));
 }
 
 /* static */ Bytecode Bytecode::MakeRecv(Span span, ChannelData channel_data) {
-  return Bytecode(std::move(span), Op::kRecv, std::move(channel_data));
+  return Bytecode(span, Op::kRecv, std::move(channel_data));
 }
 
 /* static */ Bytecode Bytecode::MakeRecvNonBlocking(Span span,
                                                     ChannelData channel_data) {
-  return Bytecode(std::move(span), Op::kRecvNonBlocking,
-                  std::move(channel_data));
+  return Bytecode(span, Op::kRecvNonBlocking, std::move(channel_data));
 }
 
 /* static */ Bytecode Bytecode::MakeSend(Span span, ChannelData channel_data) {
-  return Bytecode(std::move(span), Op::kSend, std::move(channel_data));
+  return Bytecode(span, Op::kSend, std::move(channel_data));
 }
 
 /* static */ Bytecode Bytecode::MakeSpawn(Span span, SpawnData spawn_data) {
-  return Bytecode(std::move(span), Op::kSpawn, spawn_data);
+  return Bytecode(span, Op::kSpawn, spawn_data);
 }
 
 /* static */ Bytecode Bytecode::MakeStore(Span span, SlotIndex slot_index) {
-  return Bytecode(std::move(span), Op::kStore, slot_index);
+  return Bytecode(span, Op::kStore, slot_index);
 }
 
 absl::StatusOr<Bytecode::JumpTarget> Bytecode::jump_target() const {
@@ -661,7 +660,16 @@ std::string Bytecode::ToString(const FileTable& file_table,
       std::string operator()(const MatchArmItem& v) { return v.ToString(); }
 
       std::string operator()(const SpawnData& spawn_data) {
-        return spawn_data.spawn()->ToString();
+        // TODO: https://github.com/google/xls/issues/608 - source the rest
+        // of the data needed to print SpawnData, including the callee
+        // and parametrics.
+        std::string config_args =
+            absl::StrJoin(spawn_data.spawn_functions().config->args(), ", ",
+                          [](std::string* out, const Expr* e) {
+                            absl::StrAppend(out, e->ToString());
+                          });
+
+        return absl::StrFormat("spawn (%s)", config_args);
       }
     };
 

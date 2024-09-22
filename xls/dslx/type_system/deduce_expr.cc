@@ -48,19 +48,8 @@
 
 namespace xls::dslx {
 
-// Forward declaration from sister implementation file as we are recursively
-// bound to the central deduce-and-resolve routine in our node deduction
-// routines.
-//
-// TODO(cdleary): 2024-01-16 We can break this circular resolution with a
-// virtual function on DeduceCtx when we get things refactored nicely.
-extern absl::StatusOr<std::unique_ptr<Type>> DeduceAndResolve(
-    const AstNode* node, DeduceCtx* ctx);
-extern absl::StatusOr<std::unique_ptr<Type>> Resolve(const Type& type,
-                                                     DeduceCtx* ctx);
-
-absl::StatusOr<std::unique_ptr<Type>> DeduceEmptyArray(const Array* node,
-                                                       DeduceCtx* ctx) {
+static absl::StatusOr<std::unique_ptr<Type>> DeduceEmptyArray(const Array* node,
+                                                              DeduceCtx* ctx) {
   // We cannot have an array that is just an ellipsis, ellipsis indicates we
   // should replicate the last member.
   if (node->has_ellipsis()) {
@@ -120,7 +109,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceArray(const Array* node,
   std::vector<std::unique_ptr<Type>> member_types;
   for (Expr* member : node->members()) {
     XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> member_type,
-                         DeduceAndResolve(member, ctx));
+                         ctx->DeduceAndResolve(member));
     member_types.push_back(std::move(member_type));
   }
 
@@ -216,7 +205,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceArray(const Array* node,
   // Check the element type of the annotation is the same as the inferred type
   // from the element(s).
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> resolved_element_type,
-                       Resolve(array_type->element_type(), ctx));
+                       ctx->Resolve(array_type->element_type()));
   if (*resolved_element_type != *member_types[0]) {
     return ctx->TypeMismatchError(
         node->members().at(0)->span(), nullptr, *resolved_element_type, nullptr,
@@ -326,7 +315,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceNumber(const Number* node,
   }
 
   CHECK(type != nullptr);
-  XLS_ASSIGN_OR_RETURN(type, Resolve(*type, ctx));
+  XLS_ASSIGN_OR_RETURN(type, ctx->Resolve(*type));
   XLS_RET_CHECK(!type->IsMeta());
 
   if (std::optional<BitsLikeProperties> bits_like = GetBitsLike(*type);
@@ -419,7 +408,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceConditional(const Conditional* node,
                                                         DeduceCtx* ctx) {
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> test_type,
                        ctx->Deduce(node->test()));
-  XLS_ASSIGN_OR_RETURN(test_type, Resolve(*test_type, ctx));
+  XLS_ASSIGN_OR_RETURN(test_type, ctx->Resolve(*test_type));
   auto test_want = BitsType::MakeU1();
   if (*test_type != *test_want) {
     return ctx->TypeMismatchError(node->span(), node->test(), *test_type,
@@ -430,10 +419,10 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceConditional(const Conditional* node,
 
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> consequent_type,
                        ctx->Deduce(node->consequent()));
-  XLS_ASSIGN_OR_RETURN(consequent_type, Resolve(*consequent_type, ctx));
+  XLS_ASSIGN_OR_RETURN(consequent_type, ctx->Resolve(*consequent_type));
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> alternate_type,
                        ctx->Deduce(ToAstNode(node->alternate())));
-  XLS_ASSIGN_OR_RETURN(alternate_type, Resolve(*alternate_type, ctx));
+  XLS_ASSIGN_OR_RETURN(alternate_type, ctx->Resolve(*alternate_type));
 
   if (*consequent_type != *alternate_type) {
     return ctx->TypeMismatchError(
@@ -482,7 +471,7 @@ static const absl::flat_hash_set<BinopKind>& GetEnumOkKinds() {
 static absl::StatusOr<std::unique_ptr<Type>> DeduceShift(const Binop* node,
                                                          DeduceCtx* ctx) {
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> lhs,
-                       DeduceAndResolve(node->lhs(), ctx));
+                       ctx->DeduceAndResolve(node->lhs()));
 
   std::optional<uint64_t> number_value;
   if (auto* number = dynamic_cast<Number*>(node->rhs());
@@ -506,7 +495,7 @@ static absl::StatusOr<std::unique_ptr<Type>> DeduceShift(const Binop* node,
   }
 
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> rhs,
-                       DeduceAndResolve(node->rhs(), ctx));
+                       ctx->DeduceAndResolve(node->rhs()));
 
   // Validate bits type for lhs and rhs.
   BitsType* lhs_bit_type = dynamic_cast<BitsType*>(lhs.get());
@@ -550,25 +539,48 @@ static absl::StatusOr<std::unique_ptr<Type>> DeduceShift(const Binop* node,
 static absl::StatusOr<std::unique_ptr<Type>> DeduceConcat(const Binop* node,
                                                           DeduceCtx* ctx) {
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> lhs,
-                       DeduceAndResolve(node->lhs(), ctx));
+                       ctx->DeduceAndResolve(node->lhs()));
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> rhs,
-                       DeduceAndResolve(node->rhs(), ctx));
+                       ctx->DeduceAndResolve(node->rhs()));
+
+  std::optional<BitsLikeProperties> lhs_bits_like = GetBitsLike(*lhs);
+  std::optional<BitsLikeProperties> rhs_bits_like = GetBitsLike(*rhs);
+  if (lhs_bits_like.has_value() && rhs_bits_like.has_value()) {
+    XLS_ASSIGN_OR_RETURN(bool lhs_is_signed,
+                         lhs_bits_like->is_signed.GetAsBool());
+    XLS_ASSIGN_OR_RETURN(bool rhs_is_signed,
+                         rhs_bits_like->is_signed.GetAsBool());
+    if (lhs_is_signed || rhs_is_signed) {
+      return TypeInferenceErrorStatus(
+          node->span(), nullptr,
+          absl::StrFormat("Concatenation requires operand types to both be "
+                          "unsigned bits; got lhs: `%s`; rhs: `%s`",
+                          lhs->ToString(), rhs->ToString()),
+          ctx->file_table());
+    }
+    XLS_ASSIGN_OR_RETURN(TypeDim new_size,
+                         lhs_bits_like->size.Add(rhs_bits_like->size));
+    return std::make_unique<BitsType>(/*signed=*/false, /*size=*/new_size);
+  }
 
   auto* lhs_array = dynamic_cast<ArrayType*>(lhs.get());
   auto* rhs_array = dynamic_cast<ArrayType*>(rhs.get());
-  bool lhs_is_array = lhs_array != nullptr;
-  bool rhs_is_array = rhs_array != nullptr;
+  bool lhs_is_array = lhs_array != nullptr && !lhs_bits_like.has_value();
+  bool rhs_is_array = rhs_array != nullptr && !rhs_bits_like.has_value();
 
   if (lhs_is_array != rhs_is_array) {
-    return ctx->TypeMismatchError(node->span(), node->lhs(), *lhs, node->rhs(),
-                                  *rhs,
-                                  "Attempting to concatenate array/non-array "
-                                  "values together.");
+    return TypeInferenceErrorStatus(
+        node->span(), nullptr,
+        absl::StrFormat("Attempting to concatenate array/non-array "
+                        "values together; got lhs: `%s`; rhs: `%s`.",
+                        lhs->ToString(), rhs->ToString()),
+        ctx->file_table());
   }
 
   if (lhs_is_array && lhs_array->element_type() != rhs_array->element_type()) {
     return ctx->TypeMismatchError(
-        node->span(), nullptr, *lhs, nullptr, *rhs,
+        node->span(), nullptr, lhs_array->element_type(), nullptr,
+        rhs_array->element_type(),
         "Array concatenation requires element types to be the same.");
   }
 
@@ -579,34 +591,21 @@ static absl::StatusOr<std::unique_ptr<Type>> DeduceConcat(const Binop* node,
         lhs_array->element_type().CloneToUnique(), new_size);
   }
 
-  auto* lhs_bits = dynamic_cast<BitsType*>(lhs.get());
-  auto* rhs_bits = dynamic_cast<BitsType*>(rhs.get());
-  bool lhs_is_bits = lhs_bits != nullptr;
-  bool rhs_is_bits = rhs_bits != nullptr;
-  if (!lhs_is_bits || !rhs_is_bits) {
-    if (lhs->HasEnum() || rhs->HasEnum()) {
-      return ctx->TypeMismatchError(
-          node->span(), node->lhs(), *lhs, node->rhs(), *rhs,
-          "Enum values must be cast to unsigned bits before concatenation.");
-    }
-    return ctx->TypeMismatchError(node->span(), node->lhs(), *lhs, node->rhs(),
-                                  *rhs,
-                                  "Concatenation requires operand types to be "
-                                  "either both-arrays or both-bits");
+  if (lhs->HasEnum() || rhs->HasEnum()) {
+    return TypeInferenceErrorStatus(
+        node->span(), nullptr,
+        absl::StrFormat("Enum values must be cast to unsigned bits before "
+                        "concatenation; got lhs: `%s`; rhs: `%s`",
+                        lhs->ToString(), rhs->ToString()),
+        ctx->file_table());
   }
-
-  if (lhs_bits->is_signed() || rhs_bits->is_signed()) {
-    return ctx->TypeMismatchError(
-        node->span(), node->lhs(), *lhs, node->rhs(), *rhs,
-        "Concatenation requires operand types to both be "
-        "unsigned bits");
-  }
-
-  XLS_RET_CHECK(lhs_bits != nullptr);
-  XLS_RET_CHECK(rhs_bits != nullptr);
-  XLS_ASSIGN_OR_RETURN(TypeDim new_size,
-                       lhs_bits->size().Add(rhs_bits->size()));
-  return std::make_unique<BitsType>(/*signed=*/false, /*size=*/new_size);
+  return TypeInferenceErrorStatus(
+      node->span(), nullptr,
+      absl::StrFormat(
+          "Concatenation requires operand types to be "
+          "either both-arrays or both-bits; got lhs: `%s`; rhs: `%s`",
+          lhs->ToString(), rhs->ToString()),
+      ctx->file_table());
 }
 
 absl::StatusOr<std::unique_ptr<Type>> DeduceBinop(const Binop* node,
@@ -620,9 +619,9 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceBinop(const Binop* node,
   }
 
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> lhs,
-                       DeduceAndResolve(node->lhs(), ctx));
+                       ctx->DeduceAndResolve(node->lhs()));
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> rhs,
-                       DeduceAndResolve(node->rhs(), ctx));
+                       ctx->DeduceAndResolve(node->rhs()));
 
   if (*lhs != *rhs) {
     return ctx->TypeMismatchError(

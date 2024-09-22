@@ -271,6 +271,22 @@ fn do_ternary() -> u32 {
 006 jump_dest)");
 }
 
+TEST(BytecodeEmitterTest, CastToXbits) {
+  constexpr std::string_view kProgram = R"(#[test]
+fn main(x: u1) -> s1 {
+  x as xN[true][1]
+})";
+
+  ImportData import_data(CreateImportDataForTest());
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<BytecodeFunction> bf,
+                           EmitBytecodes(&import_data, kProgram, "main"));
+
+  EXPECT_EQ(BytecodesToString(bf->bytecodes(), /*source_locs=*/false,
+                              import_data.file_table()),
+            R"(000 load 0
+001 cast xN[is_signed=1][1])");
+}
+
 TEST(BytecodeEmitterTest, Shadowing) {
   constexpr std::string_view kProgram = R"(#[test]
 fn f() -> u32 {
@@ -1458,6 +1474,31 @@ proc Parent {
       std::get<Expr*>(config_body->statements().at(1)->wrapped()));
   XLS_ASSERT_OK_AND_ASSIGN(TypeInfo * parent_ti,
                            tm.type_info->GetTopLevelProcTypeInfo(parent));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<BytecodeFunction> parent_config_bf,
+      BytecodeEmitter::Emit(&import_data, parent_ti, parent->config(),
+                            ParametricEnv()));
+  const std::vector<Bytecode>& parent_config_bytecodes =
+      parent_config_bf->bytecodes();
+  const std::vector<std::string> kParentConfigExpected = {
+      "literal (channel, channel)",
+      "expand_tuple",
+      "store 0",
+      "store 1",
+      "load 1",
+      "literal u64:100",
+      "literal u128:0xc8",
+      "spawn spawn (c, u64:100, uN[128]:200)",
+      "pop",
+      "load 0",
+      "create_tuple 1",
+  };
+  ASSERT_EQ(parent_config_bytecodes.size(), kParentConfigExpected.size());
+  for (int i = 0; i < parent_config_bytecodes.size(); i++) {
+    ASSERT_EQ(parent_config_bytecodes[i].ToString(import_data.file_table()),
+              kParentConfigExpected[i]);
+  }
+
   TypeInfo* child_ti =
       parent_ti->GetInvocationTypeInfo(spawn->config(), ParametricEnv())
           .value();

@@ -104,8 +104,10 @@ class QueryEngine {
   virtual bool IsTracked(Node* node) const = 0;
 
   // Returns a `LeafTypeTree<TernaryVector>` indicating which bits have known
-  // values for the given node and what that bit's known value is.
-  virtual LeafTypeTree<TernaryVector> GetTernary(Node* node) const = 0;
+  // values for the given node and what that bit's known value is. May return
+  // `std::nullopt` if no bits are known.
+  virtual std::optional<LeafTypeTree<TernaryVector>> GetTernary(
+      Node* node) const = 0;
 
   // Return a query engine which is specialized with the given predicates. The
   // reference has an lifetime of the source engine.  For now no query-engine
@@ -168,11 +170,11 @@ class QueryEngine {
 
   // Returns whether the value of the output bit of the given node at the given
   // index is known (definitely zero or one).
-  bool IsKnown(const TreeBitLocation& bit) const;
+  virtual bool IsKnown(const TreeBitLocation& bit) const;
 
   // Returns the value of the output bit of the given node at the given index,
   // if known; otherwise returns std::nullopt.
-  std::optional<bool> KnownValue(const TreeBitLocation& bit) const;
+  virtual std::optional<bool> KnownValue(const TreeBitLocation& bit) const;
 
   // Returns the output of the given node at the given index, if completely
   // known; otherwise returns std::nullopt.
@@ -197,8 +199,8 @@ class QueryEngine {
 
   // Returns whether every bit in the output of the given node is definitely
   // zero (or one). Always returns false if the node includes a token.
-  bool IsAllZeros(Node* node) const;
-  bool IsAllOnes(Node* node) const;
+  virtual bool IsAllZeros(Node* node) const;
+  virtual bool IsAllOnes(Node* node) const;
 
   // Returns true if every output bit of the given node is known (definitely
   // zero or one).

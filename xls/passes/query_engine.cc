@@ -76,9 +76,17 @@ LeafTypeTree<IntervalSet> QueryEngine::GetIntervals(Node* node) const {
   // `1 << kMaxTernaryIntervalBits` separate intervals.
   // "4" is arbitrary, but keeps the number of intervals from blowing up.
   constexpr int64_t kMaxTernaryIntervalBits = 4;
-  LeafTypeTree<TernaryVector> tern = GetTernary(node);
+  std::optional<LeafTypeTree<TernaryVector>> tern = GetTernary(node);
+  if (!tern.has_value()) {
+    return *LeafTypeTree<IntervalSet>::CreateFromFunction(
+        node->GetType(),
+        [](Type* leaf_type,
+           absl::Span<const int64_t>) -> absl::StatusOr<IntervalSet> {
+          return IntervalSet::Maximal(leaf_type->GetFlatBitCount());
+        });
+  }
   return leaf_type_tree::Map<IntervalSet, TernaryVector>(
-      tern.AsView(), [](TernarySpan tv) -> IntervalSet {
+      tern->AsView(), [](TernarySpan tv) -> IntervalSet {
         return interval_ops::FromTernary(
             tv, /*max_interval_bits=*/kMaxTernaryIntervalBits);
       });
@@ -122,7 +130,11 @@ bool QueryEngine::IsKnown(const TreeBitLocation& bit) const {
   if (!IsTracked(bit.node())) {
     return false;
   }
-  return GetTernary(bit.node()).Get(bit.tree_index())[bit.bit_index()] !=
+  std::optional<LeafTypeTree<TernaryVector>> ternary = GetTernary(bit.node());
+  if (!ternary.has_value()) {
+    return false;
+  }
+  return ternary->Get(bit.tree_index())[bit.bit_index()] !=
          TernaryValue::kUnknown;
 }
 
@@ -131,7 +143,11 @@ std::optional<bool> QueryEngine::KnownValue(const TreeBitLocation& bit) const {
     return std::nullopt;
   }
 
-  switch (GetTernary(bit.node()).Get(bit.tree_index())[bit.bit_index()]) {
+  std::optional<LeafTypeTree<TernaryVector>> ternary = GetTernary(bit.node());
+  if (!ternary.has_value()) {
+    return std::nullopt;
+  }
+  switch (ternary->Get(bit.tree_index())[bit.bit_index()]) {
     case TernaryValue::kUnknown:
       return std::nullopt;
     case TernaryValue::kKnownZero:
@@ -149,19 +165,27 @@ std::optional<Value> QueryEngine::KnownValue(Node* node) const {
     return std::nullopt;
   }
 
-  bool fully_known = true;
-  LeafTypeTree<TernaryVector> ternary = GetTernary(node);
-  LeafTypeTree<Value> value = leaf_type_tree::Map<Value, TernaryVector>(
-      ternary.AsView(), [&fully_known](const TernaryVector& v) {
-        if (!ternary_ops::IsFullyKnown(v)) {
-          fully_known = false;
-        }
-        return Value(ternary_ops::ToKnownBitsValues(v));
-      });
-  if (!fully_known) {
+  std::optional<LeafTypeTree<TernaryVector>> ternary = GetTernary(node);
+  if (!ternary.has_value() ||
+      !absl::c_all_of(ternary->elements(), [](const TernaryVector& v) {
+        return ternary_ops::IsFullyKnown(v);
+      })) {
     return std::nullopt;
   }
-  absl::StatusOr<Value> result = LeafTypeTreeToValue(value.AsView());
+
+  absl::StatusOr<LeafTypeTree<Value>> value =
+      leaf_type_tree::MapIndex<Value, TernaryVector>(
+          ternary->AsView(),
+          [](Type* leaf_type, const TernaryVector& v,
+             absl::Span<const int64_t>) -> absl::StatusOr<Value> {
+            if (leaf_type->IsToken()) {
+              return Value::Token();
+            }
+            CHECK(leaf_type->IsBits());
+            return Value(ternary_ops::ToKnownBitsValues(v));
+          });
+  CHECK_OK(value.status());
+  absl::StatusOr<Value> result = LeafTypeTreeToValue(value->AsView());
   CHECK_OK(result.status());
   return *result;
 }
@@ -184,8 +208,11 @@ bool QueryEngine::IsMsbKnown(Node* node) const {
   if (!IsTracked(node)) {
     return false;
   }
-  TernaryVector ternary = GetTernary(node).Get({});
-  return ternary_ops::ToKnownBits(ternary).msb();
+  if (node->BitCountOrDie() == 0) {
+    // Zero-length is considered unknown.
+    return false;
+  }
+  return IsKnown(TreeBitLocation(node, node->BitCountOrDie() - 1));
 }
 
 bool QueryEngine::IsOne(const TreeBitLocation& bit) const {
@@ -207,28 +234,29 @@ bool QueryEngine::IsZero(const TreeBitLocation& bit) const {
 bool QueryEngine::GetKnownMsb(Node* node) const {
   CHECK(node->GetType()->IsBits());
   CHECK(IsMsbKnown(node));
-  TernaryVector ternary = GetTernary(node).Get({});
-  return ternary_ops::ToKnownBitsValues(ternary).msb();
+  return KnownValue(TreeBitLocation(node, node->BitCountOrDie() - 1)).value();
 }
 
 bool QueryEngine::IsAllZeros(Node* node) const {
   if (!IsTracked(node) || TypeHasToken(node->GetType())) {
     return false;
   }
-  LeafTypeTree<TernaryVector> ternary_value = GetTernary(node);
-  return absl::c_all_of(ternary_value.elements(), [](const TernaryVector& v) {
-    return ternary_ops::IsKnownZero(v);
-  });
+  std::optional<LeafTypeTree<TernaryVector>> ternary_value = GetTernary(node);
+  return ternary_value.has_value() &&
+         absl::c_all_of(ternary_value->elements(), [](const TernaryVector& v) {
+           return ternary_ops::IsKnownZero(v);
+         });
 }
 
 bool QueryEngine::IsAllOnes(Node* node) const {
   if (!IsTracked(node) || TypeHasToken(node->GetType())) {
     return false;
   }
-  LeafTypeTree<TernaryVector> ternary_value = GetTernary(node);
-  return absl::c_all_of(ternary_value.elements(), [](const TernaryVector& v) {
-    return ternary_ops::IsKnownOne(v);
-  });
+  std::optional<LeafTypeTree<TernaryVector>> ternary_value = GetTernary(node);
+  return ternary_value.has_value() &&
+         absl::c_all_of(ternary_value->elements(), [](const TernaryVector& v) {
+           return ternary_ops::IsKnownOne(v);
+         });
 }
 
 bool QueryEngine::IsFullyKnown(Node* node) const {
@@ -236,10 +264,11 @@ bool QueryEngine::IsFullyKnown(Node* node) const {
     return false;
   }
 
-  LeafTypeTree<TernaryVector> ternary = GetTernary(node);
-  return absl::c_all_of(ternary.elements(), [](const TernaryVector& v) {
-    return ternary_ops::IsFullyKnown(v);
-  });
+  std::optional<LeafTypeTree<TernaryVector>> ternary = GetTernary(node);
+  return ternary.has_value() &&
+         absl::c_all_of(ternary->elements(), [](const TernaryVector& v) {
+           return ternary_ops::IsFullyKnown(v);
+         });
 }
 
 Bits QueryEngine::MaxUnsignedValue(Node* node) const {
@@ -292,20 +321,36 @@ bool QueryEngine::NodesKnownUnsignedNotEquals(Node* a, Node* b) const {
 bool QueryEngine::NodesKnownUnsignedEquals(Node* a, Node* b) const {
   CHECK(a->GetType()->IsBits());
   CHECK(b->GetType()->IsBits());
-  TernaryVector a_ternary = GetTernary(a).Get({});
-  TernaryVector b_ternary = GetTernary(b).Get({});
-  return a == b ||
-         (AllBitsKnown(a) && AllBitsKnown(b) &&
-          bits_ops::UEqual(ternary_ops::ToKnownBitsValues(a_ternary),
-                           ternary_ops::ToKnownBitsValues(b_ternary)));
+  if (a == b) {
+    return true;
+  }
+  std::optional<Bits> a_value = KnownValueAsBits(a);
+  if (!a_value.has_value()) {
+    return false;
+  }
+  std::optional<Bits> b_value = KnownValueAsBits(b);
+  if (!b_value.has_value()) {
+    return false;
+  }
+  return bits_ops::UEqual(*a_value, *b_value);
 }
 
 std::string QueryEngine::ToString(Node* node) const {
   CHECK(IsTracked(node));
-  if (node->GetType()->IsBits()) {
-    return xls::ToString(GetTernary(node).Get({}));
+  std::optional<LeafTypeTree<TernaryVector>> ternary = GetTernary(node);
+  if (!ternary.has_value()) {
+    ternary = *LeafTypeTree<TernaryVector>::CreateFromFunction(
+        node->GetType(),
+        [](Type* leaf_type,
+           absl::Span<const int64_t>) -> absl::StatusOr<TernaryVector> {
+          return TernaryVector(leaf_type->GetFlatBitCount(),
+                               TernaryValue::kUnknown);
+        });
   }
-  return GetTernary(node).ToString(
+  if (node->GetType()->IsBits()) {
+    return xls::ToString(ternary->Get({}));
+  }
+  return ternary->ToString(
       [](const TernaryVector& v) -> std::string { return xls::ToString(v); });
 }
 
@@ -319,7 +364,8 @@ class ForwardingQueryEngine final : public QueryEngine {
 
   bool IsTracked(Node* node) const override { return real_.IsTracked(node); }
 
-  LeafTypeTree<TernaryVector> GetTernary(Node* node) const override {
+  std::optional<LeafTypeTree<TernaryVector>> GetTernary(
+      Node* node) const override {
     return real_.GetTernary(node);
   };
 
@@ -366,6 +412,16 @@ class ForwardingQueryEngine final : public QueryEngine {
                       const TreeBitLocation& b) const override {
     return real_.KnownNotEquals(a, b);
   }
+
+  bool IsKnown(const TreeBitLocation& bit) const override {
+    return real_.IsKnown(bit);
+  }
+  std::optional<bool> KnownValue(const TreeBitLocation& bit) const override {
+    return real_.KnownValue(bit);
+  }
+  bool IsAllZeros(Node* n) const override { return real_.IsAllZeros(n); }
+  bool IsAllOnes(Node* n) const override { return real_.IsAllOnes(n); }
+  bool IsFullyKnown(Node* n) const override { return real_.IsFullyKnown(n); }
 
  private:
   const QueryEngine& real_;

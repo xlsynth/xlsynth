@@ -47,9 +47,14 @@ class StatelessQueryEngine : public QueryEngine {
 
   bool IsTracked(Node* node) const override { return true; }
 
+  std::optional<bool> KnownValue(const TreeBitLocation& bit) const override;
+  bool IsKnown(const TreeBitLocation& bit) const override {
+    return KnownValue(bit).has_value();
+  }
   std::optional<Value> KnownValue(Node* node) const override;
 
-  LeafTypeTree<TernaryVector> GetTernary(Node* node) const override;
+  std::optional<LeafTypeTree<TernaryVector>> GetTernary(
+      Node* node) const override;
 
   bool AtMostOneTrue(absl::Span<TreeBitLocation const> bits) const override;
   bool AtLeastOneTrue(absl::Span<TreeBitLocation const> bits) const override;
@@ -66,6 +71,9 @@ class StatelessQueryEngine : public QueryEngine {
 
   bool Implies(const TreeBitLocation& a,
                const TreeBitLocation& b) const override;
+
+  bool IsAllZeros(Node* node) const override;
+  bool IsAllOnes(Node* node) const override;
 
   std::optional<Bits> ImpliedNodeValue(
       absl::Span<const std::pair<TreeBitLocation, bool>> predicate_bit_values,
@@ -84,7 +92,11 @@ class StatelessQueryEngine : public QueryEngine {
       absl::Span<const std::pair<TreeBitLocation, bool>> predicate_bit_values,
       Node* node) const override {
     CHECK(node->GetType()->IsBits());
-    return GetTernary(node).Get({});
+    std::optional<LeafTypeTree<TernaryVector>> ternary = GetTernary(node);
+    if (!ternary.has_value()) {
+      return std::nullopt;
+    }
+    return ternary->Get({});
   }
 
   bool IsFullyKnown(Node* n) const override;
