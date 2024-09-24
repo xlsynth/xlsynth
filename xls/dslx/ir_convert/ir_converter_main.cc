@@ -133,11 +133,11 @@ absl::Status RealMain(
            "input path to know where to resolve the entry function)";
   }
 
-  XLS_ASSIGN_OR_RETURN(
-      PackageConversionData result,
-      ConvertFilesToPackage(paths, dslx_stdlib_path, dslx_paths, convert_options,
-                            /*top=*/top,
-                            /*package_name=*/package_name, printed_error));
+  XLS_ASSIGN_OR_RETURN(PackageConversionData result,
+                       ConvertFilesToPackage(
+                           paths, dslx_stdlib_path, dslx_paths, convert_options,
+                           /*top=*/top,
+                           /*package_name=*/package_name, printed_error));
   if (output_file) {
     XLS_RETURN_IF_ERROR(SetFileContents(*output_file, result.DumpIr()));
   } else {
