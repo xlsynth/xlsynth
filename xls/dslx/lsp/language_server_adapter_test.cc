@@ -284,8 +284,7 @@ TEST(LanguageServerAdapterTest, PrepareRenameForParameter) {
   // Rename from the use position should also work and resolve to the same
   // definition span.
   verible::lsp::Position use_pos{1, 10};
-  XLS_ASSERT_OK_AND_ASSIGN(to_rename,
-                           adapter.PrepareRename(kUri, use_pos));
+  XLS_ASSERT_OK_AND_ASSIGN(to_rename, adapter.PrepareRename(kUri, use_pos));
   ASSERT_TRUE(to_rename.has_value());
   EXPECT_TRUE(kWantRange == to_rename.value());
 }

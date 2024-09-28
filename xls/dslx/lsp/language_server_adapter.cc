@@ -40,8 +40,8 @@
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/extract_module_name.h"
 #include "xls/dslx/fmt/ast_fmt.h"
-#include "xls/dslx/frontend/ast_utils.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/ast_utils.h"
 #include "xls/dslx/frontend/bindings.h"
 #include "xls/dslx/frontend/comment_data.h"
 #include "xls/dslx/frontend/pos.h"
@@ -332,9 +332,9 @@ LanguageServerAdapter::PrepareRename(
 }
 
 absl::StatusOr<std::optional<verible::lsp::WorkspaceEdit>>
-LanguageServerAdapter::Rename(
-    std::string_view uri, const verible::lsp::Position& position,
-    std::string_view new_name) const {
+LanguageServerAdapter::Rename(std::string_view uri,
+                              const verible::lsp::Position& position,
+                              std::string_view new_name) const {
   std::vector<verible::lsp::TextEdit> edits;
   if (ParseData* parsed = FindParsedForUri(uri); parsed && parsed->ok()) {
     FileTable& file_table = parsed->import_data.file_table();
@@ -342,12 +342,12 @@ LanguageServerAdapter::Rename(
     const Pos pos = ConvertLspPositionToPos(uri, position, file_table);
     VLOG(1) << "FindDefinition; uri: " << uri << " pos: " << pos;
     const NameDef* name_def = nullptr;
-    xls::dslx::FindDefinition(
-        parsed->module(), pos, parsed->type_info(), parsed->import_data, &name_def);
+    xls::dslx::FindDefinition(parsed->module(), pos, parsed->type_info(),
+                              parsed->import_data, &name_def);
     if (name_def != nullptr) {
       edits.push_back(verible::lsp::TextEdit{
-        .range = ConvertSpanToLspRange(name_def->span()),
-        .newText = std::string{new_name},
+          .range = ConvertSpanToLspRange(name_def->span()),
+          .newText = std::string{new_name},
       });
 
       // If the name def is under a function we traverse upwards to it, and
@@ -366,11 +366,12 @@ LanguageServerAdapter::Rename(
       const auto* function = down_cast<const Function*>(node);
 
       // Get all the references to the name def and rename them all.
-      XLS_ASSIGN_OR_RETURN(std::vector<const NameRef*> name_refs, CollectNameRefsUnder(function, name_def));
+      XLS_ASSIGN_OR_RETURN(std::vector<const NameRef*> name_refs,
+                           CollectNameRefsUnder(function, name_def));
       for (const NameRef* name_ref : name_refs) {
         edits.push_back(verible::lsp::TextEdit{
-          .range = ConvertSpanToLspRange(name_ref->span()),
-          .newText = std::string{new_name},
+            .range = ConvertSpanToLspRange(name_ref->span()),
+            .newText = std::string{new_name},
         });
       }
     }
@@ -383,9 +384,9 @@ LanguageServerAdapter::Rename(
     }
 
     return verible::lsp::WorkspaceEdit{
-      .changes = nlohmann::json::object({
-        {std::string{uri}, edits_json},
-      }),
+        .changes = nlohmann::json::object({
+            {std::string{uri}, edits_json},
+        }),
     };
   }
   return std::nullopt;

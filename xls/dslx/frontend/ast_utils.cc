@@ -372,10 +372,10 @@ absl::StatusOr<std::vector<AstNode*>> CollectUnder(AstNode* root,
   return nodes;
 }
 
-absl::StatusOr<std::vector<const NameRef*>> CollectNameRefsUnder(const AstNode* root,
-    const NameDef* to) {
+absl::StatusOr<std::vector<const NameRef*>> CollectNameRefsUnder(
+    const AstNode* root, const NameDef* to) {
   XLS_ASSIGN_OR_RETURN(std::vector<const AstNode*> nodes,
-                       CollectUnder(root, /*want_types*/true));
+                       CollectUnder(root, /*want_types*/ true));
   std::vector<const NameRef*> results;
   for (const AstNode* n : nodes) {
     if (const auto* name_ref = dynamic_cast<const NameRef*>(n);
