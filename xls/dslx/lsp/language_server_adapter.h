@@ -87,6 +87,10 @@ class LanguageServerAdapter {
   absl::StatusOr<std::optional<verible::lsp::Range>> PrepareRename(
       std::string_view uri, const verible::lsp::Position& position) const;
 
+  absl::StatusOr<std::optional<verible::lsp::WorkspaceEdit>> Rename(
+      std::string_view uri, const verible::lsp::Position& position,
+      std::string_view new_name) const;
+
  private:
   struct ParseData;
 

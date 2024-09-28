@@ -40,6 +40,7 @@
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/extract_module_name.h"
 #include "xls/dslx/fmt/ast_fmt.h"
+#include "xls/dslx/frontend/ast_utils.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/bindings.h"
 #include "xls/dslx/frontend/comment_data.h"
@@ -326,6 +327,66 @@ LanguageServerAdapter::PrepareRename(
     if (maybe_definition_span.has_value()) {
       return ConvertSpanToLspRange(maybe_definition_span.value());
     }
+  }
+  return std::nullopt;
+}
+
+absl::StatusOr<std::optional<verible::lsp::WorkspaceEdit>>
+LanguageServerAdapter::Rename(
+    std::string_view uri, const verible::lsp::Position& position,
+    std::string_view new_name) const {
+  std::vector<verible::lsp::TextEdit> edits;
+  if (ParseData* parsed = FindParsedForUri(uri); parsed && parsed->ok()) {
+    FileTable& file_table = parsed->import_data.file_table();
+
+    const Pos pos = ConvertLspPositionToPos(uri, position, file_table);
+    VLOG(1) << "FindDefinition; uri: " << uri << " pos: " << pos;
+    const NameDef* name_def = nullptr;
+    xls::dslx::FindDefinition(
+        parsed->module(), pos, parsed->type_info(), parsed->import_data, &name_def);
+    if (name_def != nullptr) {
+      edits.push_back(verible::lsp::TextEdit{
+        .range = ConvertSpanToLspRange(name_def->span()),
+        .newText = std::string{new_name},
+      });
+
+      // If the name def is under a function we traverse upwards to it, and
+      // then find all the references to this def underneath it.
+      const AstNode* node = name_def;
+
+      while (node != nullptr) {
+        node = node->parent();
+        if (node->kind() == AstNodeKind::kFunction) {
+          break;
+        }
+      }
+      if (node == nullptr) {
+        return std::nullopt;
+      }
+      const auto* function = down_cast<const Function*>(node);
+
+      // Get all the references to the name def and rename them all.
+      XLS_ASSIGN_OR_RETURN(std::vector<const NameRef*> name_refs, CollectNameRefsUnder(function, name_def));
+      for (const NameRef* name_ref : name_refs) {
+        edits.push_back(verible::lsp::TextEdit{
+          .range = ConvertSpanToLspRange(name_ref->span()),
+          .newText = std::string{new_name},
+        });
+      }
+    }
+
+    nlohmann::json edits_json;
+    for (const auto& edit : edits) {
+      nlohmann::json o;
+      verible::lsp::to_json(o, edit);
+      edits_json.push_back(o);
+    }
+
+    return verible::lsp::WorkspaceEdit{
+      .changes = nlohmann::json::object({
+        {std::string{uri}, edits_json},
+      }),
+    };
   }
   return std::nullopt;
 }

@@ -216,6 +216,24 @@ absl::Status RealMain() {
       });
 
   dispatcher.AddRequestHandler(
+      "textDocument/rename",
+      [&](const verible::lsp::RenameParams& params) -> nlohmann::json {
+        auto edit_or = language_server_adapter.Rename(
+            params.textDocument.uri, params.position, params.newName);
+        if (!edit_or.ok()) {
+          LspLog() << "could not determine rename edit; status: " << edit_or.status() << "\n";
+          return nlohmann::json();
+        }
+        std::optional<verible::lsp::WorkspaceEdit> edit = std::move(edit_or).value();
+        if (edit.has_value()) {
+          nlohmann::json o;
+          verible::lsp::to_json(o, edit.value());
+          return o;
+        }
+        return nlohmann::json();
+      });
+
+  dispatcher.AddRequestHandler(
       "textDocument/inlayHint",
       [&](const verible::lsp::InlayHintParams& params) {
         auto inlay_hints_or = language_server_adapter.InlayHint(
