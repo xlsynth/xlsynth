@@ -102,8 +102,13 @@ std::optional<Span> FindDefinition(const Module& m, const Pos& selected,
         defs.push_back(Reference{type_ref->span(),
                                  std::get<const NameDef*>(type_definer)});
       }
+    } else if (auto* name_def = dynamic_cast<const NameDef*>(node)) {
+      defs.push_back(Reference{name_def->span(), name_def});
     }
   }
+
+  VLOG(3) << "Found " << defs.size() << " definitions intercepting position "
+          << selected;
 
   if (defs.size() == 1) {
     return defs.at(0).to->GetSpan();

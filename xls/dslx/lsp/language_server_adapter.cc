@@ -313,4 +313,21 @@ LanguageServerAdapter::InlayHint(std::string_view uri,
   return results;
 }
 
+absl::StatusOr<std::optional<verible::lsp::Range>>
+LanguageServerAdapter::PrepareRename(
+    std::string_view uri, const verible::lsp::Position& position) const {
+  if (ParseData* parsed = FindParsedForUri(uri); parsed && parsed->ok()) {
+    FileTable& file_table = parsed->import_data.file_table();
+
+    const Pos pos = ConvertLspPositionToPos(uri, position, file_table);
+    VLOG(1) << "FindDefinition; uri: " << uri << " pos: " << pos;
+    std::optional<Span> maybe_definition_span = xls::dslx::FindDefinition(
+        parsed->module(), pos, parsed->type_info(), parsed->import_data);
+    if (maybe_definition_span.has_value()) {
+      return ConvertSpanToLspRange(maybe_definition_span.value());
+    }
+  }
+  return std::nullopt;
+}
+
 }  // namespace xls::dslx

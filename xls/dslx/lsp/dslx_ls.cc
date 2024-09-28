@@ -80,6 +80,10 @@ InitializeResult InitializeServer(const nlohmann::json& params) {
       {"dynamicRegistration", false},
       {"tooltipSupport", false},
   };
+  capabilities["renameProvider"] = {
+      {"dynamicRegistration", false},
+      {"prepareSupport", true},
+  };
   capabilities["documentFormattingProvider"] = true;
   return InitializeResult{
       .capabilities = std::move(capabilities),

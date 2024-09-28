@@ -264,5 +264,23 @@ fn main() { imported::f() }
   EXPECT_TRUE(definition_location.range == kWantRange);
 }
 
+TEST(LanguageServerAdapterTest, PrepareRenameForParameter) {
+  LanguageServerAdapter adapter(kDefaultDslxStdlibPath, /*dslx_paths=*/{"."});
+  constexpr std::string_view kUri = "memfile://test.x";
+  XLS_ASSERT_OK(adapter.Update(kUri, R"(fn f(x: u32) -> u32 {
+  let y = x;
+  let z = y;
+  z
+})"));
+
+  const auto kWantRange =
+      verible::lsp::Range{.start = verible::lsp::Position{0, 5},
+                          .end = verible::lsp::Position{0, 6}};
+  XLS_ASSERT_OK_AND_ASSIGN(std::optional<verible::lsp::Range> to_rename,
+                           adapter.PrepareRename(kUri, kWantRange.start));
+  ASSERT_TRUE(to_rename.has_value());
+  EXPECT_TRUE(kWantRange == to_rename.value());
+}
+
 }  // namespace
 }  // namespace xls::dslx
