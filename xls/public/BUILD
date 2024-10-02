@@ -155,19 +155,70 @@ cc_library(
 )
 
 cc_library(
+    name = "c_api_impl_helpers",
+    srcs = ["c_api_impl_helpers.cc"],
+    hdrs = ["c_api_impl_helpers.h"],
+    deps = [
+        ":c_api_format_preference",
+        "//xls/ir:format_preference",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:str_format",
+    ],
+)
+
+cc_library(
+    name = "c_api_format_preference",
+    hdrs = ["c_api_format_preference.h"],
+)
+
+cc_library(
+    name = "c_api_vast",
+    srcs = ["c_api_vast.cc"],
+    hdrs = ["c_api_vast.h"],
+    deps = [
+        ":c_api_format_preference",
+        ":c_api_impl_helpers",
+        "//xls/codegen/vast",
+        "//xls/ir:bits",
+        "//xls/ir:format_preference",
+        "//xls/ir:source_location",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_library(
+    name = "c_api_dslx",
+    srcs = ["c_api_dslx.cc"],
+    hdrs = ["c_api_dslx.h"],
+    deps = [
+        ":c_api_impl_helpers",
+        "//xls/common:visitor",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:parse_and_typecheck",
+        "//xls/dslx:warning_kind",
+        "//xls/dslx/type_system:unwrap_meta_type",
+        "@com_google_absl//absl/types:variant",
+    ],
+)
+
+cc_library(
     name = "c_api",
     srcs = ["c_api.cc"],
     hdrs = ["c_api.h"],
     deps = [
+        ":c_api_dslx",
+        ":c_api_format_preference",
+        ":c_api_impl_helpers",
+        ":c_api_vast",
         ":runtime_build_actions",
-        "//xls/codegen/vast",
         "//xls/common:init_xls",
         "//xls/interpreter:ir_interpreter",
         "//xls/ir",
+        "//xls/ir:bits",
         "//xls/ir:events",
         "//xls/ir:format_preference",
         "//xls/ir:ir_parser",
-        "//xls/ir:source_location",
         "//xls/ir:type",
         "//xls/ir:value",
         "@com_google_absl//absl/log:check",
@@ -182,6 +233,8 @@ cc_test(
     srcs = ["c_api_test.cc"],
     deps = [
         ":c_api",
+        ":c_api_format_preference",
+        ":c_api_vast",
         "//xls/common:xls_gunit_main",
         "//xls/common/file:filesystem",
         "//xls/common/file:temp_directory",

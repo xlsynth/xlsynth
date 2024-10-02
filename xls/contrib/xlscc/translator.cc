@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <list>
 #include <map>
 #include <memory>
@@ -68,6 +69,7 @@
 #include "llvm/include/llvm/ADT/FloatingPointMode.h"
 #include "llvm/include/llvm/ADT/StringRef.h"
 #include "llvm/include/llvm/Support/raw_ostream.h"
+#include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/contrib/xlscc/cc_parser.h"
 #include "xls/contrib/xlscc/xlscc_logging.h"
@@ -75,6 +77,7 @@
 #include "xls/ir/bits.h"
 #include "xls/ir/channel.h"
 #include "xls/ir/channel_ops.h"
+#include "xls/ir/dfs_visitor.h"
 #include "xls/ir/fileno.h"
 #include "xls/ir/function.h"
 #include "xls/ir/function_builder.h"
@@ -4585,80 +4588,125 @@ absl::StatusOr<xls::Value> Translator::EvaluateNode(xls::Node* node,
   return result;
 }
 
+namespace {
+class ShortCircuitVisitor : public xls::DfsVisitorWithDefault {
+ public:
+  static std::optional<xls::Value> TryResolveAsValue(xls::Node* node) {
+    xls::IrInterpreter ir_interpreter;
+    absl::Status status = node->Accept(&ir_interpreter);
+    if (status.ok()) {
+      return ir_interpreter.ResolveAsValue(node);
+    }
+    return std::nullopt;
+  }
+
+  absl::Status HandleNaryAnd(xls::NaryOp* op) final {
+    xls::IrInterpreter ir_interpreter;
+    absl::Status status = op->Accept(&ir_interpreter);
+    if (status.ok()) {
+      const xls::Value& value = ir_interpreter.ResolveAsValue(op);
+      XLS_ASSIGN_OR_RETURN(xls::Node * replacement,
+                           op->ReplaceUsesWithNew<xls::Literal>(value));
+      rewrites_[op] = replacement;
+      return absl::OkStatus();
+    }
+    std::vector<xls::Node*> new_operands;
+    new_operands.reserve(op->operand_count());
+    for (xls::Node* operand : op->operands()) {
+      std::optional<xls::Value> const_val = TryResolveAsValue(operand);
+      if (!const_val.has_value()) {
+        new_operands.push_back(operand);
+        continue;
+      }
+      if (const_val->IsAllOnes()) {
+        continue;
+      }
+      if (const_val->IsAllZeros()) {
+        XLS_ASSIGN_OR_RETURN(
+            xls::Node * replacement,
+            op->ReplaceUsesWithNew<xls::Literal>(ZeroOfType(op->GetType())));
+        rewrites_[op] = replacement;
+        return absl::OkStatus();
+      }
+      new_operands.push_back(operand);
+    }
+    XLS_RET_CHECK_GT(new_operands.size(), 0);
+    if (new_operands.size() == 1) {
+      rewrites_[op] = new_operands[0];
+      return op->ReplaceUsesWith(new_operands[0]);
+    }
+    if (new_operands.size() != op->operand_count()) {
+      XLS_ASSIGN_OR_RETURN(
+          xls::Node * replacement,
+          op->ReplaceUsesWithNew<xls::NaryOp>(new_operands, op->op()));
+      rewrites_[op] = replacement;
+    }
+    return absl::OkStatus();
+  }
+  absl::Status HandleNaryOr(xls::NaryOp* op) final {
+    xls::IrInterpreter ir_interpreter;
+    absl::Status status = op->Accept(&ir_interpreter);
+    if (status.ok()) {
+      const xls::Value& value = ir_interpreter.ResolveAsValue(op);
+      XLS_ASSIGN_OR_RETURN(xls::Node * replacement,
+                           op->ReplaceUsesWithNew<xls::Literal>(value));
+      rewrites_[op] = replacement;
+      return absl::OkStatus();
+    }
+    std::vector<xls::Node*> new_operands;
+    new_operands.reserve(op->operand_count());
+    for (xls::Node* operand : op->operands()) {
+      std::optional<xls::Value> const_val = TryResolveAsValue(operand);
+      if (!const_val.has_value()) {
+        new_operands.push_back(operand);
+        continue;
+      }
+      if (const_val->IsAllZeros()) {
+        continue;
+      }
+      if (const_val->IsAllOnes()) {
+        XLS_ASSIGN_OR_RETURN(
+            xls::Node * replacement,
+            op->ReplaceUsesWithNew<xls::Literal>(AllOnesOfType(op->GetType())));
+        rewrites_[op] = replacement;
+        return absl::OkStatus();
+      }
+      new_operands.push_back(operand);
+    }
+    XLS_RET_CHECK_GT(new_operands.size(), 0);
+    if (new_operands.size() == 1) {
+      rewrites_[op] = new_operands[0];
+      return op->ReplaceUsesWith(new_operands[0]);
+    }
+    if (new_operands.size() != op->operand_count()) {
+      XLS_ASSIGN_OR_RETURN(
+          xls::Node * replacement,
+          op->ReplaceUsesWithNew<xls::NaryOp>(new_operands, op->op()));
+      rewrites_[op] = replacement;
+    }
+    return absl::OkStatus();
+  }
+  absl::Status DefaultHandler(xls::Node* node) final {
+    return absl::OkStatus();
+  }
+
+  const absl::flat_hash_map<xls::Node*, xls::Node*>& rewrites() const {
+    return rewrites_;
+  }
+
+ private:
+  absl::flat_hash_map<xls::Node*, xls::Node*> rewrites_;
+};
+}  // namespace
+
 absl::Status Translator::ShortCircuitBVal(xls::BValue& bval,
                                           const xls::SourceInfo& loc) {
-  absl::flat_hash_set<xls::Node*> visited;
-  return ShortCircuitNode(bval.node(), bval, nullptr, visited, loc);
-}
-
-absl::Status Translator::ShortCircuitNode(
-    xls::Node* node, xls::BValue& top_bval, xls::Node* parent,
-    absl::flat_hash_set<xls::Node*>& visited, const xls::SourceInfo& loc) {
-  if (visited.contains(node)) {
-    return absl::OkStatus();
+  ShortCircuitVisitor visitor;
+  XLS_RETURN_IF_ERROR(bval.node()->Accept(&visitor));
+  auto iter = visitor.rewrites().find(bval.node());
+  if (iter != visitor.rewrites().end()) {
+    bval = xls::BValue(iter->second, context().fb);
   }
-
-  visited.insert(node);
-
-  // Depth-first to allow multi-step short circuits
-  // Index based to avoid modify while iterating
-  for (int oi = 0; oi < node->operand_count(); ++oi) {
-    xls::Node* op = node->operand(oi);
-    XLS_RETURN_IF_ERROR(ShortCircuitNode(op, top_bval, node, visited, loc));
-  }
-
-  // Don't duplicate literals
-  if (node->Is<xls::Literal>()) {
-    return absl::OkStatus();
-  }
-
-  absl::StatusOr<xls::Value> const_result =
-      EvaluateNode(node, loc, /*do_check=*/false);
-
-  // Try to replace the node with a literal
-  if (const_result.ok()) {
-    xls::BValue literal_bval =
-        context().fb->Literal(const_result.value(), node->loc());
-
-    if (parent != nullptr) {
-      XLSCC_CHECK(parent->ReplaceOperand(node, literal_bval.node()), loc);
-    } else {
-      top_bval = literal_bval;
-    }
-    return absl::OkStatus();
-  }
-
-  if (!((node->op() == xls::Op::kAnd) || (node->op() == xls::Op::kOr))) {
-    return absl::OkStatus();
-  }
-
-  for (xls::Node* op : node->operands()) {
-    // Operands that can be evaluated will already have been turned into
-    // literals by the above depth-first literalization
-    if (!op->Is<xls::Literal>()) {
-      continue;
-    }
-    xls::Literal* literal_node = op->As<xls::Literal>();
-
-    const xls::Value& const_value = literal_node->value();
-
-    if ((node->op() == xls::Op::kAnd) && (!const_value.IsAllZeros())) {
-      continue;
-    }
-    if ((node->op() == xls::Op::kOr) && (!const_value.IsAllOnes())) {
-      continue;
-    }
-
-    // Replace the node with its literal operand
-    if (parent != nullptr) {
-      XLSCC_CHECK(parent->ReplaceOperand(node, op), loc);
-    } else {
-      top_bval = xls::BValue(op, context().fb);
-    }
-
-    return absl::OkStatus();
-  }
-
   return absl::OkStatus();
 }
 
@@ -5395,12 +5443,9 @@ absl::StatusOr<bool> Translator::BitMustBe(bool assert_value, xls::BValue& bval,
 
   XLS_RETURN_IF_ERROR(ShortCircuitBVal(bval, loc));
 
-  XLS_ASSIGN_OR_RETURN(
-      std::unique_ptr<xls::solvers::z3::IrTranslator> z3_translator,
-      xls::solvers::z3::IrTranslator::CreateAndTranslate(
-          /*ctx=*/ctx,
-          /*source=*/bval.node(),
-          /*allow_unsupported=*/false));
+  XLS_ASSIGN_OR_RETURN(xls::solvers::z3::IrTranslator * z3_translator,
+                       GetZ3Translator(bval.builder()->function()));
+  XLS_RETURN_IF_ERROR(bval.node()->Accept(z3_translator));
 
   absl::Span<xls::Node*> positive_assumptions, negative_assumptions;
   xls::Node* assumptions[] = {bval.node()};
@@ -6114,6 +6159,21 @@ absl::StatusOr<Pragma> Translator::FindPragmaForLoc(
     const clang::PresumedLoc& ploc, bool ignore_label) {
   CHECK_NE(parser_.get(), nullptr);
   return parser_->FindPragmaForLoc(ploc, ignore_label);
+}
+
+absl::StatusOr<xls::solvers::z3::IrTranslator*> Translator::GetZ3Translator(
+    xls::FunctionBase* func) {
+  XLS_RET_CHECK(!func->IsBlock());
+  auto [iter, inserted] = z3_translators_.insert({func, nullptr});
+  if (inserted) {
+    XLS_ASSIGN_OR_RETURN(
+        iter->second,
+        xls::solvers::z3::IrTranslator::CreateAndTranslate(
+            // Don't preemptively convert everything as this is expensive and we
+            // might get away with converting less.
+            /*function_base=*/nullptr, /*allow_unsupported=*/false));
+  }
+  return iter->second.get();
 }
 
 }  // namespace xlscc

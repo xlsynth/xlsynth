@@ -49,6 +49,7 @@
 #include "xls/dslx/run_routines/run_routines.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/warning_kind.h"
+#include "xls/interpreter/evaluator_options.h"
 #include "xls/interpreter/function_interpreter.h"
 #include "xls/interpreter/interpreter_proc_runtime.h"
 #include "xls/interpreter/proc_runtime.h"
@@ -245,7 +246,7 @@ IrJitTestRunner::CreateTestRunner(ImportData* import_data, TypeInfo* type_info,
         return jit->Run(args);
       },
       [](xls::Package* p) -> absl::StatusOr<std::unique_ptr<ProcRuntime>> {
-        return CreateJitSerialProcRuntime(p);
+        return CreateJitSerialProcRuntime(p, EvaluatorOptions());
       });
 }
 
@@ -254,9 +255,12 @@ IrInterpreterTestRunner::CreateTestRunner(ImportData* import_data,
                                           TypeInfo* type_info,
                                           Module* module) const {
   return MakeRunner(
-      import_data, type_info, module, InterpretFunction,
+      import_data, type_info, module,
+      [&](xls::Function* f, absl::Span<Value const> args) {
+        return InterpretFunction(f, args);
+      },
       [](xls::Package* p) -> absl::StatusOr<std::unique_ptr<ProcRuntime>> {
-        return CreateInterpreterSerialProcRuntime(p);
+        return CreateInterpreterSerialProcRuntime(p, EvaluatorOptions());
       });
 }
 

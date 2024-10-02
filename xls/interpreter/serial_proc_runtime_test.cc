@@ -29,6 +29,7 @@
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/interpreter/channel_queue.h"
+#include "xls/interpreter/evaluator_options.h"
 #include "xls/interpreter/interpreter_proc_runtime.h"
 #include "xls/interpreter/proc_evaluator.h"
 #include "xls/interpreter/proc_interpreter.h"
@@ -52,7 +53,7 @@ constexpr const char kIrAssertPath[] = "xls/interpreter/force_assert.ir";
 // Create a SerialProcRuntime composed of a mix of ProcInterpreters and
 // ProcJits.
 absl::StatusOr<std::unique_ptr<SerialProcRuntime>> CreateMixedSerialProcRuntime(
-    ProcElaboration elaboration) {
+    ProcElaboration elaboration, const EvaluatorOptions& options) {
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<OrcJit> orc, OrcJit::Create());
   XLS_ASSIGN_OR_RETURN(auto data_layout, orc->CreateDataLayout());
   // Create a queue manager for the queues. This factory verifies that there an
@@ -68,9 +69,11 @@ absl::StatusOr<std::unique_ptr<SerialProcRuntime>> CreateMixedSerialProcRuntime(
   bool use_jit = true;
   for (Proc* proc : queue_manager->elaboration().procs()) {
     if (use_jit) {
-      XLS_ASSIGN_OR_RETURN(std::unique_ptr<ProcJit> proc_jit,
-                           ProcJit::Create(proc, &queue_manager->runtime(),
-                                           queue_manager.get()));
+      XLS_ASSIGN_OR_RETURN(
+          std::unique_ptr<ProcJit> proc_jit,
+          ProcJit::Create(
+              proc, &queue_manager->runtime(), queue_manager.get(),
+              /*include_observer_callbacks=*/options.support_observers()));
       proc_evaluators.push_back(std::move(proc_jit));
     } else {
       proc_evaluators.push_back(
@@ -80,9 +83,10 @@ absl::StatusOr<std::unique_ptr<SerialProcRuntime>> CreateMixedSerialProcRuntime(
   }
 
   // Create a runtime.
-  XLS_ASSIGN_OR_RETURN(std::unique_ptr<SerialProcRuntime> proc_runtime,
-                       SerialProcRuntime::Create(std::move(proc_evaluators),
-                                                 std::move(queue_manager)));
+  XLS_ASSIGN_OR_RETURN(
+      std::unique_ptr<SerialProcRuntime> proc_runtime,
+      SerialProcRuntime::Create(std::move(proc_evaluators),
+                                std::move(queue_manager), options));
 
   // Inject initial values into channels.
   for (ChannelInstance* channel_instance :
@@ -99,17 +103,17 @@ absl::StatusOr<std::unique_ptr<SerialProcRuntime>> CreateMixedSerialProcRuntime(
 }
 
 absl::StatusOr<std::unique_ptr<SerialProcRuntime>> CreateMixedSerialProcRuntime(
-    Package* package) {
+    Package* package, const EvaluatorOptions& options) {
   XLS_ASSIGN_OR_RETURN(ProcElaboration elaboration,
                        ProcElaboration::ElaborateOldStylePackage(package));
-  return CreateMixedSerialProcRuntime(std::move(elaboration));
+  return CreateMixedSerialProcRuntime(std::move(elaboration), options);
 }
 
 absl::StatusOr<std::unique_ptr<SerialProcRuntime>> CreateMixedSerialProcRuntime(
-    Proc* top) {
+    Proc* top, const EvaluatorOptions& options) {
   XLS_ASSIGN_OR_RETURN(ProcElaboration elaboration,
                        ProcElaboration::Elaborate(top));
-  return CreateMixedSerialProcRuntime(std::move(elaboration));
+  return CreateMixedSerialProcRuntime(std::move(elaboration), options);
 }
 
 // Negative test - can we handle asserts
@@ -151,28 +155,38 @@ INSTANTIATE_TEST_SUITE_P(
     testing::Values(
         ProcRuntimeTestParam(
             "interpreter",
-            [](Package* package) -> std::unique_ptr<ProcRuntime> {
-              return CreateInterpreterSerialProcRuntime(package).value();
+            [](Package* package, const EvaluatorOptions& options)
+                -> std::unique_ptr<ProcRuntime> {
+              return CreateInterpreterSerialProcRuntime(package, options)
+                  .value();
             },
-            [](Proc* top) -> std::unique_ptr<ProcRuntime> {
-              return CreateInterpreterSerialProcRuntime(top).value();
-            }),
+            [](Proc* top, const EvaluatorOptions& options)
+                -> std::unique_ptr<ProcRuntime> {
+              return CreateInterpreterSerialProcRuntime(top, options).value();
+            },
+            /*supports_observers=*/true),
         ProcRuntimeTestParam(
             "jit",
-            [](Package* package) -> std::unique_ptr<ProcRuntime> {
-              return CreateJitSerialProcRuntime(package).value();
+            [](Package* package, const EvaluatorOptions& options)
+                -> std::unique_ptr<ProcRuntime> {
+              return CreateJitSerialProcRuntime(package, options).value();
             },
-            [](Proc* top) -> std::unique_ptr<ProcRuntime> {
-              return CreateJitSerialProcRuntime(top).value();
-            }),
+            [](Proc* top, const EvaluatorOptions& options)
+                -> std::unique_ptr<ProcRuntime> {
+              return CreateJitSerialProcRuntime(top, options).value();
+            },
+            /*supports_observers=*/true),
         ProcRuntimeTestParam(
             "mixed",
-            [](Package* package) -> std::unique_ptr<ProcRuntime> {
-              return CreateMixedSerialProcRuntime(package).value();
+            [](Package* package, const EvaluatorOptions& options)
+                -> std::unique_ptr<ProcRuntime> {
+              return CreateMixedSerialProcRuntime(package, options).value();
             },
-            [](Proc* top) -> std::unique_ptr<ProcRuntime> {
-              return CreateMixedSerialProcRuntime(top).value();
-            })),
+            [](Proc* top, const EvaluatorOptions& options)
+                -> std::unique_ptr<ProcRuntime> {
+              return CreateMixedSerialProcRuntime(top, options).value();
+            },
+            /*supports_observers=*/true)),
     [](const testing::TestParamInfo<ProcRuntimeTestBase::ParamType>& info) {
       return info.param.name();
     });

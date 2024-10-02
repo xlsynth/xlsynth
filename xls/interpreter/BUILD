@@ -36,6 +36,7 @@ cc_library(
     ],
     deps = [
         ":block_evaluator",
+        ":observer",
         "//xls/codegen:module_signature_cc_proto",
         "//xls/common:casts",
         "//xls/common/status:ret_check",
@@ -71,6 +72,7 @@ cc_library(
     srcs = ["block_evaluator.cc"],
     hdrs = ["block_evaluator.h"],
     deps = [
+        ":observer",
         "//xls/codegen:module_signature_cc_proto",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
@@ -103,6 +105,7 @@ cc_test(
     deps = [
         ":ir_evaluator_test_base",
         ":ir_interpreter",
+        ":observer",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
         "//xls/ir",
@@ -127,6 +130,7 @@ cc_library(
     deps = [
         ":channel_queue",
         ":ir_interpreter",
+        ":observer",
         ":proc_evaluator",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
@@ -136,11 +140,8 @@ cc_library(
         "//xls/ir:proc_elaboration",
         "//xls/ir:value",
         "//xls/ir:value_utils",
-        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
     ],
 )
@@ -187,6 +188,7 @@ cc_library(
     hdrs = ["block_evaluator_test_base.h"],
     deps = [
         ":block_evaluator",
+        ":observer",
         "//xls/codegen:module_signature_cc_proto",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
@@ -231,6 +233,7 @@ cc_library(
     srcs = ["ir_evaluator_test_base.cc"],
     hdrs = ["ir_evaluator_test_base.h"],
     deps = [
+        ":observer",
         "//xls/common:math_util",
         "//xls/common/status:matchers",
         "//xls/common/status:ret_check",
@@ -351,6 +354,7 @@ cc_library(
     srcs = ["proc_evaluator.cc"],
     hdrs = ["proc_evaluator.h"],
     deps = [
+        ":observer",
         "//xls/ir",
         "//xls/ir:events",
         "//xls/ir:proc_elaboration",
@@ -371,6 +375,7 @@ cc_library(
     hdrs = ["proc_evaluator_test_base.h"],
     deps = [
         ":channel_queue",
+        ":observer",
         ":proc_evaluator",
         "//xls/common/status:matchers",
         "//xls/ir",
@@ -385,6 +390,7 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest",
     ],
+    alwayslink = 1,
 )
 
 cc_library(
@@ -393,21 +399,27 @@ cc_library(
     hdrs = ["proc_runtime.h"],
     deps = [
         ":channel_queue",
+        ":evaluator_options",
+        ":observer",
         ":proc_evaluator",
         "//xls/common/status:status_macros",
         "//xls/ir",
         "//xls/ir:channel",
         "//xls/ir:channel_ops",
         "//xls/ir:events",
+        "//xls/ir:format_preference",
         "//xls/ir:proc_elaboration",
         "//xls/ir:value",
         "//xls/jit:jit_channel_queue",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/synchronization",
     ],
 )
 
@@ -417,6 +429,7 @@ cc_library(
     hdrs = ["serial_proc_runtime.h"],
     deps = [
         ":channel_queue",
+        ":evaluator_options",
         ":proc_evaluator",
         ":proc_runtime",
         "//xls/common/status:ret_check",
@@ -438,6 +451,7 @@ cc_test(
     data = ["force_assert.ir"],
     deps = [
         ":channel_queue",
+        ":evaluator_options",
         ":interpreter_proc_runtime",
         ":proc_evaluator",
         ":proc_interpreter",
@@ -471,6 +485,8 @@ cc_library(
     hdrs = ["proc_runtime_test_base.h"],
     deps = [
         ":channel_queue",
+        ":evaluator_options",
+        ":observer",
         ":proc_runtime",
         "//xls/common/status:matchers",
         "//xls/common/status:status_macros",
@@ -478,6 +494,8 @@ cc_library(
         "//xls/ir:bits",
         "//xls/ir:channel",
         "//xls/ir:channel_ops",
+        "//xls/ir:events",
+        "//xls/ir:format_preference",
         "//xls/ir:function_builder",
         "//xls/ir:ir_parser",
         "//xls/ir:ir_test_base",
@@ -496,6 +514,7 @@ cc_library(
     hdrs = ["interpreter_proc_runtime.h"],
     deps = [
         ":channel_queue",
+        ":evaluator_options",
         ":proc_evaluator",
         ":proc_interpreter",
         ":serial_proc_runtime",
@@ -504,5 +523,22 @@ cc_library(
         "//xls/ir:proc_elaboration",
         "//xls/ir:value",
         "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_library(
+    name = "evaluator_options",
+    hdrs = ["evaluator_options.h"],
+    visibility = ["//xls:xls_users"],
+    deps = ["//xls/ir:format_preference"],
+)
+
+cc_library(
+    name = "observer",
+    hdrs = ["observer.h"],
+    deps = [
+        "//xls/ir",
+        "//xls/ir:value",
+        "@com_google_absl//absl/container:flat_hash_map",
     ],
 )

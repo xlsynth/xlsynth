@@ -21,10 +21,14 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/synchronization/mutex.h"
 #include "xls/interpreter/channel_queue.h"
+#include "xls/interpreter/evaluator_options.h"
+#include "xls/interpreter/observer.h"
 #include "xls/interpreter/proc_evaluator.h"
 #include "xls/ir/events.h"
 #include "xls/ir/package.h"
@@ -39,7 +43,8 @@ class ProcRuntime {
  public:
   ProcRuntime(
       absl::flat_hash_map<Proc*, std::unique_ptr<ProcEvaluator>>&& evaluators,
-      std::unique_ptr<ChannelQueueManager>&& queue_manager);
+      std::unique_ptr<ChannelQueueManager>&& queue_manager,
+      const EvaluatorOptions& options);
 
   virtual ~ProcRuntime() = default;
 
@@ -113,11 +118,10 @@ class ProcRuntime {
         ->GetEvents();
   }
 
-  void ClearInterpreterEvents() const {
-    for (const auto& [_, continuation] : continuations_) {
-      continuation->ClearEvents();
-    }
-  }
+  // Return the events which are not associated with any particular proc (e.g.,
+  // trace messages for channel activity).
+  InterpreterEvents GetGlobalEvents() const;
+  void ClearInterpreterEvents();
 
   const ProcElaboration& elaboration() const {
     return queue_manager_->elaboration();
@@ -125,7 +129,22 @@ class ProcRuntime {
 
   Package* package() const { return elaboration().package(); }
 
+  void ClearObserver();
+
+  // Set the callbacks for node calculation. Only one may be set at a time. If
+  // this execution environment cannot support the observer api an
+  // absl::UnimplementedError will be returned.
+  absl::Status SetObserver(EvaluationObserver* obs);
+
+  // Does this execution environment support the observer api. If false then
+  // setting an observer might fail and callbacks might not always occur or
+  // could cause crashes.
+  bool SupportsObservers() const;
+
  protected:
+  friend class ChannelTraceRecorder;
+  void AddTraceMessage(TraceMessage message);
+
   // Execute (up to) a single iteration of every proc in the package.
   struct NetworkTickResult {
     // Whether any instruction on any proc executed.
@@ -142,6 +161,12 @@ class ProcRuntime {
   absl::flat_hash_map<Proc*, std::unique_ptr<ProcEvaluator>> evaluators_;
   absl::flat_hash_map<ProcInstance*, std::unique_ptr<ProcContinuation>>
       continuations_;
+
+  mutable absl::Mutex global_events_mutex_;
+  InterpreterEvents global_events_ ABSL_GUARDED_BY(global_events_mutex_);
+
+  EvaluatorOptions options_;
+  std::optional<EvaluationObserver*> observer_ = std::nullopt;
 };
 
 }  // namespace xls

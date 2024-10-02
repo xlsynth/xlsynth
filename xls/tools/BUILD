@@ -28,6 +28,25 @@ package(
     licenses = ["notice"],  # Apache 2.0
 )
 
+proto_library(
+    name = "node_coverage_stats_proto",
+    srcs = ["node_coverage_stats.proto"],
+    visibility = ["//xls:xls_users"],
+    deps = ["//xls/ir:xls_value_proto"],
+)
+
+cc_proto_library(
+    name = "node_coverage_stats_cc_proto",
+    visibility = ["//xls:xls_users"],
+    deps = [":node_coverage_stats_proto"],
+)
+
+py_proto_library(
+    name = "node_coverage_stats_py_pb2",
+    visibility = ["//xls:xls_users"],
+    deps = [":node_coverage_stats_proto"],
+)
+
 cc_binary(
     name = "lec_main",
     srcs = ["lec_main.cc"],
@@ -162,6 +181,7 @@ cc_binary(
     srcs = ["eval_ir_main.cc"],
     visibility = ["//xls:xls_users"],
     deps = [
+        ":node_coverage_utils",
         "//xls/common:exit_status",
         "//xls/common:init_xls",
         "//xls/common/file:filesystem",
@@ -176,6 +196,7 @@ cc_binary(
         "//xls/dslx/ir_convert:conversion_info",
         "//xls/dslx/ir_convert:ir_converter",
         "//xls/interpreter:ir_interpreter",
+        "//xls/interpreter:observer",
         "//xls/interpreter:random_value",
         "//xls/ir",
         "//xls/ir:bits",
@@ -261,6 +282,7 @@ cc_binary(
     visibility = ["//xls:xls_users"],
     deps = [
         ":eval_utils",
+        ":node_coverage_utils",
         "//xls/codegen:module_signature_cc_proto",
         "//xls/common:exit_status",
         "//xls/common:init_xls",
@@ -270,6 +292,7 @@ cc_binary(
         "//xls/dev_tools:tool_timeout",
         "//xls/interpreter:block_evaluator",
         "//xls/interpreter:channel_queue",
+        "//xls/interpreter:evaluator_options",
         "//xls/interpreter:interpreter_proc_runtime",
         "//xls/interpreter:ir_interpreter",
         "//xls/interpreter:serial_proc_runtime",
@@ -284,6 +307,7 @@ cc_binary(
         "//xls/ir:value_utils",
         "//xls/jit:block_jit",
         "//xls/jit:jit_proc_runtime",
+        "//xls/jit:jit_runtime",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:btree",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -701,9 +725,12 @@ py_test(
     python_version = "PY3",
     srcs_version = "PY3",
     deps = [
+        ":node_coverage_stats_py_pb2",
         "//xls/common:runfiles",
         "//xls/common:test_base",
+        "//xls/ir:xls_value_py_pb2",
         "@com_google_absl_py//absl/testing:absltest",
+        "@com_google_absl_py//absl/testing:parameterized",
     ],
 )
 
@@ -737,7 +764,9 @@ py_test(
     python_version = "PY3",
     srcs_version = "PY3",
     deps = [
+        ":node_coverage_stats_py_pb2",
         "//xls/common:runfiles",
+        "//xls/ir:xls_value_py_pb2",
         "@com_google_absl_py//absl/logging",
         "@com_google_absl_py//absl/testing:absltest",
         "@com_google_absl_py//absl/testing:parameterized",
@@ -898,5 +927,36 @@ py_test(
         "//xls/common:runfiles",
         "//xls/common:test_base",
         "@com_google_absl_py//absl/testing:absltest",
+    ],
+)
+
+cc_library(
+    name = "node_coverage_utils",
+    srcs = ["node_coverage_utils.cc"],
+    hdrs = ["node_coverage_utils.h"],
+    deps = [
+        ":node_coverage_stats_cc_proto",
+        "//xls/common/file:filesystem",
+        "//xls/common/status:ret_check",
+        "//xls/common/status:status_macros",
+        "//xls/data_structures:inline_bitmap",
+        "//xls/data_structures:leaf_type_tree",
+        "//xls/interpreter:observer",
+        "//xls/ir",
+        "//xls/ir:bits",
+        "//xls/ir:source_location",
+        "//xls/ir:type",
+        "//xls/ir:value",
+        "//xls/ir:value_utils",
+        "//xls/jit:jit_runtime",
+        "//xls/jit:observer",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:protobuf",
     ],
 )

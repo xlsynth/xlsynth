@@ -743,18 +743,158 @@ fn f(x: u32) -> (u32, u8) {
 }
 
 TEST(TypecheckTest, ForWithBadTypeTree) {
-  EXPECT_THAT(
-      Typecheck(R"(
+  EXPECT_THAT(Typecheck(R"(
 fn f(x: u32) -> (u32, u8) {
   for (i, (x, y)): (u32, u8) in range(u32:0, u32:3) {
     (x, y)
   }((x, u8:42))
 })"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       AllOf(HasSubstr("uN[8]\nvs (uN[32], uN[8])"),
+                             HasSubstr("For-loop annotated accumulator type "
+                                       "did not match inferred type."))));
+}
+
+TEST(TypecheckTest, ForWithBadTypeAnnotation) {
+  EXPECT_THAT(
+      Typecheck(R"(
+fn f(x: u32) -> (u32, u8) {
+  for (i, _): u32 in range(u32:0, u32:3) {
+    i
+  }(u32:0)
+})"),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               AllOf(HasSubstr("For-loop annotated type should be a tuple "
+                               "containing a type for the iterable and a type "
+                               "for the accumulator."))));
+}
+
+TEST(TypecheckTest, ForWithWrongResultType) {
+  EXPECT_THAT(Typecheck(R"(
+fn f(x: u32) -> (u32, u8) {
+  for (i, _): (u32, u32) in range(u32:0, u32:3) {
+    i as u64
+  }(u32:0)
+})"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       AllOf(HasSubstr("uN[32] vs uN[64]"),
+                             HasSubstr("For-loop init value type did not match "
+                                       "for-loop body's result type."))));
+}
+
+TEST(TypecheckTest, ForWithWrongNumberOfArguments) {
+  EXPECT_THAT(
+      Typecheck(R"(
+fn f(x: u32) -> u32 {
+  for (i, j, acc): (u32, u32, u32) in range(u32:0, u32:3) {
+    i + j + acc
+  }(u32:42)
+})"),
       StatusIs(
           absl::StatusCode::kInvalidArgument,
-          AllOf(HasSubstr("uN[8]\nvs (uN[32], uN[8])"),
+          HasSubstr("For-loop annotated type should specify a type for the "
+                    "iterable and a type for the accumulator; got 3 types.")));
+}
+
+TEST(IrConverterTest, ForWithIndexTypeTooSmallForRange) {
+  EXPECT_THAT(Typecheck(R"(
+fn test() -> u4 {
+  for(i, acc): (u4, u32) in u32:0..u32:120 {
+    i as u32 + acc
+  }(u32:0)
+})"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       AllOf(HasSubstr("uN[4]\nvs uN[32]"),
+                             HasSubstr("For-loop annotated index type did not "
+                                       "match inferred type."))));
+}
+
+TEST(TypecheckTest, UnrollForSimple) {
+  XLS_EXPECT_OK(Typecheck(R"(
+fn test() -> u32 {
+  unroll_for!(i, acc): (u32, u32) in u32:0..u32:4 {
+    i + acc
+  }(u32:0)
+})"));
+}
+
+TEST(TypecheckTest, UnrollForNestedBindings) {
+  XLS_EXPECT_OK(Typecheck(R"(
+fn f(x: u32) -> (u32, u8) {
+  unroll_for! (_, (x, y)): (u32, (u32, u8)) in range(u32:0, u32:3) {
+    (x, y)
+  }((x, u8:42))
+}
+)"));
+}
+
+TEST(TypecheckTest, UnrollForWithBadTypeTree) {
+  EXPECT_THAT(Typecheck(R"(
+fn f(x: u32) -> (u32, u8) {
+  unroll_for! (i, (x, y)): (u32, u8) in range(u32:0, u32:3) {
+    (x, y)
+  }((x, u8:42))
+})"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       AllOf(HasSubstr("uN[8]\nvs (uN[32], uN[8])"),
+                             HasSubstr("For-loop annotated accumulator type "
+                                       "did not match inferred type."))));
+}
+
+TEST(TypecheckTest, UnrollForWithBadTypeAnnotation) {
+  EXPECT_THAT(
+      Typecheck(R"(
+fn f(x: u32) -> (u32, u8) {
+  unroll_for! (i, _): u32 in range(u32:0, u32:3) {
+    i
+  }(u32:0)
+})"),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("For-loop annotated type should be a tuple "
+                         "containing a type for the iterable and a type "
+                         "for the accumulator.")));
+}
+
+TEST(TypecheckTest, UnrollForWithWrongResultType) {
+  EXPECT_THAT(Typecheck(R"(
+fn f(x: u32) -> (u32, u8) {
+  unroll_for! (i, _): (u32, u32) in range(u32:0, u32:3) {
+    i as u64
+  }(u32:0)
+})"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       AllOf(HasSubstr("uN[32] vs uN[64]"),
+                             HasSubstr("For-loop init value type did not match "
+                                       "for-loop body's result type."))));
+}
+
+TEST(TypecheckTest, UnrollForWithWrongNumberOfArguments) {
+  EXPECT_THAT(
+      Typecheck(R"(
+fn test() -> u32 {
+  unroll_for!(i, j, acc): (u32, u32, u32) in u32:0..u32:4 {
+    i + j + acc
+  }(u32:0)
+})"),
+      StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          AllOf(HasSubstr("(uN[32], uN[32], uN[32])\nvs (uN[32], uN[32])"),
                 HasSubstr(
-                    "For-loop annotated type did not match inferred type."))));
+                    "For-loop annotated type should specify a type for the "
+                    "iterable and a type for the accumulator; got 3 types."))));
+}
+
+TEST(IrConverterTest, UnrollForWithIndexTypeTooSmallForRange) {
+  EXPECT_THAT(Typecheck(R"(
+fn test() -> u4 {
+  unroll_for!(i, acc): (u4, u4) in u32:0..u32:120 {
+    i + acc
+  }(u4:0)
+})"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       AllOf(HasSubstr("uN[4]\nvs uN[32]"),
+                             HasSubstr("For-loop annotated index type did not "
+                                       "match inferred type."))));
 }
 
 TEST(TypecheckTest, DerivedParametricStruct) {
@@ -3185,6 +3325,51 @@ fn main() -> u5 {
   auto import_data = CreateImportDataForTest();
   XLS_EXPECT_OK(
       ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+  XLS_EXPECT_OK(
+      ParseAndTypecheck(kProgram, "fake_main_path.x", "main", &import_data));
+}
+
+TEST(TypecheckTest, InstantiateImportedParametricStructArray) {
+  constexpr std::string_view kImported = R"(
+pub struct my_struct<N: u32> {
+    my_field: uN[N],
+}
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+const imported_structs = imported::my_struct<5>[2]:[
+  imported::my_struct { my_field: u5:10 },
+  imported::my_struct { my_field: u5:11 }
+];
+
+fn main() -> u5 {
+  imported_structs[1].my_field
+}
+)";
+  auto import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(
+      ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+  XLS_EXPECT_OK(
+      ParseAndTypecheck(kProgram, "fake_main_path.x", "main", &import_data));
+}
+
+TEST(TypecheckTest, InstantiateParametricStructArray) {
+  constexpr std::string_view kProgram = R"(
+struct my_struct<N: u32> {
+    my_field: uN[N],
+}
+
+const local_structs = my_struct<5>[1]:[
+  //my_struct { my_field: u5:10 },
+  my_struct { my_field: u5:11 }
+];
+
+fn main() -> u5 {
+  local_structs[0].my_field
+}
+)";
+  auto import_data = CreateImportDataForTest();
   XLS_EXPECT_OK(
       ParseAndTypecheck(kProgram, "fake_main_path.x", "main", &import_data));
 }

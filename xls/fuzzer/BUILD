@@ -387,6 +387,8 @@ generate_crasher_regression_tests(
         "crashers/crasher_2024-09-20_67c5.x",
         # TODO(https://github.com/google/xls/issues/1624): Remove when fixed.
         "crashers/crasher_2024-09-23_0330.x",
+        # TODO(https://github.com/google/xls/issues/1636): Remove when fixed.
+        "crashers/crasher_2024-09-26_ac56.x",
     ],
     prefix = package_name(),
     tags = {
@@ -451,6 +453,9 @@ generate_crasher_regression_tests(
             "optonly",
         ],
         "crashers/crasher_2024-09-23_0330.x": [
+            "optonly",
+        ],
+        "crashers/crasher_2024-09-24_6def.x": [
             "optonly",
         ],
     },

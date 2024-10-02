@@ -86,6 +86,7 @@
   X(EnumDef)                      \
   X(Function)                     \
   X(Import)                       \
+  X(Impl)                         \
   X(MatchArm)                     \
   X(Module)                       \
   X(NameDef)                      \
@@ -270,8 +271,7 @@ inline std::vector<AstNode*> ToAstNodes(absl::Span<NodeT* const> source) {
 // Abstract base class for type annotations.
 class TypeAnnotation : public AstNode {
  public:
-  TypeAnnotation(Module* owner, Span span)
-      : AstNode(owner), span_(std::move(span)) {}
+  TypeAnnotation(Module* owner, Span span) : AstNode(owner), span_(span) {}
 
   ~TypeAnnotation() override;
 
@@ -640,7 +640,7 @@ inline bool WeakerThan(Precedence x, Precedence y) {
 // (i.e. can produce runtime values).
 class Expr : public AstNode {
  public:
-  Expr(Module* owner, Span span) : AstNode(owner), span_(std::move(span)) {}
+  Expr(Module* owner, Span span) : AstNode(owner), span_(span) {}
 
   ~Expr() override;
 
@@ -694,7 +694,7 @@ class Expr : public AstNode {
  protected:
   virtual std::string ToStringInternal() const = 0;
 
-  void UpdateSpan(Span new_span) { span_ = std::move(new_span); }
+  void UpdateSpan(Span new_span) { span_ = new_span; }
 
  private:
   Span span_;
@@ -1816,7 +1816,7 @@ class Match : public Expr {
 class Attr : public Expr {
  public:
   Attr(Module* owner, Span span, Expr* lhs, std::string attr)
-      : Expr(owner, std::move(span)), lhs_(lhs), attr_(std::move(attr)) {}
+      : Expr(owner, span), lhs_(lhs), attr_(std::move(attr)) {}
 
   ~Attr() override;
 
@@ -2105,7 +2105,7 @@ class AllOnesMacro : public Expr {
 class Slice : public AstNode {
  public:
   Slice(Module* owner, Span span, Expr* start, Expr* limit)
-      : AstNode(owner), span_(std::move(span)), start_(start), limit_(limit) {}
+      : AstNode(owner), span_(span), start_(start), limit_(limit) {}
 
   ~Slice() override;
 
@@ -2194,7 +2194,10 @@ class EnumDef : public AstNode {
   const Span& span() const { return span_; }
   std::optional<Span> GetSpan() const override { return span_; }
   NameDef* name_def() const { return name_def_; }
+
   const std::vector<EnumMember>& values() const { return values_; }
+  std::vector<EnumMember>& mutable_values() { return values_; }
+
   TypeAnnotation* type_annotation() const { return type_annotation_; }
   bool is_public() const { return is_public_; }
 
@@ -2270,7 +2273,10 @@ class StructDef : public AstNode {
   const std::vector<ParametricBinding*>& parametric_bindings() const {
     return parametric_bindings_;
   }
+
   const std::vector<StructMember>& members() const { return members_; }
+  std::vector<StructMember>& mutable_members() { return members_; }
+
   bool is_public() const { return public_; }
   const Span& span() const { return span_; }
   std::optional<Span> GetSpan() const override { return span_; }
@@ -2303,6 +2309,37 @@ class StructDef : public AstNode {
   bool public_;
   // The external verilog type name
   std::optional<std::string> extern_type_name_;
+};
+
+// Represents an impl for a struct.
+class Impl : public AstNode {
+ public:
+  Impl(Module* owner, Span span, TypeAnnotation* struct_ref, bool is_public);
+
+  ~Impl() override;
+
+  AstNodeKind kind() const override { return AstNodeKind::kImpl; }
+
+  absl::Status Accept(AstNodeVisitor* v) const override {
+    return absl::UnimplementedError("impl not yet implemented");
+  }
+
+  std::string_view GetNodeTypeName() const override { return "Impl"; }
+
+  std::string ToString() const override;
+
+  std::vector<AstNode*> GetChildren(bool want_types) const override {
+    return {};
+  };
+
+  bool is_public() const { return public_; }
+  const Span& span() const { return span_; }
+  std::optional<Span> GetSpan() const override { return span_; }
+
+ private:
+  Span span_;
+  TypeAnnotation* struct_ref_;
+  bool public_;
 };
 
 // Represents instantiation of a struct via member expressions.

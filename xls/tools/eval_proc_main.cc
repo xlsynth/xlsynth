@@ -59,6 +59,7 @@
 #include "xls/interpreter/block_evaluator.h"
 #include "xls/interpreter/block_interpreter.h"
 #include "xls/interpreter/channel_queue.h"
+#include "xls/interpreter/evaluator_options.h"
 #include "xls/interpreter/interpreter_proc_runtime.h"
 #include "xls/interpreter/serial_proc_runtime.h"
 #include "xls/ir/bits.h"
@@ -73,7 +74,9 @@
 #include "xls/ir/value_utils.h"
 #include "xls/jit/block_jit.h"
 #include "xls/jit/jit_proc_runtime.h"
+#include "xls/jit/jit_runtime.h"
 #include "xls/tools/eval_utils.h"
+#include "xls/tools/node_coverage_utils.h"
 
 static constexpr std::string_view kUsage = R"(
 Evaluates an IR file containing Procs, or a Block generated from them.
@@ -171,6 +174,9 @@ ABSL_FLAG(int64_t, random_seed, 42, "Random seed");
 ABSL_FLAG(double, prob_input_valid_assert, 1.0,
           "Single-cycle probability of asserting valid with more input ready.");
 ABSL_FLAG(bool, show_trace, false, "Whether or not to print trace messages.");
+ABSL_FLAG(bool, trace_channels, false,
+          "If true, values sent and received on channels are recorded as trace "
+          "messages");
 ABSL_FLAG(int64_t, max_trace_verbosity, 0,
           "Maximum verbosity for traces. Traces with higher verbosity are "
           "stripped from codegen output. 0 by default.");
@@ -183,8 +189,18 @@ ABSL_FLAG(std::vector<std::string>, model_memories, {},
 ABSL_FLAG(bool, fail_on_assert, false,
           "When set to true, the simulation fails on the activation or cycle "
           "in which an assertion fires.");
+ABSL_FLAG(std::optional<std::string>, output_node_coverage_stats_proto,
+          std::nullopt,
+          "File to write a (binary) NodeCoverageStatsProto showing which bits "
+          "in the run were actually set for each node.");
+ABSL_FLAG(std::optional<std::string>, output_node_coverage_stats_textproto,
+          std::nullopt,
+          "File to write a (text) NodeCoverageStatsProto showing which bits "
+          "in the run were actually set for each node.");
 
 namespace xls {
+
+namespace {
 
 static absl::Status LogInterpreterEvents(std::string_view entity_name,
                                          const InterpreterEvents& events) {
@@ -219,10 +235,28 @@ static absl::Status EvaluateProcs(
         expected_outputs_for_channels,
     const EvaluateProcsOptions& options = {}) {
   std::unique_ptr<SerialProcRuntime> runtime;
+  std::optional<JitRuntime*> jit;
+  EvaluatorOptions evaluator_options;
+  evaluator_options.set_trace_channels(absl::GetFlag(FLAGS_trace_channels));
+  bool uses_observers =
+      absl::GetFlag(FLAGS_output_node_coverage_stats_proto).has_value() ||
+      absl::GetFlag(FLAGS_output_node_coverage_stats_textproto).has_value();
+  evaluator_options.set_support_observers(uses_observers);
   if (options.use_jit) {
-    XLS_ASSIGN_OR_RETURN(runtime, CreateJitSerialProcRuntime(package));
+    XLS_ASSIGN_OR_RETURN(
+        runtime, CreateJitSerialProcRuntime(package, evaluator_options));
+    XLS_ASSIGN_OR_RETURN(auto jit_queue, runtime->GetJitChannelQueueManager());
+    jit = &jit_queue->runtime();
   } else {
-    XLS_ASSIGN_OR_RETURN(runtime, CreateInterpreterSerialProcRuntime(package));
+    XLS_ASSIGN_OR_RETURN(runtime, CreateInterpreterSerialProcRuntime(
+                                      package, evaluator_options));
+  }
+  ScopedRecordNodeCoverage cov(
+      absl::GetFlag(FLAGS_output_node_coverage_stats_proto),
+      absl::GetFlag(FLAGS_output_node_coverage_stats_textproto), jit);
+  if (cov.observer()) {
+    XLS_RETURN_IF_ERROR(runtime->SetObserver(*cov.observer()));
+    LOG(ERROR) << "Set observer!";
   }
 
   ChannelQueueManager& queue_manager = runtime->queue_manager();
@@ -309,6 +343,8 @@ static absl::Status EvaluateProcs(
 
       std::vector<std::string> asserts;
 
+      XLS_RETURN_IF_ERROR(
+          LogInterpreterEvents("[global]", runtime->GetGlobalEvents()));
       for (Proc* proc : sorted_procs) {
         const xls::InterpreterEvents& events =
             runtime->GetInterpreterEvents(proc);
@@ -752,13 +788,29 @@ static absl::Status RunBlock(
     reg_state[reg->name()] = XsOfType(reg->type());
   }
 
+  bool needs_observer =
+      absl::GetFlag(FLAGS_output_node_coverage_stats_proto).has_value() ||
+      absl::GetFlag(FLAGS_output_node_coverage_stats_textproto).has_value();
   const BlockEvaluator& continuation_factory =
       options.use_jit
-          ? reinterpret_cast<const BlockEvaluator&>(kJitBlockEvaluator)
+          ? reinterpret_cast<const BlockEvaluator&>(
+                needs_observer ? kObservableJitBlockEvaluator
+                               : kJitBlockEvaluator)
           : reinterpret_cast<const BlockEvaluator&>(kInterpreterBlockEvaluator);
-
   XLS_ASSIGN_OR_RETURN(auto continuation,
                        continuation_factory.NewContinuation(block, reg_state));
+  std::optional<JitRuntime*> jit;
+  if (options.use_jit) {
+    XLS_ASSIGN_OR_RETURN(jit,
+                         kJitBlockEvaluator.GetRuntime(continuation.get()));
+  }
+  ScopedRecordNodeCoverage cov(
+      absl::GetFlag(FLAGS_output_node_coverage_stats_proto),
+      absl::GetFlag(FLAGS_output_node_coverage_stats_textproto), jit);
+
+  if (cov.observer()) {
+    XLS_RETURN_IF_ERROR(continuation->SetObserver(*cov.observer()));
+  }
 
   int64_t last_output_cycle = 0;
   int64_t matched_outputs = 0;
@@ -766,6 +818,9 @@ static absl::Status RunBlock(
   for (int64_t cycle = 0;; ++cycle) {
     // Idealized reset behavior
     const bool resetting = (cycle == 0);
+    // We don't want the cycle where we are initially resetting the registers to
+    // be counted in coverage since its unlikely to be valuable.
+    cov.SetPaused(resetting);
 
     if (options.show_trace && ((cycle < 30) || (cycle % 100 == 0))) {
       LOG(INFO) << "Cycle[" << cycle << "]: resetting? " << resetting
@@ -1185,6 +1240,7 @@ static absl::Status RealMain(
                        expected_outputs_for_channels, evaluate_procs_options);
 }
 
+}  // namespace
 }  // namespace xls
 
 int main(int argc, char* argv[]) {
