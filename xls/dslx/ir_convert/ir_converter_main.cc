@@ -49,7 +49,7 @@ ABSL_FLAG(std::string, top, "",
           "top entity in the generated IR. When not provided, all functions "
           "and procs are converted, there is no top entity defined in the "
           "generated IR.");
-ABSL_FLAG(std::string, dslx_stdlib_path, xls::kDefaultDslxStdlibPath,
+ABSL_FLAG(std::string, stdlib_path, xls::kDefaultDslxStdlibPath,
           "Path to DSLX standard library files.");
 ABSL_FLAG(std::string, dslx_path, "",
           "Additional paths to search for modules (colon delimited).");
@@ -101,7 +101,7 @@ absl::Status RealMain(
     absl::Span<const std::string_view> paths,
     std::optional<std::string_view> top,
     std::optional<std::string_view> package_name,
-    const std::string& dslx_stdlib_path,
+    const std::string& stdlib_path,
     absl::Span<const std::filesystem::path> dslx_paths,
     bool emit_fail_as_assert, bool verify_ir, bool warnings_as_errors,
     bool* printed_error,
@@ -133,11 +133,11 @@ absl::Status RealMain(
            "input path to know where to resolve the entry function)";
   }
 
-  XLS_ASSIGN_OR_RETURN(PackageConversionData result,
-                       ConvertFilesToPackage(
-                           paths, dslx_stdlib_path, dslx_paths, convert_options,
-                           /*top=*/top,
-                           /*package_name=*/package_name, printed_error));
+  XLS_ASSIGN_OR_RETURN(
+      PackageConversionData result,
+      ConvertFilesToPackage(paths, stdlib_path, dslx_paths, convert_options,
+                            /*top=*/top,
+                            /*package_name=*/package_name, printed_error));
   if (output_file) {
     XLS_RETURN_IF_ERROR(SetFileContents(*output_file, result.DumpIr()));
   } else {
@@ -181,7 +181,7 @@ int main(int argc, char* argv[]) {
                 *absl::GetFlag(FLAGS_output_file))
           : std::nullopt;
 
-  std::string dslx_stdlib_path = absl::GetFlag(FLAGS_dslx_stdlib_path);
+  std::string stdlib_path = absl::GetFlag(FLAGS_stdlib_path);
   std::string dslx_path = absl::GetFlag(FLAGS_dslx_path);
   std::vector<std::string> dslx_path_strs = absl::StrSplit(dslx_path, ':');
 
@@ -206,7 +206,7 @@ int main(int argc, char* argv[]) {
   bool warnings_as_errors = absl::GetFlag(FLAGS_warnings_as_errors);
   bool printed_error = false;
   absl::Status status = xls::dslx::RealMain(
-      output_file, args, top, package_name, dslx_stdlib_path, dslx_paths,
+      output_file, args, top, package_name, stdlib_path, dslx_paths,
       emit_fail_as_assert, verify_ir, warnings_as_errors, &printed_error,
       absl::GetFlag(FLAGS_interface_proto_file)
           ? std::make_optional<std::filesystem::path>(
