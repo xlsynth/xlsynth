@@ -268,6 +268,10 @@ cc_binary(
     srcs = ["c_api.cc", "c_api.h"],
     linkshared = True,
     deps = [
+        ":c_api_dslx",
+        ":c_api_format_preference",
+        ":c_api_impl_helpers",
+        ":c_api_vast",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
@@ -278,6 +282,7 @@ cc_binary(
         "//xls/common:init_xls",
         "//xls/interpreter:ir_interpreter",
         "//xls/ir",
+        "//xls/ir:bits",
         "//xls/ir:events",
         "//xls/ir:format_preference",
         "//xls/ir:ir_parser",

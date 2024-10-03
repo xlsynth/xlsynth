@@ -31,6 +31,10 @@
 
 #include "xls/public/c_api_format_preference.h"
 
+#ifndef XLS_DLL_EXPORT
+#define XLS_DLL_EXPORT __attribute__((visibility("default")))
+#endif  // XLS_DLL_EXPORT
+
 extern "C" {
 
 // Opaque structs.
@@ -56,42 +60,54 @@ enum {
 
 // Note: caller owns the returned verilog file object, to be freed by
 // `xls_vast_verilog_file_free`.
+XLS_DLL_EXPORT
 struct xls_vast_verilog_file* xls_vast_make_verilog_file(
     xls_vast_file_type file_type);
 
+XLS_DLL_EXPORT
 void xls_vast_verilog_file_free(struct xls_vast_verilog_file* f);
 
+XLS_DLL_EXPORT
 struct xls_vast_verilog_module* xls_vast_verilog_file_add_module(
     struct xls_vast_verilog_file* f, const char* name);
 
+XLS_DLL_EXPORT
 struct xls_vast_data_type* xls_vast_verilog_file_make_scalar_type(
     struct xls_vast_verilog_file* f);
 
+XLS_DLL_EXPORT
 struct xls_vast_data_type* xls_vast_verilog_file_make_bit_vector_type(
     struct xls_vast_verilog_file* f, int64_t bit_count, bool is_signed);
 
+XLS_DLL_EXPORT
 void xls_vast_verilog_module_add_member_instantiation(
     struct xls_vast_verilog_module* m, struct xls_vast_instantiation* member);
+XLS_DLL_EXPORT
 void xls_vast_verilog_module_add_member_continuous_assignment(
     struct xls_vast_verilog_module* m,
     struct xls_vast_continuous_assignment* member);
 
+XLS_DLL_EXPORT
 struct xls_vast_logic_ref* xls_vast_verilog_module_add_input(
     struct xls_vast_verilog_module* m, const char* name,
     struct xls_vast_data_type* type);
+XLS_DLL_EXPORT
 struct xls_vast_logic_ref* xls_vast_verilog_module_add_output(
     struct xls_vast_verilog_module* m, const char* name,
     struct xls_vast_data_type* type);
+XLS_DLL_EXPORT
 struct xls_vast_logic_ref* xls_vast_verilog_module_add_wire(
     struct xls_vast_verilog_module* m, const char* name,
     struct xls_vast_data_type* type);
 // TODO(cdleary): 2024-09-05 Add xls_vast_verilog_module_add_wire_with_expr
 
+XLS_DLL_EXPORT
 struct xls_vast_continuous_assignment*
 xls_vast_verilog_file_make_continuous_assignment(
     struct xls_vast_verilog_file* f, struct xls_vast_expression* lhs,
     struct xls_vast_expression* rhs);
 
+XLS_DLL_EXPORT
 struct xls_vast_instantiation* xls_vast_verilog_file_make_instantiation(
     struct xls_vast_verilog_file* f, const char* module_name,
     const char* instance_name, const char** parameter_port_names,
@@ -100,19 +116,23 @@ struct xls_vast_instantiation* xls_vast_verilog_file_make_instantiation(
     struct xls_vast_expression** connection_expressions,
     size_t connection_count);
 
+XLS_DLL_EXPORT
 void xls_vast_verilog_file_add_include(struct xls_vast_verilog_file* f,
                                        const char* path);
 
+XLS_DLL_EXPORT
 struct xls_vast_slice* xls_vast_verilog_file_make_slice_i64(
     struct xls_vast_verilog_file* f,
     struct xls_vast_indexable_expression* subject, int64_t hi, int64_t lo);
 
+XLS_DLL_EXPORT
 struct xls_vast_literal* xls_vast_verilog_file_make_plain_literal(
     struct xls_vast_verilog_file* f, int32_t value);
 
 // Creates a VAST literal with an arbitrary bit count.
 //
 // Returns an error if the given format preference is invalid.
+XLS_DLL_EXPORT
 bool xls_vast_verilog_file_make_literal(struct xls_vast_verilog_file* f,
                                         struct xls_bits* bits,
                                         xls_format_preference format_preference,
@@ -120,13 +140,17 @@ bool xls_vast_verilog_file_make_literal(struct xls_vast_verilog_file* f,
                                         struct xls_vast_literal** literal_out);
 
 // Casts to turn the given node to an expression, where possible.
+XLS_DLL_EXPORT
 struct xls_vast_expression* xls_vast_literal_as_expression(
     struct xls_vast_literal* v);
+XLS_DLL_EXPORT
 struct xls_vast_expression* xls_vast_logic_ref_as_expression(
     struct xls_vast_logic_ref* v);
+XLS_DLL_EXPORT
 struct xls_vast_expression* xls_vast_slice_as_expression(
     struct xls_vast_slice* v);
 
+XLS_DLL_EXPORT
 struct xls_vast_indexable_expression*
 xls_vast_logic_ref_as_indexable_expression(
     struct xls_vast_logic_ref* logic_ref);
@@ -134,6 +158,7 @@ xls_vast_logic_ref_as_indexable_expression(
 // Emits/formats the contents of the given verilog file to a string.
 //
 // Note: caller owns the returned string, to be freed by `xls_c_str_free`.
+XLS_DLL_EXPORT
 char* xls_vast_verilog_file_emit(const struct xls_vast_verilog_file* f);
 
 }  // extern "C"

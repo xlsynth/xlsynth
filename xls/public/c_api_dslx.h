@@ -29,6 +29,10 @@
 #include <stddef.h>  // NOLINT(modernize-deprecated-headers)
 #include <stdint.h>  // NOLINT(modernize-deprecated-headers)
 
+#ifndef XLS_DLL_EXPORT
+#define XLS_DLL_EXPORT __attribute__((visibility("default")))
+#endif  // XLS_DLL_EXPORT
+
 extern "C" {
 
 typedef int32_t xls_dslx_type_definition_kind;
@@ -51,36 +55,47 @@ struct xls_dslx_type_info;
 struct xls_dslx_type;
 struct xls_dslx_type_annotation;
 
+XLS_DLL_EXPORT
 struct xls_dslx_import_data* xls_dslx_import_data_create(
     const char* dslx_stdlib_path, const char* additional_search_paths[],
     size_t additional_search_paths_count);
 
+XLS_DLL_EXPORT
 void xls_dslx_import_data_free(struct xls_dslx_import_data*);
 
+XLS_DLL_EXPORT
 bool xls_dslx_parse_and_typecheck(
     const char* text, const char* path, const char* module_name,
     struct xls_dslx_import_data* import_data, char** error_out,
     struct xls_dslx_typechecked_module** result_out);
 
+XLS_DLL_EXPORT
 void xls_dslx_typechecked_module_free(struct xls_dslx_typechecked_module* tm);
 
+XLS_DLL_EXPORT
 struct xls_dslx_module* xls_dslx_typechecked_module_get_module(
     struct xls_dslx_typechecked_module*);
+XLS_DLL_EXPORT
 struct xls_dslx_type_info* xls_dslx_typechecked_module_get_type_info(
     struct xls_dslx_typechecked_module*);
 
+XLS_DLL_EXPORT
 int64_t xls_dslx_module_get_type_definition_count(
     struct xls_dslx_module* module);
 
+XLS_DLL_EXPORT
 xls_dslx_type_definition_kind xls_dslx_module_get_type_definition_kind(
     struct xls_dslx_module* module, int64_t i);
 
+XLS_DLL_EXPORT
 struct xls_dslx_struct_def* xls_dslx_module_get_type_definition_as_struct_def(
     struct xls_dslx_module* module, int64_t i);
 
+XLS_DLL_EXPORT
 struct xls_dslx_enum_def* xls_dslx_module_get_type_definition_as_enum_def(
     struct xls_dslx_module* module, int64_t i);
 
+XLS_DLL_EXPORT
 struct xls_dslx_type_alias* xls_dslx_module_get_type_definition_as_type_alias(
     struct xls_dslx_module* module, int64_t i);
 
@@ -88,41 +103,54 @@ struct xls_dslx_type_alias* xls_dslx_module_get_type_definition_as_type_alias(
 
 // Note: the return value is owned by the caller and must be freed via
 // `xls_c_str_free`.
+XLS_DLL_EXPORT
 char* xls_dslx_struct_def_get_identifier(struct xls_dslx_struct_def*);
 
+XLS_DLL_EXPORT
 bool xls_dslx_struct_def_is_parametric(struct xls_dslx_struct_def*);
+XLS_DLL_EXPORT
 int64_t xls_dslx_struct_def_get_member_count(struct xls_dslx_struct_def*);
 
+XLS_DLL_EXPORT
 struct xls_dslx_struct_member* xls_dslx_struct_def_get_member(
     struct xls_dslx_struct_def*, int64_t);
 
 // Note: return value is owned by the caller, free via `xls_c_str_free`.
+XLS_DLL_EXPORT
 char* xls_dslx_struct_member_get_name(struct xls_dslx_struct_member*);
 
+XLS_DLL_EXPORT
 struct xls_dslx_type_annotation* xls_dslx_struct_member_get_type(
     struct xls_dslx_struct_member*);
 
 // -- enum_def
 
+XLS_DLL_EXPORT
 char* xls_dslx_enum_def_get_identifier(struct xls_dslx_enum_def*);
 
+XLS_DLL_EXPORT
 int64_t xls_dslx_enum_def_get_member_count(struct xls_dslx_enum_def*);
 
+XLS_DLL_EXPORT
 struct xls_dslx_enum_member* xls_dslx_enum_def_get_member(
     struct xls_dslx_enum_def*, int64_t);
 
 // Note: return value is owned by the caller, free via `xls_c_str_free`.
+XLS_DLL_EXPORT
 char* xls_dslx_enum_member_get_name(struct xls_dslx_enum_member*);
 
+XLS_DLL_EXPORT
 struct xls_dslx_expr* xls_dslx_enum_member_get_value(
     struct xls_dslx_enum_member*);
 
 // -- interp_value
 
+XLS_DLL_EXPORT
 bool xls_dslx_interp_value_convert_to_ir(struct xls_dslx_interp_value* v,
                                          char** error_out,
                                          struct xls_value** result_out);
 
+XLS_DLL_EXPORT
 void xls_dslx_interp_value_free(struct xls_dslx_interp_value*);
 
 // -- type_info
@@ -131,21 +159,26 @@ void xls_dslx_interp_value_free(struct xls_dslx_interp_value*);
 // may return null; however, if type checking has completed successfully this
 // should not occur in practice.
 
+XLS_DLL_EXPORT
 const struct xls_dslx_type* xls_dslx_type_info_get_type_struct_def(
     struct xls_dslx_type_info*, struct xls_dslx_struct_def*);
 
+XLS_DLL_EXPORT
 const struct xls_dslx_type* xls_dslx_type_info_get_type_enum_def(
     struct xls_dslx_type_info*, struct xls_dslx_enum_def*);
 
+XLS_DLL_EXPORT
 const struct xls_dslx_type* xls_dslx_type_info_get_type_type_annotation(
     struct xls_dslx_type_info*, struct xls_dslx_type_annotation*);
 
 // Note: the outparam is owned by the caller and must be freed via
 // `xls_dslx_interp_value_free`.
+XLS_DLL_EXPORT
 bool xls_dslx_type_info_get_const_expr(
     struct xls_dslx_type_info* type_info, struct xls_dslx_expr* expr,
     char** error_out, struct xls_dslx_interp_value** result_out);
 
+XLS_DLL_EXPORT
 bool xls_dslx_type_get_total_bit_count(const struct xls_dslx_type*,
                                        char** error_out, int64_t* result_out);
 
