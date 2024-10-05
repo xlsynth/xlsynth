@@ -282,10 +282,23 @@ cc_binary(
     }),
 )
 
+# This allows export of all symbols that start with `xls_`
 filegroup(
     name = "exported_symbols_map",
     srcs = ["exported_symbols.map"],
 )
+
+py_test(
+    name = "test_c_api_symbols",
+    srcs = ["test_c_api_symbols.py"],
+    data = [
+        "c_api_symbols.txt",
+        ":c_api",
+        ":c_api_dslx",
+        ":c_api_vast",
+    ],
+)
+
 
 # We have to note that all these symbols, though unused, should be
 # included/exposed in the resulting artifact's symbol set.
