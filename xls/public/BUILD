@@ -247,34 +247,19 @@ cc_test(
 
 cc_binary(
     name = "libxls.dylib",
-    srcs = ["c_api.cc", "c_api.h"],
     linkshared = True,
     deps = [
-        ":c_api_dslx",
-        ":c_api_format_preference",
-        ":c_api_impl_helpers",
-        ":c_api_vast",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings:str_format",
-        ":runtime_build_actions",
-        "//xls/codegen/vast",
-        "//xls/common:init_xls",
-        "//xls/interpreter:ir_interpreter",
-        "//xls/ir",
-        "//xls/ir:bits",
-        "//xls/ir:events",
-        "//xls/ir:format_preference",
-        "//xls/ir:ir_parser",
-        "//xls/ir:source_location",
-        "//xls/ir:type",
-        "//xls/ir:value",
+        ":c_api",
     ],
     copts = [
-        "-fvisibility=hidden",
         "-fno-exceptions",
+    ],
+    linkopts = [
+        "@$(location :generate_linker_params_underscores)",
+    ],
+    additional_linker_inputs = [
+        ":exported_symbols_map",
+        ":generate_linker_params_underscores",
     ],
     target_compatible_with = select({
         "@platforms//os:osx": [],
@@ -299,7 +284,6 @@ py_test(
     ],
 )
 
-
 # We have to note that all these symbols, though unused, should be
 # included/exposed in the resulting artifact's symbol set.
 genrule(
@@ -307,6 +291,14 @@ genrule(
     srcs = ["c_api_symbols.txt"],
     outs = ["dso_linker_params.txt"],
     cmd = "sed 's|^|-Wl,-u,|' $(location c_api_symbols.txt) > $@",
+)
+
+# As above, but with leading underscores for OS X.
+genrule(
+    name = "generate_linker_params_underscores",
+    srcs = ["c_api_symbols.txt"],
+    outs = ["dso_linker_params_underscores.txt"],
+    cmd = "sed 's|^|-Wl,-u,_|' $(location c_api_symbols.txt) > $@",
 )
 
 cc_binary(

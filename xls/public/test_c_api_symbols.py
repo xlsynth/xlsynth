@@ -36,6 +36,8 @@ class TestCApiSymbols(unittest.TestCase):
                     symbol = parts[2]
                     if symbol.startswith('xls_'):
                         actual_symbols.add(symbol)
+                    elif symbol.startswith('_xls_'):
+                        actual_symbols.add(symbol[1:])
 
         # Compare the symbols
         self.assertEqual(expected_symbols, actual_symbols, "Mismatch between c_api_symbols.txt and symbols extracted from .a files.")
