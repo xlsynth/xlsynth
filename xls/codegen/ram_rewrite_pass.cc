@@ -345,8 +345,8 @@ absl::Status Ram1RWUpdateSignature(
            req_wr_mask_port,
            req_rd_mask_port,
        }) {
-    if (port->operand(0)->GetType()->GetFlatBitCount() > 0) {
-      builder.AddDataOutput(port->name(), port->operand(0)->GetType());
+    if (port->output_type()->GetFlatBitCount() > 0) {
+      builder.AddDataOutput(port->name(), port->output_type());
     }
   }
   for (const xls::InputPort* port : {resp_rd_data_port}) {
@@ -357,11 +357,11 @@ absl::Status Ram1RWUpdateSignature(
 
   builder.AddRam1RW({
       .package = package,
-      .data_type = req_wr_data_port->GetType(),
+      .data_type = req_wr_data_port->output_type(),
       .ram_name = ram_name,
       .req_name = ram_config.rw_port_configuration().request_channel_name,
       .resp_name = ram_config.rw_port_configuration().response_channel_name,
-      .address_width = req_addr_port->GetType()->GetFlatBitCount(),
+      .address_width = req_addr_port->output_type()->GetFlatBitCount(),
       .read_mask_width = req_rd_mask_port->GetType()->GetFlatBitCount(),
       .write_mask_width = req_wr_mask_port->GetType()->GetFlatBitCount(),
       .address_name = req_addr_port->GetName(),
@@ -390,7 +390,7 @@ absl::StatusOr<bool> Ram1RWRewrite(
 
   // req is (addr, wr_data, we, re)
   XLS_RETURN_IF_ERROR(CheckDataPortType(
-      rw_block_ports.req_ports.req_data->operand(0)->GetType(), "Request",
+      rw_block_ports.req_ports.req_data->output_type(), "Request",
       {TypeKind::kBits, std::nullopt, std::nullopt, std::nullopt,
        TypeKind::kBits, TypeKind::kBits},
       {"addr", "wr_data", "wr_mask", "rd_mask", "we", "re"}));
@@ -490,12 +490,22 @@ absl::StatusOr<bool> Ram1RWRewrite(
   // Make a new response port with a new name.
   std::string resp_rd_data_name =
       block->UniquifyNodeName(absl::StrCat(ram_name, "_rd_data"));
+  // Make the actual input port. Destructure the response type. (NB The bits are
+  // identical but other parts expect the wr_data and rd_data ports to have the
+  // same type).
+  XLS_ASSIGN_OR_RETURN(
+      TupleType * orig_port_type,
+      rw_block_ports.resp_ports.resp_data->GetType()->AsTuple());
+  XLS_RET_CHECK_EQ(orig_port_type->size(), 1)
+      << "Unexpected extra elements in ram rd_data port type "
+      << orig_port_type;
   XLS_ASSIGN_OR_RETURN(
       InputPort * resp_rd_data_port,
-      block->AddInputPort(resp_rd_data_name,
-                          rw_block_ports.resp_ports.resp_data->GetType()));
-  XLS_RETURN_IF_ERROR(
-      rw_block_ports.resp_ports.resp_data->ReplaceUsesWith(resp_rd_data_port));
+      block->AddInputPort(resp_rd_data_name, orig_port_type->element_type(0)));
+  XLS_RETURN_IF_ERROR(rw_block_ports.resp_ports.resp_data
+                          ->ReplaceUsesWithNew<Tuple>(
+                              absl::Span<Node* const>{resp_rd_data_port})
+                          .status());
 
   // Add buffer before resp_ready
   std::string resp_ready_port_buf_name = absl::StrFormat(
@@ -590,7 +600,7 @@ absl::StatusOr<bool> Ram1R1WRewrite(
 
   // rd_req is (rd_addr, rd_mask)
   XLS_RETURN_IF_ERROR(CheckDataPortType(
-      r_block_ports.req_ports.req_data->operand(0)->GetType(), "rd_req",
+      r_block_ports.req_ports.req_data->output_type(), "rd_req",
       {TypeKind::kBits, std::nullopt}, {"rd_addr", "rd_mask"}));
   // rd_resp is (rd_data)
   XLS_RETURN_IF_ERROR(
@@ -598,7 +608,7 @@ absl::StatusOr<bool> Ram1R1WRewrite(
                         "rd_resp", {std::nullopt}, {"rd_data"}));
   // wr_req is (wr_addr, wr_data, wr_mask)
   XLS_RETURN_IF_ERROR(
-      CheckDataPortType(w_block_ports.req_ports.req_data->operand(0)->GetType(),
+      CheckDataPortType(w_block_ports.req_ports.req_data->output_type(),
                         "wr_req", {TypeKind::kBits, std::nullopt, std::nullopt},
                         {"wr_addr", "wr_data", "wr_mask"}));
 
@@ -805,15 +815,15 @@ absl::StatusOr<bool> Ram1R1WRewrite(
 
       builder.AddRam1R1W({
           .package = unit->package,
-          .data_type = rd_data->GetType(),
+          .data_type = rd_data_port->GetType(),
           .ram_name = ram_name,
           .rd_req_name = ram_config.r_port_configuration().request_channel_name,
           .rd_resp_name =
               ram_config.r_port_configuration().response_channel_name,
           .wr_req_name = ram_config.w_port_configuration().request_channel_name,
-          .address_width = rd_addr_port->GetType()->GetFlatBitCount(),
-          .read_mask_width = rd_mask_port->GetType()->GetFlatBitCount(),
-          .write_mask_width = wr_mask_port->GetType()->GetFlatBitCount(),
+          .address_width = rd_addr_port->output_type()->GetFlatBitCount(),
+          .read_mask_width = rd_mask_port->output_type()->GetFlatBitCount(),
+          .write_mask_width = wr_mask_port->output_type()->GetFlatBitCount(),
           .read_address_name = rd_addr_port->GetName(),
           .read_data_name = rd_data_port->GetName(),
           .read_mask_name = rd_mask_port->GetName(),

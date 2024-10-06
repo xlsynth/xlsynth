@@ -136,13 +136,18 @@ class AstNodeVisitor {
 
 // Subtype of abstract AstNodeVisitor that returns ok status (does nothing) for
 // every node type.
+//
+// Users can override the default behavior by overriding the DefaultHandler()
+// method.
 class AstNodeVisitorWithDefault : public AstNodeVisitor {
  public:
   ~AstNodeVisitorWithDefault() override = default;
 
+  virtual absl::Status DefaultHandler() { return absl::OkStatus(); }
+
 #define DECLARE_HANDLER(__type)                           \
   absl::Status Handle##__type(const __type* n) override { \
-    return absl::OkStatus();                              \
+    return DefaultHandler();                              \
   }
   XLS_DSLX_AST_NODE_EACH(DECLARE_HANDLER)
 #undef DECLARE_HANDLER
@@ -1656,6 +1661,7 @@ class Function : public AstNode {
     return parametric_bindings_;
   }
   const std::vector<Param*>& params() const { return params_; }
+  absl::StatusOr<Param*> GetParamByName(std::string_view param_name) const;
 
   // The body of the function is a block (sequence of statements that yields a
   // final expression).
@@ -2314,7 +2320,8 @@ class StructDef : public AstNode {
 // Represents an impl for a struct.
 class Impl : public AstNode {
  public:
-  Impl(Module* owner, Span span, TypeAnnotation* struct_ref, bool is_public);
+  Impl(Module* owner, Span span, TypeAnnotation* struct_ref,
+       const std::vector<ConstantDef*> constants, bool is_public);
 
   ~Impl() override;
 
@@ -2326,6 +2333,9 @@ class Impl : public AstNode {
 
   std::string_view GetNodeTypeName() const override { return "Impl"; }
 
+  // An AST node that refers to the struct being implemented.
+  TypeAnnotation* struct_ref() const { return struct_ref_; }
+
   std::string ToString() const override;
 
   std::vector<AstNode*> GetChildren(bool want_types) const override {
@@ -2336,9 +2346,12 @@ class Impl : public AstNode {
   const Span& span() const { return span_; }
   std::optional<Span> GetSpan() const override { return span_; }
 
+  const std::vector<ConstantDef*>& constants() const { return constants_; }
+
  private:
   Span span_;
   TypeAnnotation* struct_ref_;
+  std::vector<ConstantDef*> constants_;
   bool public_;
 };
 

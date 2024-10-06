@@ -37,8 +37,8 @@
 #include "llvm/include/llvm/ADT/StringExtras.h"
 #include "llvm/include/llvm/ADT/StringMap.h"
 #include "llvm/include/llvm/ADT/StringRef.h"
-#include "llvm/include/llvm/ADT/TypeSwitch.h"
 #include "llvm/include/llvm/ADT/Twine.h"
+#include "llvm/include/llvm/ADT/TypeSwitch.h"
 #include "llvm/include/llvm/Support/Casting.h"  // IWYU pragma: keep
 #include "llvm/include/llvm/Support/LogicalResult.h"
 #include "llvm/include/llvm/Support/raw_ostream.h"
@@ -54,9 +54,11 @@
 #include "mlir/include/mlir/IR/Types.h"
 #include "mlir/include/mlir/IR/Value.h"
 #include "mlir/include/mlir/IR/Visitors.h"
+#include "mlir/include/mlir/Pass/PassManager.h"
 #include "mlir/include/mlir/Support/DebugStringHelper.h"
 #include "mlir/include/mlir/Support/LLVM.h"
 #include "mlir/include/mlir/Support/LogicalResult.h"
+#include "mlir/include/mlir/Transforms/Passes.h"
 #include "xls/common/file/filesystem.h"
 #include "xls/common/file/get_runfile_path.h"
 #include "xls/contrib/mlir/IR/xls_ops.h"
@@ -977,8 +979,17 @@ FailureOr<BValue> convertFunction(TranslationState& translation_state,
             // Debugging ops
             TraceOp>(
             [&](auto t) { return convertOp(t, translation_state, fb); })
-        .Case<mlir::func::ReturnOp, YieldOp>(
-            [&](auto ret) { return out = value_map[ret.getOperand(0)]; })
+        .Case<mlir::func::ReturnOp, YieldOp>([&](auto ret) {
+          if (ret.getNumOperands() == 1) {
+            return out = value_map[ret.getOperand(0)];
+          }
+          std::vector<BValue> operands;
+          operands.reserve(ret.getNumOperands());
+          for (auto operand : ret.getOperands()) {
+            operands.push_back(value_map[operand]);
+          }
+          return out = fb.Tuple(operands);
+        })
         .Case<CallDslxOp>([&](CallDslxOp call) {
           llvm::errs() << "Call remaining, call pass normalize-xls-calls "
                           "before translation\n";
@@ -1180,6 +1191,18 @@ LogicalResult setTop(Operation* op, std::string_view name, Package* package) {
 
 LogicalResult MlirXlsToXlsTranslate(Operation* op, llvm::raw_ostream& output,
                                     MlirXlsToXlsTranslateOptions options) {
+  if (!options.main_function.empty() && options.privatize_and_dce_functions) {
+    op->walk([&](FuncOp func) {
+      if (func.isPrivate() || func.getName() == options.main_function) return;
+      func.setPrivate();
+    });
+    mlir::PassManager pm(op->getContext());
+    pm.addPass(mlir::createSymbolDCEPass());
+    if (pm.run(op).failed()) {
+      return op->emitError("Failed to run SymbolDCE pass");
+    }
+  }
+
   auto package = mlirXlsToXls(op, options.dslx_search_path);
   if (failed(package) ||
       failed(setTop(op, options.main_function, package->get())))

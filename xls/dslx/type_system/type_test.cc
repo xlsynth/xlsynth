@@ -184,6 +184,7 @@ TEST(TypeTest, TestU32) {
   EXPECT_EQ(std::vector<TypeDim>{TypeDim::CreateU32(32)}, t.GetAllDims());
   EXPECT_EQ(t, *t.ToUBits());
   EXPECT_TRUE(IsUBits(t));
+  EXPECT_FALSE(t.IsTuple());
 }
 
 TEST(TypeTest, TestUnit) {
@@ -193,7 +194,21 @@ TEST(TypeTest, TestUnit) {
   EXPECT_EQ("tuple", t.GetDebugTypeName());
   EXPECT_EQ(false, t.HasEnum());
   EXPECT_TRUE(t.GetAllDims().empty());
+  EXPECT_TRUE(t.IsTuple());
   EXPECT_FALSE(IsUBits(t));
+
+  Type* generic_type = &t;
+  EXPECT_TRUE(generic_type->IsTuple());
+  EXPECT_EQ(&generic_type->AsTuple(), &t);
+}
+
+TEST(TypeTest, TestMetaUnit) {
+  MetaType meta_t(std::make_unique<BitsType>(false, 32));
+  EXPECT_TRUE(meta_t.IsMeta());
+
+  Type* generic_type = &meta_t;
+  EXPECT_FALSE(generic_type->IsTuple());
+  EXPECT_EQ(&generic_type->AsMeta(), &meta_t);
 }
 
 TEST(TypeTest, TestTwoTupleOfStruct) {
@@ -327,26 +342,29 @@ TEST(TypeTest, StructTypeNominalTypeDims) {
                            Pair("N", TypeDim(InterpValue::MakeU32(6)))));
 }
 
-TEST(TypeTest, StructTypeAddNominalTypeDimsIncrementally) {
+TEST(TypeTest, StructTypeResolveNominalTypeDims) {
   FileTable file_table;
   Module module("test", /*fs_path=*/std::nullopt, file_table);
   StructType s = CreateSimpleParametricStruct(module);
   EXPECT_THAT(s.nominal_type_dims_by_identifier(), IsEmpty());
 
   absl::flat_hash_map<std::string, TypeDim> nominal_dims = {
-      {"M", TypeDim(InterpValue::MakeU32(5))}};
+      {"M", TypeDim(InterpValue::MakeU32(5))},
+      {"N", TypeDim(std::make_unique<ParametricSymbol>("X", Span::Fake()))}};
   std::unique_ptr<Type> type_with_m_specified =
       s.AddNominalTypeDims(nominal_dims);
   EXPECT_THAT(
       type_with_m_specified->AsStruct().nominal_type_dims_by_identifier(),
-      UnorderedElementsAre(Pair("M", TypeDim(InterpValue::MakeU32(5)))));
+      UnorderedElementsAre(Pair("M", TypeDim(InterpValue::MakeU32(5))),
+                           Pair("N", TypeDim(std::make_unique<ParametricSymbol>(
+                                         "X", Span::Fake())))));
 
-  // Setting `M` back to a symbol should be ignored.
-  absl::flat_hash_map<std::string, TypeDim> new_dims = {
-      {"M", TypeDim(std::make_unique<ParametricSymbol>("M", Span::Fake()))},
-      {"N", TypeDim(InterpValue::MakeU32(6))}};
+  TypeDimMap new_dims;
+  new_dims.Insert(
+      "M", TypeDim(std::make_unique<ParametricSymbol>("M", Span::Fake())));
+  new_dims.Insert("X", TypeDim(InterpValue::MakeU32(6)));
   std::unique_ptr<Type> type_with_n_specified =
-      type_with_m_specified->AddNominalTypeDims(new_dims);
+      type_with_m_specified->ResolveNominalTypeDims(new_dims.env());
   EXPECT_THAT(
       type_with_n_specified->AsStruct().nominal_type_dims_by_identifier(),
       UnorderedElementsAre(Pair("M", TypeDim(InterpValue::MakeU32(5))),

@@ -50,21 +50,24 @@ func.func @and(%arg0: tensor<3x3xi32>, %arg1: tensor<3x3xi32>) -> tensor<3x3xi32
 }
 
 // CHECK-LABEL: addf
-// CHECK: call @f32lib_add
+// CHECK: call_dslx
+// CHECK-SAME: "add"
 func.func @addf(%arg0: tensor<3x3xf32>, %arg1: tensor<3x3xf32>) -> tensor<3x3xf32> attributes { "xls" = true } {
   %0 = arith.addf %arg0, %arg1 : tensor<3x3xf32>
   return %0 : tensor<3x3xf32>
 }
 
 // CHECK-LABEL: subf
-// CHECK: vectorized_call @f32lib_sub
+// CHECK: call_dslx
+// CHECK-SAME: "sub"
 func.func @subf(%arg0: tensor<3x3xf32>, %arg1: tensor<3x3xf32>) -> tensor<3x3xf32> attributes { "xls" = true } {
   %0 = arith.subf %arg0, %arg1 : tensor<3x3xf32>
   return %0 : tensor<3x3xf32>
 }
 
 // CHECK-LABEL: mulf
-// CHECK: vectorized_call @f32lib_mul
+// CHECK: call_dslx
+// CHECK-SAME: "mul"
 func.func @mulf(%arg0: tensor<3x3xf32>, %arg1: tensor<3x3xf32>) -> tensor<3x3xf32> attributes { "xls" = true } {
   %0 = arith.mulf %arg0, %arg1 : tensor<3x3xf32>
   return %0 : tensor<3x3xf32>
@@ -72,14 +75,16 @@ func.func @mulf(%arg0: tensor<3x3xf32>, %arg1: tensor<3x3xf32>) -> tensor<3x3xf3
 
 // TODO(jmolloy): Should be calling "div" but div doesn't exist yet.
 // CHECK-LABEL: divf
-// CHECK: vectorized_call @f32lib_add
+// CHECK: call_dslx
+// CHECK-SAME: "add"
 func.func @divf(%arg0: tensor<3x3xf32>, %arg1: tensor<3x3xf32>) -> tensor<3x3xf32> attributes { "xls" = true } {
   %0 = arith.divf %arg0, %arg1 : tensor<3x3xf32>
   return %0 : tensor<3x3xf32>
 }
 
 // CHECK-LABEL: maxf
-// CHECK: vectorized_call @f32lib_gt_2
+// CHECK: call_dslx
+// CHECK-SAME: "gt_2"
 // CHECK: xls.sel
 func.func @maxf(%arg0: tensor<3x3xf32>, %arg1: tensor<3x3xf32>) -> tensor<3x3xf32> attributes { "xls" = true } {
   %0 = arith.maximumf %arg0, %arg1 : tensor<3x3xf32>
@@ -87,7 +92,8 @@ func.func @maxf(%arg0: tensor<3x3xf32>, %arg1: tensor<3x3xf32>) -> tensor<3x3xf3
 }
 
 // CHECK-LABEL: minf
-// CHECK: vectorized_call @f32lib_lt_2
+// CHECK: call_dslx
+// CHECK-SAME: "lt_2"
 // CHECK: xls.sel
 func.func @minf(%arg0: tensor<3x3xf32>, %arg1: tensor<3x3xf32>) -> tensor<3x3xf32> attributes { "xls" = true } {
   %0 = arith.minimumf %arg0, %arg1 : tensor<3x3xf32>
@@ -104,14 +110,16 @@ func.func @ext(%arg0: i32) -> (i64, i64) attributes { "xls" = true } {
 }
 
 // CHECK-LABEL: @extf(
-// CHECK: xls.vectorized_call @ext_trunclib_ext
-func.func @extf(%arg0: bf16) -> f32 attributes { "xls" = true } {
-  %0 = arith.extf %arg0 : bf16 to f32
-  return %0 : f32
+// CHECK: call_dslx
+// CHECK-SAME: "ext"
+func.func @extf(%arg0: tensor<3x3xbf16>) -> tensor<3x3xf32> attributes { "xls" = true } {
+  %0 = arith.extf %arg0 : tensor<3x3xbf16> to tensor<3x3xf32>
+  return %0 : tensor<3x3xf32>
 }
 
 // CHECK-LABEL: @truncf(
-// CHECK: xls.vectorized_call @ext_trunclib_trunc
+// CHECK: call_dslx
+// CHECK-SAME: "trunc"
 func.func @truncf(%arg0: f32) -> bf16 attributes { "xls" = true } {
   %0 = arith.truncf %arg0 : f32 to bf16
   return %0 : bf16
@@ -122,4 +130,69 @@ func.func @truncf(%arg0: f32) -> bf16 attributes { "xls" = true } {
 func.func @trunci(%arg0: i32) -> i16 attributes { "xls" = true } {
   %0 = arith.trunci %arg0 : i32 to i16
   return %0 : i16
+}
+
+// CHECK-LABEL: @sitofp32
+// CHECK: xls.call_dslx
+// CHECK-SAME: from_int32
+// CHECK-SAME: (i32) -> f32
+func.func @sitofp32(%arg0: i32) -> f32 attributes { "xls" = true } {
+  %0 = arith.sitofp %arg0 : i32 to f32
+  return %0 : f32
+}
+
+// CHECK-LABEL: @sitofp16
+// CHECK: xls.call_dslx
+// CHECK-SAME: from_int8
+// CHECK-SAME: (i8) -> bf16
+func.func @sitofp16(%arg0: i8) -> bf16 attributes { "xls" = true } {
+  %0 = arith.sitofp %arg0 : i8 to bf16
+  return %0 : bf16
+}
+
+// CHECK-LABEL: @eq
+// CHECK:  xls.call_dslx
+// CHECK-SAME: eq_2
+// CHECK-SAME: (f32, f32) -> i1
+func.func @eq(%arg0: f32, %arg1: f32) -> i1 attributes { "xls" = true } {
+  %0 = arith.cmpf oeq, %arg0, %arg1 : f32
+  return %0 : i1
+}
+
+// CHECK-LABEL: @uno
+// CHECK: xls.call_dslx
+// CHECK-SAME: add
+// CHECK: xls.call_dslx
+// CHECK-SAME: is_nan
+func.func @uno(%arg0: f32, %arg1: f32) -> i1 attributes { "xls" = true } {
+  %0 = arith.cmpf uno, %arg0, %arg1 : f32
+  return %0 : i1
+}
+
+// CHECK-LABEL: @fptosi32
+// CHECK: xls.call_dslx
+// CHECK-SAME: to_int32
+// CHECK-SAME: (f32) -> i32
+func.func @fptosi32(%arg0: f32) -> i32 attributes { "xls" = true } {
+  %0 = arith.fptosi %arg0 : f32 to i32
+  return %0 : i32
+}
+
+// CHECK-LABEL: @fptosi16
+// CHECK: xls.call_dslx
+// CHECK-SAME: to_int16
+// CHECK-SAME: (bf16) -> i16
+func.func @fptosi16(%arg0: bf16) -> i16 attributes { "xls" = true } {
+  %0 = arith.fptosi %arg0 : bf16 to i16
+  return %0 : i16
+}
+
+// CHECK-LABEL: @fptosi8
+// CHECK: xls.call_dslx
+// CHECK-SAME: to_int16
+// CHECK-SAME: (bf16) -> i16
+// CHECK-NEXT: xls.bit_slice %0 {start = 0 : i64, width = 8 : i64} : (i16) -> i8
+func.func @fptosi8(%arg0: bf16) -> i8 attributes { "xls" = true } {
+  %0 = arith.fptosi %arg0 : bf16 to i8
+  return %0 : i8
 }

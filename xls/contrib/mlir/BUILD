@@ -299,6 +299,7 @@ cc_library(
         ":mlir_xls",
         ":xls_transforms_passes_inc_gen",
         "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:MathDialect",
         "@llvm-project//mlir:Pass",
@@ -463,7 +464,6 @@ cc_library(
     hdrs = ["tools/xls_translate/xls_translate.h"],
     deps = [
         ":mlir_xls",
-        ":xls_dialect_registration",
         "//xls/common/file:filesystem",
         "//xls/common/file:get_runfile_path",
         "//xls/public:c_api",
@@ -487,6 +487,7 @@ cc_library(
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TensorDialect",
+        "@llvm-project//mlir:Transforms",
         "@llvm-project//mlir:TranslateLib",
     ],
 )

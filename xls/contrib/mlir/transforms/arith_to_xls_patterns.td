@@ -4,6 +4,14 @@ include "mlir/Dialect/Func/IR/FuncOps.td"
 include "mlir/Dialect/Math/IR/MathOps.td"
 include "mlir/IR/PatternBase.td"
 
+def FloatLib : NativeCodeCall<"getFloatLib($0.getType())">;
+
+// Shorthand for a constant string attribute.
+class CS<string s> : ConstantStrAttr<StrAttr, s>;
+
+class ScalarOrTensorOf<Type element> :
+    AnyTypeOf<[element, TensorOf<[element]>]>;
+
 class BinaryOpPat<Arith_Op a, Xls_Op b> : Pat<(a $a, $b), (b $a, $b)>;
 class BinaryOpOverflowPat<Arith_Op a, Xls_Op b> : Pat<(a $a, $b, $_), (b $a, $b)>;
 class BinaryVariadicOpPat<Arith_Op a, Xls_Op b> : Pat<(a $a, $b), (b (variadic $a, $b))>;
@@ -39,6 +47,26 @@ def : CmpPat<"uge", Xls_UgeOp>;
 def : CmpPat<"ugt", Xls_UgtOp>;
 def : CmpPat<"ule", Xls_UleOp>;
 def : CmpPat<"ult", Xls_UltOp>;
+
+class FCmpPat<string s, dag target> :
+    Pat<(Arith_CmpFOp:$op ConstantEnumCase<Arith_CmpFPredicateAttr, s>, $lhs, $rhs, $fmf),
+        target>;
+
+def : FCmpPat<"oeq", (Xls_CallDslxOp (FloatLib $lhs), CS<"eq_2">,
+                                     (variadic $lhs, $rhs), ConstUnitAttr)>;
+def : FCmpPat<"ogt", (Xls_CallDslxOp (FloatLib $lhs), CS<"gt_2">,
+                                     (variadic $lhs, $rhs), ConstUnitAttr)>;
+def : FCmpPat<"oge", (Xls_CallDslxOp (FloatLib $lhs), CS<"gte_2">,
+                                     (variadic $lhs, $rhs), ConstUnitAttr)>;
+def : FCmpPat<"olt", (Xls_CallDslxOp (FloatLib $lhs), CS<"lt_2">,
+                                     (variadic $lhs, $rhs), ConstUnitAttr)>;
+def : FCmpPat<"ole", (Xls_CallDslxOp (FloatLib $lhs), CS<"lte_2">,
+                                     (variadic $lhs, $rhs), ConstUnitAttr)>;
+
+// Define unordered(x, y) = is_nan(x + y)
+def : FCmpPat<"uno", (Xls_CallDslxOp (FloatLib $lhs), CS<"is_nan">,
+                                     (variadic (Arith_AddFOp $lhs, $rhs, $fmf)),
+                                     ConstUnitAttr)>;
 
 def : BinaryOpOverflowPat<Arith_ShLIOp, Xls_ShllOp>;
 def : BinaryOpPat<Arith_ShRUIOp, Xls_ShrlOp>;
@@ -86,37 +114,47 @@ def : Pat<(Arith_ConstantOp NonIndexElementsAttr:$val),
 def : Pat<(Arith_ConstantOp NonIndexAttr:$val),
           (Xls_ConstantScalarOp $val)>;
 
-def FloatLibcallSymbol :
-    NativeCodeCall<"getOrCreateFloatLibcallSymbol($_builder, $0, $1)">;
-def FloatLibcallSymbolReturningBool :
-    NativeCodeCall<"getOrCreateFloatLibcallSymbol($_builder, $0, $1, true)">;
-def FloatLibcallSymbol_ExtTrunc :
-    NativeCodeCall<"getOrCreateFloatLibcallSymbol($_builder, $0, $1, false, true)">;
+// The extension and truncation library.
+defvar ExtLib = CS<"xls/contrib/mlir/stdlib/fp_ext_trunc.x">;
 
-def FirstResult : NativeCodeCall<"$0->getResult(0)">;
-
+// Emits a binary float library call.
 class FloatLibcall<Op Op, string Name> :
     Pat<(Op:$op $a, $b, /*FastMathFlags=*/$_),
-          (FirstResult
-            (VectorizedCallOp
-              (FloatLibcallSymbol ConstantStrAttr<StrAttr, Name>, $op),
-              (variadic $a, $b)))>;
+        (Xls_CallDslxOp (FloatLib $a), CS<Name>, (variadic $a, $b), ConstUnitAttr)>;
 
 def : FloatLibcall<Arith_AddFOp, "add">;
 def : FloatLibcall<Arith_MulFOp, "mul">;
 def : FloatLibcall<Arith_SubFOp, "sub">;
 
 def : Pat<(Arith_ExtFOp:$op $a, /*FastMathFlags=*/$_),
-          (FirstResult
-            (VectorizedCallOp
-              (FloatLibcallSymbol_ExtTrunc ConstantStrAttr<StrAttr, "ext">, $op),
-              (variadic $a)))>;
+          (Xls_CallDslxOp ExtLib, CS<"ext">, (variadic $a), ConstUnitAttr)>;
 
 def : Pat<(Arith_TruncFOp:$op $a, /*RoundingMode=*/$_, /*FastMathFlags=*/$_),
-          (FirstResult
-            (VectorizedCallOp
-              (FloatLibcallSymbol_ExtTrunc ConstantStrAttr<StrAttr, "trunc">, $op),
-              (variadic $a)))>;
+          (Xls_CallDslxOp ExtLib, CS<"trunc">, (variadic $a), ConstUnitAttr)>;
+
+def : Pat<(Arith_SIToFPOp:$op I32:$a),
+          (Xls_CallDslxOp (FloatLib $op), CS<"from_int32">, (variadic $a), ConstUnitAttr),
+          [(ScalarOrTensorOf<F32> $op)]>;
+
+def : Pat<(Arith_SIToFPOp:$op I8:$a),
+          (Xls_CallDslxOp (FloatLib $op), CS<"from_int8">, (variadic $a), ConstUnitAttr),
+          [(ScalarOrTensorOf<BF16> $op)]>;
+
+def : Pat<(Arith_FPToSIOp:$op F32:$a),
+          (Xls_CallDslxOp (FloatLib $a), CS<"to_int32">, (variadic $a), ConstUnitAttr),
+          [(ScalarOrTensorOf<I32> $op)]>;
+
+def : Pat<(Arith_FPToSIOp:$op BF16:$a),
+          (Xls_CallDslxOp (FloatLib $a), CS<"to_int16">, (variadic $a), ConstUnitAttr),
+          [(ScalarOrTensorOf<I16> $op)]>;
+
+// TODO(jmolloy): to_int8 doesn't exist, so truncating the result of to_int16
+// seems like a reasonable approximation but I don't know if it's bit accurate.
+def : Pat<(Arith_FPToSIOp:$op BF16:$a),
+          (Arith_TruncIOp
+            (Xls_CallDslxOp (FloatLib $a), CS<"to_int16">, (variadic $a),
+                            ConstUnitAttr, (returnType "$_builder.getI16Type()"))),
+          [(ScalarOrTensorOf<I8> $op)]>;
 
 // The expansion is a little tricky to read due to the one-hot select with the
 // default case being the first argument.
@@ -129,10 +167,7 @@ class MinMaxPatBase<dag Matcher, dag Predicate> : Pat<
 
 class FPMinMaxPat<Op Op, string Name> : MinMaxPatBase<
   (Op:$op $a, $b, /*FastMathFlags=*/$_),
-  (FirstResult
-    (VectorizedCallOp
-      (FloatLibcallSymbolReturningBool ConstantStrAttr<StrAttr, Name>, $op),
-      (variadic $a, $b)))>;
+  (Xls_CallDslxOp (FloatLib $a), CS<Name>, (variadic $a, $b), ConstUnitAttr, (returnType $op))>;
 
 def : FPMinMaxPat<Arith_MaximumFOp, "gt_2">;
 def : FPMinMaxPat<Arith_MinimumFOp, "lt_2">;
@@ -142,8 +177,10 @@ def : MinMaxPatBase<(Arith_MinSIOp:$op $a, $b), (Xls_SltOp $a, $b)>;
 def : MinMaxPatBase<(Arith_MaxUIOp:$op $a, $b), (Xls_UgtOp $a, $b)>;
 def : MinMaxPatBase<(Arith_MinUIOp:$op $a, $b), (Xls_UltOp $a, $b)>;
 
+// SelOp will return cases[0] if selector is false and the default value if
+// selector is true (because 1 is out of bound of cases).
 def : Pat<(SelectOp $selector, $a, $b),
-          (Xls_SelOp $selector, /*otherwise=*/$b, /*cases=*/(variadic $a))>;
+          (Xls_SelOp $selector, /*otherwise=*/$a, /*cases=*/(variadic $b))>;
 
 def GetBitwidthAsI64Attr : NativeCodeCall<
   "$_builder.getI64IntegerAttr(cast<IntegerType>($0.getType()).getWidth())"
@@ -161,7 +198,4 @@ def : Pat<
 // TODO(jmolloy): Support Div and Exp in the standard library.
 def : FloatLibcall<Arith_DivFOp, "add">;
 def : Pat<(Math_ExpOp:$op $a, /*FastMathFlags=*/$_),
-          (FirstResult
-            (VectorizedCallOp
-              (FloatLibcallSymbol ConstantStrAttr<StrAttr, "ceil">, $op),
-              (variadic $a)))>;
+          (Xls_CallDslxOp (FloatLib $a), CS<"ceil">, (variadic $a), ConstUnitAttr)>;

@@ -887,9 +887,10 @@ fn f(outer_thing_1: u32, outer_thing_2: u32) -> u32 {
 
 TEST(IrConverterTest, ParametricDefaultInStruct) {
   const char* kProgram = R"(
-struct Foo <X: u32, Y: u32 = {X + u32:1}> {
+struct Foo <X: u32, Y: u32 = {X + u32:1}, Z: u32 = {Y + u32:1}> {
     a: uN[X],
     b: uN[Y],
+    c: uN[Z]
 }
 
 fn make_zero_foo<X: u32>() -> Foo<X> {
@@ -898,6 +899,30 @@ fn make_zero_foo<X: u32>() -> Foo<X> {
 
 fn test() -> Foo<u32:5> {
  make_zero_foo<u32:5>()
+}
+)";
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string converted,
+      ConvertModuleForTest(kProgram, ConvertOptions{.emit_positions = false}));
+  ExpectIr(converted, TestName());
+}
+
+// See https://github.com/google/xls/issues/1615
+TEST(IrConverterTest, ParametricStructReverseOrderParametrics) {
+  const char* kProgram = R"(
+struct Foo<X: u32, Y: u32, Z:u32 = {X}> {
+    a: uN[X],
+    b: uN[Y],
+    c: uN[Z],
+}
+
+fn make_zero_foo<X: u32, Y: u32>() -> Foo<Y, X> {
+  Foo<Y, X> { a: zero!<uN[Y]>(), b: zero!<uN[X]>(), c: zero!<uN[Y]>() }
+}
+
+fn test() -> Foo<u32:6, u32:5> {
+ make_zero_foo<u32:5, u32:6>()
 }
 )";
 
@@ -2374,6 +2399,110 @@ TEST(IrConverterTest, BoundaryChannels) {
   XLS_ASSERT_OK_AND_ASSIGN(
       std::string converted,
       ConvertOneFunctionForTest(kProgram, "foo", import_data, options));
+  ExpectIr(converted, TestName());
+}
+
+TEST(IrConverterTest, PassChannelAcrossMultipleSpawns) {
+  constexpr std::string_view kProgram = R"(
+  proc SomeProc {
+    input: chan<u32> in;
+    init { () }
+    config(input: chan<u32> in) {
+      (input,)
+    }
+    next(state: ()) {
+      let (_, v) = recv(token(), input);
+      trace_fmt!("recv: {}", v);
+      state
+    }
+  }
+
+  proc SomeOtherProc {
+    init { () }
+    config(input: chan<u32> in) {
+      spawn SomeProc(input);
+    }
+    next(state: ()) {
+      ()
+    }
+  }
+
+  proc YetAnotherProc {
+    output: chan<u32> out;
+    init { () }
+    config() {
+      let (output, input) = chan<u32>("in_out");
+      spawn SomeOtherProc(input);
+      (output,)
+    }
+    next(state: ()) {
+      send(token(), output, u32:0);
+      state
+    }
+  }
+  )";
+  ConvertOptions options;
+  options.emit_fail_as_assert = false;
+  options.emit_positions = false;
+  options.verify_ir = false;
+  auto import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(std::string converted,
+                           ConvertOneFunctionForTest(kProgram, "YetAnotherProc",
+                                                     import_data, options));
+  ExpectIr(converted, TestName());
+}
+
+TEST(IrConverterTest, PassChannelArraysAcrossMultipleSpawns) {
+  constexpr std::string_view kProgram = R"(
+  proc SomeProc<N: u32> {
+    ins: chan<u32>[N] in;
+    init { () }
+    config(ins: chan<u32>[N] in) {
+      (ins,)
+    }
+    next(state: ()) {
+      unroll_for! (i, ()): (u32, ()) in u32:0..u32:4 {
+        let (_, v) = recv(token(), ins[i]);
+        trace_fmt!("recv: {}", v);
+      }(());
+      state
+    }
+  }
+
+  proc SomeOtherProc<N: u32> {
+    init { () }
+    config(ins: chan<u32>[N] in) {
+      spawn SomeProc<N>(ins);
+    }
+    next(state: ()) {
+      ()
+    }
+  }
+
+  proc YetAnotherProc {
+    outs: chan<u32>[4] out;
+    init { () }
+    config() {
+      let (outs, ins) =  chan<u32>[4]("ins_outs");
+      spawn SomeOtherProc<u32:4>(ins);
+      (outs,)
+    }
+    next(state: ()) {
+      unroll_for! (i, ()): (u32, ()) in u32:0..u32:4 {
+        send(token(), outs[i], i);
+      }(());
+      state
+    }
+  }
+  )";
+  ConvertOptions options;
+  options.emit_fail_as_assert = false;
+  options.emit_positions = false;
+  options.verify_ir = false;
+  auto import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(std::string converted,
+                           ConvertOneFunctionForTest(kProgram, "YetAnotherProc",
+                                                     import_data, options));
   ExpectIr(converted, TestName());
 }
 
