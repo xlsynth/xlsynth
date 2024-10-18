@@ -14,6 +14,7 @@
 
 #include "xls/public/c_api.h"
 
+#include <cstdint>
 #include <filesystem>  // NOLINT
 #include <string>
 #include <string_view>
@@ -30,7 +31,7 @@
 
 namespace {
 
-using testing::HasSubstr;
+using ::testing::HasSubstr;
 
 // Smoke test for `xls_convert_dslx_to_ir` C API.
 TEST(XlsCApiTest, ConvertDslxToIrSimple) {
