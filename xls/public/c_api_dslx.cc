@@ -220,7 +220,11 @@ const struct xls_dslx_type* xls_dslx_type_info_get_type_struct_def(
 
 const struct xls_dslx_type* xls_dslx_type_info_get_type_struct_member(
     struct xls_dslx_type_info* type_info, struct xls_dslx_struct_member* struct_member) {
-  return GetMetaTypeHelper(type_info, struct_member);
+  // Note: StructMember is not itself an AST node, it's just a POD struct, so
+  // we need to traverse to its type annotation.
+  auto* cpp_struct_member = reinterpret_cast<xls::dslx::StructMember*>(struct_member);
+  xls::dslx::TypeAnnotation* type = cpp_struct_member->type;
+  return GetMetaTypeHelper(type_info, type);
 }
 
 const struct xls_dslx_type* xls_dslx_type_info_get_type_enum_def(
