@@ -355,7 +355,7 @@ bool xls_dslx_type_is_bits_like(struct xls_dslx_type* type,
   }
 
   *is_signed = reinterpret_cast<xls_dslx_type_dim*>(new xls::dslx::TypeDim(std::move(properties->is_signed)));
-  *size = reinterpret_cast<xls_dslx_type_dim*>(new xls::dslx::TypeDim(std::move(properties->is_signed)));
+  *size = reinterpret_cast<xls_dslx_type_dim*>(new xls::dslx::TypeDim(std::move(properties->size)));
   return true;
 }
 
@@ -386,7 +386,7 @@ bool xls_dslx_type_dim_get_as_int64(struct xls_dslx_type_dim* td,
   auto* cpp_type_dim = reinterpret_cast<xls::dslx::TypeDim*>(td);
   absl::StatusOr<int64_t> value_or = cpp_type_dim->GetAsInt64();
   if (!value_or.ok()) {
-    *result_out = false;
+    *result_out = 0;
     *error_out = xls::ToOwnedCString(value_or.status().ToString());
     return false;
   }
