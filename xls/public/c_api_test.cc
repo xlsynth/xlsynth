@@ -14,7 +14,6 @@
 
 #include "xls/public/c_api.h"
 
-#include <cstdint>
 #include <filesystem>  // NOLINT
 #include <string>
 #include <string_view>
@@ -26,13 +25,12 @@
 #include "xls/common/file/temp_directory.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/default_dslx_stdlib_path.h"
-#include "xls/public/c_api_dslx.h"
 #include "xls/public/c_api_format_preference.h"
 #include "xls/public/c_api_vast.h"
 
 namespace {
 
-using ::testing::HasSubstr;
+using testing::HasSubstr;
 
 // Smoke test for `xls_convert_dslx_to_ir` C API.
 TEST(XlsCApiTest, ConvertDslxToIrSimple) {

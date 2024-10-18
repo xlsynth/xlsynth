@@ -168,6 +168,9 @@ void xls_package_free(struct xls_package* p) {
 }
 
 void xls_c_str_free(char* c_str) {
+  if (c_str == nullptr) {
+    return;
+  }
   free(c_str);
 }
 
@@ -324,15 +327,15 @@ bool xls_function_get_name(struct xls_function* function, char** error_out,
 }
 
 bool xls_function_get_type(struct xls_function* function, char** error_out,
-                           xls_function_type** xls_fn_type_out) {
+                           xls_function_type** result_out) {
   CHECK(function != nullptr);
   CHECK(error_out != nullptr);
-  CHECK(xls_fn_type_out != nullptr);
+  CHECK(result_out != nullptr);
   xls::Function* xls_function = reinterpret_cast<xls::Function*>(function);
   xls::FunctionType* type = xls_function->GetType();
 
   *error_out = nullptr;
-  *xls_fn_type_out = reinterpret_cast<xls_function_type*>(type);
+  *result_out = reinterpret_cast<xls_function_type*>(type);
   return true;
 }
 
