@@ -546,6 +546,9 @@ enum MyEnum : u5 {
     absl::Cleanup free_identifier([=] { xls_c_str_free(identifier); });
     EXPECT_EQ(std::string_view{identifier}, std::string_view{"MyStruct"});
 
+    EXPECT_FALSE(xls_dslx_struct_def_is_parametric(struct_def));
+    EXPECT_EQ(xls_dslx_struct_def_get_member_count(struct_def), 2);
+
     // Get the concrete type that this resolves to.
     const xls_dslx_type* struct_def_type =
         xls_dslx_type_info_get_type_struct_def(type_info, struct_def);
