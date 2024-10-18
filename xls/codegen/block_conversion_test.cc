@@ -38,6 +38,7 @@
 #include "absl/random/bit_gen_ref.h"
 #include "absl/random/distributions.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
@@ -81,6 +82,8 @@ namespace xls {
 namespace verilog {
 namespace {
 
+using ::absl_testing::IsOkAndHolds;
+using ::absl_testing::StatusIs;
 using ::testing::_;
 using ::testing::AllOf;
 using ::testing::Each;
@@ -93,8 +96,6 @@ using ::testing::Pair;
 using ::testing::Property;
 using ::testing::SizeIs;
 using ::testing::UnorderedElementsAre;
-using ::xls::status_testing::IsOkAndHolds;
-using ::xls::status_testing::StatusIs;
 
 MATCHER_P2(First, n, matcher,
            absl::StrFormat("(looking at just the first %d elements) %s", n,
@@ -5583,7 +5584,7 @@ TEST_F(BlockConversionTest, CoveringRegions) {
   auto nxt_c = pb.Next(c, nc);
   XLS_ASSERT_OK_AND_ASSIGN(auto proc, pb.Build());
 
-  // One region entierly covers the others.
+  // One region entirely covers the others.
   // A is live [0, 3]
   // B is live [2, 3]
   // C is live [1, 2]

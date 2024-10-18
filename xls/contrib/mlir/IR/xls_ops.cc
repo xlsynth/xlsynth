@@ -15,12 +15,16 @@
 #include "xls/contrib/mlir/IR/xls_ops.h"
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+
+// Some of these need the keep IWYU pragma as they are required by *.inc files
 
 #include "llvm/include/llvm/ADT/APInt.h"
 #include "llvm/include/llvm/ADT/STLExtras.h"
 #include "llvm/include/llvm/ADT/TypeSwitch.h"  // IWYU pragma: keep
+#include "llvm/include/llvm/Support/LogicalResult.h"
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/include/mlir/Dialect/Shape/IR/Shape.h"
 #include "mlir/include/mlir/IR/BuiltinAttributes.h"
@@ -60,7 +64,9 @@ class ShapeOrBad {
   // Compares two ShapeOrBads. "bad" is poison - if either this or other are bad
   // then false is returned.
   bool operator==(const ShapeOrBad& other) const {
-    if (bad || other.bad) return false;
+    if (bad || other.bad) {
+      return false;
+    }
     return shape == other.shape;
   }
 
@@ -102,7 +108,9 @@ ShapeOrBad getShapeSplat(Operation::operand_type_range range) {
 
 void CallDslxOp::getEffects(
     llvm::SmallVectorImpl<mlir::MemoryEffects::EffectInstance>& effects) {
-  if (getIsPure()) return;
+  if (getIsPure()) {
+    return;
+  }
 
   // By default, conservatively assume all side effects.
   effects.emplace_back(mlir::MemoryEffects::Allocate::get());
@@ -258,6 +266,32 @@ LogicalResult ArrayIndexOp::canonicalize(ArrayIndexOp op,
   return LogicalResult::failure();
 }
 
+LogicalResult InstantiateEprocOp::verifySymbolUses(
+    SymbolTableCollection& symbolTable) {
+  // Check that the callee references a valid function.
+  auto eprocOp =
+      symbolTable.lookupNearestSymbolFrom<EprocOp>(*this, getEprocAttr());
+  if (!eprocOp) {
+    return emitError("'") << getEproc() << "' does not reference a valid eproc";
+  }
+
+  for (auto ref : getGlobalChannels()) {
+    auto chanOp = symbolTable.lookupNearestSymbolFrom<ChanOp>(
+        *this, cast<FlatSymbolRefAttr>(ref));
+    if (!chanOp) {
+      return emitOpError("'") << ref << "' does not reference a valid channel";
+    }
+  }
+  for (auto ref : getLocalChannels()) {
+    auto chanOp = symbolTable.lookupNearestSymbolFrom<ChanOp>(
+        *this, cast<FlatSymbolRefAttr>(ref));
+    if (!chanOp) {
+      return emitOpError("'") << ref << "' does not reference a valid channel";
+    }
+  }
+  return success();
+}
+
 }  // namespace mlir::xls
 
 namespace {
@@ -284,16 +318,16 @@ Type getI1TypeOf(Type type) {
 }  // namespace
 
 #define GET_OP_CLASSES
-#include "xls/contrib/mlir/IR/xls_ops.cc.inc"
+#include "xls/contrib/mlir/IR/xls_ops.cc.inc"  // IWYU pragma: keep
 
 #define GET_ATTRDEF_CLASSES
-#include "xls/contrib/mlir/IR/xls_ops_attrs.cc.inc"
+#include "xls/contrib/mlir/IR/xls_ops_attrs.cc.inc"  // IWYU pragma: keep
 
 #define GET_TYPEDEF_CLASSES
-#include "xls/contrib/mlir/IR/xls_ops_typedefs.cc.inc"
+#include "xls/contrib/mlir/IR/xls_ops_typedefs.cc.inc"  // IWYU pragma: keep
 
 #define GET_INTERFACE_CLASSES
-#include "xls/contrib/mlir/IR/interfaces.cc.inc"  // IWYU pragma: export
+#include "xls/contrib/mlir/IR/interfaces.cc.inc"  // IWYU pragma: keep
 
 namespace mlir::xls {
 
@@ -310,20 +344,21 @@ LogicalResult TupleOp::inferReturnTypes(
 }
 
 void ForOp::getAsmBlockArgumentNames(Region& region,
-                                     OpAsmSetValueNameFn setFn) {
+                                     OpAsmSetValueNameFn setNameFn) {
   for (auto& block : region.getBlocks()) {
-    if (block.getArguments().size() !=
-        getInits().size() + getInvariants().size() + 1) {
+    const size_t initsCount = getInits().size();
+    const size_t invariantCount = getInvariants().size();
+    if (block.getArguments().size() != 1 + initsCount + invariantCount) {
       // Validation error.
       return;
     }
     int argNum = 0;
-    setFn(block.getArgument(argNum++), "indvar");
-    for (auto _ : getInits()) {
-      setFn(block.getArgument(argNum++), "carry");
+    setNameFn(block.getArgument(argNum++), "indvar");
+    for (size_t i = 0; i < initsCount; ++i) {
+      setNameFn(block.getArgument(argNum++), "carry");
     }
-    for (auto _ : getInvariants()) {
-      setFn(block.getArgument(argNum++), "invariant");
+    for (size_t i = 0; i < invariantCount; ++i) {
+      setNameFn(block.getArgument(argNum++), "invariant");
     }
   }
 }
@@ -335,6 +370,9 @@ void EprocOp::print(OpAsmPrinter& printer) {
   llvm::interleaveComma(getBody().getArguments(), printer.getStream(),
                         [&](auto arg) { printer.printRegionArgument(arg); });
   printer << ") zeroinitializer ";
+  if (getDiscardable()) {
+    printer << "discardable ";
+  }
   printer.printRegion(getBody(), /*printEntryBlockArgs=*/false);
 }
 
@@ -342,15 +380,22 @@ ParseResult EprocOp::parse(OpAsmParser& parser, OperationState& result) {
   // Parse the name as a symbol.
   StringAttr nameAttr;
   if (parser.parseSymbolName(nameAttr, SymbolTable::getSymbolAttrName(),
-                             result.attributes))
+                             result.attributes)) {
     return failure();
+  }
 
   SmallVector<OpAsmParser::Argument> args;
   if (parser.parseArgumentList(args, OpAsmParser::Delimiter::Paren,
-                               /*allowType=*/true))
+                               /*allowType=*/true)) {
     return failure();
+  }
 
-  if (parser.parseKeyword("zeroinitializer")) return failure();
+  if (parser.parseKeyword("zeroinitializer")) {
+    return failure();
+  }
+  if (succeeded(parser.parseOptionalKeyword("discardable"))) {
+    result.addAttribute("discardable", UnitAttr::get(parser.getContext()));
+  }
 
   Region* body = result.addRegion();
   return parser.parseRegion(*body, args);
@@ -372,12 +417,16 @@ LogicalResult EprocOp::verify() {
 ParseResult SchanOp::parse(OpAsmParser& parser, OperationState& result) {
   Type type;
   if (parser.parseLess() || parser.parseType(type) || parser.parseGreater() ||
-      parser.parseLParen())
+      parser.parseLParen()) {
     return failure();
+  }
   StringAttr nameAttr;
-  if (parser.parseAttribute(nameAttr, "name", result.attributes))
+  if (parser.parseAttribute(nameAttr, "name", result.attributes)) {
     return failure();
-  if (parser.parseRParen()) return failure();
+  }
+  if (parser.parseRParen()) {
+    return failure();
+  }
   result.addAttribute("type", TypeAttr::get(type));
   result.types.push_back(SchanType::get(parser.getContext(), type, false));
   result.types.push_back(SchanType::get(parser.getContext(), type, true));
@@ -400,7 +449,9 @@ void SprocOp::print(OpAsmPrinter& printer) {
   llvm::interleaveComma(getSpawns().getArguments(), printer.getStream(),
                         [&](auto arg) { printer.printRegionArgument(arg); });
   printer << ")";
-  if (getIsTop()) printer << " top";
+  if (getIsTop()) {
+    printer << " top";
+  }
   printer.printOptionalAttrDictWithKeyword(getOperation()->getAttrs(),
                                            {"sym_name", "is_top"});
   printer << " {";
@@ -423,13 +474,15 @@ ParseResult SprocOp::parse(OpAsmParser& parser, OperationState& result) {
   // Parse the name as a symbol.
   StringAttr nameAttr;
   if (parser.parseSymbolName(nameAttr, SymbolTable::getSymbolAttrName(),
-                             result.attributes))
+                             result.attributes)) {
     return failure();
+  }
 
   SmallVector<OpAsmParser::Argument> spawnsArgs;
   if (parser.parseArgumentList(spawnsArgs, OpAsmParser::Delimiter::Paren,
-                               /*allowType=*/true))
+                               /*allowType=*/true)) {
     return failure();
+  }
 
   bool top = false;
   if (succeeded(parser.parseOptionalKeyword("top"))) {
@@ -437,13 +490,15 @@ ParseResult SprocOp::parse(OpAsmParser& parser, OperationState& result) {
   }
   result.addAttribute("is_top", BoolAttr::get(parser.getContext(), top));
 
-  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes)) {
     return failure();
+  }
 
   Region* spawns = result.addRegion();
   if (parser.parseLBrace() || parser.parseKeyword("spawns") ||
-      parser.parseRegion(*spawns, spawnsArgs))
+      parser.parseRegion(*spawns, spawnsArgs)) {
     return failure();
+  }
 
   Region* next = result.addRegion();
   SmallVector<OpAsmParser::Argument> nextArgs;
@@ -451,8 +506,9 @@ ParseResult SprocOp::parse(OpAsmParser& parser, OperationState& result) {
       parser.parseArgumentList(nextArgs, OpAsmParser::Delimiter::Paren,
                                /*allowType=*/true) ||
       parser.parseKeyword("zeroinitializer") ||
-      parser.parseRegion(*next, nextArgs) || parser.parseRBrace())
+      parser.parseRegion(*next, nextArgs) || parser.parseRBrace()) {
     return failure();
+  }
   return success();
 }
 
@@ -486,9 +542,10 @@ LogicalResult SprocOp::verify() {
 }
 
 SprocOp SpawnOp::resolveCallee(SymbolTableCollection* symbolTable) {
-  if (symbolTable)
+  if (symbolTable) {
     return symbolTable->lookupNearestSymbolFrom<SprocOp>(getOperation(),
                                                          getCallee());
+  }
   return SymbolTable::lookupNearestSymbolFrom<SprocOp>(getOperation(),
                                                        getCallee());
 }
@@ -688,15 +745,15 @@ XlsDialect::XlsDialect(mlir::MLIRContext* ctx)
     : Dialect("xls", ctx, TypeID::get<XlsDialect>()) {
   addOperations<
 #define GET_OP_LIST
-#include "xls/contrib/mlir/IR/xls_ops.cc.inc"
+#include "xls/contrib/mlir/IR/xls_ops.cc.inc"  // IWYU pragma: keep
       >();
   addAttributes<
 #define GET_ATTRDEF_LIST
-#include "xls/contrib/mlir/IR/xls_ops_attrs.cc.inc"
+#include "xls/contrib/mlir/IR/xls_ops_attrs.cc.inc"  // IWYU pragma: keep
       >();
   addTypes<
 #define GET_TYPEDEF_LIST
-#include "xls/contrib/mlir/IR/xls_ops_typedefs.cc.inc"
+#include "xls/contrib/mlir/IR/xls_ops_typedefs.cc.inc"  // IWYU pragma: keep
       >();
   addInterface<SupportsUnconditionalInliner>();
   // Ensure dialect is loaded before attaching interfaces.

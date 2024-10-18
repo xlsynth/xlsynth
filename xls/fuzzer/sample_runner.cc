@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>  // NOLINT
 #include <iterator>
 #include <memory>
@@ -34,6 +35,7 @@
 #include "absl/flags/flag.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/log/vlog_is_on.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/ascii.h"
@@ -828,8 +830,7 @@ absl::Status SampleRunner::Run(const Sample& sample) {
   XLS_RETURN_IF_ERROR(SetFileContents(input_path, sample.input_text()));
 
   std::filesystem::path options_path = run_dir_ / "options.pbtxt";
-  XLS_RETURN_IF_ERROR(
-      SetFileContents(options_path, sample.options().ToPbtxt()));
+  XLS_RETURN_IF_ERROR(SetTextProtoFile(options_path, sample.options().proto()));
 
   std::filesystem::path args_path = run_dir_ / "args.txt";
   XLS_RETURN_IF_ERROR(

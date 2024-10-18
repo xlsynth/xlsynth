@@ -3071,8 +3071,29 @@ absl::StatusOr<StructDef*> Parser::ParseStruct(bool is_public,
 
 absl::StatusOr<Impl*> Parser::ParseImpl(bool is_public, Bindings& bindings) {
   VLOG(5) << "ParseImpl @ " << GetPos();
+  Bindings impl_bindings(&bindings);
   XLS_RETURN_IF_ERROR(DropKeywordOrError(Keyword::kImpl));
-  XLS_ASSIGN_OR_RETURN(TypeAnnotation * type, ParseTypeAnnotation(bindings));
+  XLS_ASSIGN_OR_RETURN(TypeAnnotation * type,
+                       ParseTypeAnnotation(impl_bindings));
+
+  absl::Status wrong_type_error = ParseErrorStatus(
+      type->span(), "'impl' can only be defined for a 'struct'");
+
+  TypeRefTypeAnnotation* type_ref = dynamic_cast<TypeRefTypeAnnotation*>(type);
+  if (type_ref == nullptr) {
+    return wrong_type_error;
+  }
+  if (!std::holds_alternative<StructDef*>(
+          type_ref->type_ref()->type_definition())) {
+    return wrong_type_error;
+  }
+  StructDef* struct_def =
+      std::get<StructDef*>(type_ref->type_ref()->type_definition());
+  if (struct_def->impl().has_value()) {
+    return ParseErrorStatus(
+        type->span(), "'impl' can only be defined once for a given 'struct'");
+  }
+
   const Pos start_pos = GetPos();
   XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kOBrace, /*start=*/nullptr,
                                        "Opening brace for impl."));
@@ -3090,11 +3111,13 @@ absl::StatusOr<Impl*> Parser::ParseImpl(bool is_public, Bindings& bindings) {
                               "Only constants are supported in impl");
     }
     XLS_ASSIGN_OR_RETURN(ConstantDef * constant,
-                         ParseConstantDef(next_is_public, bindings));
+                         ParseConstantDef(next_is_public, impl_bindings));
     constants.push_back(constant);
   }
   Span span(start_pos, GetPos());
-  return module_->Make<Impl>(span, type, std::move(constants), is_public);
+  auto* impl = module_->Make<Impl>(span, type, std::move(constants), is_public);
+  struct_def->set_impl(impl);
+  return impl;
 }
 
 absl::StatusOr<NameDefTree*> Parser::ParseTuplePattern(const Pos& start_pos,

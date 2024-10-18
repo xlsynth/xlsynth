@@ -26,6 +26,7 @@
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/log/vlog_is_on.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
@@ -47,7 +48,7 @@ namespace {
 // Get channel_id for send_receive channels. If node is not a send/receive, or
 // if the channel used by node is not send_receive, returns nullopt.
 std::optional<int64_t> GetInternalChannelId(Node* node) {
-  if (!IsChannelNode(node)) {
+  if (!node->Is<ChannelNode>()) {
     return std::nullopt;
   }
   absl::StatusOr<Channel*> ch = GetChannelUsedByNode(node);
@@ -360,7 +361,7 @@ absl::StatusOr<absl::flat_hash_set<Channel*>> MinimalFeedbackArcs(
     // Find internal channel operations that have already been seen and add them
     // to the result set.
     for (Node* successor : itr->second) {
-      XLS_RET_CHECK(IsChannelNode(successor));
+      XLS_RET_CHECK(successor->Is<ChannelNode>());
       XLS_ASSIGN_OR_RETURN(Channel * ch, GetChannelUsedByNode(successor));
       if (seen.contains(successor)) {
         result.insert(ch);

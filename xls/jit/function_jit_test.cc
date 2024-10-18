@@ -34,9 +34,11 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/log/vlog_is_on.h"
 #include "absl/random/bit_gen_ref.h"
 #include "absl/random/random.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
@@ -72,14 +74,14 @@
 namespace xls {
 namespace {
 
-using status_testing::IsOk;
-using status_testing::IsOkAndHolds;
-using status_testing::StatusIs;
-using testing::ElementsAre;
-using testing::ElementsAreArray;
-using testing::HasSubstr;
-using testing::TestParamInfo;
-using testing::Values;
+using ::absl_testing::IsOk;
+using ::absl_testing::IsOkAndHolds;
+using ::absl_testing::StatusIs;
+using ::testing::ElementsAre;
+using ::testing::ElementsAreArray;
+using ::testing::HasSubstr;
+using ::testing::TestParamInfo;
+using ::testing::Values;
 
 // TODO(https://github.com/google/xls/issues/506): 2021-10-12 Replace the empty
 // events returned by the JIT evaluator with a entry point that includes the
@@ -1167,7 +1169,7 @@ void TestPackedBitsWithType(const TypeProto& type_proto) {
   XLS_ASSERT_OK_AND_ASSIGN(
       auto orc_jit,
       OrcJit::Create(opt_level, /*include_observer_callbacks=*/false,
-                     /*observer=*/nullptr));
+                     /*jit_observer=*/nullptr));
   XLS_ASSERT_OK_AND_ASSIGN(llvm::DataLayout data_layout,
                            orc_jit->CreateDataLayout());
   XLS_ASSERT_OK_AND_ASSIGN(JittedFunctionBase jit,
@@ -1232,7 +1234,7 @@ void TestPackedTupleWithType(const TypeProto& type_proto) {
   XLS_ASSERT_OK_AND_ASSIGN(
       auto orc_jit,
       OrcJit::Create(opt_level, /*include_observer_callbacks=*/false,
-                     /*observer=*/nullptr));
+                     /*jit_observer=*/nullptr));
   XLS_ASSERT_OK_AND_ASSIGN(llvm::DataLayout data_layout,
                            orc_jit->CreateDataLayout());
   XLS_ASSERT_OK_AND_ASSIGN(JittedFunctionBase jit,
@@ -1302,7 +1304,7 @@ void TestPackedArrayWithType(const TypeProto& type_proto) {
   XLS_ASSERT_OK_AND_ASSIGN(
       auto orc_jit,
       OrcJit::Create(opt_level, /*include_observer_callbacks=*/false,
-                     /*observer=*/nullptr));
+                     /*jit_observer=*/nullptr));
   XLS_ASSERT_OK_AND_ASSIGN(llvm::DataLayout data_layout,
                            orc_jit->CreateDataLayout());
   XLS_ASSERT_OK_AND_ASSIGN(JittedFunctionBase jit,

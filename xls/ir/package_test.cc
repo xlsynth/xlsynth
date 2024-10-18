@@ -22,6 +22,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
 #include "xls/common/casts.h"
 #include "xls/common/status/matchers.h"
@@ -32,6 +33,7 @@
 #include "xls/ir/function_builder.h"
 #include "xls/ir/ir_matcher.h"
 #include "xls/ir/ir_test_base.h"
+#include "xls/ir/nodes.h"
 #include "xls/ir/type.h"
 #include "xls/ir/value.h"
 #include "xls/ir/xls_type.pb.h"
@@ -39,14 +41,14 @@
 namespace xls {
 namespace {
 
-using status_testing::IsOkAndHolds;
-using status_testing::StatusIs;
-using testing::Contains;
-using testing::ElementsAre;
-using testing::HasSubstr;
-using testing::IsEmpty;
-using testing::Not;
-using testing::Property;
+using ::absl_testing::IsOkAndHolds;
+using ::absl_testing::StatusIs;
+using ::testing::Contains;
+using ::testing::ElementsAre;
+using ::testing::HasSubstr;
+using ::testing::IsEmpty;
+using ::testing::Not;
+using ::testing::Property;
 
 class PackageTest : public IrTestBase {};
 
@@ -985,7 +987,7 @@ fn my_function(x: bits[32], y: bits[32]) -> bits[32] {
 
   XLS_ASSERT_OK_AND_ASSIGN(auto pkg1, ParsePackage(text1));
   XLS_ASSERT_OK_AND_ASSIGN(auto pkg2, ParsePackage(text2));
-  XLS_ASSERT_OK(pkg1->AddPackage(pkg2.get()).status());
+  XLS_ASSERT_OK(pkg1->ImportFromPackage(pkg2.get()).status());
   EXPECT_EQ(pkg1->functions().size(), 2);
   XLS_EXPECT_OK(pkg1->GetFunction("my_function"));
   XLS_EXPECT_OK(pkg1->GetFunction("my_function_1"));
@@ -1017,7 +1019,7 @@ fn my_function(x: bits[32], y: bits[32]) -> bits[32] {
 
   XLS_ASSERT_OK_AND_ASSIGN(auto pkg1, ParsePackage(text1));
   XLS_ASSERT_OK_AND_ASSIGN(auto pkg2, ParsePackage(text2));
-  XLS_ASSERT_OK(pkg1->AddPackage(pkg2.get()).status());
+  XLS_ASSERT_OK(pkg1->ImportFromPackage(pkg2.get()).status());
 
   EXPECT_EQ(pkg1->functions().size(), 4);
   XLS_EXPECT_OK(pkg1->GetFunction("my_function"));
@@ -1065,7 +1067,7 @@ top proc another_main(__state: (), init={()}) {
 
   XLS_ASSERT_OK_AND_ASSIGN(auto pkg1, ParsePackage(text1));
   XLS_ASSERT_OK_AND_ASSIGN(auto pkg2, ParsePackage(text2));
-  XLS_ASSERT_OK(pkg1->AddPackage(pkg2.get()).status());
+  XLS_ASSERT_OK(pkg1->ImportFromPackage(pkg2.get()).status());
   EXPECT_EQ(pkg1->channels().size(), 2);
   EXPECT_EQ(pkg1->procs().size(), 2);
   XLS_EXPECT_OK(pkg1->GetProc("main"));
@@ -1122,7 +1124,7 @@ top proc another_main(__state: (), init={()}) {
 
   XLS_ASSERT_OK_AND_ASSIGN(auto pkg1, ParsePackage(text1));
   XLS_ASSERT_OK_AND_ASSIGN(auto pkg2, ParsePackage(text2));
-  XLS_ASSERT_OK(pkg1->AddPackage(pkg2.get()).status());
+  XLS_ASSERT_OK(pkg1->ImportFromPackage(pkg2.get()).status());
 
   EXPECT_EQ(pkg1->channels().size(), 2);
   EXPECT_EQ(pkg1->procs().size(), 2);
@@ -1159,7 +1161,7 @@ block my_block(a: bits[32], b: bits[32], out: bits[32]) {
 
   XLS_ASSERT_OK_AND_ASSIGN(auto pkg1, ParsePackage(text1));
   XLS_ASSERT_OK_AND_ASSIGN(auto pkg2, ParsePackage(text2));
-  XLS_ASSERT_OK(pkg1->AddPackage(pkg2.get()).status());
+  XLS_ASSERT_OK(pkg1->ImportFromPackage(pkg2.get()).status());
 
   EXPECT_EQ(pkg1->blocks().size(), 2);
   XLS_EXPECT_OK(pkg1->GetBlock("my_block"));

@@ -16,10 +16,10 @@
 #include <optional>
 #include <utility>
 
+// Some of these need the keep IWYU pragma as they are required by *.inc files
+
 #include "llvm/include/llvm/ADT/ArrayRef.h"
 #include "llvm/include/llvm/ADT/STLExtras.h"
-#include "llvm/include/llvm/Support/Casting.h"
-#include "llvm/include/llvm/Support/LogicalResult.h"
 #include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/include/mlir/IR/Builders.h"
@@ -29,8 +29,7 @@
 #include "mlir/include/mlir/IR/PatternMatch.h"
 #include "mlir/include/mlir/IR/TypeUtilities.h"
 #include "mlir/include/mlir/IR/Visitors.h"
-#include "mlir/include/mlir/Pass/Pass.h"
-#include "mlir/include/mlir/Pass/PassRegistry.h"
+#include "mlir/include/mlir/Pass/Pass.h"  // IWYU pragma: keep
 #include "mlir/include/mlir/Support/LLVM.h"
 #include "mlir/include/mlir/Support/LogicalResult.h"
 #include "mlir/include/mlir/Support/TypeID.h"
@@ -84,9 +83,7 @@ class IndexTypeConverter : public TypeConverter {
     });
   }
 
-  // We should not need this function, but it is required for resolving the
-  // overloaded method.
-  bool isLegal(Region *region) const { return TypeConverter::isLegal(region); }
+  using TypeConverter::isLegal;
 
   bool isLegal(mlir::Operation *op) const {
     // An non-function XlsRegionOp is legal always (reminder: meaning that it
@@ -141,8 +138,9 @@ class LegalizeIndexCastOp : public OpConversionPattern<IndexCastOpTy> {
       IndexCastOpTy op, OpConversionPattern<IndexCastOpTy>::OpAdaptor adaptor,
       ConversionPatternRewriter &rewriter) const override {
     Type outType = op.getOut().getType();
-    if (!isa<IndexType, IntegerType>(outType))
+    if (!isa<IndexType, IntegerType>(outType)) {
       return rewriter.notifyMatchFailure(op, "only scalar type is supported");
+    }
 
     bool isCastToIndex = outType.isIndex();
     unsigned srcBitWidth;
@@ -215,13 +213,29 @@ class LegalizeGeneralOps : public ConversionPattern {
       TypeConverter::SignatureConversion signatureConv(
           newRegion->getNumArguments());
       if (failed(typeConverter->convertSignatureArgs(
-              newRegion->getArgumentTypes(), signatureConv)))
+              newRegion->getArgumentTypes(), signatureConv))) {
         return failure();
+      }
       rewriter.applySignatureConversion(&newRegion->front(), signatureConv);
     }
 
     Operation *newOp = rewriter.create(newOpState);
     rewriter.replaceOp(op, newOp->getResults());
+    return success();
+  }
+};
+
+class LegalizeChanOp : public OpConversionPattern<ChanOp> {
+ public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      ChanOp op, OpAdaptor /*adaptor*/,
+      ConversionPatternRewriter &rewriter) const override {
+    Type resultType = getTypeConverter()->convertType(op.getType());
+    rewriter.replaceOpWithNewOp<xls::ChanOp>(op, op.getSymName(), resultType,
+                                             op.getSendSupported(),
+                                             op.getRecvSupported());
     return success();
   }
 };
@@ -232,18 +246,6 @@ class IndexTypeConversionPass
   using IndexTypeConversionPassBase::IndexTypeConversionPassBase;
 
   void runOnOperation() override {
-    getOperation()->walk([&](Operation *op) {
-      if (auto interface = dyn_cast<XlsRegionOpInterface>(op)) {
-        if (interface.isSupportedRegion()) {
-          runOnOperation(interface);
-          return WalkResult::skip();
-        }
-      }
-      return WalkResult::advance();
-    });
-  }
-
-  void runOnOperation(XlsRegionOpInterface op) {
     MLIRContext &ctx = getContext();
     IndexTypeConverter typeConverter(ctx, indexTypeBitWidth);
     ConversionTarget target(ctx);
@@ -253,11 +255,15 @@ class IndexTypeConversionPass
                return typeConverter.isLegal(&region);
              });
     });
+    target.addDynamicallyLegalOp<ChanOp>([&](ChanOp op) {
+      return typeConverter.convertType(op.getType()) == op.getType();
+    });
 
     RewritePatternSet patterns(&getContext());
     patterns.add<LegalizeIndexCast, LegalizeIndexCastUI, LegalizeConstantIndex,
-                 LegalizeGeneralOps>(typeConverter, &ctx);
-    if (failed(mlir::applyFullConversion(op, target, std::move(patterns)))) {
+                 LegalizeGeneralOps, LegalizeChanOp>(typeConverter, &ctx);
+    if (failed(mlir::applyFullConversion(getOperation(), target,
+                                         std::move(patterns)))) {
       signalPassFailure();
     }
   }

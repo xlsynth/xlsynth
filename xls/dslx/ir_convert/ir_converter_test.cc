@@ -27,6 +27,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
 #include "xls/common/golden_files.h"
@@ -42,7 +43,7 @@
 namespace xls::dslx {
 namespace {
 
-using status_testing::StatusIs;
+using ::absl_testing::StatusIs;
 using ::testing::HasSubstr;
 
 absl::StatusOr<TestResultData> ParseAndTest(
@@ -2503,6 +2504,39 @@ TEST(IrConverterTest, PassChannelArraysAcrossMultipleSpawns) {
   XLS_ASSERT_OK_AND_ASSIGN(std::string converted,
                            ConvertOneFunctionForTest(kProgram, "YetAnotherProc",
                                                      import_data, options));
+  ExpectIr(converted, TestName());
+}
+
+TEST(IrConverterTest, ReceiveFromBoundaryChannelArrayElement) {
+  constexpr std::string_view kProgram = R"(
+  proc SomeProc {
+    some_chan_array: chan<u32>[2] in;
+
+    config(some_chan_array: chan<u32>[2] in) {
+        (
+            some_chan_array,
+        )
+    }
+
+    init {  }
+
+    next(state: ()) {
+        let some_tok = token();
+        let (tok_0, _) = recv(some_tok, some_chan_array[0]);
+        let (tok_1, _) = recv(some_tok, some_chan_array[1]);
+        join(tok_0, tok_1);
+    }
+  }
+  )";
+
+  ConvertOptions options;
+  options.emit_fail_as_assert = false;
+  options.emit_positions = false;
+  options.verify_ir = false;
+  auto import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string converted,
+      ConvertOneFunctionForTest(kProgram, "SomeProc", import_data, options));
   ExpectIr(converted, TestName());
 }
 

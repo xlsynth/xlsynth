@@ -70,7 +70,7 @@ ABSL_FLAG(
     "input port is equal to the number of pipeline stages. Bit N of the port "
     "is the load-enable signal for the pipeline registers after stage N.");
 ABSL_FLAG(bool, flop_inputs, true,
-          "If true, inputs of the the module are flopped into registers before "
+          "If true, inputs of the module are flopped into registers before "
           "use in generated pipelines. Only used with pipeline generator.");
 ABSL_FLAG(bool, flop_outputs, true,
           "If true, the module outputs are flopped into registers before "
@@ -106,6 +106,9 @@ ABSL_FLAG(bool, use_system_verilog, true,
           "If true, emit SystemVerilog otherwise emit Verilog.");
 ABSL_FLAG(bool, separate_lines, false,
           "If true, emit every subexpression on a separate line.");
+ABSL_FLAG(int64_t, max_inline_depth, 5,
+          "The maximum depth of subexpressions to include inline. Deeper "
+          "expressions are emitted with extra wires/lines to reduce depth.");
 ABSL_FLAG(std::string, gate_format, "", "Format string to use for gate! ops.");
 ABSL_FLAG(std::string, assert_format, "",
           "Format string to use for assertions.");
@@ -160,7 +163,6 @@ ABSL_FLAG(std::string, simulation_macro_name, "SIMULATION",
           "simulation-specific constructs such as $display statements. If "
           "prefixed with `!` the polarity of the guard is inverted (`ifndef).");
 // LINT.ThenChange(
-//   //xls/build_rules/xls_codegen_rules.bzl,
 //   //xls/build_rules/xls_providers.bzl,
 //   //docs_src/codegen_options.md
 // )
@@ -260,6 +262,7 @@ static absl::StatusOr<bool> SetOptionsFromFlags(CodegenFlagsProto &proto) {
   POPULATE_FLAG(reset_data_path);
   POPULATE_FLAG(use_system_verilog);
   POPULATE_FLAG(separate_lines);
+  POPULATE_FLAG(max_inline_depth);
   POPULATE_FLAG(gate_format);
   POPULATE_FLAG(assert_format);
   POPULATE_FLAG(smulp_format);

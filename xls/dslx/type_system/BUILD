@@ -71,6 +71,7 @@ cc_test(
         "//xls/ir:bits",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest",
     ],
@@ -317,7 +318,6 @@ cc_library(
     hdrs = ["typecheck_invocation.h"],
     deps = [
         ":ast_env",
-        ":deduce",
         ":deduce_ctx",
         ":deduce_utils",
         ":instantiate_parametric_function",
@@ -424,6 +424,7 @@ cc_test(
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:pos",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest",
@@ -439,6 +440,20 @@ cc_test(
         "//xls/common/status:matchers",
         "//xls/dslx:error_test_utils",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "impl_typecheck_test",
+    srcs = ["impl_typecheck_test.cc"],
+    deps = [
+        ":typecheck_test_utils",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -636,6 +651,7 @@ cc_test(
         "//xls/dslx/frontend:pos",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -819,6 +835,7 @@ cc_test(
         "//xls/dslx/frontend:proc",
         "//xls/dslx/frontend:scanner",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest",
     ],
 )

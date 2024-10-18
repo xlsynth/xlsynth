@@ -17,7 +17,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
-#include <string>
 #include <vector>
 
 #include "gmock/gmock.h"
@@ -25,8 +24,7 @@
 #include "xls/common/fuzzing/fuzztest.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/status/status.h"
-#include "absl/strings/str_format.h"
-#include "absl/strings/str_join.h"
+#include "absl/status/status_matchers.h"
 #include "absl/types/span.h"
 #include "xls/common/bits_util.h"
 #include "xls/common/math_util.h"
@@ -41,8 +39,8 @@
 namespace xls {
 namespace {
 
-using status_testing::IsOkAndHolds;
-using status_testing::StatusIs;
+using ::absl_testing::IsOkAndHolds;
+using ::absl_testing::StatusIs;
 using ::testing::ElementsAre;
 using ::testing::ElementsAreArray;
 using ::testing::HasSubstr;
@@ -533,12 +531,6 @@ TEST(BitsTest, ToBitVectorAndBack) {
   EXPECT_EQ(Bits(UBits(1, 1).ToBitVector()), UBits(1, 1));
   EXPECT_EQ(Bits(UBits(0b11001, 5).ToBitVector()), UBits(0b11001, 5));
   EXPECT_EQ(Bits(UBits(0b11001, 1234).ToBitVector()), UBits(0b11001, 1234));
-}
-
-static std::string BytesToHexString(absl::Span<const uint8_t> bytes) {
-  return "0x" + absl::StrJoin(bytes, "", [](std::string* out, uint8_t b) {
-           absl::StrAppendFormat(out, "%02x", b);
-         });
 }
 
 void RoundtripOneByte(uint8_t byte, int64_t bit_count) {

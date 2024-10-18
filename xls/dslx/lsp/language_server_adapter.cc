@@ -32,6 +32,7 @@
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
+#include "nlohmann/json.hpp"
 #include "external/verible/common/lsp/lsp-file-utils.h"
 #include "external/verible/common/lsp/lsp-protocol-enums.h"
 #include "external/verible/common/lsp/lsp-protocol.h"
@@ -40,6 +41,7 @@
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/extract_module_name.h"
 #include "xls/dslx/fmt/ast_fmt.h"
+#include "xls/dslx/fmt/comments.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/ast_utils.h"
 #include "xls/dslx/frontend/bindings.h"
@@ -171,14 +173,14 @@ absl::Status LanguageServerAdapter::Update(std::string_view file_uri,
                         /*module_name=*/module_name, &import_data, &comments);
 
   if (typechecked_module.ok()) {
-    insert_value.reset(new ParseData{
+    insert_value = std::make_unique<ParseData>(
         std::move(import_data), TypecheckedModuleWithComments{
                                     .tm = std::move(typechecked_module).value(),
                                     .comments = Comments::Create(comments),
-                                }});
+                                });
   } else {
-    insert_value.reset(
-        new ParseData{std::move(import_data), typechecked_module.status()});
+    insert_value = std::make_unique<ParseData>(std::move(import_data),
+                                               typechecked_module.status());
   }
 
   const absl::Duration duration = absl::Now() - start;
@@ -193,7 +195,7 @@ std::vector<verible::lsp::Diagnostic>
 LanguageServerAdapter::GenerateParseDiagnostics(std::string_view uri) const {
   std::vector<verible::lsp::Diagnostic> result;
   if (ParseData* parsed = FindParsedForUri(uri)) {
-    FileTable& file_table = parsed->import_data.file_table();
+    FileTable& file_table = parsed->file_table();
     if (parsed->ok()) {
       const TypecheckedModule& tm = parsed->typechecked_module();
       AppendDiagnosticFromTypecheck(tm, &result);
@@ -217,20 +219,21 @@ absl::StatusOr<std::vector<verible::lsp::Location>>
 LanguageServerAdapter::FindDefinitions(
     std::string_view uri, const verible::lsp::Position& position) const {
   if (ParseData* parsed = FindParsedForUri(uri); parsed && parsed->ok()) {
-    FileTable& file_table = parsed->import_data.file_table();
+    FileTable& file_table = parsed->file_table();
     const Pos pos = ConvertLspPositionToPos(uri, position, file_table);
     VLOG(1) << "FindDefinition; uri: " << uri << " pos: " << pos;
-    std::optional<Span> maybe_definition_span = xls::dslx::FindDefinition(
-        parsed->module(), pos, parsed->type_info(), parsed->import_data);
-    if (maybe_definition_span.has_value()) {
+    std::optional<const NameDef*> maybe_definition = xls::dslx::FindDefinition(
+        parsed->module(), pos, parsed->type_info(), parsed->import_data());
+    if (maybe_definition.has_value()) {
+      const Span& definition_span = maybe_definition.value()->span();
       VLOG(1) << "FindDefinition; span: "
-              << maybe_definition_span.value().ToString(file_table);
+              << definition_span.ToString(file_table);
       verible::lsp::Location location =
-          ConvertSpanToLspLocation(maybe_definition_span.value());
+          ConvertSpanToLspLocation(definition_span);
       XLS_ASSIGN_OR_RETURN(
-          location.uri, MaybeRelpathToUri(maybe_definition_span->GetFilename(
-                                              parsed->import_data.file_table()),
-                                          dslx_paths_));
+          location.uri,
+          MaybeRelpathToUri(definition_span.GetFilename(parsed->file_table()),
+                            dslx_paths_));
       return std::vector<verible::lsp::Location>{location};
     }
   }
@@ -253,11 +256,11 @@ LanguageServerAdapter::FormatDocument(std::string_view uri) const {
 std::vector<verible::lsp::DocumentLink>
 LanguageServerAdapter::ProvideImportLinks(std::string_view uri) const {
   std::vector<verible::lsp::DocumentLink> result;
-  if (const ParseData* parsed = FindParsedForUri(uri); parsed && parsed->ok()) {
+  if (ParseData* parsed = FindParsedForUri(uri); parsed && parsed->ok()) {
     const Module& module = parsed->module();
     for (const auto& [_, import_node] : module.GetImportByName()) {
       const ImportTokens tok(import_node->subject());
-      absl::StatusOr<ModuleInfo*> info = parsed->import_data.Get(tok);
+      absl::StatusOr<ModuleInfo*> info = parsed->import_data().Get(tok);
       if (!info.ok()) {
         continue;
       }
@@ -277,7 +280,7 @@ LanguageServerAdapter::InlayHint(std::string_view uri,
                                  const verible::lsp::Range& range) const {
   std::vector<verible::lsp::InlayHint> results;
   if (ParseData* parsed = FindParsedForUri(uri); parsed && parsed->ok()) {
-    FileTable& file_table = parsed->import_data.file_table();
+    FileTable& file_table = parsed->file_table();
     const Span want_span = ConvertLspRangeToSpan(uri, range, file_table);
     const Module& module = parsed->module();
     const TypeInfo& type_info = parsed->type_info();
@@ -318,14 +321,14 @@ absl::StatusOr<std::optional<verible::lsp::Range>>
 LanguageServerAdapter::PrepareRename(
     std::string_view uri, const verible::lsp::Position& position) const {
   if (ParseData* parsed = FindParsedForUri(uri); parsed && parsed->ok()) {
-    FileTable& file_table = parsed->import_data.file_table();
+    FileTable& file_table = parsed->file_table();
 
     const Pos pos = ConvertLspPositionToPos(uri, position, file_table);
     VLOG(1) << "FindDefinition; uri: " << uri << " pos: " << pos;
-    std::optional<Span> maybe_definition_span = xls::dslx::FindDefinition(
-        parsed->module(), pos, parsed->type_info(), parsed->import_data);
-    if (maybe_definition_span.has_value()) {
-      return ConvertSpanToLspRange(maybe_definition_span.value());
+    std::optional<const NameDef*> maybe_definition = xls::dslx::FindDefinition(
+        parsed->module(), pos, parsed->type_info(), parsed->import_data());
+    if (maybe_definition.has_value()) {
+      return ConvertSpanToLspRange(maybe_definition.value()->span());
     }
   }
   return std::nullopt;
@@ -357,18 +360,19 @@ LanguageServerAdapter::Rename(std::string_view uri,
                               std::string_view new_name) const {
   std::vector<verible::lsp::TextEdit> edits;
   if (ParseData* parsed = FindParsedForUri(uri); parsed && parsed->ok()) {
-    FileTable& file_table = parsed->import_data.file_table();
+    FileTable& file_table = parsed->file_table();
 
     const Pos pos = ConvertLspPositionToPos(uri, position, file_table);
     VLOG(1) << "FindDefinition; uri: " << uri << " pos: " << pos;
-    const NameDef* name_def = nullptr;
-    xls::dslx::FindDefinition(parsed->module(), pos, parsed->type_info(),
-                              parsed->import_data, &name_def);
-    if (name_def == nullptr) {
+    std::optional<const NameDef*> maybe_name_def = xls::dslx::FindDefinition(
+        parsed->module(), pos, parsed->type_info(), parsed->import_data());
+    if (!maybe_name_def.has_value()) {
       VLOG(1) << "No definition found for attempted rename to: `" << new_name
               << "`";
       return std::nullopt;
     }
+
+    const NameDef* name_def = maybe_name_def.value();
 
     // We always want to edit the original name definition to the new name.
     edits.push_back(verible::lsp::TextEdit{
@@ -416,6 +420,37 @@ LanguageServerAdapter::Rename(std::string_view uri,
     };
   }
   return std::nullopt;
+}
+
+absl::StatusOr<std::vector<verible::lsp::DocumentHighlight>>
+LanguageServerAdapter::DocumentHighlight(
+    std::string_view uri, const verible::lsp::Position& position) const {
+  if (ParseData* parsed = FindParsedForUri(uri); parsed && parsed->ok()) {
+    FileTable& file_table = parsed->file_table();
+    const Pos pos = ConvertLspPositionToPos(uri, position, file_table);
+    VLOG(1) << "FindDefinition; uri: " << uri << " pos: " << pos;
+    const Module& module = parsed->module();
+    std::optional<const NameDef*> maybe_definition = xls::dslx::FindDefinition(
+        module, pos, parsed->type_info(), parsed->import_data());
+    if (maybe_definition.has_value()) {
+      const NameDef* name_def = maybe_definition.value();
+      const Span& definition_span = name_def->span();
+      std::vector<verible::lsp::DocumentHighlight> highlights = {
+          verible::lsp::DocumentHighlight{
+              .range = ConvertSpanToLspRange(definition_span),
+          },
+      };
+      XLS_ASSIGN_OR_RETURN(std::vector<const NameRef*> refs,
+                           CollectNameRefsUnder(&module, name_def));
+      for (const NameRef* ref : refs) {
+        highlights.push_back(verible::lsp::DocumentHighlight{
+            .range = ConvertSpanToLspRange(ref->span()),
+        });
+      }
+      return highlights;
+    }
+  }
+  return std::vector<verible::lsp::DocumentHighlight>{};
 }
 
 }  // namespace xls::dslx

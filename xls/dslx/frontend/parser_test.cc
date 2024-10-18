@@ -28,6 +28,7 @@
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xls/common/casts.h"
@@ -43,9 +44,9 @@
 
 namespace xls::dslx {
 
-using status_testing::IsOkAndHolds;
-using status_testing::StatusIs;
-using testing::HasSubstr;
+using ::absl_testing::IsOkAndHolds;
+using ::absl_testing::StatusIs;
+using ::testing::HasSubstr;
 
 class ParserTest : public ::testing::Test {
  public:
@@ -337,6 +338,25 @@ fn f(my_foo: foo) -> u32 {
 })");
 }
 
+TEST_F(ParserTest, ParseErrorForDuplicateImpl) {
+  constexpr std::string_view kProgram = R"(pub struct foo {
+    a: bits[9],
+    b: bits[16],
+}
+impl foo {
+    const FOO_VAL = u32:5;
+}
+impl foo {
+    const FOO_STRING = "foo";
+})";
+  FileTable file_table;
+  Scanner s{file_table, Fileno(0), std::string(kProgram)};
+  Parser parser{"test", &s};
+  auto module_or = parser.ParseModule();
+  EXPECT_THAT(module_or.status(),
+              IsPosError("ParseError", HasSubstr("can only be defined once")));
+}
+
 TEST(ParserErrorTest, ParseErrorForImplWithFunc) {
   constexpr std::string_view kProgram = R"(pub struct foo {
     a: bits[9],
@@ -355,6 +375,57 @@ impl foo {
   EXPECT_THAT(
       module_or.status(),
       IsPosError("ParseError", HasSubstr("Only constants are supported")));
+}
+
+TEST(ParserErrorTest, ParseErrorForUseOutsideStruct) {
+  constexpr std::string_view kProgram = R"(pub struct foo {
+    a: bits[9],
+    b: bits[16],
+}
+
+impl foo {
+    const FOO_VAL = u32:5;
+}
+
+const MY_FOO = FOO_VAL;
+)";
+  FileTable file_table;
+  Scanner s{file_table, Fileno(0), std::string(kProgram)};
+  Parser parser{"test", &s};
+  auto module_or = parser.ParseModule();
+  EXPECT_THAT(
+      module_or.status(),
+      IsPosError("ParseError", HasSubstr("Cannot find a definition for name")));
+}
+
+TEST(ParserErrorTest, ParseErrorForImplOnBuiltin) {
+  constexpr std::string_view kProgram = R"(impl u32 {
+    const ONE = u32:1;
+})";
+  FileTable file_table;
+  Scanner s{file_table, Fileno(0), std::string(kProgram)};
+  Parser parser{"test", &s};
+  auto module_or = parser.ParseModule();
+  EXPECT_THAT(
+      module_or.status(),
+      IsPosError("ParseError",
+                 HasSubstr("'impl' can only be defined for a 'struct'")));
+}
+
+TEST(ParserErrorTest, ParseErrorForImplOnNonStruct) {
+  constexpr std::string_view kProgram = R"(type foo = u32;
+
+impl foo {
+    const ONE = u32:1;
+})";
+  FileTable file_table;
+  Scanner s{file_table, Fileno(0), std::string(kProgram)};
+  Parser parser{"test", &s};
+  auto module_or = parser.ParseModule();
+  EXPECT_THAT(
+      module_or.status(),
+      IsPosError("ParseError",
+                 HasSubstr("'impl' can only be defined for a 'struct'")));
 }
 
 TEST(ParserErrorTest, ParseErrorForImplWithoutStructDef) {

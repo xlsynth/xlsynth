@@ -25,6 +25,7 @@
 #include "gtest/gtest.h"
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
@@ -46,7 +47,7 @@
 namespace xls::dslx {
 namespace {
 
-using status_testing::IsOkAndHolds;
+using ::absl_testing::IsOkAndHolds;
 using ::testing::ElementsAre;
 
 absl::StatusOr<std::unique_ptr<BytecodeFunction>> EmitBytecodes(
@@ -806,6 +807,41 @@ fn imported_enum_ref() -> import_0::ImportedEnum {
   ASSERT_TRUE(bc->has_data());
   EXPECT_THAT(bytecodes.at(0).value_data(),
               IsOkAndHolds(InterpValue::MakeSBits(4, 2)));
+}
+
+TEST(BytecodeEmitterTest, StructImplConstant) {
+  constexpr std::string_view kBaseProgram = R"(
+struct Empty {}
+
+impl Empty {
+  const MY_CONST = u4:7;
+}
+
+#[test]
+fn struct_const_ref() -> u4 {
+  Empty::MY_CONST
+}
+)";
+
+  auto import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kBaseProgram, "test.x", "test", &import_data));
+
+  XLS_ASSERT_OK_AND_ASSIGN(TestFunction * tf,
+                           tm.module->GetTest("struct_const_ref"));
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<BytecodeFunction> bf,
+                           BytecodeEmitter::Emit(&import_data, tm.type_info,
+                                                 tf->fn(), ParametricEnv()));
+
+  const std::vector<Bytecode>& bytecodes = bf->bytecodes();
+  ASSERT_EQ(bytecodes.size(), 1);
+
+  const Bytecode* bc = bytecodes.data();
+  ASSERT_EQ(bc->op(), Bytecode::Op::kLiteral);
+  ASSERT_TRUE(bc->has_data());
+  EXPECT_THAT(bytecodes.at(0).value_data(),
+              IsOkAndHolds(InterpValue::MakeSBits(4, 7)));
 }
 
 TEST(BytecodeEmitterTest, ImportedConstant) {

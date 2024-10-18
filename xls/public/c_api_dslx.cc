@@ -14,12 +14,30 @@
 
 #include "xls/public/c_api_dslx.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>  // NOLINT
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "absl/log/check.h"
+#include "absl/status/statusor.h"
 #include "absl/types/variant.h"
 #include "xls/common/visitor.h"
 #include "xls/dslx/create_import_data.h"
+#include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/ast_node.h"
+#include "xls/dslx/frontend/module.h"
+#include "xls/dslx/import_data.h"
+#include "xls/dslx/interp_value.h"
 #include "xls/dslx/parse_and_typecheck.h"
+#include "xls/dslx/type_system/type.h"
+#include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/type_system/unwrap_meta_type.h"
 #include "xls/dslx/warning_kind.h"
+#include "xls/ir/value.h"
 #include "xls/public/c_api_impl_helpers.h"
 
 namespace {
@@ -150,6 +168,16 @@ char* xls_dslx_struct_def_get_identifier(struct xls_dslx_struct_def* n) {
   return xls::ToOwnedCString(result);
 }
 
+bool xls_dslx_struct_def_is_parametric(struct xls_dslx_struct_def* n) {
+  auto* cpp_struct_def = reinterpret_cast<xls::dslx::StructDef*>(n);
+  return cpp_struct_def->IsParametric();
+}
+
+int64_t xls_dslx_struct_def_get_member_count(struct xls_dslx_struct_def* n) {
+  auto* cpp_struct_def = reinterpret_cast<xls::dslx::StructDef*>(n);
+  return cpp_struct_def->size();
+}
+
 // -- enum_def
 
 char* xls_dslx_enum_def_get_identifier(struct xls_dslx_enum_def* n) {
@@ -188,6 +216,11 @@ const struct xls_dslx_type* xls_dslx_type_info_get_type_struct_def(
     struct xls_dslx_type_info* type_info,
     struct xls_dslx_struct_def* struct_def) {
   return GetMetaTypeHelper(type_info, struct_def);
+}
+
+const struct xls_dslx_type* xls_dslx_type_info_get_type_struct_member(
+    struct xls_dslx_type_info* type_info, struct xls_dslx_struct_member* struct_member) {
+  return GetMetaTypeHelper(type_info, struct_member);
 }
 
 const struct xls_dslx_type* xls_dslx_type_info_get_type_enum_def(

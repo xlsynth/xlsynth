@@ -257,6 +257,8 @@ std::optional<ModuleMember*> Module::FindMemberWithName(
       }
     } else if (std::holds_alternative<ConstAssert*>(member)) {
       continue;  // These have no name / binding.
+    } else if (std::holds_alternative<Impl*>(member)) {
+      continue;  // These have no name / binding.
     } else {
       LOG(FATAL) << "Unhandled module member variant: "
                  << ToAstNode(member)->GetNodeTypeName();
@@ -352,6 +354,9 @@ absl::Status Module::AddTop(ModuleMember member,
           [](ConstantDef* cd) { return std::make_optional(cd->identifier()); },
           [](EnumDef* ed) { return std::make_optional(ed->identifier()); },
           [](Import* i) { return std::make_optional(i->identifier()); },
+          [](VerbatimNode*) -> std::optional<std::string> {
+            return std::nullopt;
+          },
           [](ConstAssert* n) -> std::optional<std::string> {
             return std::nullopt;
           },
@@ -393,6 +398,7 @@ std::string_view GetModuleMemberTypeName(const ModuleMember& module_member) {
                          [](ConstantDef*) { return "constant-definition"; },
                          [](EnumDef*) { return "enum-definition"; },
                          [](Import*) { return "import"; },
+                         [](VerbatimNode*) { return "verbatim"; },
                          [](ConstAssert*) { return "const-assert"; },
                      },
                      module_member);
@@ -412,6 +418,7 @@ bool IsPublic(const ModuleMember& member) {
                          [](const QuickCheck* m) { return false; },
                          [](const Import* m) { return false; },
                          [](const ConstAssert* m) { return false; },
+                         [](const VerbatimNode*) { return false; },
                      },
                      member);
 }
@@ -438,6 +445,7 @@ NameDef* ModuleMemberGetNameDef(const ModuleMember& mm) {
           [](EnumDef* n) -> NameDef* { return n->name_def(); },
           [](Import* n) -> NameDef* { return &n->name_def(); },
           [](ConstAssert* n) -> NameDef* { return nullptr; },
+          [](VerbatimNode*) -> NameDef* { return nullptr; },
       },
       mm);
 }

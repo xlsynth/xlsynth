@@ -67,7 +67,7 @@ using ColonRefSubjectT =
 // Note: the returned AST node may not be from the same module that the
 // original `type_alias` was from.
 static absl::StatusOr<
-    std::variant<EnumDef*, BuiltinNameDef*, ArrayTypeAnnotation*>>
+    std::variant<EnumDef*, BuiltinNameDef*, ArrayTypeAnnotation*, StructDef*>>
 ResolveTypeAliasToDirectColonRefSubject(ImportData* import_data,
                                         const TypeInfo* type_info,
                                         TypeAlias* type_alias) {
@@ -131,11 +131,14 @@ ResolveTypeAliasToDirectColonRefSubject(ImportData* import_data,
     }
   }
 
+  if (std::holds_alternative<StructDef*>(current_type_definition)) {
+    return std::get<StructDef*>(current_type_definition);
+  }
+
   if (!std::holds_alternative<EnumDef*>(current_type_definition)) {
     return absl::InternalError(
         "ResolveTypeDefToDirectColonRefSubject() can only be called when the "
-        "TypeAlias "
-        "directory or indirectly refers to an EnumDef.");
+        "TypeAlias directly or indirectly refers to an EnumDef or StructDef.");
   }
 
   return std::get<EnumDef*>(current_type_definition);
@@ -252,6 +255,32 @@ absl::Status ValidateNumber(const Number& number, const Type& type) {
       file_table);
 }
 
+static std::optional<StructDef*> TryResolveStructDefFromNode(AstNode* definer) {
+  if (StructDef* struct_def = dynamic_cast<StructDef*>(definer);
+      struct_def != nullptr) {
+    return struct_def;
+  }
+
+  TypeRefTypeAnnotation* type_ref = nullptr;
+  if (Param* param = dynamic_cast<Param*>(definer); param != nullptr) {
+    type_ref = dynamic_cast<TypeRefTypeAnnotation*>(param->type_annotation());
+  } else if (StructInstance* struct_instance =
+                 dynamic_cast<StructInstance*>(definer);
+             struct_instance != nullptr) {
+    type_ref =
+        dynamic_cast<TypeRefTypeAnnotation*>(struct_instance->struct_ref());
+  }
+
+  if (type_ref != nullptr) {
+    if (absl::StatusOr<StructDef*> struct_def =
+            ResolveLocalStructDef(type_ref->type_ref()->type_definition());
+        struct_def.ok()) {
+      return struct_def.value();
+    }
+  }
+  return std::nullopt;
+}
+
 // When a ColonRef's subject is a NameRef, this resolves the entity referred to
 // by that ColonRef. In a valid program that can only be a limited set of
 // things, which is reflected in the return type provided.
@@ -326,8 +355,12 @@ static absl::StatusOr<ColonRefSubjectT> ResolveColonRefNameRefSubject(
     return enum_def;
   }
 
-  TypeAlias* type_alias = dynamic_cast<TypeAlias*>(definer);
+  std::optional<StructDef*> struct_def = TryResolveStructDefFromNode(definer);
+  if (struct_def.has_value()) {
+    return struct_def.value();
+  }
 
+  TypeAlias* type_alias = dynamic_cast<TypeAlias*>(definer);
   if (type_alias == nullptr) {
     return make_subject_error();
   }
@@ -407,28 +440,30 @@ absl::StatusOr<ColonRefSubjectT> ResolveColonRefSubjectForTypeChecking(
       td.value());
 }
 
-absl::StatusOr<
-    std::variant<Module*, EnumDef*, BuiltinNameDef*, ArrayTypeAnnotation*>>
+absl::StatusOr<std::variant<Module*, EnumDef*, BuiltinNameDef*,
+                            ArrayTypeAnnotation*, Impl*>>
 ResolveColonRefSubjectAfterTypeChecking(ImportData* import_data,
                                         const TypeInfo* type_info,
                                         const ColonRef* colon_ref) {
   XLS_ASSIGN_OR_RETURN(auto result, ResolveColonRefSubjectForTypeChecking(
                                         import_data, type_info, colon_ref));
-  using ReturnT = absl::StatusOr<
-      std::variant<Module*, EnumDef*, BuiltinNameDef*, ArrayTypeAnnotation*>>;
+  using ReturnT =
+      absl::StatusOr<std::variant<Module*, EnumDef*, BuiltinNameDef*,
+                                  ArrayTypeAnnotation*, Impl*>>;
   return absl::visit(
       Visitor{
           [](Module* x) -> ReturnT { return x; },
           [](EnumDef* x) -> ReturnT { return x; },
           [](BuiltinNameDef* x) -> ReturnT { return x; },
           [](ArrayTypeAnnotation* x) -> ReturnT { return x; },
-          [](StructDef*) -> ReturnT {
-            return absl::InternalError(
-                "After type checking colon-ref subject cannot be a StructDef");
+          [](StructDef* x) -> ReturnT {
+            std::optional<Impl*> impl = x->impl();
+            XLS_RET_CHECK(impl.has_value());
+            return impl.value();
           },
           [](ColonRef*) -> ReturnT {
             return absl::InternalError(
-                "After type checking colon-ref subject cannot be a StructDef");
+                "After type checking colon-ref subject cannot be a ColonRef");
           },
       },
       result);

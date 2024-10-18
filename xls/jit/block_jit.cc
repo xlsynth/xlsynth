@@ -28,14 +28,12 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
 #include "xls/codegen/block_inlining_pass.h"
 #include "xls/codegen/codegen_options.h"
 #include "xls/codegen/codegen_pass.h"
 #include "xls/codegen/materialize_fifos_pass.h"
-#include "xls/common/casts.h"
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/interpreter/block_evaluator.h"
@@ -112,8 +110,9 @@ class ElaboratedBlockJitContinuation : public BlockJitContinuation {
     absl::flat_hash_map<std::string, Value> base =
         BlockJitContinuation::GetRegistersMap();
     for (const auto& [orig, rename] : reg_rename_map_) {
-      if (base.contains(rename)) {
-        base[orig] = base.extract(rename).mapped();
+      if (auto node = base.extract(rename)) {
+        node.key() = orig;
+        base.insert(std::move(node));
       }
     }
     return base;
@@ -122,8 +121,9 @@ class ElaboratedBlockJitContinuation : public BlockJitContinuation {
       const override {
     auto base = BlockJitContinuation::GetRegisterIndices();
     for (const auto& [orig, rename] : reg_rename_map_) {
-      if (base.contains(rename)) {
-        base[orig] = base.extract(rename).mapped();
+      if (auto node = base.extract(rename)) {
+        node.key() = orig;
+        base.insert(std::move(node));
       }
     }
     return base;
@@ -132,8 +132,9 @@ class ElaboratedBlockJitContinuation : public BlockJitContinuation {
       const absl::flat_hash_map<std::string, Value>& regs) override {
     absl::flat_hash_map<std::string, Value> translated_regs = regs;
     for (const auto& [orig, rename] : reg_rename_map_) {
-      if (translated_regs.contains(orig)) {
-        translated_regs[rename] = translated_regs.extract(orig).mapped();
+      if (auto node = translated_regs.extract(orig)) {
+        node.key() = rename;
+        translated_regs.insert(std::move(node));
       }
     }
     // Registers inserted to implement elaboration don't have any analogue on
@@ -548,23 +549,6 @@ absl::flat_hash_map<std::string, Value> BlockJitContinuation::GetRegistersMap()
 }
 
 namespace {
-absl::StatusOr<absl::flat_hash_map<std::string, Value>> GetZeroRegisterValues(
-    const BlockElaboration& elab) {
-  absl::flat_hash_map<std::string, Value> regs;
-  for (BlockInstance* inst : elab.instances()) {
-    if (!inst->block()) {
-      continue;
-    }
-    for (Register* reg : inst->block().value()->GetRegisters()) {
-      regs[absl::StrCat(inst->RegisterPrefix(), reg->name())] =
-          ZeroOfType(reg->type());
-    }
-  }
-  return regs;
-}
-}  // namespace
-
-namespace {
 // Helper adapter to implement the interpreter-focused block-continuation api
 // used by eval_proc_main. This holds live all the values needed to run the
 // block-jit.
@@ -597,6 +581,7 @@ class BlockContinuationJitWrapper final : public BlockContinuation {
   }
   absl::Status SetRegisters(
       const absl::flat_hash_map<std::string, Value>& regs) final {
+    temporary_regs_.reset();
     return continuation_->SetRegisters(regs);
   }
 

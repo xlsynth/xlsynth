@@ -28,7 +28,6 @@
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
 #include "xls/common/math_util.h"
-#include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/estimators/delay_model/delay_estimator.h"
 #include "xls/estimators/delay_model/delay_info.pb.h"
@@ -101,10 +100,14 @@ absl::StatusOr<std::vector<CriticalPathEntry>> AnalyzeCriticalPath(
     }
   }
 
-  // Starting with the operation with the longest pat hdelay, walk back up its
+  // `latest_entry` has no value for empty FunctionBases.
+  if (!latest_entry.has_value()) {
+    return std::vector<CriticalPathEntry>();
+  }
+
+  // Starting with the operation with the longest path delay, walk back up its
   // critical path constructing CriticalPathEntry's as we go.
   std::vector<CriticalPathEntry> critical_path;
-  XLS_RET_CHECK(latest_entry.has_value());
   NodeEntry* entry = &(latest_entry.value());
   while (true) {
     critical_path.push_back(CriticalPathEntry{

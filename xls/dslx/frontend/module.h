@@ -43,7 +43,7 @@ namespace xls::dslx {
 using ModuleMember =
     std::variant<Function*, Proc*, TestFunction*, TestProc*, QuickCheck*,
                  TypeAlias*, StructDef*, ConstantDef*, EnumDef*, Import*,
-                 ConstAssert*, Impl*>;
+                 ConstAssert*, Impl*, VerbatimNode*>;
 
 // Note: this returns nullptr for constructs that do not define a name, e.g.
 // `ConstAssert`.
@@ -217,6 +217,8 @@ class Module : public AstNode {
     return GetTopWithT<StructDef>();
   }
   std::vector<Proc*> GetProcs() const { return GetTopWithT<Proc>(); }
+
+  std::vector<Impl*> GetImpls() const { return GetTopWithT<Impl>(); }
 
   // Returns the identifiers for all functions within this module (in the order
   // in which they are defined).

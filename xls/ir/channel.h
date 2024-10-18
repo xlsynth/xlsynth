@@ -31,7 +31,6 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
-#include "xls/common/status/ret_check.h"
 #include "xls/ir/channel.pb.h"
 #include "xls/ir/channel_ops.h"
 #include "xls/ir/type.h"
@@ -149,15 +148,23 @@ class Channel {
     absl::Format(&sink, "%s", p.name());
   }
 
-  // Comparator used for sorting by name.
+  // Comparators used for sorting by name/id.
   static bool NameLessThan(const Channel* a, const Channel* b) {
     return a->name() < b->name();
+  }
+  static bool IdLessThan(const Channel* a, const Channel* b) {
+    return a->id() < b->id();
   }
 
   // Struct form for passing comparators as template arguments.
   struct NameLessThan {
     bool operator()(const Channel* a, const Channel* b) const {
       return Channel::NameLessThan(a, b);
+    }
+  };
+  struct IdLessThan {
+    bool operator()(const Channel* a, const Channel* b) const {
+      return Channel::IdLessThan(a, b);
     }
   };
 
@@ -244,7 +251,7 @@ enum class ChannelStrictness : uint8_t {
   kArbitraryStaticOrder,
 };
 
-constexpr ChannelStrictness kDefaultChannelStrictness =
+inline constexpr ChannelStrictness kDefaultChannelStrictness =
     ChannelStrictness::kProvenMutuallyExclusive;
 
 absl::StatusOr<ChannelStrictness> ChannelStrictnessFromString(
@@ -347,6 +354,14 @@ enum class Direction : int8_t { kSend, kReceive };
 std::string DirectionToString(Direction direction);
 absl::StatusOr<Direction> DirectionFromString(std::string_view str);
 std::ostream& operator<<(std::ostream& os, Direction direction);
+inline Direction InvertDirection(Direction d) {
+  switch (d) {
+    case Direction::kSend:
+      return Direction::kReceive;
+    case Direction::kReceive:
+      return Direction::kSend;
+  }
+}
 
 // Abstraction representing a reference to a channel. The reference can be
 // typed to refer to the send or receive side. With proc-scoped channels (new
@@ -364,7 +379,7 @@ class ChannelReference {
   ChannelReference(std::string_view name, Type* type, ChannelKind kind,
                    std::optional<ChannelStrictness> strictness)
       : name_(name), type_(type), kind_(kind), strictness_(strictness) {}
-  virtual ~ChannelReference() {}
+  virtual ~ChannelReference() = default;
 
   // Like most IR constructs, ChannelReferences are passed around by pointer
   // and are not copyable.
@@ -391,7 +406,7 @@ class SendChannelReference : public ChannelReference {
   SendChannelReference(std::string_view name, Type* type, ChannelKind kind,
                        std::optional<ChannelStrictness> strictness)
       : ChannelReference(name, type, kind, strictness) {}
-  ~SendChannelReference() override {}
+  ~SendChannelReference() override = default;
   Direction direction() const override { return Direction::kSend; }
 };
 
@@ -400,7 +415,7 @@ class ReceiveChannelReference : public ChannelReference {
   ReceiveChannelReference(std::string_view name, Type* type, ChannelKind kind,
                           std::optional<ChannelStrictness> strictness)
       : ChannelReference(name, type, kind, strictness) {}
-  ~ReceiveChannelReference() override {}
+  ~ReceiveChannelReference() override = default;
   Direction direction() const override { return Direction::kReceive; }
 };
 
@@ -420,10 +435,21 @@ using ChannelRef = std::variant<Channel*, ChannelReference*>;
 using SendChannelRef = std::variant<Channel*, SendChannelReference*>;
 using ReceiveChannelRef = std::variant<Channel*, ReceiveChannelReference*>;
 
+// Converts a send/receive ChannelRef into a generic ChannelRef.
+ChannelRef AsChannelRef(SendChannelRef ref);
+ChannelRef AsChannelRef(ReceiveChannelRef ref);
+
+// Converts a base ChannelRef into a send/receive form. CHECK fails if the
+// ChannelRef is not of the appropriate direction.
+SendChannelRef AsSendChannelRefOrDie(ChannelRef ref);
+ReceiveChannelRef AsReceiveChannelRefOrDie(ChannelRef ref);
+
 // Return the name/type/kind of a channel reference.
 std::string_view ChannelRefName(ChannelRef ref);
 Type* ChannelRefType(ChannelRef ref);
 ChannelKind ChannelRefKind(ChannelRef ref);
+std::optional<ChannelStrictness> ChannelRefStrictness(ChannelRef ref);
+std::string ChannelRefToString(ChannelRef ref);
 
 }  // namespace xls
 

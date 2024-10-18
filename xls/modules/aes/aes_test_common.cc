@@ -13,7 +13,6 @@
 // limitations under the License.
 #include "xls/modules/aes/aes_test_common.h"
 
-#include <array>
 #include <cstdint>
 #include <iostream>
 #include <string>
@@ -104,13 +103,6 @@ absl::StatusOr<Block> ValueToBlock(const Value& value) {
   }
 
   return result;
-}
-
-static void InitVectorToBuffer(const InitVector& iv,
-                               std::array<uint8_t, kInitVectorBytes>* buffer) {
-  for (int i = kInitVectorBytes - 1; i >= 0; i--) {
-    buffer->data()[i] = iv[kInitVectorBytes - 1 - i];
-  }
 }
 
 absl::StatusOr<Value> KeyToValue(const Key& key) {

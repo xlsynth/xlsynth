@@ -14,6 +14,7 @@
 
 #include "xls/public/c_api.h"
 
+#include <cstdint>
 #include <filesystem>  // NOLINT
 #include <string>
 #include <string_view>
@@ -30,7 +31,7 @@
 
 namespace {
 
-using testing::HasSubstr;
+using ::testing::HasSubstr;
 
 // Smoke test for `xls_convert_dslx_to_ir` C API.
 TEST(XlsCApiTest, ConvertDslxToIrSimple) {
@@ -543,6 +544,9 @@ enum MyEnum : u5 {
     char* identifier = xls_dslx_struct_def_get_identifier(struct_def);
     absl::Cleanup free_identifier([=] { xls_c_str_free(identifier); });
     EXPECT_EQ(std::string_view{identifier}, std::string_view{"MyStruct"});
+
+    EXPECT_FALSE(xls_dslx_struct_def_is_parametric(struct_def));
+    EXPECT_EQ(xls_dslx_struct_def_get_member_count(struct_def), 2);
 
     // Get the concrete type that this resolves to.
     const xls_dslx_type* struct_def_type =

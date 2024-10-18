@@ -14,6 +14,7 @@
 
 #include "xls/dslx/lsp/language_server_adapter.h"
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -22,6 +23,8 @@
 #include "gtest/gtest.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_format.h"
 #include "external/verible/common/lsp/lsp-protocol.h"
@@ -33,8 +36,7 @@
 namespace xls::dslx {
 namespace {
 
-using status_testing::IsOkAndHolds;
-using status_testing::StatusIs;
+using ::absl_testing::StatusIs;
 
 std::string DebugString(const verible::lsp::Position& pos) {
   return absl::StrFormat("Position{.line=%d, .character=%d}", pos.line,
@@ -267,7 +269,7 @@ fn main() { imported::f() }
 
 TEST(LanguageServerAdapterTest, RenameForParameter) {
   LanguageServerAdapter adapter(kDefaultDslxStdlibPath, /*dslx_paths=*/{"."});
-  constexpr std::string_view kUri = "memfile://test.x";
+  constexpr char kUri[] = "memfile://test.x";
   XLS_ASSERT_OK(adapter.Update(kUri, R"(fn f(x: u32) -> u32 {
   let y = x;
   let z = y;
@@ -299,7 +301,7 @@ TEST(LanguageServerAdapterTest, RenameForParameter) {
 
 TEST(LanguageServerAdapterTest, RenameForModuleScopedConstant) {
   LanguageServerAdapter adapter(kDefaultDslxStdlibPath, /*dslx_paths=*/{"."});
-  constexpr std::string_view kUri = "memfile://test.x";
+  constexpr char kUri[] = "memfile://test.x";
   XLS_ASSERT_OK(adapter.Update(kUri, R"(const FOO = u32:42;
 
 const BAR: u32 = FOO + FOO;)"));
@@ -349,6 +351,34 @@ const BAR: u32 = FOO + FOO;)"));
       adapter.Rename(kUri, kWantRange.start, "FT");
   XLS_EXPECT_OK(edit.status());
   EXPECT_EQ(edit.value(), std::nullopt);
+}
+
+TEST(LanguageServerAdapterTest, DocumentHighlight) {
+  LanguageServerAdapter adapter(kDefaultDslxStdlibPath, /*dslx_paths=*/{"."});
+  constexpr std::string_view kUri = "memfile://test.x";
+  XLS_ASSERT_OK(adapter.Update(kUri, R"(pub const FOO = u32:42;
+
+const BAR: u32 = FOO + FOO;
+
+fn f() -> u32 { FOO })"));
+  const auto kTargetPos = verible::lsp::Position{4, 16};
+  absl::StatusOr<std::vector<verible::lsp::DocumentHighlight>> highlights_or =
+      adapter.DocumentHighlight(kUri, kTargetPos);
+  XLS_EXPECT_OK(highlights_or.status());
+  const auto& highlights = highlights_or.value();
+
+  // There are four instances in the document including the definition.
+  EXPECT_EQ(highlights.size(), 4);
+
+  // Definition comes first.
+  EXPECT_EQ(highlights[0].range.start.line, 0);
+
+  // Then uses in the const.
+  EXPECT_EQ(highlights[1].range.start.line, 2);
+  EXPECT_EQ(highlights[2].range.start.line, 2);
+
+  // Then use in the function definition.
+  EXPECT_EQ(highlights[3].range.start.line, 4);
 }
 
 }  // namespace

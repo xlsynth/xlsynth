@@ -23,6 +23,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
@@ -36,8 +37,8 @@ namespace xls {
 namespace verilog {
 namespace {
 
-using status_testing::IsOkAndHolds;
-using status_testing::StatusIs;
+using ::absl_testing::IsOkAndHolds;
+using ::absl_testing::StatusIs;
 using ::testing::HasSubstr;
 
 class VastTest : public testing::TestWithParam<bool> {
@@ -508,6 +509,15 @@ TEST_P(VastTest, Literals) {
                 ->Emit(nullptr));
   EXPECT_EQ("42'h000_0000_3039",
             f.Literal(UBits(12345, 42), SourceInfo(), FormatPreference::kHex)
+                ->Emit(nullptr));
+  EXPECT_EQ("1025'b0",
+            f.Literal(UBits(0, 1025), SourceInfo(), FormatPreference::kBinary)
+                ->Emit(nullptr));
+  EXPECT_EQ("1025'h0",
+            f.Literal(UBits(0, 1025), SourceInfo(), FormatPreference::kHex)
+                ->Emit(nullptr));
+  EXPECT_EQ("1025'd0",
+            f.Literal(UBits(0, 1025), SourceInfo(), FormatPreference::kDefault)
                 ->Emit(nullptr));
 
   EXPECT_EQ("13579", f.PlainLiteral(13579, SourceInfo())->Emit(nullptr));

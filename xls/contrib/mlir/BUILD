@@ -217,29 +217,14 @@ cc_library(
         ":xls_ops_inc_gen",
         ":xls_ops_typedefs_inc_gen",
         "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:Analysis",
-        "@llvm-project//mlir:ArithDialect",
-        "@llvm-project//mlir:BytecodeOpInterface",
         "@llvm-project//mlir:CallOpInterfaces",
-        "@llvm-project//mlir:ComplexDialect",
-        "@llvm-project//mlir:ControlFlowInterfaces",
-        "@llvm-project//mlir:Dialect",
         "@llvm-project//mlir:FuncDialect",
-        "@llvm-project//mlir:FunctionInterfaces",
         "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:InferTypeOpInterface",
         "@llvm-project//mlir:InliningUtils",
-        "@llvm-project//mlir:LLVMDialect",
-        "@llvm-project//mlir:MemRefDialect",
-        "@llvm-project//mlir:Pass",
-        "@llvm-project//mlir:QuantOps",
         "@llvm-project//mlir:ShapeDialect",
         "@llvm-project//mlir:SideEffectInterfaces",
-        "@llvm-project//mlir:SparseTensorDialect",
         "@llvm-project//mlir:Support",
-        "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:TransformUtils",
-        "@llvm-project//mlir:Transforms",
     ],
 )
 
@@ -266,8 +251,6 @@ cc_library(
         ":arith_to_xls_patterns_inc_gen",
         ":mlir_xls",
         ":xls_transforms_passes_inc_gen",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:string_view",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
@@ -374,6 +357,7 @@ cc_library(
         ":arith_to_xls",  # buildcleaner: keep
         ":expand_macro_ops",  # buildcleaner: keep
         ":index_type_conversion",  # buildcleaner: keep
+        ":instantiate_eprocs",  # buildcleaner: keep
         ":math_to_xls",  # buildcleaner: keep
         ":normalize_xls_calls",  # buildcleaner: keep
         ":proc_elaboration",  # buildcleaner: keep
@@ -381,6 +365,7 @@ cc_library(
         ":scf_to_xls",  # buildcleaner: keep
         ":transforms/lower_counted_for",  # buildcleaner: keep
         ":xls_transforms_passes",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Transforms",
     ],
@@ -393,6 +378,7 @@ cc_library(
         ":mlir_xls",
         ":xls_transforms_passes_inc_gen",
         "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
@@ -416,6 +402,26 @@ cc_library(
         "@com_google_absl//absl/strings:str_format",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+    ],
+)
+
+cc_library(
+    name = "instantiate_eprocs",
+    srcs = ["transforms/instantiate_eprocs.cc"],
+    deps = [
+        ":interpreter",
+        ":mlir_xls",
+        ":xls_transforms_passes",
+        ":xls_transforms_passes_inc_gen",
+        "//xls/common/status:status_macros",
+        "@com_google_absl//absl/cleanup",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings:str_format",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TransformUtils",
     ],
 )
 
@@ -426,7 +432,6 @@ cc_library(
         ":mlir_xls",
         ":xls_transforms_passes",
         ":xls_transforms_passes_inc_gen",
-        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TransformUtils",
@@ -439,6 +444,8 @@ cc_binary(
     deps = [
         ":arith_to_xls",
         ":expand_macro_ops",
+        ":extraction_utils",
+        ":instantiate_eprocs",
         ":mlir_xls",
         ":normalize_xls_calls",
         ":proc_elaboration",
@@ -451,10 +458,8 @@ cc_binary(
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AllExtensions",
         "@llvm-project//mlir:AllPassesAndDialects",
-        "@llvm-project//mlir:IR",
         "@llvm-project//mlir:MlirOptLib",
         "@llvm-project//mlir:Pass",
-        "@llvm-project//mlir:Support",
     ],
 )
 
@@ -466,11 +471,18 @@ cc_library(
         ":mlir_xls",
         "//xls/common/file:filesystem",
         "//xls/common/file:get_runfile_path",
-        "//xls/public:c_api",
+        "//xls/ir:bits",
+        "//xls/ir:source_location",
         "//xls/public:function_builder",
         "//xls/public:ir",
         "//xls/public:ir_parser",
         "//xls/public:runtime_build_actions",
+        "//xls/tools:codegen_flags",
+        "//xls/tools:codegen_flags_cc_proto",
+        "//xls/tools:opt",
+        "//xls/tools:scheduling_options_flags",
+        "//xls/tools:scheduling_options_flags_cc_proto",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
@@ -478,17 +490,12 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:AllExtensions",
-        "@llvm-project//mlir:AllPassesAndDialects",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:MlirOptLib",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Support",
-        "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:Transforms",
-        "@llvm-project//mlir:TranslateLib",
     ],
 )
 
@@ -499,28 +506,15 @@ cc_binary(
         "stdlib/fp_ext_trunc.x",
     ],
     deps = [
-        ":mlir_xls",
         ":xls_dialect_registration",
         ":xls_translate_lib",
         "//xls/public:c_api",
-        "//xls/public:function_builder",
-        "//xls/public:ir",
-        "//xls/public:ir_parser",
-        "//xls/public:runtime_build_actions",
-        "@com_google_absl//absl/container:inlined_vector",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AllExtensions",
         "@llvm-project//mlir:AllPassesAndDialects",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:MlirOptLib",
-        "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:TranslateLib",
@@ -553,9 +547,9 @@ cc_test(
     deps = [
         ":interpreter",
         "//xls/common:xls_gunit_main",
-        "//xls/common/status:matchers",
         "//xls/common/status:status_macros",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest",
         "@llvm-project//llvm:Support",
@@ -563,5 +557,20 @@ cc_test(
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Parser",
+    ],
+)
+
+cc_library(
+    name = "extraction_utils",
+    srcs = ["util/extraction_utils.cc"],
+    hdrs = ["util/extraction_utils.h"],
+    deps = [
+        ":mlir_xls",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:Analysis",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
     ],
 )

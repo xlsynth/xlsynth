@@ -19,13 +19,14 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "xls/common/status/matchers.h"
 
 namespace xls::noc {
 namespace {
 
+using ::absl_testing::StatusIs;
 using ::testing::HasSubstr;
-using ::xls::status_testing::StatusIs;
 
 TEST(ArbitraryBaseNumberTest, AccessFields) {
   ArbitraryBaseNumber number(1, 2);
@@ -39,7 +40,7 @@ TEST(ArbitraryBaseNumberTest, AddOne) {
   EXPECT_TRUE(number.AddOne());
 }
 
-// Increment upto 10 using a four-digit-base-two integer number and retrieve
+// Increment up to 10 using a four-digit-base-two integer number and retrieve
 // value.
 TEST(ArbitraryBaseNumberTest, GetValue) {
   ArbitraryBaseNumber number(4, 2);
@@ -49,7 +50,7 @@ TEST(ArbitraryBaseNumberTest, GetValue) {
   EXPECT_EQ(number.GetValue().value(), 10);
 }
 
-// Increment upto 10 using a four-digit-base-two integer number and retrieve
+// Increment up to 10 using a four-digit-base-two integer number and retrieve
 // value from index one.
 TEST(ArbitraryBaseNumberTest, GetValueIndex) {
   ArbitraryBaseNumber number(4, 2);
@@ -59,7 +60,7 @@ TEST(ArbitraryBaseNumberTest, GetValueIndex) {
   EXPECT_EQ(number.GetValue(1).value(), 5);
 }
 
-// Increment upto 10 and reset integer number.
+// Increment up to 10 and reset integer number.
 TEST(ArbitraryBaseNumberTest, Reset) {
   ArbitraryBaseNumber number(4, 2);
   for (int64_t count = 0; count < 10; count++) {

@@ -15,7 +15,6 @@
 #include "xls/solvers/z3_ir_translator.h"
 
 #include <algorithm>
-#include <compare>
 #include <cstdint>
 #include <functional>
 #include <iterator>
@@ -551,6 +550,19 @@ absl::Status IrTranslator::HandleNe(CompareOp* ne) {
                                                 GetValue(ne->operand(1)),
                                                 ne->operand(0)->GetType(), t));
   NoteTranslation(ne, result);
+  return seh.status();
+}
+
+absl::Status IrTranslator::HandleGate(Gate* gate) {
+  Z3OpTranslator t(ctx_);
+  ScopedErrorHandler seh(ctx_);
+  XLS_ASSIGN_OR_RETURN(
+      Z3_ast zero,
+      TranslateLiteralValue(/*has_nonconcat_uses=*/true, gate->GetType(),
+                            ZeroOfType(gate->GetType())));
+  NoteTranslation(gate,
+                  Z3_mk_ite(ctx_, t.NeZeroBool(GetValue(gate->condition())),
+                            GetValue(gate->data()), zero));
   return seh.status();
 }
 

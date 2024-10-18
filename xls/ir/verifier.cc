@@ -16,7 +16,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <deque>
 #include <memory>
 #include <optional>
 #include <string>
@@ -52,6 +51,7 @@
 #include "xls/ir/instantiation.h"
 #include "xls/ir/ir_scanner.h"
 #include "xls/ir/node.h"
+#include "xls/ir/node_util.h"
 #include "xls/ir/nodes.h"
 #include "xls/ir/op.h"
 #include "xls/ir/package.h"
@@ -71,8 +71,16 @@ namespace {
 
 using ::absl::StrFormat;
 
-absl::Status VerifyNodeIdUnique(Node* node, absl::flat_hash_set<int64_t>* ids) {
-  if (!ids->insert(node->id()).second) {
+absl::Status VerifyNodeIdUnique(Node* node, std::vector<bool>* ids_seen,
+                                int64_t* max_id_seen) {
+  const int64_t id = node->id();
+  if (id >= ids_seen->size()) {
+    return absl::InternalError(
+        absl::StrFormat("ID %d larger than expected max id in package", id));
+  }
+  *max_id_seen = std::max(id, *max_id_seen);
+
+  if ((*ids_seen)[id]) {
     // Find locations of all nodes in the package with this node ID for error
     // message.
     std::vector<std::string> location_strings;
@@ -87,6 +95,7 @@ absl::Status VerifyNodeIdUnique(Node* node, absl::flat_hash_set<int64_t>* ids) {
         "ID %d is not unique; source locations of nodes with same id:\n%s",
         node->id(), absl::StrJoin(location_strings, ", ")));
   }
+  (*ids_seen)[id] = true;
   return absl::OkStatus();
 }
 
@@ -112,10 +121,10 @@ absl::Status VerifyFunctionBase(FunctionBase* function) {
   }
 
   // Verify ids are unique within the function.
-  absl::flat_hash_set<int64_t> ids;
-  ids.reserve(function->node_count());
+  std::vector<bool> ids_seen(function->package()->next_node_id());
+  int64_t max_id_seen = -1;
   for (Node* node : function->nodes()) {
-    XLS_RETURN_IF_ERROR(VerifyNodeIdUnique(node, &ids));
+    XLS_RETURN_IF_ERROR(VerifyNodeIdUnique(node, &ids_seen, &max_id_seen));
   }
 
   // Verify that there are no cycles in the node graph.
@@ -155,91 +164,6 @@ absl::Status VerifyFunctionBase(FunctionBase* function) {
       << "Number of param nodes not equal to Function::params() size for "
          "function "
       << function->name();
-
-  return absl::OkStatus();
-}
-
-// Returns the channel used by the given send or receive node. Returns an error
-// if the given node is not a send or receive.
-absl::StatusOr<Channel*> GetSendOrReceiveChannel(Node* node) {
-  if (node->Is<Send>()) {
-    return node->package()->GetChannel(node->As<Send>()->channel_name());
-  }
-  if (node->Is<Receive>()) {
-    return node->package()->GetChannel(node->As<Receive>()->channel_name());
-  }
-  return absl::InternalError(absl::StrFormat(
-      "Node is not a send or receive node: %s", node->ToString()));
-}
-
-// Verify that all side-effecting operation which produce tokens in the given
-// FunctionBase are connected. Tokens for these operations should flow from the
-// source token to the sink token.
-absl::Status VerifyTokenConnectivity(Node* source_token, Node* sink_token,
-                                     FunctionBase* f) {
-  absl::flat_hash_set<Node*> visited;
-  std::deque<Node*> worklist;
-  auto maybe_add_to_worklist = [&](Node* n) {
-    if (visited.contains(n)) {
-      return;
-    }
-    worklist.push_back(n);
-    visited.insert(n);
-  };
-
-  // Verify connectivity to source param.
-  absl::flat_hash_set<Node*> connected_to_source;
-  maybe_add_to_worklist(source_token);
-  while (!worklist.empty()) {
-    Node* node = worklist.front();
-    worklist.pop_front();
-    connected_to_source.insert(node);
-    if (TypeHasToken(node->GetType())) {
-      for (Node* user : node->users()) {
-        maybe_add_to_worklist(user);
-      }
-    }
-  }
-
-  // Verify connectivity to sink token.
-  absl::flat_hash_set<Node*> connected_to_sink;
-  visited.clear();
-  maybe_add_to_worklist(sink_token);
-  while (!worklist.empty()) {
-    Node* node = worklist.front();
-    worklist.pop_front();
-    connected_to_sink.insert(node);
-    for (Node* operand : node->operands()) {
-      if (TypeHasToken(operand->GetType())) {
-        maybe_add_to_worklist(operand);
-      }
-    }
-  }
-
-  for (Node* node : f->nodes()) {
-    if (TypeHasToken(node->GetType()) && OpIsSideEffecting(node->op())) {
-      if (!connected_to_source.contains(node)) {
-        return absl::InternalError(absl::StrFormat(
-            "Side-effecting token-typed nodes must be connected to the source "
-            "token via a path of tokens: %s.",
-            node->GetName()));
-      }
-      if (!connected_to_sink.contains(node)) {
-        return absl::InternalError(
-            absl::StrFormat("Side-effecting token-typed nodes must be "
-                            "connected to the sink token value "
-                            "via a path of tokens: %s.",
-                            node->GetName()));
-      }
-    }
-  }
-
-  if (!connected_to_source.contains(sink_token)) {
-    return absl::InternalError(
-        absl::StrFormat("The sink token must be connected to the token "
-                        "parameter via a path of tokens: %s.",
-                        sink_token->GetName()));
-  }
 
   return absl::OkStatus();
 }
@@ -298,11 +222,11 @@ absl::Status VerifyChannels(Package* package, bool codegen) {
     }
     for (Node* node : TopoSort(proc.get())) {
       if (node->Is<Send>()) {
-        XLS_ASSIGN_OR_RETURN(Channel * channel, GetSendOrReceiveChannel(node));
+        XLS_ASSIGN_OR_RETURN(Channel * channel, GetChannelUsedByNode(node));
         send_nodes[channel].push_back(node);
       }
       if (node->Is<Receive>()) {
-        XLS_ASSIGN_OR_RETURN(Channel * channel, GetSendOrReceiveChannel(node));
+        XLS_ASSIGN_OR_RETURN(Channel * channel, GetChannelUsedByNode(node));
         receive_nodes[channel].push_back(node);
       }
     }
@@ -533,22 +457,18 @@ absl::Status VerifyPackage(Package* package, bool codegen) {
 
   // Verify node IDs are unique within the package and uplinks point to this
   // package.
-  absl::flat_hash_set<int64_t> ids;
-  ids.reserve(package->GetNodeCount());
+  std::vector<bool> ids_seen(package->next_node_id());
+  int64_t max_id_seen = -1;
   for (FunctionBase* function : package->GetFunctionBases()) {
     XLS_RET_CHECK(function->package() == package);
     for (Node* node : function->nodes()) {
-      XLS_RETURN_IF_ERROR(VerifyNodeIdUnique(node, &ids));
+      XLS_RETURN_IF_ERROR(VerifyNodeIdUnique(node, &ids_seen, &max_id_seen));
       XLS_RET_CHECK(node->package() == package);
     }
   }
 
   // Ensure that the package's "next ID" is not in the space of IDs currently
   // occupied by the package's nodes.
-  int64_t max_id_seen = -1;
-  for (const auto& item : ids) {
-    max_id_seen = std::max(item, max_id_seen);
-  }
   XLS_RET_CHECK_GT(package->next_node_id(), max_id_seen);
 
   // Verify function, proc, block names are unique among functions/procs/blocks.

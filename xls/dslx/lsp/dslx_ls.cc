@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <filesystem>  // NOLINT
 #include <iostream>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -57,11 +58,11 @@ namespace {
 
 namespace fs = std::filesystem;
 
-using verible::lsp::BufferCollection;
-using verible::lsp::EditTextBuffer;
-using verible::lsp::InitializeResult;
-using verible::lsp::JsonRpcDispatcher;
-using verible::lsp::MessageStreamSplitter;
+using ::verible::lsp::BufferCollection;
+using ::verible::lsp::EditTextBuffer;
+using ::verible::lsp::InitializeResult;
+using ::verible::lsp::JsonRpcDispatcher;
+using ::verible::lsp::MessageStreamSplitter;
 
 // The "initialize" method requests server capabilities.
 InitializeResult InitializeServer(const nlohmann::json& params) {
@@ -84,6 +85,7 @@ InitializeResult InitializeServer(const nlohmann::json& params) {
       {"dynamicRegistration", false},
       {"prepareSupport", true},
   };
+  capabilities["documentHighlightProvider"] = true;
   capabilities["documentFormattingProvider"] = true;
   return InitializeResult{
       .capabilities = std::move(capabilities),
@@ -246,6 +248,19 @@ absl::Status RealMain() {
         LspLog() << "could not determine inlay hints; status: "
                  << inlay_hints_or.status() << "\n";
         return std::vector<verible::lsp::InlayHint>{};
+      });
+
+  dispatcher.AddRequestHandler(
+      "textDocument/documentHighlight",
+      [&](const verible::lsp::DocumentHighlightParams& params) {
+        auto highlights_or = language_server_adapter.DocumentHighlight(
+            params.textDocument.uri, params.position);
+        if (highlights_or.ok()) {
+          return highlights_or.value();
+        }
+        LspLog() << "could not perform document highlight(s); status: "
+                 << highlights_or.status() << "\n";
+        return std::vector<verible::lsp::DocumentHighlight>{};
       });
 
   // Main loop. Feeding the stream-splitter that then calls the dispatcher.

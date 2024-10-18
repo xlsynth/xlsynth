@@ -577,7 +577,7 @@ class AstCloner : public AstNodeVisitor {
   absl::Status HandleQuickCheck(const QuickCheck* n) override {
     XLS_RETURN_IF_ERROR(VisitChildren(n));
     old_to_new_[n] = module_->Make<QuickCheck>(
-        n->GetSpan().value(), down_cast<Function*>(old_to_new_.at(n->f())),
+        n->GetSpan().value(), down_cast<Function*>(old_to_new_.at(n->fn())),
         n->test_count());
     return absl::OkStatus();
   }
@@ -672,12 +672,38 @@ class AstCloner : public AstNodeVisitor {
         n->span(), new_name_def, new_parametric_bindings, new_members,
         n->is_public());
     old_to_new_[n] = new_struct_def;
+
+    if (n->impl().has_value()) {
+      if (!old_to_new_.contains(n->impl().value())) {
+        XLS_RETURN_IF_ERROR(n->impl().value()->Accept(this));
+      }
+      auto* new_impl = down_cast<Impl*>(old_to_new_.at(n->impl().value()));
+      new_struct_def->set_impl(new_impl);
+    }
     new_name_def->set_definer(new_struct_def);
     return absl::OkStatus();
   }
 
   absl::Status HandleImpl(const Impl* n) override {
-    return absl::UnimplementedError("impl not yet implemented");
+    XLS_RETURN_IF_ERROR(VisitChildren(n));
+
+    std::vector<ConstantDef*> new_constants;
+    new_constants.reserve(n->constants().size());
+    for (const auto* constant : n->constants()) {
+      new_constants.push_back(
+          down_cast<ConstantDef*>(old_to_new_.at(constant)));
+    }
+
+    Impl* new_impl =
+        module_->Make<Impl>(n->span(), nullptr, new_constants, n->is_public());
+    old_to_new_[n] = new_impl;
+    if (!old_to_new_.contains(n->struct_ref())) {
+      XLS_RETURN_IF_ERROR(n->struct_ref()->Accept(this));
+    }
+    TypeAnnotation* new_struct_ref =
+        down_cast<TypeAnnotation*>(old_to_new_.at(n->struct_ref()));
+    new_impl->set_struct_ref(new_struct_ref);
+    return absl::OkStatus();
   }
 
   absl::Status HandleStructInstance(const StructInstance* n) override {
@@ -888,6 +914,11 @@ class AstCloner : public AstNodeVisitor {
     return absl::OkStatus();
   }
 
+  absl::Status HandleVerbatimNode(const VerbatimNode* n) override {
+    old_to_new_[n] = module_->Make<VerbatimNode>(n->span(), n->text());
+    return absl::OkStatus();
+  }
+
   const absl::flat_hash_map<const AstNode*, AstNode*>& old_to_new() {
     return old_to_new_;
   }
@@ -993,8 +1024,10 @@ absl::StatusOr<std::unique_ptr<Module>> CloneModule(Module* module,
               new_member = down_cast<StructDef*>(cloner.old_to_new().at(sd));
               return absl::OkStatus();
             },
-            [&](Impl* _) -> absl::Status {
-              return absl::UnimplementedError("impl not yet implemented");
+            [&](Impl* i) -> absl::Status {
+              XLS_RETURN_IF_ERROR(i->Accept(&cloner));
+              new_member = down_cast<Impl*>(cloner.old_to_new().at(i));
+              return absl::OkStatus();
             },
             [&](ConstantDef* cd) -> absl::Status {
               XLS_RETURN_IF_ERROR(cd->Accept(&cloner));
@@ -1014,6 +1047,11 @@ absl::StatusOr<std::unique_ptr<Module>> CloneModule(Module* module,
             [&](ConstAssert* n) -> absl::Status {
               XLS_RETURN_IF_ERROR(n->Accept(&cloner));
               new_member = down_cast<ConstAssert*>(cloner.old_to_new().at(n));
+              return absl::OkStatus();
+            },
+            [&](VerbatimNode* n) -> absl::Status {
+              XLS_RETURN_IF_ERROR(n->Accept(&cloner));
+              new_member = down_cast<VerbatimNode*>(cloner.old_to_new().at(n));
               return absl::OkStatus();
             },
         },

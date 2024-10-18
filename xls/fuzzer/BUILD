@@ -104,6 +104,7 @@ cc_test(
         "//xls/dslx:interp_value_utils",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest",
     ],
@@ -197,6 +198,7 @@ cc_test(
         "//xls/dslx/frontend:pos",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_googletest//:gtest",
@@ -221,6 +223,7 @@ cc_test(
         "//xls/dslx/frontend:pos",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_googletest//:gtest",
@@ -245,6 +248,7 @@ cc_test(
         "//xls/dslx/frontend:pos",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_googletest//:gtest",
@@ -327,6 +331,7 @@ cc_library(
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/log:vlog_is_on",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -361,6 +366,7 @@ cc_test(
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest",
@@ -379,16 +385,10 @@ generate_crasher_regression_tests(
         "crashers/crasher_2023-10-01_eb60.x",
         # TODO(https://github.com/google/xls/issues/1141): Remove when fixed.
         "crashers/crasher_2023-10-02_7c14.x",
-        # TODO(https://github.com/google/xls/issues/1512): Remove when fixed.
-        "crashers/crasher_2024-07-14_b78c.x",
         # TODO(https://github.com/google/xls/issues/1609): Remove when fixed.
         "crashers/crasher_2024-09-14_6bbb.x",
         # TODO(https://github.com/google/xls/issues/1618): Remove when fixed.
         "crashers/crasher_2024-09-20_67c5.x",
-        # TODO(https://github.com/google/xls/issues/1624): Remove when fixed.
-        "crashers/crasher_2024-09-23_0330.x",
-        # TODO(https://github.com/google/xls/issues/1636): Remove when fixed.
-        "crashers/crasher_2024-09-26_ac56.x",
     ],
     prefix = package_name(),
     tags = {
@@ -831,10 +831,10 @@ cc_test(
     deps = [
         ":dslx_mutator",
         "//xls/common:xls_gunit_main",
-        "//xls/common/status:matchers",
         "@com_google_absl//absl/random:mock_distributions",
         "@com_google_absl//absl/random:mocking_bit_gen",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -860,6 +860,7 @@ cc_test(
         "//xls/dslx:interp_value",
         "//xls/dslx/frontend:pos",
         "//xls/dslx/type_system:type",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -958,6 +959,7 @@ cc_test(
         "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:pos",
         "//xls/dslx/type_system:type",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest",
     ],
 )

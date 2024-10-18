@@ -309,6 +309,8 @@ std::string_view AstNodeKindToString(AstNodeKind kind) {
       return "tuple index";
     case AstNodeKind::kUnrollFor:
       return "unroll-for";
+    case AstNodeKind::kVerbatimNode:
+      return "verbatim-node";
   }
   LOG(FATAL) << "Out-of-range AstNodeKind: " << static_cast<int>(kind);
 }
@@ -1296,6 +1298,14 @@ std::vector<std::string> StructDef::GetMemberNames() const {
   return names;
 }
 
+std::optional<ConstantDef*> StructDef::GetImplConstant(
+    std::string_view constant_name) {
+  if (!impl_.has_value()) {
+    return std::nullopt;
+  }
+  return impl_.value()->GetConstant(constant_name);
+}
+
 // -- class Impl
 
 Impl::Impl(Module* owner, Span span, TypeAnnotation* struct_ref,
@@ -1318,6 +1328,24 @@ std::string Impl::ToString() const {
   }
   absl::StrAppend(&result, "}");
   return result;
+}
+
+std::vector<AstNode*> Impl::GetChildren(bool want_types) const {
+  std::vector<AstNode*> results;
+  results.reserve(constants_.size());
+  for (auto& constant : constants_) {
+    results.push_back(constant);
+  }
+  return results;
+}
+
+std::optional<ConstantDef*> Impl::GetConstant(std::string_view name) const {
+  for (ConstantDef* constant : constants_) {
+    if (constant->name_def()->identifier() == name) {
+      return constant;
+    }
+  }
+  return std::nullopt;
 }
 
 // -- class StructInstance
@@ -1855,7 +1883,8 @@ std::string TupleTypeAnnotation::ToString() const {
 
 // -- class Statement
 
-/* static */ absl::StatusOr<std::variant<Expr*, TypeAlias*, Let*, ConstAssert*>>
+/* static */ absl::StatusOr<
+    std::variant<Expr*, TypeAlias*, Let*, ConstAssert*, VerbatimNode*>>
 Statement::NodeToWrapped(AstNode* n) {
   if (auto* e = dynamic_cast<Expr*>(n)) {
     return e;
@@ -1893,11 +1922,18 @@ WildcardPattern::~WildcardPattern() = default;
 
 RestOfTuple::~RestOfTuple() = default;
 
+// -- class VerbatimNode
+
+VerbatimNode::~VerbatimNode() = default;
+
 // -- class QuickCheck
 
-QuickCheck::QuickCheck(Module* owner, Span span, Function* f,
+QuickCheck::QuickCheck(Module* owner, Span span, Function* fn,
                        std::optional<int64_t> test_count)
-    : AstNode(owner), span_(std::move(span)), f_(f), test_count_(test_count) {}
+    : AstNode(owner),
+      span_(std::move(span)),
+      fn_(fn),
+      test_count_(test_count) {}
 
 QuickCheck::~QuickCheck() = default;
 
@@ -1906,7 +1942,8 @@ std::string QuickCheck::ToString() const {
   if (test_count_.has_value()) {
     test_count_str = absl::StrFormat("(test_count=%d)", *test_count_);
   }
-  return absl::StrFormat("#[quickcheck%s]\n%s", test_count_str, f_->ToString());
+  return absl::StrFormat("#[quickcheck%s]\n%s", test_count_str,
+                         fn_->ToString());
 }
 
 // -- class TupleIndex

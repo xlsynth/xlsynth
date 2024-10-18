@@ -22,6 +22,7 @@
 #include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "xls/common/casts.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
@@ -46,9 +47,9 @@
 namespace xls::dslx {
 namespace {
 
+using ::absl_testing::StatusIs;
 using ::testing::Contains;
 using ::testing::HasSubstr;
-using ::xls::status_testing::StatusIs;
 
 namespace m = ::xls::op_matchers;
 
@@ -264,6 +265,70 @@ proc main {
   EXPECT_THAT(conv.package->channels(),
               AllOf(Contains(m::Channel("test_module__my_chan")),
                     Contains(m::Channel("test_module__my_chan__1"))));
+}
+
+TEST(ProcConfirIrConverterTest, ChannelArrayDestructureWithWildcard) {
+  constexpr std::string_view kModule = R"(
+  proc SomeProc {
+      some_chan_array: chan<u32>[4] in;
+
+      config() {
+          let (_, new_chan_array_r) = chan<u32>[4]("the_chan_array");
+          (new_chan_array_r,)
+      }
+
+      init {  }
+
+      next(state: ()) {  }
+  }
+)";
+  auto import_data = CreateImportDataForTest();
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kModule, "test_module.x", "test_module", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      PackageConversionData conv,
+      ConvertModuleToPackage(tm.module, &import_data,
+                             ConvertOptions{.verify_ir = false}));
+  EXPECT_THAT(
+      conv.package->channels(),
+      UnorderedElementsAre(m::Channel("test_module__the_chan_array__0"),
+                           m::Channel("test_module__the_chan_array__1"),
+                           m::Channel("test_module__the_chan_array__2"),
+                           m::Channel("test_module__the_chan_array__3")));
+}
+
+TEST(ProcConfirIrConverterTest, ChannelArrayDestructureWithRestOfTuple) {
+  constexpr std::string_view kModule = R"(
+  proc SomeProc {
+      some_chan_array: chan<u32>[4] in;
+
+      config() {
+          let (.., new_chan_array_r) = chan<u32>[4]("the_chan_array");
+          (new_chan_array_r,)
+      }
+
+      init {  }
+
+      next(state: ()) {  }
+  }
+)";
+  auto import_data = CreateImportDataForTest();
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kModule, "test_module.x", "test_module", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      PackageConversionData conv,
+      ConvertModuleToPackage(tm.module, &import_data,
+                             ConvertOptions{.verify_ir = false}));
+  EXPECT_THAT(
+      conv.package->channels(),
+      UnorderedElementsAre(m::Channel("test_module__the_chan_array__0"),
+                           m::Channel("test_module__the_chan_array__1"),
+                           m::Channel("test_module__the_chan_array__2"),
+                           m::Channel("test_module__the_chan_array__3")));
 }
 
 TEST(ProcConfigIrConverterTest, DealOutChannelArrayElementsToSpawnee) {

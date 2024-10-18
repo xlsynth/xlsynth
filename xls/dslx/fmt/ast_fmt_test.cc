@@ -27,10 +27,13 @@
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "xls/common/logging/log_lines.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
+#include "xls/dslx/fmt/comments.h"
 #include "xls/dslx/fmt/pretty_print.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/ast_test_utils.h"
@@ -44,7 +47,7 @@
 namespace xls::dslx {
 namespace {
 
-using status_testing::IsOkAndHolds;
+using ::absl_testing::IsOkAndHolds;
 
 TEST(BuiltAstFmtTest, FormatCastThatNeedsParens) {
   auto [file_table, module, lt] = MakeCastWithinLtComparison();
@@ -104,7 +107,7 @@ TEST(BuildAstFmtTest, FormatShortTupleWithTrailingComma) {
   EXPECT_EQ(PrettyPrint(arena, doc, /*text_width=*/100), "(x0, x1)");
 }
 
-TEST(BuildAstFmtTest, FormatLongTupleShouldTrailingComma) {
+TEST(BuildAstFmtTest, FormatLongTupleShouldAddTrailingComma) {
   const Comments empty_comments = Comments::Create({});
   {
     auto [file_table, module, tuple] =
@@ -165,6 +168,40 @@ TEST(AstFmtTest, FormatLet) {
   DocArena arena(file_table);
   DocRef doc = Fmt(*stmt, comments, arena, /*trailing_semi=*/false);
   EXPECT_EQ(PrettyPrint(arena, doc, /*text_width=*/100), "let x: u32 = u32:42");
+}
+
+TEST(AstFmtTest, FormatVerbatimNodeTop) {
+  FileTable file_table;
+  Module m("test", /*fs_path=*/std::nullopt, file_table);
+
+  const std::string_view verbatim_text = "anything // goes\n  even here";
+  VerbatimNode verbatim(&m, Span(), verbatim_text);
+  XLS_ASSERT_OK(m.AddTop(&verbatim, /*make_collision_error=*/nullptr));
+  const Comments empty_comments = Comments::Create({});
+
+  DocArena arena(file_table);
+  DocRef doc = Fmt(m, empty_comments, arena);
+
+  // Intentionally small text width, should still be formatted verbatim.
+  // Newline is always added to a module.
+  EXPECT_EQ(PrettyPrint(arena, doc, /*text_width=*/10),
+            absl::StrCat(verbatim_text, "\n"));
+}
+
+TEST(AstFmtTest, FormatVerbatimNodeStatement) {
+  FileTable file_table;
+  Module m("test", /*fs_path=*/std::nullopt, file_table);
+
+  const std::string_view verbatim_text = "anything // goes\n  even here";
+  VerbatimNode verbatim(&m, Span(), verbatim_text);
+  Statement statement(&m, &verbatim);
+  const Comments empty_comments = Comments::Create({});
+
+  DocArena arena(file_table);
+  DocRef doc = Fmt(statement, empty_comments, arena, /*trailing_semi=*/false);
+
+  // Intentionally small text width, should still be formatted verbatim.
+  EXPECT_EQ(PrettyPrint(arena, doc, /*text_width=*/10), verbatim_text);
 }
 
 // Fixture for test that format entire (single) functions -- expected usage:
@@ -1006,7 +1043,7 @@ TEST_F(FunctionFmtTest, CommentParagraphThenStatement) {
   EXPECT_EQ(got, original);
 }
 
-TEST_F(FunctionFmtTest, LetRhsIsOverlongFor) {
+TEST_F(FunctionFmtTest, LetRhsIsOverLongFor) {
   const std::string_view original =
       R"(fn f() {
     let (_, _, _, div_result) =
@@ -1081,6 +1118,85 @@ TEST_F(FunctionFmtTest, InlineBlockExpression) {
 })";
   XLS_ASSERT_OK_AND_ASSIGN(std::string got, DoFmt(original));
   EXPECT_EQ(got, original);
+}
+
+// Regression test for https://github.com/google/xls/issues/1195
+TEST_F(FunctionFmtTest, TupleWithTrailingComment) {
+  const std::string_view original = R"(fn foo() {
+    let a = (
+        u32:1,
+        u32:2,
+        u32:3, // after third
+        // After last
+    );
+})";
+  XLS_ASSERT_OK_AND_ASSIGN(std::string got, DoFmt(original));
+  EXPECT_EQ(got, original);
+}
+
+TEST_F(FunctionFmtTest, TupleWithInternalComments) {
+  const std::string_view original = R"(fn foo() {
+    let a = (
+        u32:1,  // after first
+        u32:2,  // after second
+      // another after second
+        u32:3,  // after third
+    );
+})";
+  const std::string_view expected = R"(fn foo() {
+    let a = (
+        u32:1, // after first
+        u32:2, // after second
+        // another after second
+        u32:3, // after third
+    );
+})";
+  XLS_ASSERT_OK_AND_ASSIGN(std::string actual, DoFmt(original));
+  EXPECT_EQ(actual, expected);
+}
+
+TEST_F(FunctionFmtTest, TupleWithComments) {
+  const std::string_view original = R"(fn foo() {
+    let a = (
+        // Before first
+        u32:1, // after first
+        u32:2, // after second
+        u32:3, // after third
+        // After last
+    );
+})";
+  XLS_ASSERT_OK_AND_ASSIGN(std::string got, DoFmt(original));
+  EXPECT_EQ(got, original);
+}
+
+TEST_F(FunctionFmtTest, SingletonTupleWithTrailingComment) {
+  const std::string_view original = R"(fn foo() {
+    let a = ( u32  :  1,
+    // after first
+    );
+})";
+  const std::string_view expected = R"(fn foo() {
+    let a = (
+        u32:1, // after first
+    );
+})";
+  XLS_ASSERT_OK_AND_ASSIGN(std::string got, DoFmt(original));
+  EXPECT_EQ(got, expected);
+}
+
+TEST_F(FunctionFmtTest, SingletonTupleWithLeadingComment) {
+  const std::string_view original = R"(fn foo() {
+    let a = (// before first
+    u32  :  1,      );
+})";
+  const std::string_view expected = R"(fn foo() {
+    let a = (
+        // before first
+        u32:1,
+    );
+})";
+  XLS_ASSERT_OK_AND_ASSIGN(std::string got, DoFmt(original));
+  EXPECT_EQ(got, expected);
 }
 
 // -- ModuleFmtTest cases, formatting entire modules
@@ -1489,6 +1605,57 @@ fn f() -> MyStruct {
 fn f() -> MyStruct {
     let x = u32:42;
     MyStruct { x }
+}
+)");
+}
+
+TEST_F(ModuleFmtTest, StructInstantiationWithExactSizedCondExpr) {
+  Run(
+      R"(struct MyStruct { field: u32 }
+
+const TESTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT = true;
+
+fn f(b: bool) -> MyStruct {
+    MyStruct {
+        field: if TESTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT {
+            u32:42
+        } else {
+            u32:64
+        },
+    }
+}
+)");
+}
+
+TEST_F(ModuleFmtTest, StructInstantiationWithExactOneCharOverlyLargeCondExpr) {
+  Run(
+      R"(struct MyStruct { field: u32 }
+
+const TESTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT = true;
+
+fn f(b: bool) -> MyStruct {
+    MyStruct {
+        field: if TESTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT {
+            u32:42
+        } else {
+            u32:64
+        },
+    }
+}
+)",
+      /*want=*/R"(struct MyStruct { field: u32 }
+
+const TESTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT = true;
+
+fn f(b: bool) -> MyStruct {
+    MyStruct {
+        field:
+            if TESTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT {
+                u32:42
+            } else {
+                u32:64
+            },
+    }
 }
 )");
 }
@@ -2250,6 +2417,23 @@ TEST_F(ModuleFmtTest, GithubIssue1354) {
 pub struct A { value: B[5] }
 
 pub fn f(a: A) -> A { if a.B[0].value == u32:0 { zero!<A>() } else { a } }
+)");
+}
+
+TEST_F(ModuleFmtTest, LongStructInstanceFieldExpr) {
+  Run(R"(struct X { xxxxxxxxxxxxxxxxxxx: bool, yyyyyyyyyyyyyyyyyyy: u32 }
+
+const aaaaaaaaaaaaaaaaaaaaaaaaa = u32:0;
+const bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb = u32:0;
+const ccccccccccccccccccccccccc = bool:false;
+
+fn f() -> X {
+    X {
+        xxxxxxxxxxxxxxxxxxx:
+            aaaaaaaaaaaaaaaaaaaaaaaaa == bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,
+        yyyyyyyyyyyyyyyyyyy: u32:0,
+    }
+}
 )");
 }
 

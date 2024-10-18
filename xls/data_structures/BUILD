@@ -94,32 +94,6 @@ cc_test(
 )
 
 cc_library(
-    name = "maximum_clique",
-    hdrs = ["maximum_clique.h"],
-    deps = [
-        "@com_google_absl//absl/container:btree",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings:str_format",
-        "@com_google_ortools//ortools/linear_solver",
-    ],
-)
-
-cc_test(
-    name = "maximum_clique_test",
-    srcs = ["maximum_clique_test.cc"],
-    deps = [
-        ":maximum_clique",
-        "//xls/common:xls_gunit_main",
-        "@com_google_absl//absl/container:btree",
-        "@com_google_absl//absl/random:distributions",
-        "@com_google_absl//absl/strings:str_format",
-        "@com_google_googletest//:gtest",
-    ],
-)
-
-cc_library(
     name = "transitive_closure",
     hdrs = ["transitive_closure.h"],
     deps = [
@@ -195,44 +169,11 @@ cc_library(
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/log:vlog_is_on",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
-    ],
-)
-
-cc_library(
-    name = "min_cut",
-    srcs = ["min_cut.cc"],
-    hdrs = ["min_cut.h"],
-    deps = [
-        "//xls/common:strong_int",
-        "//xls/common/logging:log_lines",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:str_format",
-        "@com_google_absl//absl/types:span",
-    ],
-)
-
-cc_library(
-    name = "path_cut",
-    srcs = ["path_cut.cc"],
-    hdrs = ["path_cut.h"],
-    deps = [
-        "//xls/common:strong_int",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:str_format",
-        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -303,6 +244,7 @@ cc_test(
         "//xls/ir:ir_parser",
         "//xls/ir:type",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
@@ -327,42 +269,9 @@ cc_test(
     deps = [
         ":binary_decision_diagram",
         "//xls/common:xls_gunit_main",
-        "//xls/common/status:matchers",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
-        "@com_google_googletest//:gtest",
-    ],
-)
-
-cc_test(
-    name = "min_cut_test",
-    srcs = ["min_cut_test.cc"],
-    deps = [
-        ":min_cut",
-        "//xls/common:random_util",
-        "//xls/common:xls_gunit_main",
-        "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/random",
-        "@com_google_absl//absl/random:distributions",
-        "@com_google_absl//absl/random:mocking_bit_gen",
-        "@com_google_absl//absl/strings:str_format",
-        "@com_google_absl//absl/types:span",
-        "@com_google_googletest//:gtest",
-    ],
-)
-
-cc_test(
-    name = "path_cut_test",
-    srcs = ["path_cut_test.cc"],
-    deps = [
-        ":path_cut",
-        "//xls/common:strong_int",
-        "//xls/common:xls_gunit_main",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/types:span",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -373,8 +282,8 @@ cc_test(
     deps = [
         ":binary_search",
         "//xls/common:xls_gunit_main",
-        "//xls/common/status:matchers",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest",
     ],

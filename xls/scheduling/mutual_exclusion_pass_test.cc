@@ -45,7 +45,7 @@
 namespace xls {
 namespace {
 
-using status_testing::IsOkAndHolds;
+using ::absl_testing::IsOkAndHolds;
 namespace m = ::xls::op_matchers;
 
 class SimplificationPass : public OptimizationCompoundPass {
@@ -93,13 +93,6 @@ absl::StatusOr<bool> RunMutualExclusionPass(
                                 options);
 }
 
-absl::StatusOr<bool> RunMutualExclusionPass(Package* p,
-                                            const SchedulingOptions& options) {
-  SchedulingPassOptions pass_options;
-  pass_options.scheduling_options = options;
-  return RunMutualExclusionPass(SchedulingUnit::CreateForWholePackage(p),
-                                pass_options);
-}
 absl::StatusOr<bool> RunMutualExclusionPass(FunctionBase* f,
                                             const SchedulingOptions& options) {
   SchedulingPassOptions pass_options;

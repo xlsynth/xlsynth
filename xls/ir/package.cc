@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <deque>
 #include <list>
 #include <memory>
 #include <optional>
@@ -158,7 +159,7 @@ Block* Package::AddBlock(std::unique_ptr<Block> block) {
   return blocks_.back().get();
 }
 
-// Private helpers for Package::AddPackage().
+// Private helpers for Package::ImportFromPackage().
 namespace {
 // Helper class that tracks names in a package and resolves name collisions.
 class NameCollisionResolver {
@@ -183,8 +184,9 @@ class NameCollisionResolver {
       new_name = absl::StrCat(old_name, "_", suffix);
       ++suffix;
     } while (Collides(new_name));
-    names_.insert(new_name);
     name_updates_[old_name] = new_name;
+    std::string& new_name_ref = storage_.emplace_back(new_name);
+    names_.insert(new_name_ref);
     return new_name;
   }
 
@@ -193,6 +195,9 @@ class NameCollisionResolver {
   // for collisions and resolve them.
   absl::flat_hash_set<std::string_view> names_;
   absl::flat_hash_map<std::string, std::string> name_updates_;
+  // Storage for string_views inside names_ that have been created in
+  // ResolveName.
+  std::deque<std::string> storage_;
 };
 
 // Get a set of all names defined within a package.
@@ -295,7 +300,7 @@ AddFunctionBasesFromPackage(
 }
 }  // namespace
 
-absl::StatusOr<Package::PackageMergeResult> Package::AddPackage(
+absl::StatusOr<Package::PackageMergeResult> Package::ImportFromPackage(
     const Package* other) {
   // Helper that keeps track of old -> new name mapping, resolving collisions if
   // needed.
@@ -768,6 +773,7 @@ absl::Status Package::AddChannel(std::unique_ptr<Channel> channel, Proc* proc) {
 }
 
 absl::StatusOr<Channel*> Package::GetChannel(int64_t id) const {
+  XLS_RET_CHECK(!ChannelsAreProcScoped());
   for (Channel* ch : channels()) {
     if (ch->id() == id) {
       return ch;
@@ -777,6 +783,7 @@ absl::StatusOr<Channel*> Package::GetChannel(int64_t id) const {
 }
 
 std::vector<std::string> Package::GetChannelNames() const {
+  CHECK(!ChannelsAreProcScoped());
   std::vector<std::string> names;
   names.reserve(channels().size());
   for (Channel* ch : channels()) {
@@ -786,6 +793,7 @@ std::vector<std::string> Package::GetChannelNames() const {
 }
 
 absl::StatusOr<Channel*> Package::GetChannel(std::string_view name) const {
+  XLS_RET_CHECK(!ChannelsAreProcScoped());
   auto it = channels_.find(name);
   if (it != channels_.end()) {
     return it->second.get();

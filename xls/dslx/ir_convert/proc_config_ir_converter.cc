@@ -43,14 +43,6 @@
 namespace xls::dslx {
 namespace {
 
-ProcConfigValue ChannelOrArrayToProcConfigValue(
-    ChannelOrArray channel_or_array) {
-  if (std::holds_alternative<Channel*>(channel_or_array)) {
-    return std::get<Channel*>(channel_or_array);
-  }
-  return std::get<ChannelArray*>(channel_or_array);
-}
-
 std::optional<ChannelOrArray> ProcConfigValueToChannelOrArray(
     ProcConfigValue value) {
   if (std::holds_alternative<Channel*>(value)) {
@@ -169,11 +161,18 @@ absl::Status ProcConfigIrConverter::HandleLet(const Let* node) {
     std::vector<NameDefTree::Leaf> leaves = node->name_def_tree()->Flatten();
     CHECK_EQ(leaves.size(), 2);
     for (int i = 0; i < 2; i++) {
-      NameDef* name_def = std::get<NameDef*>(leaves[i]);
-      XLS_ASSIGN_OR_RETURN(
-          ChannelOrArray target,
-          channel_scope_->AssociateWithExistingChannelOrArray(name_def, decl));
-      node_to_ir_[name_def] = ChannelOrArrayToProcConfigValue(target);
+      if (std::holds_alternative<NameDef*>(leaves[i])) {
+        NameDef* name_def = std::get<NameDef*>(leaves[i]);
+        XLS_ASSIGN_OR_RETURN(
+            ChannelOrArray target,
+            channel_scope_->AssociateWithExistingChannelOrArray(name_def,
+                                                                decl));
+        node_to_ir_[name_def] = ChannelOrArrayToProcConfigValue(target);
+        continue;
+      }
+      // Type checking will error before now, if it's not one of these.
+      XLS_RET_CHECK(std::holds_alternative<WildcardPattern*>(leaves[i]) ||
+                    std::holds_alternative<RestOfTuple*>(leaves[i]));
     }
   } else {
     if (!node->name_def_tree()->is_leaf()) {

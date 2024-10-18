@@ -28,6 +28,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
+#include "absl/log/vlog_is_on.h"
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -54,9 +55,9 @@ namespace xls {
 namespace solvers {
 namespace z3 {
 
-using netlist::rtl::Module;
-using netlist::rtl::Netlist;
-using netlist::rtl::NetRef;
+using ::xls::netlist::rtl::Module;
+using ::xls::netlist::rtl::Netlist;
+using ::xls::netlist::rtl::NetRef;
 
 namespace {
 

@@ -53,7 +53,7 @@
 
 namespace xls {
 
-using dslx::InterpValue;
+using ::xls::dslx::InterpValue;
 
 namespace {
 
@@ -110,12 +110,6 @@ std::vector<std::string> ParseIrChannelNames(
   XLS_RETURN_IF_ERROR(ParseTextProto(text,
                                      /*file_name=*/"", &proto));
   return FromProto(proto);
-}
-
-std::string SampleOptions::ToPbtxt() const {
-  std::string pbtxt;
-  CHECK(google::protobuf::TextFormat::PrintToString(proto_, &pbtxt));
-  return pbtxt;
 }
 
 /* static */ absl::StatusOr<SampleOptions> SampleOptions::FromProto(

@@ -22,6 +22,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/substitute.h"
@@ -47,7 +48,7 @@ namespace xls {
 namespace verilog {
 namespace {
 
-using status_testing::IsOkAndHolds;
+using ::absl_testing::IsOkAndHolds;
 using ::testing::ContainsRegex;
 using ::testing::HasSubstr;
 using ::testing::Not;
@@ -696,7 +697,7 @@ TEST_P(PipelineGeneratorTest, ValidPipelineControlWithSimulation) {
                                              result.signature, GetSimulator()));
   XLS_ASSERT_OK_AND_ASSIGN(
       ModuleTestbenchThread * tbt,
-      tb->CreateThreadDrivingAllInputs("main", /*initial_value=*/ZeroOrX::kX));
+      tb->CreateThreadDrivingAllInputs("main", /*default_value=*/ZeroOrX::kX));
   SequentialBlock& seq = tbt->MainBlock();
   seq.Set("in_valid", 0);
   seq.AtEndOfCycleWhenNotX("out_valid").ExpectEq("out_valid", 0);
@@ -794,7 +795,7 @@ TEST_P(PipelineGeneratorTest, ValidSignalWithReset) {
                                  resetless_signature, GetSimulator()));
     XLS_ASSERT_OK_AND_ASSIGN(ModuleTestbenchThread * tbt,
                              tb->CreateThreadDrivingAllInputs(
-                                 "main", /*initial_value=*/ZeroOrX::kX));
+                                 "main", /*default_value=*/ZeroOrX::kX));
     SequentialBlock& seq = tbt->MainBlock();
     // One cycle after reset the output control signal should be zero.
     seq.Set(kResetSignal, kAssertReset).Set("in_valid", 0);
@@ -1061,7 +1062,7 @@ TEST_P(PipelineGeneratorTest, ValidPipelineControlWithResetSimulation) {
                                resetless_signature, GetSimulator()));
   XLS_ASSERT_OK_AND_ASSIGN(
       ModuleTestbenchThread * tbt,
-      tb->CreateThreadDrivingAllInputs("main", /*initial_value=*/ZeroOrX::kX));
+      tb->CreateThreadDrivingAllInputs("main", /*default_value=*/ZeroOrX::kX));
   SequentialBlock& seq = tbt->MainBlock();
   seq.Set("in_valid", 0).Set("rst", 1);
   seq.NextCycle();

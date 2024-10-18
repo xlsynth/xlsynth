@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <list>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -23,6 +24,7 @@
 #include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "google/protobuf/text_format.h"
 #include "google/protobuf/util/message_differencer.h"
 #include "xls/common/status/matchers.h"
@@ -903,7 +905,7 @@ TEST_F(TranslatorMemoryTest, ReferenceToMemoryOp) {
 
   ASSERT_THAT(
       SourceToIr(content).status(),
-      xls::status_testing::StatusIs(
+      absl_testing::StatusIs(
           absl::StatusCode::kUnimplemented,
           testing::HasSubstr("eferences to side effecting operations")));
 }
@@ -1015,7 +1017,7 @@ TEST_F(TranslatorMemoryTest, MemoryUnused) {
   XLS_ASSERT_OK(ScanFile(content, /*clang_argv=*/{},
                          /*io_test_mode=*/false,
                          /*error_on_init_interval=*/false));
-  package_.reset(new xls::Package("my_package"));
+  package_ = std::make_unique<xls::Package>("my_package");
   XLS_ASSERT_OK(
       translator_->GenerateIR_Block(package_.get(), block_spec).status());
 
@@ -1180,7 +1182,7 @@ TEST_F(TranslatorMemoryTest, MemoryTokenNetwork) {
   XLS_ASSERT_OK(ScanFile(content, /*clang_argv=*/{},
                          /*io_test_mode=*/false,
                          /*error_on_init_interval=*/false));
-  package_.reset(new xls::Package("my_package"));
+  package_ = std::make_unique<xls::Package>("my_package");
   HLSBlock block_spec;
   XLS_ASSERT_OK_AND_ASSIGN(
       xls::Proc * ret,
@@ -1234,7 +1236,7 @@ TEST_F(TranslatorMemoryTest, MemoryTokenNetworkReadAfterWrite) {
   XLS_ASSERT_OK(ScanFile(content, /*clang_argv=*/{},
                          /*io_test_mode=*/false,
                          /*error_on_init_interval=*/false));
-  package_.reset(new xls::Package("my_package"));
+  package_ = std::make_unique<xls::Package>("my_package");
   HLSBlock block_spec;
   XLS_ASSERT_OK_AND_ASSIGN(
       xls::Proc * ret,

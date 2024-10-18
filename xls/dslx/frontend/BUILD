@@ -151,6 +151,7 @@ cc_test(
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest",
@@ -293,6 +294,7 @@ cc_test(
         "//xls/dslx:error_test_utils",
         "@com_google_absl//absl/random",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest",
     ],
@@ -330,6 +332,7 @@ cc_test(
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -490,6 +493,7 @@ cc_test(
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -513,9 +517,9 @@ cc_test(
         ":token",
         "//xls/common:xls_gunit_main",
         "//xls/common/fuzzing:fuzztest",
-        "//xls/common/status:matchers",
         "//xls/common/status:ret_check",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
@@ -537,9 +541,11 @@ cc_library(
     ],
 )
 
-cc_test(
-    name = "proc_id_test",
-    srcs = ["proc_id_test.cc"],
+cc_library(
+    name = "proc_test_utils",
+    testonly = True,
+    srcs = ["proc_test_utils.cc"],
+    hdrs = ["proc_test_utils.h"],
     deps = [
         ":ast",
         ":bindings",
@@ -547,12 +553,24 @@ cc_test(
         ":parser",
         ":pos",
         ":proc",
-        ":proc_id",
         ":scanner",
-        "//xls/common:xls_gunit_main",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:str_format",
+    ],
+)
+
+cc_test(
+    name = "proc_id_test",
+    srcs = ["proc_id_test.cc"],
+    deps = [
+        ":ast",
+        ":module",
+        ":pos",
+        ":proc",
+        ":proc_id",
+        ":proc_test_utils",
+        "//xls/common:xls_gunit_main",
         "@com_google_googletest//:gtest",
     ],
 )

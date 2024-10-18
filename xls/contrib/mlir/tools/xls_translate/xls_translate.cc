@@ -29,7 +29,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
-#include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "llvm/include/llvm/ADT/APFloat.h"
 #include "llvm/include/llvm/ADT/STLExtras.h"
@@ -40,7 +39,6 @@
 #include "llvm/include/llvm/ADT/Twine.h"
 #include "llvm/include/llvm/ADT/TypeSwitch.h"
 #include "llvm/include/llvm/Support/Casting.h"  // IWYU pragma: keep
-#include "llvm/include/llvm/Support/LogicalResult.h"
 #include "llvm/include/llvm/Support/raw_ostream.h"
 #include "mlir/include/mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/include/mlir/Dialect/Func/IR/FuncOps.h"
@@ -62,11 +60,17 @@
 #include "xls/common/file/filesystem.h"
 #include "xls/common/file/get_runfile_path.h"
 #include "xls/contrib/mlir/IR/xls_ops.h"
-#include "xls/public/c_api.h"
+#include "xls/ir/bits.h"
+#include "xls/ir/source_location.h"
 #include "xls/public/function_builder.h"
 #include "xls/public/ir.h"
 #include "xls/public/ir_parser.h"
 #include "xls/public/runtime_build_actions.h"
+#include "xls/tools/codegen_flags.h"
+#include "xls/tools/codegen_flags.pb.h"
+#include "xls/tools/opt.h"
+#include "xls/tools/scheduling_options_flags.h"
+#include "xls/tools/scheduling_options_flags.pb.h"
 
 namespace mlir::xls {
 namespace {
@@ -84,11 +88,11 @@ using ValueMap = DenseMap<Value, BValue>;
 
 // Tracks imported package and the renaming due to import.
 struct PackageInfo {
-  PackageInfo(std::unique_ptr<Package> p, Package::PackageMergeResult m,
+  PackageInfo(std::shared_ptr<const Package> p, Package::PackageMergeResult m,
               ImportDslxFilePackageOp op)
       : package(std::move(p)), merge_result(std::move(m)), op(op) {}
 
-  std::unique_ptr<Package> package;
+  std::shared_ptr<const Package> package;
   Package::PackageMergeResult merge_result;
   ImportDslxFilePackageOp op;
 };
@@ -189,7 +193,9 @@ class TranslationState {
     return ::xls::SourceInfo();
   }
   auto file_loc = dyn_cast<mlir::FileLineColLoc>(loc);
-  if (!file_loc) return ::xls::SourceInfo();
+  if (!file_loc) {
+    return ::xls::SourceInfo();
+  }
 
   std::filesystem::path path(
       std::string_view(file_loc.getFilename().getValue()));
@@ -208,7 +214,9 @@ class TranslationState {
 
 ::xls::Type* TranslationState::getType(Type t) {
   auto& xls_type = type_map_[t];
-  if (xls_type != nullptr) return xls_type;
+  if (xls_type != nullptr) {
+    return xls_type;
+  }
 
   xls_type =
       TypeSwitch<Type, ::xls::Type*>(t)
@@ -576,17 +584,23 @@ absl::StatusOr<::xls::Function*> getFunction(TranslationState& state,
     return state.getPackage().GetFunction(func_name);
   }
 
-  if (auto it = package_info->merge_result.name_updates.find(func_name);
-      it != package_info->merge_result.name_updates.end()) {
-    func_name = it->second;
-  }
-  const auto& mangled_func_name_or =
+  // Use the mangled function name to find the XLS function in the package.
+  absl::StatusOr<std::string> mangled_func_name =
       ::xls::MangleDslxName(package_info->package->name(), func_name);
-  if (!mangled_func_name_or.ok()) {
+  if (!mangled_func_name.ok()) {
     return absl::InvalidArgumentError(absl::StrCat(
-        "Failed to mangle name: ", mangled_func_name_or.status().message()));
+        "Failed to mangle name: ", mangled_func_name.status().message()));
   }
-  auto fn = state.getPackage().GetFunction(mangled_func_name_or.value());
+  // Mangled name is possibly renamed in the merge result, if so, use the new
+  // name. This is for the case where one imported multiple packages with the
+  // same stem and that have functions with the same names.
+  if (auto it =
+          package_info->merge_result.name_updates.find(*mangled_func_name);
+      it != package_info->merge_result.name_updates.end()) {
+    mangled_func_name.emplace(it->second);
+  }
+
+  auto fn = state.getPackage().GetFunction(mangled_func_name.value());
   if (fn.ok()) {
     state.addFunction(fn_name, fn.value());
   }
@@ -596,7 +610,9 @@ absl::StatusOr<::xls::Function*> getFunction(TranslationState& state,
 BValue convertOp(mlir::func::CallOp call, TranslationState& state,
                  BuilderBase& fb) {
   std::vector<BValue> args;
-  for (auto arg : call.getOperands()) args.push_back(state.getXlsValue(arg));
+  for (auto arg : call.getOperands()) {
+    args.push_back(state.getXlsValue(arg));
+  }
   absl::StatusOr<::xls::Function*> func_or =
       getFunction(state, call.getCallee());
   if (!func_or.ok()) {
@@ -623,8 +639,9 @@ BValue convertOp(CountedForOp counted_for_op, TranslationState& state,
                  BuilderBase& fb) {
   BValue init = state.getXlsValue(counted_for_op.getInit());
   std::vector<BValue> invar_args;
-  for (auto arg : counted_for_op.getInvariantArgs())
+  for (auto arg : counted_for_op.getInvariantArgs()) {
     invar_args.push_back(state.getXlsValue(arg));
+  }
   absl::StatusOr<::xls::Function*> func_or =
       getFunction(state, counted_for_op.getToApply());
   if (!func_or.ok()) {
@@ -642,7 +659,9 @@ BValue convertOp(CountedForOp counted_for_op, TranslationState& state,
   // Doing this in a simple loop, not the most efficient and could be improved
   // if needed (was just avoiding needing to think about the endianness).
   absl::InlinedVector<bool, 64> bits(apInt.getBitWidth());
-  for (unsigned i : llvm::seq(0u, apInt.getBitWidth())) bits[i] = apInt[i];
+  for (unsigned i : llvm::seq(0u, apInt.getBitWidth())) {
+    bits[i] = apInt[i];
+  }
   // NOLINTNEXTLINE
   return ::xls::Bits(bits);
 }
@@ -657,7 +676,9 @@ BValue convertConstantAttr(Attribute attr, const TranslationState& /*state*/,
     absl::InlinedVector<bool, 64> bits(bitWidth);
     // Doing this in a simple loop, not the most efficient and could be improved
     // if needed (was just avoiding needing to think about the endianness).
-    for (unsigned i : llvm::seq(0u, bitWidth)) bits[i] = intVal[i];
+    for (unsigned i : llvm::seq(0u, bitWidth)) {
+      bits[i] = intVal[i];
+    }
     // NOLINTNEXTLINE
     return fb.Literal(::xls::Bits(bits));
   }
@@ -739,7 +760,9 @@ BValue convertOp(SendOp op, const TranslationState& state, BuilderBase& fb) {
     return BValue();
   }
   ::xls::Channel* channel = getChannel(op, state);
-  if (!channel) return BValue();
+  if (!channel) {
+    return BValue();
+  }
   if (op.getPredicate()) {
     return pb->SendIf(channel, state.getXlsValue(op.getTkn()),
                       state.getXlsValue(op.getPredicate()),
@@ -757,7 +780,9 @@ BValue convertOp(BlockingReceiveOp op, TranslationState& state,
     return BValue();
   }
   ::xls::Channel* channel = getChannel(op, state);
-  if (!channel) return BValue();
+  if (!channel) {
+    return BValue();
+  }
 
   BValue out;
   if (op.getPredicate()) {
@@ -779,7 +804,9 @@ BValue convertOp(NonblockingReceiveOp op, TranslationState& state,
     return BValue();
   }
   ::xls::Channel* channel = getChannel(op, state);
-  if (!channel) return BValue();
+  if (!channel) {
+    return BValue();
+  }
   BValue out;
   if (op.getPredicate()) {
     out = pb->ReceiveIfNonBlocking(channel, state.getXlsValue(op.getTkn()),
@@ -837,7 +864,7 @@ FailureOr<PackageInfo> importDslxInstantiation(
     return failure();
   }
   absl::StatusOr<Package::PackageMergeResult> merge_result =
-      package.AddPackage(package_or->get());
+      package.ImportFromPackage(package_or->get());
   if (!merge_result.ok()) {
     llvm::errs() << "Failed to add package: " << merge_result.status().message()
                  << "\n";
@@ -873,27 +900,23 @@ FailureOr<std::filesystem::path> findDslxFile(
 
 FailureOr<PackageInfo> importDslxFile(ImportDslxFilePackageOp file_import_op,
                                       Package& package,
-                                      llvm::StringRef dslx_search_path) {
+                                      llvm::StringRef dslx_search_path,
+                                      DslxPackageCache& dslx_cache) {
   auto file_name =
       findDslxFile(file_import_op.getFilename().str(), dslx_search_path);
-  if (failed(file_name)) return failure();
-
-  absl::StatusOr<std::string> package_string_or = ::xls::ConvertDslxPathToIr(
-      *file_name, ::xls::GetDefaultDslxStdlibPath(), {});
-  if (!package_string_or.ok()) {
-    llvm::errs() << "Failed to convert DSLX to IR: "
-                 << package_string_or.status().message() << "\n";
+  if (failed(file_name)) {
     return failure();
   }
-  absl::StatusOr<std::unique_ptr<Package>> package_or =
-      ::xls::ParsePackage(package_string_or.value(), std::nullopt);
+
+  absl::StatusOr<std::shared_ptr<const Package>> package_or =
+      dslx_cache.import(*file_name);
   if (!package_or.ok()) {
     llvm::errs() << "Failed to parse package: " << package_or.status().message()
                  << "\n";
     return failure();
   }
   absl::StatusOr<Package::PackageMergeResult> merge_result =
-      package.AddPackage(package_or->get());
+      package.ImportFromPackage(package_or->get());
   if (!merge_result.ok()) {
     llvm::errs() << "Failed to add package: " << merge_result.status().message()
                  << "\n";
@@ -914,7 +937,9 @@ FailureOr<::xls::Value> zeroLiteral(Type type) {
     values.reserve(array_type.getNumElements());
     for (int i = 0; i < array_type.getNumElements(); ++i) {
       auto value = zeroLiteral(array_type.getElementType());
-      if (failed(value)) return failure();
+      if (failed(value)) {
+        return failure();
+      }
       values.push_back(*value);
     }
     return ::xls::Value::ArrayOwned(std::move(values));  // NOLINT
@@ -924,7 +949,9 @@ FailureOr<::xls::Value> zeroLiteral(Type type) {
     values.reserve(tuple_type.size());
     for (int i = 0; i < tuple_type.size(); ++i) {
       auto value = zeroLiteral(tuple_type.getType(i));
-      if (failed(value)) return failure();
+      if (failed(value)) {
+        return failure();
+      }
       values.push_back(*value);
     }
     return ::xls::Value::TupleOwned(std::move(values));  // NOLINT
@@ -1017,7 +1044,9 @@ FailureOr<BValue> convertFunction(TranslationState& translation_state,
     }
 
     if (BValue r = convert(op); r.valid()) {
-      if (op->getNumResults() == 1) value_map[op->getResult(0)] = r;
+      if (op->getNumResults() == 1) {
+        value_map[op->getResult(0)] = r;
+      }
       return WalkResult::advance();
     }
     if (auto s = fb.GetError(); !s.ok()) {
@@ -1034,10 +1063,13 @@ FailureOr<BValue> convertFunction(TranslationState& translation_state,
 }
 
 FailureOr<std::unique_ptr<Package>> mlirXlsToXls(
-    Operation* op, llvm::StringRef dslx_search_path) {
+    Operation* op, llvm::StringRef dslx_search_path,
+    DslxPackageCache& dslx_cache) {
   // Treating the outer most module as a package.
   ModuleOp module = dyn_cast<ModuleOp>(op);
-  if (!module) return failure();
+  if (!module) {
+    return failure();
+  }
 
   // Using either the module name or "_package" as the name of the package.
   // Don't use "package", it's a reserved keyword for the XLS parser.
@@ -1071,14 +1103,18 @@ FailureOr<std::unique_ptr<Package>> mlirXlsToXls(
     translation_state.addChannel(chan_op, *channel);
     return WalkResult::advance();
   });
-  if (walk_result.wasInterrupted()) return failure();
+  if (walk_result.wasInterrupted()) {
+    return failure();
+  }
 
   for (auto& op : module.getBodyRegion().front()) {
     // Handle file imports.
     if (auto file_import_op = dyn_cast<ImportDslxFilePackageOp>(op)) {
-      auto package_or =
-          importDslxFile(file_import_op, *package, dslx_search_path);
-      if (failed(package_or)) return failure();
+      auto package_or = importDslxFile(file_import_op, *package,
+                                       dslx_search_path, dslx_cache);
+      if (failed(package_or)) {
+        return failure();
+      }
       translation_state.setPackageInfo(file_import_op.getSymName(),
                                        std::move(*package_or));
     }
@@ -1118,7 +1154,9 @@ FailureOr<std::unique_ptr<Package>> mlirXlsToXls(
         ProcBuilder fb(xls_region.getName(), package.get());
         for (auto arg : xls_region.getBodyRegion().getArguments()) {
           auto literal = zeroLiteral(arg.getType());
-          if (failed(literal)) return failure();
+          if (failed(literal)) {
+            return failure();
+          }
           valueMap[arg] = fb.StateElement(get_name(arg), *literal);
         }
         auto out = convertFunction(translation_state, xls_region, valueMap, fb);
@@ -1141,7 +1179,9 @@ FailureOr<std::unique_ptr<Package>> mlirXlsToXls(
         // Populate the function argument values.
         for (Value arg : xls_region.getBodyRegion().getArguments()) {
           ::xls::Type* xls_type = translation_state.getType(arg.getType());
-          if (xls_type == nullptr) return failure();
+          if (xls_type == nullptr) {
+            return failure();
+          }
           valueMap[arg] = fb.Param(get_name(arg), xls_type);
         }
 
@@ -1167,13 +1207,21 @@ FailureOr<std::unique_ptr<Package>> mlirXlsToXls(
 }
 
 LogicalResult setTop(Operation* op, std::string_view name, Package* package) {
-  if (!name.empty()) return success(package->SetTopByName(name).ok());
+  if (!name.empty()) {
+    absl::Status status = package->SetTopByName(name);
+    if (!status.ok()) {
+      return op->emitError() << "failed to set top: " << status.message();
+    }
+    return success();
+  }
 
   for (auto region_op :
        cast<ModuleOp>(op).getOps<xls::XlsRegionOpInterface>()) {
     // If name is not set and the function is not private, use the function name
     // as the top.
-    if (auto fn = dyn_cast<FuncOp>(*region_op); fn && fn.isPrivate()) continue;
+    if (auto fn = dyn_cast<FuncOp>(*region_op); fn && fn.isPrivate()) {
+      continue;
+    }
     if (!name.empty()) {
       llvm::errs() << "Multiple potential top functions: " << name << " and "
                    << region_op.getName()
@@ -1191,9 +1239,15 @@ LogicalResult setTop(Operation* op, std::string_view name, Package* package) {
 
 LogicalResult MlirXlsToXlsTranslate(Operation* op, llvm::raw_ostream& output,
                                     MlirXlsToXlsTranslateOptions options) {
+  DslxPackageCache maybe_cache;
+  if (options.dslx_cache == nullptr) {
+    options.dslx_cache = &maybe_cache;
+  }
   if (!options.main_function.empty() && options.privatize_and_dce_functions) {
     op->walk([&](FuncOp func) {
-      if (func.isPrivate() || func.getName() == options.main_function) return;
+      if (func.isPrivate() || func.getName() == options.main_function) {
+        return;
+      }
       func.setPrivate();
     });
     mlir::PassManager pm(op->getContext());
@@ -1203,36 +1257,58 @@ LogicalResult MlirXlsToXlsTranslate(Operation* op, llvm::raw_ostream& output,
     }
   }
 
-  auto package = mlirXlsToXls(op, options.dslx_search_path);
+  auto package =
+      mlirXlsToXls(op, options.dslx_search_path, *options.dslx_cache);
   if (failed(package) ||
-      failed(setTop(op, options.main_function, package->get())))
+      failed(setTop(op, options.main_function, package->get()))) {
     return failure();
+  }
 
-  std::string out = (*package)->DumpIr();
   if (options.optimize_ir) {
-    auto optimized =
-        ::xls::OptimizeIr(out, (*package)->GetTop().value()->name());
-    if (!optimized.ok()) {
-      llvm::errs() << "Failed to optimize IR: " << optimized.status().message()
-                   << "\n";
+    ::xls::tools::OptOptions options = {
+        .opt_level = 1,
+        .top = (*package)->GetTop().value()->name(),
+    };
+    absl::Status status =
+        ::xls::tools::OptimizeIrForTop(package->get(), options);
+    if (!status.ok()) {
+      llvm::errs() << "Failed to optimize IR: " << status.ToString() << "\n";
       return failure();
     }
-    out = *optimized;
   }
 
   if (!options.generate_verilog) {
+    std::string out = (*package)->DumpIr();
     output << out;
     return success();
   }
 
-  ::xls::SchedulingOptionsFlagsProto scheduling_options_flags_proto;
-  ::xls::CodegenFlagsProto codegen_flags_proto;
-  codegen_flags_proto.set_generator(::xls::GENERATOR_KIND_COMBINATIONAL);
-  codegen_flags_proto.set_register_merge_strategy(
+  auto scheduling_options_flags_proto = ::xls::GetSchedulingOptionsFlagsProto();
+  if (!scheduling_options_flags_proto.ok()) {
+    llvm::errs() << "Failed to get scheduling options flags proto: "
+                 << scheduling_options_flags_proto.status().message() << "\n";
+    return failure();
+  }
+  auto codegen_flags_proto = ::xls::GetCodegenFlags();
+  if (!codegen_flags_proto.ok()) {
+    llvm::errs() << "Failed to get codegen flags proto: "
+                 << codegen_flags_proto.status().message() << "\n";
+    return failure();
+  }
+
+  if (options.pipeline_stages > 0) {
+    codegen_flags_proto->set_generator(::xls::GENERATOR_KIND_PIPELINE);
+  } else {
+    codegen_flags_proto->set_generator(::xls::GENERATOR_KIND_COMBINATIONAL);
+  }
+  codegen_flags_proto->set_register_merge_strategy(
       ::xls::RegisterMergeStrategyProto::STRATEGY_DONT_MERGE);
+  scheduling_options_flags_proto->set_delay_model(options.delay_model);
+  scheduling_options_flags_proto->set_pipeline_stages(options.pipeline_stages);
+  codegen_flags_proto->set_reset(options.reset_signal_name);
 
   auto xls_codegen_results = ::xls::ScheduleAndCodegenPackage(
-      &**package, scheduling_options_flags_proto, codegen_flags_proto,
+      package->get(), *scheduling_options_flags_proto, *codegen_flags_proto,
       /*with_delay_model=*/false);
   if (!xls_codegen_results.ok()) {
     llvm::errs() << "Failed to codegen: "
@@ -1242,6 +1318,28 @@ LogicalResult MlirXlsToXlsTranslate(Operation* op, llvm::raw_ostream& output,
 
   output << xls_codegen_results->module_generator_result.verilog_text;
   return success();
+}
+
+absl::StatusOr<std::shared_ptr<const Package>> DslxPackageCache::import(
+    const std::string& fileName) {
+  auto it = cache.find(fileName);
+  if (it != cache.end()) {
+    return it->second;
+  }
+  absl::StatusOr<std::string> package_string_or = ::xls::ConvertDslxPathToIr(
+      fileName, ::xls::GetDefaultDslxStdlibPath(), {});
+  if (!package_string_or.ok()) {
+    return package_string_or.status();
+  }
+  absl::StatusOr<std::unique_ptr<Package>> package_or =
+      ::xls::ParsePackage(package_string_or.value(), std::nullopt);
+  if (!package_or.ok()) {
+    return package_or.status();
+  }
+
+  std::shared_ptr<const Package> package = std::move(package_or.value());
+  cache[fileName] = package;
+  return package;
 }
 
 }  // namespace mlir::xls

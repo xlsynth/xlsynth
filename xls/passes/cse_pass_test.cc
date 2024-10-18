@@ -19,6 +19,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
@@ -37,7 +38,7 @@ namespace m = ::xls::op_matchers;
 namespace xls {
 namespace {
 
-using status_testing::IsOkAndHolds;
+using ::absl_testing::IsOkAndHolds;
 
 TEST(FixedPointOfSPO, Simple) {
   absl::flat_hash_map<std::string, std::string> spo;
@@ -99,6 +100,24 @@ TEST_F(CsePassTest, TwoIdenticalLiterals) {
   EXPECT_THAT(Run(f), IsOkAndHolds(true));
   EXPECT_EQ(f->node_count(), 2);
   EXPECT_EQ(f->return_value()->operand(0), f->return_value()->operand(1));
+}
+
+TEST_F(CsePassTest, TwoIdenticalLiteralsNoLiteralCommoning) {
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, ParseFunction(R"(
+     fn IdenticalLiterals() -> (bits[2], bits[2]) {
+        literal.1: bits[2] = literal(value=1)
+        literal.2: bits[2] = literal(value=1)
+        ret tuple.3: (bits[2], bits[2]) = tuple(literal.1, literal.2)
+     }
+  )",
+                                                       p.get()));
+  EXPECT_EQ(f->node_count(), 3);
+  PassResults results;
+  EXPECT_THAT(CsePass(/*common_literals=*/false)
+                  .RunOnFunctionBase(f, OptimizationPassOptions(), &results),
+              IsOkAndHolds(false));
+  EXPECT_EQ(f->node_count(), 3);
 }
 
 TEST_F(CsePassTest, NontrivialCommonSubexpressions) {

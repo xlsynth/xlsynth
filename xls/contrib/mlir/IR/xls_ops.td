@@ -401,7 +401,10 @@ def Xls_SignExtOp : Xls_UnaryOp<"sign_ext", [Pure, SameOperandsAndResultShape]> 
 // Channel operations
 //===----------------------------------------------------------------------===//
 
-def Xls_BlockingReceiveOp : Xls_Op<"blocking_receive", [TensorArrayTypeFungible, PredicatableOpInterface]> {
+def Xls_BlockingReceiveOp : Xls_Op<"blocking_receive", [
+  TensorArrayTypeFungible,
+  PredicatableOpInterface,
+  CallOpInterface]> {
   let summary = "Receives a data value from a specified channel.";
   let description = [{
     Receives a data value from a specified channel. The type of the data value
@@ -431,10 +434,23 @@ def Xls_BlockingReceiveOp : Xls_Op<"blocking_receive", [TensorArrayTypeFungible,
     void setCondition(::mlir::Value condition) {
       getPredicateMutable().assign(condition);
     }
+    ::mlir::CallInterfaceCallable getCallableForCallee() {
+      return getChannel();
+    }
+    void setCalleeFromCallable(::mlir::CallInterfaceCallable callable) {
+      llvm_unreachable("setCalleeFromCallable is not supported");
+    }
+    ::mlir::Operation::operand_range getArgOperands() {
+      return {getOperands().end(), getOperands().end()};
+    }
+    ::mlir::MutableOperandRange getArgOperandsMutable() { return {getOperation()}; }
   }];
 }
 
-def Xls_NonblockingReceiveOp : Xls_Op<"nonblocking_receive", [TensorArrayTypeFungible, PredicatableOpInterface]> {
+def Xls_NonblockingReceiveOp : Xls_Op<"nonblocking_receive", [
+  TensorArrayTypeFungible,
+  PredicatableOpInterface,
+  CallOpInterface]> {
   let summary = "Receives a data value from a specified channel.";
   let description = [{
     Receives a data value from a specified channel. The type of the data value
@@ -466,10 +482,25 @@ def Xls_NonblockingReceiveOp : Xls_Op<"nonblocking_receive", [TensorArrayTypeFun
     void setCondition(::mlir::Value condition) {
       getPredicateMutable().assign(condition);
     }
+    ::mlir::CallInterfaceCallable getCallableForCallee() {
+      return getChannel();
+    }
+    void setCalleeFromCallable(::mlir::CallInterfaceCallable callable) {
+      llvm_unreachable("setCalleeFromCallable is not supported");
+    }
+    ::mlir::Operation::operand_range getArgOperands() {
+      return {getOperands().end(), getOperands().end()};
+    }
+    ::mlir::MutableOperandRange getArgOperandsMutable() {
+      return {getOperation()};
+    }
   }];
 }
 
-def Xls_SendOp : Xls_Op<"send", [TensorArrayTypeFungible, PredicatableOpInterface]> {
+def Xls_SendOp : Xls_Op<"send", [
+  TensorArrayTypeFungible,
+  PredicatableOpInterface,
+  CallOpInterface]> {
   let summary = "Sends data to a specified channel.";
   let description = [{
     Sends data to a specified channel. The type of the data values is determined
@@ -498,6 +529,16 @@ def Xls_SendOp : Xls_Op<"send", [TensorArrayTypeFungible, PredicatableOpInterfac
     void setCondition(::mlir::Value condition) {
       getPredicateMutable().assign(condition);
     }
+    ::mlir::CallInterfaceCallable getCallableForCallee() {
+      return getChannel();
+    }
+    void setCalleeFromCallable(::mlir::CallInterfaceCallable callable) {
+      llvm_unreachable("setCalleeFromCallable is not supported");
+    }
+    ::mlir::Operation::operand_range getArgOperands() {
+      return {getOperands().end(), getOperands().end()};
+    }
+    ::mlir::MutableOperandRange getArgOperandsMutable() { return {getOperation()}; }
   }];
 }
 
@@ -1176,6 +1217,10 @@ def Xls_ImportDslxFilePackageOp : Xls_Op<"import_dslx_file_package", [Symbol]> {
   let assemblyFormat = [{
     $filename `as` $sym_name attr-dict
   }];
+  let extraClassDeclaration = [{
+    // Imports can always be discarded if they are not used.
+    bool canDiscardOnUseEmpty() const { return true; }
+  }];
 }
 
 def Xls_CallDslxOp : Xls_Op<"call_dslx", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
@@ -1212,7 +1257,9 @@ def Xls_EprocOp : Xls_Op<"eproc", [
   Symbol,
   SingleBlockImplicitTerminator<"YieldOp">,
   IsolatedFromAbove,
-  DeclareOpInterfaceMethods<XlsRegionOpInterface>
+  DeclareOpInterfaceMethods<XlsRegionOpInterface>,
+  // Callable as it contains calls so should participate in the CallGraph.
+  CallableOpInterface
 ]> {
   let summary = "Elaborated proc";
   let description = [{
@@ -1232,9 +1279,12 @@ def Xls_EprocOp : Xls_Op<"eproc", [
     keyword "zeroinitializer". This makes the initial state explicit to the
     reader as well as enabling extension to more complex initial states in the
     future without complicating the grammar.
+
+    If `discardable` is true, the eproc may be discarded if it is not used.
   }];
   let arguments = (ins
-    SymbolNameAttr:$sym_name
+    SymbolNameAttr:$sym_name,
+    UnitAttr:$discardable
   );
   let regions = (region
     SizedRegion<1>:$body
@@ -1249,10 +1299,24 @@ def Xls_EprocOp : Xls_Op<"eproc", [
     ::mlir::ValueRange getYieldedArguments() {
       return getBody().getBlocks().front().getTerminator()->getOperands();
     }
+    mlir::Region* getCallableRegion() {
+      return &getBody();
+    }
+    ::llvm::ArrayRef<::mlir::Type> getArgumentTypes() {
+      return {};
+    }
+    llvm::ArrayRef<::mlir::Type> getResultTypes() {
+      return {};
+    }
+    bool canDiscardOnUseEmpty() { return getDiscardable(); }
   }];
 }
 
-def Xls_ChanOp : Xls_Op<"chan", [Symbol]> {
+def Xls_ChanOp : Xls_Op<"chan", [
+  Symbol,
+  // While a channel isn't theoretically "callable", it is referred to by sends
+  // an receives in enough of a "call-like" way to participate in the CallGraph.
+  CallableOpInterface]> {
   let summary = "Channel";
   let description = [{
     A channel is a unidirectional FIFO queue of values. Channels are declared
@@ -1269,6 +1333,44 @@ def Xls_ChanOp : Xls_Op<"chan", [Symbol]> {
   );
   let assemblyFormat = [{
     $sym_name attr-dict `:` $type
+  }];
+  let extraClassDeclaration = [{
+    // Channels can always be discarded if they are not used.
+    bool canDiscardOnUseEmpty() const { return true; }
+
+    mlir::Region* getCallableRegion() {
+      return nullptr;
+    }
+    ::llvm::ArrayRef<::mlir::Type> getArgumentTypes() {
+      return {};
+    }
+    llvm::ArrayRef<::mlir::Type> getResultTypes() {
+      return {};
+    }
+  }];
+
+}
+
+def Xls_InstantiateEprocOp : Xls_Op<"instantiate_eproc", [DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+  let summary = "Instantiates an eproc";
+  let description = [{
+    Instantiates an eproc, binding the channels the eproc sends and receives on
+    to the given "global" channels.
+
+    "global" channels are channels that will be bound to the eproc's channels.
+    "local" channels are those channels that the eproc already uses.
+
+    During instantiation, the eproc will be cloned, and references to the local
+    channels will be replaced with references to the global channels. The
+    original eproc will be removed after instantiation.
+  }];
+  let arguments = (ins
+    FlatSymbolRefAttr:$eproc,
+    FlatSymbolRefArrayAttr:$global_channels,
+    FlatSymbolRefArrayAttr:$local_channels
+  );
+  let assemblyFormat = [{
+    $eproc custom<ZippedSymbols>($global_channels, $local_channels) attr-dict
   }];
 }
 

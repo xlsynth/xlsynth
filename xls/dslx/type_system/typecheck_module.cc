@@ -174,7 +174,7 @@ static absl::Status TypecheckProcStmts(Proc* p, DeduceCtx* ctx) {
 }
 
 static absl::Status TypecheckQuickcheck(QuickCheck* qc, DeduceCtx* ctx) {
-  Function* quickcheck_f_ptr = qc->f();
+  Function* quickcheck_f_ptr = qc->fn();
   XLS_RET_CHECK(quickcheck_f_ptr != nullptr);
   Function& quickcheck_f = *quickcheck_f_ptr;
 
@@ -292,6 +292,8 @@ absl::Status TypecheckModuleMember(const ModuleMember& member, Module* module,
     XLS_RETURN_IF_ERROR(ctx->Deduce(ToAstNode(member)).status());
     VLOG(2) << "Finished typechecking type alias: " << type_alias->ToString();
   } else if (std::holds_alternative<ConstAssert*>(member)) {
+    XLS_RETURN_IF_ERROR(ctx->Deduce(ToAstNode(member)).status());
+  } else if (std::holds_alternative<Impl*>(member)) {
     XLS_RETURN_IF_ERROR(ctx->Deduce(ToAstNode(member)).status());
   } else {
     return absl::InvalidArgumentError(

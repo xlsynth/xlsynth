@@ -139,18 +139,15 @@ struct xls_dslx_enum_member* xls_dslx_enum_def_get_member(
 XLS_DLL_EXPORT
 char* xls_dslx_enum_member_get_name(struct xls_dslx_enum_member*);
 
-XLS_DLL_EXPORT
 struct xls_dslx_expr* xls_dslx_enum_member_get_value(
     struct xls_dslx_enum_member*);
 
 // -- interp_value
 
-XLS_DLL_EXPORT
 bool xls_dslx_interp_value_convert_to_ir(struct xls_dslx_interp_value* v,
                                          char** error_out,
                                          struct xls_value** result_out);
 
-XLS_DLL_EXPORT
 void xls_dslx_interp_value_free(struct xls_dslx_interp_value*);
 
 // -- type_info
@@ -159,21 +156,20 @@ void xls_dslx_interp_value_free(struct xls_dslx_interp_value*);
 // may return null; however, if type checking has completed successfully this
 // should not occur in practice.
 
-XLS_DLL_EXPORT
 const struct xls_dslx_type* xls_dslx_type_info_get_type_struct_def(
     struct xls_dslx_type_info*, struct xls_dslx_struct_def*);
 
-XLS_DLL_EXPORT
+const struct xls_dslx_type* xls_dslx_type_info_get_type_struct_member(
+    struct xls_dslx_type_info*, struct xls_dslx_struct_member*);
+
 const struct xls_dslx_type* xls_dslx_type_info_get_type_enum_def(
     struct xls_dslx_type_info*, struct xls_dslx_enum_def*);
 
-XLS_DLL_EXPORT
 const struct xls_dslx_type* xls_dslx_type_info_get_type_type_annotation(
     struct xls_dslx_type_info*, struct xls_dslx_type_annotation*);
 
 // Note: the outparam is owned by the caller and must be freed via
 // `xls_dslx_interp_value_free`.
-XLS_DLL_EXPORT
 bool xls_dslx_type_info_get_const_expr(
     struct xls_dslx_type_info* type_info, struct xls_dslx_expr* expr,
     char** error_out, struct xls_dslx_interp_value** result_out);

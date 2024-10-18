@@ -39,6 +39,7 @@
 #include "absl/types/variant.h"
 #include "xls/common/visitor.h"
 #include "xls/dslx/channel_direction.h"
+#include "xls/dslx/fmt/comments.h"
 #include "xls/dslx/fmt/pretty_print.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/comment_data.h"
@@ -51,6 +52,9 @@
 
 namespace xls::dslx {
 namespace {
+
+DocRef FmtBlockedExprLeader(const Expr& e, const Comments& comments,
+                            DocArena& arena);
 
 // Note: if a comment doc is emitted (i.e. return value has_value()) it does not
 // have a trailing hard-line. This is for consistency with other emission
@@ -1153,7 +1157,8 @@ DocRef Fmt(const Spawn& n, const Comments& comments, DocArena& arena) {
   );
 }
 
-DocRef Fmt(const XlsTuple& n, const Comments& comments, DocArena& arena) {
+DocRef FmtTupleWithoutComments(const XlsTuple& n, const Comments& comments,
+                               DocArena& arena) {
   // 1-element tuples are a special case- we always want a trailing comma and
   // never want it to be broken up. Handle separately here.
   if (n.members().size() == 1) {
@@ -1182,6 +1187,85 @@ DocRef Fmt(const XlsTuple& n, const Comments& comments, DocArena& arena) {
                                                })),
                  arena.cparen(),
              });
+}
+
+static bool CommentsWithin(const Span& span, const Comments& comments) {
+  std::vector<const CommentData*> items = comments.GetComments(span);
+  return !items.empty();
+}
+
+DocRef FmtTuple(const XlsTuple& n, const Comments& comments, DocArena& arena) {
+  Span tuple_span = n.span();
+  // Detect if there are any comments in the span of the tuple.
+  bool any_comments = CommentsWithin(tuple_span, comments);
+
+  if (!any_comments) {
+    // Do it the old way.
+    return FmtTupleWithoutComments(n, comments, arena);
+  }
+
+  // The general algorithm is:
+  //  1. Before each element, prepend comments between the end of the previous
+  //  element and the start of this one.
+  //  2. At the end of the tuple, append comments between the last element and
+  //  the end of the tuple.
+
+  std::vector<DocRef> pieces = {};
+  absl::Span<Expr* const> items = n.members();
+  Pos last_tuple_element_span_limit = tuple_span.start();
+  for (size_t i = 0; i < items.size(); ++i) {
+    const Expr* item = items[i];
+    const bool first_element = i == 0;
+    const Span& span = item->span();
+
+    // If there are comments between end of the last element we processed,
+    // and the start of this one, prepend them.
+    if (std::optional<DocRef> previous_comments =
+            EmitCommentsBetween(last_tuple_element_span_limit, span.start(),
+                                comments, arena, nullptr)) {
+      if (!first_element) {
+        pieces.push_back(arena.comma());
+        pieces.push_back(arena.space());
+      }
+      pieces.push_back(previous_comments.value());
+      pieces.push_back(arena.hard_line());
+    } else if (!first_element) {
+      // No comments between there and here; append a newline to "terminate" the
+      // previous element.
+      pieces.push_back(arena.comma());
+      pieces.push_back(arena.hard_line());
+    }
+
+    last_tuple_element_span_limit = span.limit();
+    // Format the element itself.
+    pieces.push_back(FmtExprPtr(item, comments, arena));
+  }
+
+  DocRef guts = ConcatN(arena, pieces);
+
+  // Append comments between the last element and the end of the tuple
+  if (std::optional<DocRef> terminal_comment =
+          EmitCommentsBetween(last_tuple_element_span_limit, tuple_span.limit(),
+                              comments, arena, nullptr)) {
+    // Add trailing comma before the terminal comment too.
+    guts = ConcatN(
+        arena, {guts, arena.comma(), arena.space(), terminal_comment.value()});
+  } else if (n.members().size() == 1) {
+    // No trailing comment, but add a comma if it's a singleton.
+    guts = ConcatN(arena, {guts, arena.comma()});
+  }
+
+  return ConcatN(arena, {
+                            arena.oparen(),
+                            arena.hard_line(),
+                            arena.MakeNest(guts),
+                            arena.hard_line(),
+                            arena.cparen(),
+                        });
+}
+
+DocRef Fmt(const XlsTuple& n, const Comments& comments, DocArena& arena) {
+  return FmtTuple(n, comments, arena);
 }
 
 // Note: this does not put any spacing characters after the '{' so we can
@@ -1224,19 +1308,45 @@ static DocRef FmtStructMembersBreak(
   return FmtJoin<std::pair<std::string, Expr*>>(
       members, Joiner::kCommaHardlineTrailingCommaAlways,
       [](const auto& member, const Comments& comments, DocArena& arena) {
-        const auto& [name, expr] = member;
+        const auto& [field_name, expr] = member;
         // If the expression is an identifier that matches its corresponding
         // struct member name, we canonically use the shorthand notation of just
         // providing the identifier and leaving the member name implicitly as
         // the same symbol.
         if (const NameRef* name_ref = dynamic_cast<const NameRef*>(expr);
-            name_ref != nullptr && name_ref->identifier() == name) {
-          return arena.MakeText(name);
+            name_ref != nullptr && name_ref->identifier() == field_name) {
+          return arena.MakeText(field_name);
         }
 
-        return ConcatNGroup(arena,
-                            {arena.MakeText(name), arena.colon(), arena.space(),
-                             arena.MakeGroup(Fmt(*expr, comments, arena))});
+        DocRef field_expr = Fmt(*expr, comments, arena);
+
+        // This is the document we want to emit both when we:
+        // - Know it fits in flat mode
+        // - Know the start of the document (i.e. the leader on the RHS
+        //   expression) can be emitted in flat mode
+        //
+        // That's why it has a `break1` in it (instead of a space) and a
+        // reassessment of whether to enter break mode for the field
+        // expression.
+        DocRef on_flat =
+            ConcatN(arena, {arena.MakeText(field_name), arena.colon(),
+                            arena.break1(), arena.MakeGroup(field_expr)});
+        DocRef nest_field_expr =
+            ConcatN(arena, {arena.MakeText(field_name), arena.colon(),
+                            arena.hard_line(), arena.MakeNest(field_expr)});
+
+        DocRef on_other;
+        if (expr->IsBlockedExprWithLeader()) {
+          DocRef leader = ConcatN(
+              arena, {arena.MakeText(field_name), arena.colon(), arena.space(),
+                      FmtBlockedExprLeader(*expr, comments, arena)});
+          on_other = arena.MakeModeSelect(leader, /*on_flat=*/on_flat,
+                                          /*on_break=*/nest_field_expr);
+        } else {
+          on_other = arena.MakeFlatChoice(on_flat, nest_field_expr);
+        }
+
+        return arena.MakeNestIfFlatFits(on_flat, on_other);
       },
       comments, arena);
 }
@@ -1700,62 +1810,8 @@ DocRef Fmt(const Let& n, const Comments& comments, DocArena& arena,
   return ConcatNGroup(arena, {leader, body});
 }
 
-/* static */ Comments Comments::Create(absl::Span<const CommentData> comments) {
-  std::optional<Pos> last_data_limit;
-  absl::flat_hash_map<int64_t, CommentData> line_to_comment;
-  for (const CommentData& cd : comments) {
-    VLOG(3) << "comment on line: " << cd.span.start().lineno();
-    // Note: we don't have multi-line comments for now, so we just note the
-    // start line number for the comment.
-    line_to_comment[cd.span.start().lineno()] = cd;
-    if (last_data_limit.has_value()) {
-      last_data_limit = std::max(cd.span.limit(), last_data_limit.value());
-    } else {
-      last_data_limit = cd.span.limit();
-    }
-  }
-  return Comments{std::move(line_to_comment), last_data_limit};
-}
-
-bool Comments::HasComments(const Span& in_span) const {
-  for (int64_t i = in_span.start().lineno(); i <= in_span.limit().lineno();
-       ++i) {
-    if (auto it = line_to_comment_.find(i); it != line_to_comment_.end()) {
-      return true;
-    }
-  }
-  return false;
-}
-
-static bool InRange(const Span& node_span, const CommentData& comment) {
-  // For multiline comments, consider in range if the comment start is within
-  // the node span. Since all comments end on the line below the comment,
-  // multiline comments have > 1 line between the start and end.
-  bool overlapping_multiline =
-      (comment.span.limit().lineno() - 1 > comment.span.start().lineno()) &&
-      node_span.Contains(comment.span.start());
-  return overlapping_multiline || node_span.Contains(comment.span);
-}
-
-std::vector<const CommentData*> Comments::GetComments(
-    const Span& node_span) const {
-  // Implementation note: this will typically be a single access (as most things
-  // will be on a single line), so we prefer a flat hash map to a btree map.
-  std::vector<const CommentData*> results;
-  for (int64_t i = node_span.start().lineno(); i <= node_span.limit().lineno();
-       ++i) {
-    if (auto it = line_to_comment_.find(i); it != line_to_comment_.end()) {
-      // Check that the comment is properly contained within the given
-      // "node_span" we were targeting. E.g. the user might be requesting a
-      // subspan of a line, we don't want to give a comment that came
-      // afterwards.
-      const CommentData& cd = it->second;
-      if (InRange(node_span, cd)) {
-        results.push_back(&cd);
-      }
-    }
-  }
-  return results;
+DocRef Fmt(const VerbatimNode* n, DocArena& arena) {
+  return arena.MakeText(std::string(n->text()));
 }
 
 DocRef Fmt(const Statement& n, const Comments& comments, DocArena& arena,
@@ -1778,6 +1834,7 @@ DocRef Fmt(const Statement& n, const Comments& comments, DocArena& arena,
           [&](const ConstAssert* n) {
             return maybe_concat_semi(Fmt(*n, comments, arena));
           },
+          [&](const VerbatimNode* n) { return Fmt(n, arena); },
       },
       n.wrapped());
 }
@@ -2149,7 +2206,7 @@ static DocRef Fmt(const QuickCheck& n, const Comments& comments,
     pieces.push_back(arena.MakeText("#[quickcheck]"));
   }
   pieces.push_back(arena.hard_line());
-  pieces.push_back(Fmt(*n.f(), comments, arena));
+  pieces.push_back(Fmt(*n.fn(), comments, arena));
   return ConcatN(arena, pieces);
 }
 
@@ -2432,22 +2489,25 @@ static DocRef Fmt(const Import& n, const Comments& comments, DocArena& arena) {
 static DocRef Fmt(const ModuleMember& n, const Comments& comments,
                   DocArena& arena) {
   return absl::visit(
-      Visitor{[&](const Function* n) { return Fmt(*n, comments, arena); },
-              [&](const Proc* n) { return Fmt(*n, comments, arena); },
-              [&](const TestFunction* n) { return Fmt(*n, comments, arena); },
-              [&](const TestProc* n) { return Fmt(*n, comments, arena); },
-              [&](const QuickCheck* n) { return Fmt(*n, comments, arena); },
-              [&](const TypeAlias* n) {
-                return arena.MakeConcat(Fmt(*n, comments, arena), arena.semi());
-              },
-              [&](const StructDef* n) { return Fmt(*n, comments, arena); },
-              [&](const Impl* n) { return Fmt(*n, comments, arena); },
-              [&](const ConstantDef* n) { return Fmt(*n, comments, arena); },
-              [&](const EnumDef* n) { return Fmt(*n, comments, arena); },
-              [&](const Import* n) { return Fmt(*n, comments, arena); },
-              [&](const ConstAssert* n) {
-                return arena.MakeConcat(Fmt(*n, comments, arena), arena.semi());
-              }},
+      Visitor{
+          [&](const Function* n) { return Fmt(*n, comments, arena); },
+          [&](const Proc* n) { return Fmt(*n, comments, arena); },
+          [&](const TestFunction* n) { return Fmt(*n, comments, arena); },
+          [&](const TestProc* n) { return Fmt(*n, comments, arena); },
+          [&](const QuickCheck* n) { return Fmt(*n, comments, arena); },
+          [&](const TypeAlias* n) {
+            return arena.MakeConcat(Fmt(*n, comments, arena), arena.semi());
+          },
+          [&](const StructDef* n) { return Fmt(*n, comments, arena); },
+          [&](const Impl* n) { return Fmt(*n, comments, arena); },
+          [&](const ConstantDef* n) { return Fmt(*n, comments, arena); },
+          [&](const EnumDef* n) { return Fmt(*n, comments, arena); },
+          [&](const Import* n) { return Fmt(*n, comments, arena); },
+          [&](const ConstAssert* n) {
+            return arena.MakeConcat(Fmt(*n, comments, arena), arena.semi());
+          },
+          [&](const VerbatimNode* n) { return Fmt(n, arena); },
+      },
       n);
 }
 

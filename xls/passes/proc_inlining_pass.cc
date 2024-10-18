@@ -29,6 +29,7 @@
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/log/vlog_is_on.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -154,10 +155,7 @@ absl::StatusOr<Send*> AddSendPredicate(Send* send, Node* predicate) {
   if (send->predicate().has_value()) {
     XLS_ASSIGN_OR_RETURN(Node * new_predicate,
                          And(send->predicate().value(), predicate));
-    XLS_ASSIGN_OR_RETURN(int64_t predicate_op,
-                         send->predicate_operand_number());
-    XLS_RETURN_IF_ERROR(
-        send->ReplaceOperandNumber(predicate_op, new_predicate));
+    XLS_RETURN_IF_ERROR(send->ReplacePredicate(new_predicate));
     return send;
   }
   XLS_ASSIGN_OR_RETURN(Send * new_send, send->ReplaceUsesWithNew<Send>(
@@ -175,10 +173,7 @@ absl::StatusOr<Receive*> AddReceivePredicate(Receive* receive,
   if (receive->predicate().has_value()) {
     XLS_ASSIGN_OR_RETURN(Node * new_predicate,
                          And(receive->predicate().value(), predicate));
-    XLS_ASSIGN_OR_RETURN(int64_t predicate_op,
-                         receive->predicate_operand_number());
-    XLS_RETURN_IF_ERROR(
-        receive->ReplaceOperandNumber(predicate_op, new_predicate));
+    XLS_RETURN_IF_ERROR(receive->ReplacePredicate(new_predicate));
     return receive;
   }
   XLS_ASSIGN_OR_RETURN(Receive * new_receive,
@@ -1932,7 +1927,7 @@ absl::StatusOr<bool> ProcInliningPass::RunInternal(
   // the inlined procs.
   std::vector<Node*> to_remove;
   for (Node* node : container_proc->nodes()) {
-    if (!IsChannelNode(node)) {
+    if (!node->Is<ChannelNode>()) {
       continue;
     }
     XLS_ASSIGN_OR_RETURN(Channel * ch, GetChannelUsedByNode(node));

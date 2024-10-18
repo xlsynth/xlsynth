@@ -24,7 +24,7 @@ using ac_int = XlsInt<Width, Signed>;
 #define DELAY 2048
 #define MEMORY_SIZE static_cast<uint32_t>(DELAY)
 
-using std::uint32_t;
+using ::std::uint32_t;
 
 using memory_t = uint32_t;
 using addr_t = ac_int<11, /*signed=*/false>;
@@ -47,7 +47,6 @@ using InputChannel = __xls_channel<T, __xls_channel_dir_In>;
 // DEFAULT_OUTPUT_VALUE for the first DELAY transactions.
 struct Delay {
   InputChannel<uint32_t> in;
-#pragma hls_channel_strictness arbitrary_static_order
   __xls_memory<memory_t, MEMORY_SIZE> memory;
   OutputChannel<uint32_t> out;
 

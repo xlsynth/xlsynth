@@ -97,21 +97,7 @@ std::optional<PackageInterfaceProto::Function> FindFunctionInterface(
   }
   return std::nullopt;
 }
-std::optional<PackageInterfaceProto::Proc> FindProcInterface(
-    const std::optional<PackageInterfaceProto>& src,
-    std::string_view proc_name) {
-  if (!src) {
-    return std::nullopt;
-  }
-  auto it =
-      absl::c_find_if(src->procs(), [&](const PackageInterfaceProto::Proc& f) {
-        return f.base().name() == proc_name;
-      });
-  if (it != src->procs().end()) {
-    return *it;
-  }
-  return std::nullopt;
-}
+
 std::optional<PackageInterfaceProto::Channel> FindChannelInterface(
     const std::optional<PackageInterfaceProto>& src,
     std::string_view chan_name) {
@@ -2207,7 +2193,7 @@ class CloneNodesIntoBlockHandler {
       } else if (node->Is<Next>()) {
         XLS_RET_CHECK(is_proc_);
         XLS_RETURN_IF_ERROR(HandleNextValue(node, stage));
-      } else if (IsChannelNode(node)) {
+      } else if (node->Is<ChannelNode>()) {
         XLS_RET_CHECK(is_proc_);
         XLS_ASSIGN_OR_RETURN(Channel * channel, GetChannelUsedByNode(node));
 
@@ -3464,7 +3450,7 @@ absl::StatusOr<CodegenPassUnit> FunctionToCombinationalBlock(
   absl::flat_hash_map<Node*, Node*> node_map;
   CodegenPassUnit unit(block->package(), block);
 
-  // Emit the parameters first to ensure the their order is preserved in the
+  // Emit the parameters first to ensure their order is preserved in the
   // block.
   auto func_interface =
       FindFunctionInterface(options.package_interface(), f->name());

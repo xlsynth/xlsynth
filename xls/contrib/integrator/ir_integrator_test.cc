@@ -25,6 +25,7 @@
 #include "gtest/gtest.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "xls/common/status/matchers.h"
 #include "xls/contrib/integrator/integration_options.h"
 #include "xls/ir/ir_matcher.h"
@@ -40,8 +41,8 @@ namespace m = ::xls::op_matchers;
 namespace xls {
 namespace {
 
-using status_testing::IsOkAndHolds;
-using status_testing::StatusIs;
+using ::absl_testing::IsOkAndHolds;
+using ::absl_testing::StatusIs;
 using ::testing::ElementsAre;
 using ::testing::HasSubstr;
 using ::testing::UnorderedElementsAre;
@@ -277,7 +278,7 @@ TEST_F(IntegratorTest, MappingTestSetNodeMappingFailureCases) {
   EXPECT_FALSE(integration->SetNodeMapping(internal_2, internal_1).ok());
 }
 
-TEST_F(IntegratorTest, ParamterPacking) {
+TEST_F(IntegratorTest, ParameterPacking) {
   auto p = CreatePackage();
   FunctionBuilder fb_a("func_a", p.get());
   fb_a.Param("a1", p->GetBitsType(2));
@@ -372,7 +373,7 @@ TEST_F(IntegratorTest, ParamterPacking) {
   EXPECT_EQ(integration->function()->node_count(), 6);
 }
 
-TEST_F(IntegratorTest, ParamterPackingUniversalMuxSelect) {
+TEST_F(IntegratorTest, ParameterPackingUniversalMuxSelect) {
   auto p = CreatePackage();
   FunctionBuilder fb_a("func_a", p.get());
   fb_a.Param("a1", p->GetBitsType(2));

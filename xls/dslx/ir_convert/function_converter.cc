@@ -339,37 +339,44 @@ class FunctionConverterVisitor : public AstNodeVisitor {
 
   // These are always custom-visited (i.e. traversed to in a specialized way
   // from their parent nodes).
+  // keep-sorted start
+  INVALID(MatchArm)
+  INVALID(NameDef)
   INVALID(NameDefTree)
   INVALID(ParametricBinding)
-  INVALID(MatchArm)
-  INVALID(WildcardPattern)
   INVALID(RestOfTuple)
-  INVALID(WidthSlice)
   INVALID(Slice)
-  INVALID(NameDef)
+  INVALID(TestFunction)
+  INVALID(TestProc)
   INVALID(TypeRef)
+  INVALID(VerbatimNode)
+  INVALID(WidthSlice)
+  INVALID(WildcardPattern)
+  // keep-sorted end
+  // keep-sorted start
   INVALID(ArrayTypeAnnotation)
   INVALID(BuiltinTypeAnnotation)
   INVALID(ChannelTypeAnnotation)
   INVALID(TupleTypeAnnotation)
   INVALID(TypeRefTypeAnnotation)
-  INVALID(TestFunction)
-  INVALID(TestProc)
+  // keep-sorted end
 
   // The visitor operates within a function, so none of these should be visible.
+  // keep-sorted start
   INVALID(BuiltinNameDef)
   INVALID(ChannelDecl)
   INVALID(EnumDef)
-  INVALID(Import)
   INVALID(Function)
-  INVALID(TypeAlias)
-  INVALID(Proc)
+  INVALID(Impl)
+  INVALID(Import)
   INVALID(Module)
+  INVALID(Proc)
+  INVALID(ProcMember)
   INVALID(QuickCheck)
   INVALID(Spawn)
   INVALID(StructDef)
-  INVALID(Impl)
-  INVALID(ProcMember)
+  INVALID(TypeAlias)
+  // keep-sorted end
 
  private:
   // Called when we visit a node we don't expect to observe in the traversal.
@@ -2801,7 +2808,17 @@ absl::Status FunctionConverter::HandleColonRef(const ColonRef* node) {
             DefConst(node, value);
             return absl::OkStatus();
           },
-      },
+          [&](Impl* impl) -> absl::Status {
+            std::optional<ConstantDef*> constant_def =
+                impl->GetConstant(node->attr());
+            XLS_RET_CHECK(constant_def.has_value());
+            XLS_ASSIGN_OR_RETURN(
+                InterpValue iv,
+                current_type_info_->GetConstExpr(constant_def.value()));
+            XLS_ASSIGN_OR_RETURN(Value value, InterpValueToValue(iv));
+            DefConst(node, value);
+            return absl::OkStatus();
+          }},
       subject);
 }
 
@@ -3109,31 +3126,35 @@ absl::Status FunctionConverter::HandleStatementBlock(
 
 absl::Status FunctionConverter::HandleStatement(const Statement* node) {
   VLOG(5) << "FunctionConverter::HandleStatement; node: " << node->ToString();
-  return absl::visit(Visitor{
-                         [&](Expr* e) -> absl::Status {
-                           XLS_RETURN_IF_ERROR(Visit(ToAstNode(e)));
-                           XLS_ASSIGN_OR_RETURN(BValue bvalue, Use(e));
-                           SetNodeToIr(node, bvalue);
-                           return absl::OkStatus();
-                         },
-                         [&](TypeAlias* n) -> absl::Status {
-                           // Nothing to do, all was resolved at type inference
-                           // time.
-                           return absl::OkStatus();
-                         },
-                         [&](ConstAssert* n) -> absl::Status {
-                           // Nothing to do, all was resolved at type inference
-                           // time.
-                           return absl::OkStatus();
-                         },
-                         [&](Let* let) -> absl::Status {
-                           XLS_RETURN_IF_ERROR(Visit(ToAstNode(let)));
-                           XLS_ASSIGN_OR_RETURN(BValue bvalue, Use(let));
-                           SetNodeToIr(node, bvalue);
-                           return absl::OkStatus();
-                         },
-                     },
-                     node->wrapped());
+  return absl::visit(
+      Visitor{
+          [&](Expr* e) -> absl::Status {
+            XLS_RETURN_IF_ERROR(Visit(ToAstNode(e)));
+            XLS_ASSIGN_OR_RETURN(BValue bvalue, Use(e));
+            SetNodeToIr(node, bvalue);
+            return absl::OkStatus();
+          },
+          [&](TypeAlias*) {
+            // Nothing to do, all was resolved at type inference
+            // time.
+            return absl::OkStatus();
+          },
+          [&](ConstAssert*) {
+            // Nothing to do, all was resolved at type inference
+            // time.
+            return absl::OkStatus();
+          },
+          [&](Let* let) -> absl::Status {
+            XLS_RETURN_IF_ERROR(Visit(ToAstNode(let)));
+            XLS_ASSIGN_OR_RETURN(BValue bvalue, Use(let));
+            SetNodeToIr(node, bvalue);
+            return absl::OkStatus();
+          },
+          [](VerbatimNode*) {
+            return absl::UnimplementedError("Should not convert VerbatimNode");
+          },
+      },
+      node->wrapped());
   return absl::OkStatus();
 }
 

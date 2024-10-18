@@ -104,6 +104,7 @@
   X(TestProc)                     \
   X(TypeAlias)                    \
   X(TypeRef)                      \
+  X(VerbatimNode)                 \
   X(WidthSlice)                   \
   X(WildcardPattern)              \
   /* type annotations */          \
@@ -766,7 +767,8 @@ class ChannelTypeAnnotation : public TypeAnnotation {
 // Both of those lines are statements.
 class Statement final : public AstNode {
  public:
-  using Wrapped = std::variant<Expr*, TypeAlias*, Let*, ConstAssert*>;
+  using Wrapped =
+      std::variant<Expr*, TypeAlias*, Let*, ConstAssert*, VerbatimNode*>;
 
   static absl::StatusOr<Wrapped> NodeToWrapped(AstNode* n);
 
@@ -2307,6 +2309,12 @@ class StructDef : public AstNode {
                 parametric_bindings_.back()->span().limit());
   }
 
+  void set_impl(Impl* impl) { impl_ = impl; }
+
+  std::optional<Impl*> impl() const { return impl_; }
+
+  std::optional<ConstantDef*> GetImplConstant(std::string_view constant_name);
+
  private:
   Span span_;
   NameDef* name_def_;
@@ -2315,20 +2323,21 @@ class StructDef : public AstNode {
   bool public_;
   // The external verilog type name
   std::optional<std::string> extern_type_name_;
+  std::optional<Impl*> impl_;
 };
 
 // Represents an impl for a struct.
 class Impl : public AstNode {
  public:
   Impl(Module* owner, Span span, TypeAnnotation* struct_ref,
-       const std::vector<ConstantDef*> constants, bool is_public);
+       std::vector<ConstantDef*> constants, bool is_public);
 
   ~Impl() override;
 
   AstNodeKind kind() const override { return AstNodeKind::kImpl; }
 
   absl::Status Accept(AstNodeVisitor* v) const override {
-    return absl::UnimplementedError("impl not yet implemented");
+    return v->HandleImpl(this);
   }
 
   std::string_view GetNodeTypeName() const override { return "Impl"; }
@@ -2336,17 +2345,20 @@ class Impl : public AstNode {
   // An AST node that refers to the struct being implemented.
   TypeAnnotation* struct_ref() const { return struct_ref_; }
 
+  void set_struct_ref(TypeAnnotation* struct_ref) { struct_ref_ = struct_ref; }
+
   std::string ToString() const override;
 
-  std::vector<AstNode*> GetChildren(bool want_types) const override {
-    return {};
-  };
+  std::vector<AstNode*> GetChildren(bool want_types) const override;
 
   bool is_public() const { return public_; }
   const Span& span() const { return span_; }
   std::optional<Span> GetSpan() const override { return span_; }
 
   const std::vector<ConstantDef*>& constants() const { return constants_; }
+
+  // Returns the constant with the given name if present.
+  std::optional<ConstantDef*> GetConstant(std::string_view name) const;
 
  private:
   Span span_;
@@ -2660,13 +2672,13 @@ class QuickCheck : public AstNode {
 
   static constexpr int64_t kDefaultTestCount = 1000;
 
-  QuickCheck(Module* owner, Span span, Function* f,
+  QuickCheck(Module* owner, Span span, Function* fn,
              std::optional<int64_t> test_count = std::nullopt);
 
   ~QuickCheck() override;
 
   AstNodeKind kind() const override { return AstNodeKind::kQuickCheck; }
-  NameDef* name_def() const { return f_->name_def(); }
+  NameDef* name_def() const { return fn_->name_def(); }
 
   absl::Status Accept(AstNodeVisitor* v) const override {
     return v->HandleQuickCheck(this);
@@ -2676,12 +2688,12 @@ class QuickCheck : public AstNode {
   std::string ToString() const override;
 
   std::vector<AstNode*> GetChildren(bool want_types) const override {
-    return {f_};
+    return {fn_};
   }
 
-  const std::string& identifier() const { return f_->identifier(); }
+  const std::string& identifier() const { return fn_->identifier(); }
 
-  Function* f() const { return f_; }
+  Function* fn() const { return fn_; }
   int64_t GetTestCountOrDefault() const {
     return test_count_ ? *test_count_ : kDefaultTestCount;
   }
@@ -2691,7 +2703,7 @@ class QuickCheck : public AstNode {
 
  private:
   Span span_;
-  Function* f_;
+  Function* fn_;
   std::optional<int64_t> test_count_;
 };
 
@@ -3200,6 +3212,39 @@ class ChannelDecl : public Expr {
   std::optional<std::vector<Expr*>> dims_;
   std::optional<Expr*> fifo_depth_;
   Expr& channel_name_expr_;
+};
+
+// A node that contains original source text only; it is typically used by the
+// formatter.
+class VerbatimNode : public AstNode {
+ public:
+  VerbatimNode(Module* owner, Span span, const std::string_view text)
+      : AstNode(owner), span_(std::move(span)), text_(text) {}
+
+  ~VerbatimNode() override;
+
+  std::string_view text() const { return text_; }
+
+  AstNodeKind kind() const override { return AstNodeKind::kVerbatimNode; }
+
+  std::string_view GetNodeTypeName() const override { return "VerbatimNode"; }
+
+  std::string ToString() const override { return std::string(text_); }
+
+  std::vector<AstNode*> GetChildren(bool want_types) const override {
+    return {};
+  }
+
+  absl::Status Accept(AstNodeVisitor* v) const override {
+    return v->HandleVerbatimNode(this);
+  }
+
+  const Span& span() const { return span_; }
+  std::optional<Span> GetSpan() const override { return span_; }
+
+ private:
+  Span span_;
+  std::string_view text_;
 };
 
 // Helper for determining whether an AST node is constant (e.g. can be

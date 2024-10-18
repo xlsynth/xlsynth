@@ -38,6 +38,7 @@
 #include "llvm/include/llvm/IR/BasicBlock.h"
 #include "llvm/include/llvm/IR/Constants.h"
 #include "llvm/include/llvm/IR/DerivedTypes.h"
+#include "llvm/include/llvm/IR/GEPNoWrapFlags.h"
 #include "llvm/include/llvm/IR/IRBuilder.h"
 #include "llvm/include/llvm/IR/Instructions.h"
 #include "llvm/include/llvm/IR/Intrinsics.h"
@@ -576,7 +577,7 @@ llvm::Value* InvokeCallback(llvm::IRBuilder<>* builder, llvm::Type* return_type,
                     [](llvm::Value* v) { return v->getType(); });
   llvm::Value* fn_ptr_ptr =
       builder->CreateGEP(builder->getInt8Ty(), instance_ptr, fn_offset,
-                         "callback_ptr_ptr", /*IsInBounds=*/true);
+                         "callback_ptr_ptr", llvm::GEPNoWrapFlags::inBounds());
   llvm::FunctionType* fn_type =
       llvm::FunctionType::get(return_type, params_types, /*isVarArg=*/false);
   llvm::Value* fn_ptr =
@@ -726,7 +727,7 @@ class NodeIrContext {
   void FinalizeWithValue(llvm::Value* result,
                          std::optional<llvm::IRBuilder<>*> exit_builder,
                          std::optional<llvm::Value*> return_value,
-                         std::optional<Type*> result_type = std::nullopt);
+                         std::optional<Type*> return_type = std::nullopt);
   void FinalizeWithPointerToValue(
       llvm::Value* result_buffer,
       std::optional<llvm::IRBuilder<>*> exit_builder,
@@ -2592,13 +2593,13 @@ absl::Status IrBuilderVisitor::HandleOneHot(OneHot* one_hot) {
   if (one_hot->operand(0)->GetType()->AsBitsOrDie()->bit_count() > 0) {
     llvm::Value* zeroes;
     if (one_hot->priority() == LsbOrMsb::kLsb) {
-      llvm::Function* cttz = llvm::Intrinsic::getDeclaration(
+      llvm::Function* cttz = llvm::Intrinsic::getOrInsertDeclaration(
           module(), llvm::Intrinsic::cttz, {input_type});
       // We don't need to pass user data to these intrinsics; they're leaf
       // nodes.
       zeroes = b.CreateCall(cttz, {input, llvm_false});
     } else {
-      llvm::Function* ctlz = llvm::Intrinsic::getDeclaration(
+      llvm::Function* ctlz = llvm::Intrinsic::getOrInsertDeclaration(
           module(), llvm::Intrinsic::ctlz, {input_type});
       zeroes = b.CreateCall(ctlz, {input, llvm_false});
       zeroes = b.CreateSub(llvm::ConstantInt::get(input_type, input_width - 1),
@@ -2755,7 +2756,7 @@ absl::Status IrBuilderVisitor::HandlePrioritySel(PrioritySelect* sel) {
   llvm::Value* llvm_false = b.getFalse();
 
   // Get index to select by counting trailing zeros
-  llvm::Function* cttz = llvm::Intrinsic::getDeclaration(
+  llvm::Function* cttz = llvm::Intrinsic::getOrInsertDeclaration(
       module(), llvm::Intrinsic::cttz, {selector->getType()});
   llvm::Value* selected_index = b.CreateCall(cttz, {selector, llvm_false});
 
@@ -2786,7 +2787,7 @@ absl::Status IrBuilderVisitor::HandleOrReduce(BitwiseReductionOp* op) {
 absl::Status IrBuilderVisitor::HandleReverse(UnOp* reverse) {
   return HandleUnaryOp(
       reverse, [&](llvm::Value* operand, llvm::IRBuilder<>& b) {
-        llvm::Function* reverse_fn = llvm::Intrinsic::getDeclaration(
+        llvm::Function* reverse_fn = llvm::Intrinsic::getOrInsertDeclaration(
             module(), llvm::Intrinsic::bitreverse, {operand->getType()});
         // Shift right logically by native width - natural with.
         llvm::Value* result = b.CreateCall(reverse_fn, {operand});
@@ -3018,7 +3019,7 @@ absl::Status IrBuilderVisitor::HandleULt(CompareOp* lt) {
 absl::Status IrBuilderVisitor::HandleXorReduce(BitwiseReductionOp* op) {
   return HandleUnaryOp(op, [&](llvm::Value* operand, llvm::IRBuilder<>& b) {
     // XOR-reduce is equivalent to checking if the number of set bits is odd.
-    llvm::Function* ctpop = llvm::Intrinsic::getDeclaration(
+    llvm::Function* ctpop = llvm::Intrinsic::getOrInsertDeclaration(
         module(), llvm::Intrinsic::ctpop, {operand->getType()});
     // We don't need to pass user data to intrinsics; they're leaf nodes.
     llvm::Value* pop_count = b.CreateCall(ctpop, {operand});

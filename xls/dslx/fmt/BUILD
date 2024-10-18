@@ -59,6 +59,7 @@ cc_library(
     srcs = ["ast_fmt.cc"],
     hdrs = ["ast_fmt.h"],
     deps = [
+        ":comments",
         ":pretty_print",
         "//xls/common:visitor",
         "//xls/dslx:channel_direction",
@@ -81,11 +82,25 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "comments",
+    srcs = ["comments.cc"],
+    hdrs = ["comments.h"],
+    deps = [
+        "//xls/dslx/frontend:comment_data",
+        "//xls/dslx/frontend:pos",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
 cc_test(
     name = "ast_fmt_test",
     srcs = ["ast_fmt_test.cc"],
     deps = [
         ":ast_fmt",
+        ":comments",
         ":pretty_print",
         "//xls/common:xls_gunit_main",
         "//xls/common/logging:log_lines",
@@ -103,7 +118,9 @@ cc_test(
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -114,6 +131,7 @@ cc_test(
     shard_count = 50,
     deps = [
         ":ast_fmt",
+        ":comments",
         "//xls/common:xls_gunit_main",
         "//xls/common/logging:log_lines",
         "//xls/common/status:matchers",

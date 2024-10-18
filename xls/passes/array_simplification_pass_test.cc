@@ -16,6 +16,7 @@
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
@@ -39,7 +40,7 @@ namespace m = ::xls::op_matchers;
 namespace xls {
 namespace {
 
-using status_testing::IsOkAndHolds;
+using ::absl_testing::IsOkAndHolds;
 using ::testing::Each;
 using ::testing::Not;
 using ::xls::solvers::z3::ScopedVerifyEquivalence;
@@ -1411,6 +1412,22 @@ TEST_F(ArraySimplificationPassTest, RemovalOfUpdate) {
               m::PrioritySelect(testing::A<const Node*>(), {m::Param("v3")},
                                 original_value));
   EXPECT_THAT(f->nodes(), Each(Not(m::Array())));
+}
+
+TEST_F(ArraySimplificationPassTest, NoOpArrayUpdate) {
+  auto p = CreatePackage();
+  FunctionBuilder fb(TestName(), p.get());
+  BValue arr = fb.Param("array", p->GetArrayType(10, p->GetBitsType(32)));
+  BValue idx = fb.Param("upd_idx", p->GetBitsType(32));
+  BValue val_at_idx = fb.ArrayIndex(arr, {idx});
+  BValue update_arr = fb.ArrayUpdate(arr, val_at_idx, {idx});
+  fb.ArrayIndex(update_arr, {fb.Param("second_idx", p->GetBitsType(32))});
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, fb.Build());
+  ScopedVerifyEquivalence sve(f);
+  ScopedRecordIr sri(p.get());
+  ASSERT_THAT(Run(f), IsOkAndHolds(true));
+  EXPECT_THAT(f->return_value(),
+              m::ArrayIndex(m::Param("array"), {m::Param("second_idx")}));
 }
 
 }  // namespace

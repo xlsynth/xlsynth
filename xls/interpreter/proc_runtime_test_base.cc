@@ -24,6 +24,7 @@
 #include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
@@ -46,8 +47,8 @@
 namespace xls {
 namespace {
 
-using status_testing::IsOkAndHolds;
-using status_testing::StatusIs;
+using ::absl_testing::IsOkAndHolds;
+using ::absl_testing::StatusIs;
 using ::testing::_;
 using ::testing::ContainsRegex;
 using ::testing::ElementsAre;
@@ -71,7 +72,7 @@ absl::StatusOr<Proc*> CreateIotaProc(std::string_view proc_name,
 }
 
 // Creates a proc which keeps a running sum of all values read through the input
-// channel. The sum is sent via an output chanel each iteration.
+// channel. The sum is sent via an output channel each iteration.
 absl::StatusOr<Proc*> CreateAccumProc(std::string_view proc_name,
                                       Channel* in_channel, Channel* out_channel,
                                       Package* package) {

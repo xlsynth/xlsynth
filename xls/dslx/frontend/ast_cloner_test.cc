@@ -209,6 +209,56 @@ fn main() -> MyStruct {
   XLS_ASSERT_OK(VerifyClone(f, clone, *module->file_table()));
 }
 
+TEST(AstClonerTest, StructDefAndImpl) {
+  constexpr std::string_view kProgram = R"(
+struct MyStruct {
+    a: u32,
+    b: s64
+}
+
+impl MyStruct {
+    const MY_CONST = u32:5;
+}
+
+fn main() -> u32 {
+    MyStruct::MY_CONST
+}
+)";
+
+  constexpr std::string_view kExpectedStructDef = R"(struct MyStruct {
+    a: u32,
+    b: s64,
+})";
+
+  constexpr std::string_view kExpectedImpl = R"(impl MyStruct {
+    const MY_CONST = u32:5;
+})";
+
+  constexpr std::string_view kExpectedFunction = R"(fn main() -> u32 {
+    MyStruct::MY_CONST
+})";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(auto module, ParseModule(kProgram, "fake_path.x",
+                                                    "the_module", file_table));
+
+  Impl* impl = module->GetImpls().at(0);
+  XLS_ASSERT_OK_AND_ASSIGN(AstNode * impl_clone, CloneAst(impl));
+  EXPECT_EQ(kExpectedImpl, impl_clone->ToString());
+
+  StructDef* struct_def = module->GetStructDefs().at(0);
+  XLS_ASSERT_OK_AND_ASSIGN(AstNode * struct_clone, CloneAst(struct_def));
+  EXPECT_EQ(kExpectedStructDef, struct_clone->ToString());
+  Impl* cloned_impl = dynamic_cast<StructDef*>(struct_clone)->impl().value();
+  EXPECT_EQ(kExpectedImpl, cloned_impl->ToString());
+
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f,
+                           module->GetMemberOrError<Function>("main"));
+  XLS_ASSERT_OK_AND_ASSIGN(AstNode * clone, CloneAst(f));
+  EXPECT_EQ(kExpectedFunction, clone->ToString());
+  XLS_ASSERT_OK(VerifyClone(f, clone, *module->file_table()));
+}
+
 TEST(AstClonerTest, ColonRefToImportedStruct) {
   constexpr std::string_view kProgram = R"(
 import my.module as foo;
@@ -771,6 +821,42 @@ fn bar() -> u32{
   XLS_ASSERT_OK_AND_ASSIGN(AstNode * clone, CloneAst(orig_ref));
   ConstRef* new_ref = down_cast<ConstRef*>(clone);
   EXPECT_EQ(orig_ref->name_def(), new_ref->name_def());
+}
+
+TEST(AstClonerTest, CloneAstClonesVerbatimNode) {
+  constexpr std::string_view kProgram = "const FOO = u32:42;";
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(auto module, ParseModule(kProgram, "fake_path.x",
+                                                    "the_module", file_table));
+
+  VerbatimNode original(module.get(), Span(), "foo");
+  XLS_ASSERT_OK_AND_ASSIGN(AstNode * clone, CloneAst(&original));
+  VerbatimNode* clone_node = down_cast<VerbatimNode*>(clone);
+  EXPECT_EQ(original.text(), clone_node->text());
+  EXPECT_EQ(original.span(), clone_node->span());
+}
+
+TEST(AstClonerTest, CloneModuleClonesVerbatimNode) {
+  constexpr std::string_view kProgram = "const FOO = u32:42;";
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<Module> module,
+      ParseModule(kProgram, "fake_path.x", "the_module", file_table));
+
+  VerbatimNode original(module.get(), Span(), "foo");
+  XLS_ASSERT_OK(
+      module.get()->AddTop(&original, /*make_collision_error=*/nullptr));
+
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> cloned_module,
+                           CloneModule(module.get()));
+  EXPECT_EQ(cloned_module->top().size(), 2);
+
+  VerbatimNode* cloned_verbatim_node =
+      std::get<VerbatimNode*>(cloned_module->top().at(1));
+  ASSERT_NE(cloned_verbatim_node, nullptr);
+
+  EXPECT_EQ(original.text(), cloned_verbatim_node->text());
+  EXPECT_EQ(original.span(), cloned_verbatim_node->span());
 }
 
 }  // namespace

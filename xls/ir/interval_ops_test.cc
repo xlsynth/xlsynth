@@ -26,6 +26,7 @@
 #include "gtest/gtest.h"
 #include "xls/common/fuzzing/fuzztest.h"
 #include "absl/algorithm/container.h"
+#include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/time/time.h"
@@ -47,7 +48,7 @@
 namespace xls::interval_ops {
 
 namespace {
-using solvers::z3::IsProvenTrue;
+using ::xls::solvers::z3::IsProvenTrue;
 
 IntervalSet SetOf(absl::Span<const Interval> intervals) {
   IntervalSet is(intervals.front().BitCount());
@@ -255,7 +256,7 @@ void OpFuzz(
   EXPECT_THAT(solvers::z3::TryProve(f, implication.node(),
                                     solvers::z3::Predicate::NotEqualToZero(),
                                     absl::InfiniteDuration()),
-              status_testing::IsOkAndHolds(IsProvenTrue()));
+              absl_testing::IsOkAndHolds(IsProvenTrue()));
 }
 
 void BinaryOpFuzz(
@@ -793,7 +794,7 @@ TEST(MinimizeIntervalsTest, PrefersEarlyIntervals) {
   EXPECT_EQ(MinimizeIntervals(even_numbers, 2),
             FromRanges(
                 {
-                    // earlier entries are prefered.
+                    // earlier entries are preferred.
                     {62, 62},
                     {0, 60},
                 },
@@ -802,7 +803,7 @@ TEST(MinimizeIntervalsTest, PrefersEarlyIntervals) {
   EXPECT_EQ(MinimizeIntervals(even_numbers, 4),
             FromRanges(
                 {
-                    // earlier entries are prefered.
+                    // earlier entries are preferred.
                     {62, 62},
                     {60, 60},
                     {58, 58},

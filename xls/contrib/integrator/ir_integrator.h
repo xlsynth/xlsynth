@@ -245,6 +245,7 @@ class IntegrationFunction {
   // Helper function for UnifyIntegrationNodesWithGlobalMuxSelect that handles
   // the cases that one of the input nodes is a pre-existing mux. The other
   // input is a node that will be added as a case(s) to the mux.
+  // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
   absl::StatusOr<UnifiedNode> UnifyIntegrationNodesWithGlobalMuxSelectNoMuxArg(
       Node* mux, Node* case_node);
 
@@ -261,7 +262,7 @@ class IntegrationFunction {
   absl::StatusOr<Node*> DeUnifyIntegrationNodesWithGlobalMuxSelect(Node* node);
 
   // Replaces 'mux' with a new mux which is identical except that
-  // the the cases at the indexes in 'source_index_to_case'
+  // the cases at the indexes in 'source_index_to_case'
   // are replaced with the nodes specified.
   absl::StatusOr<Node*> ReplaceMuxCases(
       Node* mux_node,

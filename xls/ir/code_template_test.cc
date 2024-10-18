@@ -21,12 +21,13 @@
 #include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
 #include "xls/common/status/matchers.h"
 
-using testing::ElementsAre;
-using testing::HasSubstr;
-using xls::status_testing::StatusIs;
+using ::absl_testing::StatusIs;
+using ::testing::ElementsAre;
+using ::testing::HasSubstr;
 
 namespace xls {
 
@@ -152,7 +153,7 @@ TEST(CodeTemplateTest, UnescapingBraces) {
 }
 
 TEST(CodeTemplateTest, ToStringRecreatesOriginalTemplate) {
-  // Note, this implictly also tests Substitute() as it is used underneath.
+  // Note, this implicitly also tests Substitute() as it is used underneath.
   CodeTemplate code_template = *CodeTemplate::Create("");
   for (std::string_view test_template : {"",                          //
                                          "((){x})"                    //

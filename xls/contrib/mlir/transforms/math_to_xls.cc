@@ -25,6 +25,7 @@
 #include "mlir/include/mlir/IR/PatternMatch.h"
 #include "mlir/include/mlir/IR/Value.h"
 #include "mlir/include/mlir/IR/Visitors.h"
+#include "mlir/include/mlir/Pass/Pass.h"  // IWYU pragma: keep
 #include "mlir/include/mlir/Rewrite/FrozenRewritePatternSet.h"
 #include "mlir/include/mlir/Support/LLVM.h"
 #include "mlir/include/mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -61,13 +62,16 @@ void MathToXlsPass::runOnOperation() {
   auto result = getOperation()->walk([&](Operation *op) {
     if (auto interface = dyn_cast<XlsRegionOpInterface>(op)) {
       if (interface.isSupportedRegion()) {
-        if (failed(applyPatternsAndFoldGreedily(op, patterns)))
+        if (failed(applyPatternsAndFoldGreedily(op, patterns))) {
           return WalkResult::interrupt();
+        }
       }
     }
     return WalkResult::skip();
   });
-  if (result.wasInterrupted()) signalPassFailure();
+  if (result.wasInterrupted()) {
+    signalPassFailure();
+  }
 }
 
 }  // namespace
