@@ -1,4 +1,5 @@
 xls_bits_free
+xls_bits_get_bit_count
 xls_convert_dslx_path_to_ir
 xls_convert_dslx_to_ir
 xls_c_str_free
