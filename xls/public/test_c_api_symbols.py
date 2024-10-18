@@ -18,6 +18,7 @@ import unittest
 
 class TestCApiSymbols(unittest.TestCase):
     def test_symbols_match(self):
+        """Tests c_api_symbols.txt matches extern C symbols in .a files."""
         # Get the runfiles directory
         runfiles_dir = os.environ['TEST_SRCDIR']
 
