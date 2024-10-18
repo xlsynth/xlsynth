@@ -84,7 +84,7 @@ struct xls_dslx_enum_def* xls_dslx_module_get_type_definition_as_enum_def(
 struct xls_dslx_type_alias* xls_dslx_module_get_type_definition_as_type_alias(
     struct xls_dslx_module* module, int64_t i);
 
-// -- struct_def
+// -- struct_def (AST node)
 
 // Note: the return value is owned by the caller and must be freed via
 // `xls_c_str_free`.
@@ -102,7 +102,7 @@ char* xls_dslx_struct_member_get_name(struct xls_dslx_struct_member*);
 struct xls_dslx_type_annotation* xls_dslx_struct_member_get_type(
     struct xls_dslx_struct_member*);
 
-// -- enum_def
+// -- enum_def (AST node)
 
 char* xls_dslx_enum_def_get_identifier(struct xls_dslx_enum_def*);
 
@@ -125,7 +125,7 @@ bool xls_dslx_interp_value_convert_to_ir(struct xls_dslx_interp_value* v,
 
 void xls_dslx_interp_value_free(struct xls_dslx_interp_value*);
 
-// -- type_info
+// -- type_info (deduced type information)
 
 // Note: if there is no type information available for the given entity these
 // may return null; however, if type checking has completed successfully this
@@ -149,7 +149,7 @@ bool xls_dslx_type_info_get_const_expr(
     struct xls_dslx_type_info* type_info, struct xls_dslx_expr* expr,
     char** error_out, struct xls_dslx_interp_value** result_out);
 
-// -- type
+// -- type (deduced type information)
 
 bool xls_dslx_type_get_total_bit_count(const struct xls_dslx_type*,
                                        char** error_out, int64_t* result_out);
@@ -157,6 +157,27 @@ bool xls_dslx_type_get_total_bit_count(const struct xls_dslx_type*,
 // Returns whether the given type is a bits-like type with signedness 'true'.
 bool xls_dslx_type_is_signed_bits(const struct xls_dslx_type*, char** error_out,
                                   bool* result_out);
+
+bool xls_dslx_type_to_string(const struct xls_dslx_type*, char** error_out,
+                             char** result_out);
+
+// Note: on success the caller owns `is_signed` and `size` and must free them
+// via `xls_dslx_type_dim_free`.
+bool xls_dslx_type_is_bits_like(struct xls_dslx_type*,
+                                struct xls_dslx_type_dim** is_signed,
+                                struct xls_dslx_type_dim** size);
+
+// -- type_dim (deduced type information)
+
+bool xls_dslx_type_dim_is_parametric(struct xls_dslx_type_dim*);
+
+bool xls_dslx_type_dim_get_as_bool(struct xls_dslx_type_dim*,
+                                   char** error_out, bool* result_out);
+
+bool xls_dslx_type_dim_get_as_int64(struct xls_dslx_type_dim*,
+                                    char** error_out, int64_t* result_out);
+
+void xls_dslx_type_dim_free(struct xls_dslx_type_dim*);
 
 }  // extern "C"
 

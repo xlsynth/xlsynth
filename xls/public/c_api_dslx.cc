@@ -335,4 +335,70 @@ bool xls_dslx_type_is_signed_bits(const struct xls_dslx_type* type,
   return true;
 }
 
+bool xls_dslx_type_to_string(const struct xls_dslx_type* type, char** error_out,
+                             char** result_out) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  *error_out = nullptr;
+  *result_out = xls::ToOwnedCString(cpp_type->ToString());
+  return true;
+}
+
+bool xls_dslx_type_is_bits_like(struct xls_dslx_type* type,
+                                struct xls_dslx_type_dim** is_signed,
+                                struct xls_dslx_type_dim** size) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  std::optional<xls::dslx::BitsLikeProperties> properties = GetBitsLike(*cpp_type);
+  if (!properties.has_value()) {
+    *is_signed = nullptr;
+    *size = nullptr;
+    return false;
+  }
+
+  *is_signed = reinterpret_cast<xls_dslx_type_dim*>(new xls::dslx::TypeDim(std::move(properties->is_signed)));
+  *size = reinterpret_cast<xls_dslx_type_dim*>(new xls::dslx::TypeDim(std::move(properties->is_signed)));
+  return true;
+}
+
+// -- type_dim
+
+bool xls_dslx_type_dim_is_parametric(struct xls_dslx_type_dim* td) {
+  auto* cpp_type_dim = reinterpret_cast<xls::dslx::TypeDim*>(td);
+  return cpp_type_dim->IsParametric();
+}
+
+bool xls_dslx_type_dim_get_as_bool(struct xls_dslx_type_dim* td,
+                                   char** error_out, bool* result_out) {
+  auto* cpp_type_dim = reinterpret_cast<xls::dslx::TypeDim*>(td);
+  absl::StatusOr<bool> value_or = cpp_type_dim->GetAsBool();
+  if (!value_or.ok()) {
+    *result_out = false;
+    *error_out = xls::ToOwnedCString(value_or.status().ToString());
+    return false;
+  }
+
+  *result_out = value_or.value();
+  *error_out = nullptr;
+  return true;
+}
+
+bool xls_dslx_type_dim_get_as_int64(struct xls_dslx_type_dim* td,
+                                    char** error_out, int64_t* result_out) {
+  auto* cpp_type_dim = reinterpret_cast<xls::dslx::TypeDim*>(td);
+  absl::StatusOr<int64_t> value_or = cpp_type_dim->GetAsInt64();
+  if (!value_or.ok()) {
+    *result_out = false;
+    *error_out = xls::ToOwnedCString(value_or.status().ToString());
+    return false;
+  }
+
+  *result_out = value_or.value();
+  *error_out = nullptr;
+  return true;
+}
+
+void xls_dslx_type_dim_free(struct xls_dslx_type_dim* td) {
+  auto* cpp_type_dim = reinterpret_cast<xls::dslx::TypeDim*>(td);
+  delete cpp_type_dim;
+}
+
 }  // extern "C"
