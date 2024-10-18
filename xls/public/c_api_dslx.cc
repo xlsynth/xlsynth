@@ -191,6 +191,13 @@ char* xls_dslx_enum_def_get_identifier(struct xls_dslx_enum_def* n) {
   return xls::ToOwnedCString(result);
 }
 
+struct xls_dslx_type_annotation* xls_dslx_enum_def_get_underlying(
+    struct xls_dslx_enum_def* n) {
+  auto* cpp_enum_def = reinterpret_cast<xls::dslx::EnumDef*>(n);
+  auto* cpp_type_annotation = cpp_enum_def->type_annotation();
+  return reinterpret_cast<xls_dslx_type_annotation*>(cpp_type_annotation);
+}
+
 int64_t xls_dslx_enum_def_get_member_count(struct xls_dslx_enum_def* n) {
   auto* cpp_enum_def = reinterpret_cast<xls::dslx::EnumDef*>(n);
   return static_cast<int64_t>(cpp_enum_def->values().size());
@@ -225,7 +232,11 @@ const struct xls_dslx_type* xls_dslx_type_info_get_type_struct_def(
 
 const struct xls_dslx_type* xls_dslx_type_info_get_type_struct_member(
     struct xls_dslx_type_info* type_info, struct xls_dslx_struct_member* struct_member) {
-  return GetMetaTypeHelper(type_info, struct_member);
+  // Note: StructMember is not itself an AST node, it's just a POD struct, so
+  // we need to traverse to its type annotation.
+  auto* cpp_struct_member = reinterpret_cast<xls::dslx::StructMember*>(struct_member);
+  xls::dslx::TypeAnnotation* type = cpp_struct_member->type;
+  return GetMetaTypeHelper(type_info, type);
 }
 
 const struct xls_dslx_type* xls_dslx_type_info_get_type_enum_def(
@@ -338,6 +349,127 @@ bool xls_dslx_type_is_signed_bits(const struct xls_dslx_type* type,
   *error_out = nullptr;
   *result_out = is_signed_or.value();
   return true;
+}
+
+bool xls_dslx_type_is_enum(const struct xls_dslx_type* type) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  return cpp_type->IsEnum();
+}
+
+bool xls_dslx_type_is_struct(const struct xls_dslx_type* type) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  return cpp_type->IsStruct();
+}
+
+bool xls_dslx_type_is_array(const struct xls_dslx_type* type) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  return cpp_type->IsArray();
+}
+
+struct xls_dslx_type* xls_dslx_type_array_get_element_type(struct xls_dslx_type* type) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  CHECK(cpp_type->IsArray());
+  const xls::dslx::Type& cpp_element_type = cpp_type->AsArray().element_type();
+  const auto* element_type = reinterpret_cast<const xls_dslx_type*>(&cpp_element_type);
+  // Const cast is ok because the C API can only do immutable query-like things with
+  // the type anyway.
+  return const_cast<xls_dslx_type*>(element_type);
+}
+
+struct xls_dslx_type_dim* xls_dslx_type_array_get_size(struct xls_dslx_type* type) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  CHECK(cpp_type->IsArray());
+  const xls::dslx::TypeDim& cpp_size = cpp_type->AsArray().size();
+  auto* cpp_type_dim = new xls::dslx::TypeDim(cpp_size);
+  return reinterpret_cast<xls_dslx_type_dim*>(cpp_type_dim);
+}
+
+struct xls_dslx_enum_def* xls_dslx_type_get_enum_def(struct xls_dslx_type* type) {
+  auto* cpp_type = reinterpret_cast<xls::dslx::Type*>(type);
+  CHECK(cpp_type->IsEnum());
+  const xls::dslx::EnumType& enum_type = cpp_type->AsEnum();
+  const xls::dslx::EnumDef& cpp_enum_def = enum_type.nominal_type();
+  const auto* enum_def = reinterpret_cast<const xls_dslx_enum_def*>(&cpp_enum_def);
+  // Const cast is ok because the C API can only do immutable query-like things with
+  // the node anyway.
+  return const_cast<xls_dslx_enum_def*>(enum_def);
+}
+
+struct xls_dslx_struct_def* xls_dslx_type_get_struct_def(struct xls_dslx_type* type) {
+  auto* cpp_type = reinterpret_cast<xls::dslx::Type*>(type);
+  CHECK(cpp_type->IsStruct());
+  const xls::dslx::StructType& struct_type = cpp_type->AsStruct();
+  const xls::dslx::StructDef& cpp_struct_def = struct_type.nominal_type();
+  const auto* struct_def = reinterpret_cast<const xls_dslx_struct_def*>(&cpp_struct_def);
+  // Const cast is ok because the C API can only do immutable query-like things with
+  // the node anyway.
+  return const_cast<xls_dslx_struct_def*>(struct_def);
+}
+
+bool xls_dslx_type_to_string(const struct xls_dslx_type* type, char** error_out,
+                             char** result_out) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  *error_out = nullptr;
+  *result_out = xls::ToOwnedCString(cpp_type->ToString());
+  return true;
+}
+
+bool xls_dslx_type_is_bits_like(struct xls_dslx_type* type,
+                                struct xls_dslx_type_dim** is_signed,
+                                struct xls_dslx_type_dim** size) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  std::optional<xls::dslx::BitsLikeProperties> properties = GetBitsLike(*cpp_type);
+  if (!properties.has_value()) {
+    *is_signed = nullptr;
+    *size = nullptr;
+    return false;
+  }
+
+  *is_signed = reinterpret_cast<xls_dslx_type_dim*>(new xls::dslx::TypeDim(std::move(properties->is_signed)));
+  *size = reinterpret_cast<xls_dslx_type_dim*>(new xls::dslx::TypeDim(std::move(properties->size)));
+  return true;
+}
+
+// -- type_dim
+
+bool xls_dslx_type_dim_is_parametric(struct xls_dslx_type_dim* td) {
+  auto* cpp_type_dim = reinterpret_cast<xls::dslx::TypeDim*>(td);
+  return cpp_type_dim->IsParametric();
+}
+
+bool xls_dslx_type_dim_get_as_bool(struct xls_dslx_type_dim* td,
+                                   char** error_out, bool* result_out) {
+  auto* cpp_type_dim = reinterpret_cast<xls::dslx::TypeDim*>(td);
+  absl::StatusOr<bool> value_or = cpp_type_dim->GetAsBool();
+  if (!value_or.ok()) {
+    *result_out = false;
+    *error_out = xls::ToOwnedCString(value_or.status().ToString());
+    return false;
+  }
+
+  *result_out = value_or.value();
+  *error_out = nullptr;
+  return true;
+}
+
+bool xls_dslx_type_dim_get_as_int64(struct xls_dslx_type_dim* td,
+                                    char** error_out, int64_t* result_out) {
+  auto* cpp_type_dim = reinterpret_cast<xls::dslx::TypeDim*>(td);
+  absl::StatusOr<int64_t> value_or = cpp_type_dim->GetAsInt64();
+  if (!value_or.ok()) {
+    *result_out = 0;
+    *error_out = xls::ToOwnedCString(value_or.status().ToString());
+    return false;
+  }
+
+  *result_out = value_or.value();
+  *error_out = nullptr;
+  return true;
+}
+
+void xls_dslx_type_dim_free(struct xls_dslx_type_dim* td) {
+  auto* cpp_type_dim = reinterpret_cast<xls::dslx::TypeDim*>(td);
+  delete cpp_type_dim;
 }
 
 }  // extern "C"
