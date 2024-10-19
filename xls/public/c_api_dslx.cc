@@ -186,6 +186,13 @@ char* xls_dslx_enum_def_get_identifier(struct xls_dslx_enum_def* n) {
   return xls::ToOwnedCString(result);
 }
 
+struct xls_dslx_type_annotation* xls_dslx_enum_def_get_underlying(
+    struct xls_dslx_enum_def* n) {
+  auto* cpp_enum_def = reinterpret_cast<xls::dslx::EnumDef*>(n);
+  auto* cpp_type_annotation = cpp_enum_def->type_annotation();
+  return reinterpret_cast<xls_dslx_type_annotation*>(cpp_type_annotation);
+}
+
 int64_t xls_dslx_enum_def_get_member_count(struct xls_dslx_enum_def* n) {
   auto* cpp_enum_def = reinterpret_cast<xls::dslx::EnumDef*>(n);
   return static_cast<int64_t>(cpp_enum_def->values().size());

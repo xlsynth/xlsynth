@@ -111,6 +111,9 @@ int64_t xls_dslx_enum_def_get_member_count(struct xls_dslx_enum_def*);
 struct xls_dslx_enum_member* xls_dslx_enum_def_get_member(
     struct xls_dslx_enum_def*, int64_t);
 
+struct xls_dslx_type_annotation* xls_dslx_enum_def_get_underlying(
+    struct xls_dslx_enum_def*);
+
 // Note: return value is owned by the caller, free via `xls_c_str_free`.
 char* xls_dslx_enum_member_get_name(struct xls_dslx_enum_member*);
 
