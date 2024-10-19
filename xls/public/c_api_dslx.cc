@@ -339,6 +339,61 @@ bool xls_dslx_type_is_signed_bits(const struct xls_dslx_type* type,
   return true;
 }
 
+bool xls_dslx_type_is_enum(const struct xls_dslx_type* type) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  return cpp_type->IsEnum();
+}
+
+bool xls_dslx_type_is_struct(const struct xls_dslx_type* type) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  return cpp_type->IsStruct();
+}
+
+bool xls_dslx_type_is_array(const struct xls_dslx_type* type) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  return cpp_type->IsArray();
+}
+
+struct xls_dslx_type* xls_dslx_type_array_get_element_type(struct xls_dslx_type* type) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  CHECK(cpp_type->IsArray());
+  const xls::dslx::Type& cpp_element_type = cpp_type->AsArray().element_type();
+  const auto* element_type = reinterpret_cast<const xls_dslx_type*>(&cpp_element_type);
+  // Const cast is ok because the C API can only do immutable query-like things with
+  // the type anyway.
+  return const_cast<xls_dslx_type*>(element_type);
+}
+
+struct xls_dslx_type_dim* xls_dslx_type_array_get_size(struct xls_dslx_type* type) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  CHECK(cpp_type->IsArray());
+  const xls::dslx::TypeDim& cpp_size = cpp_type->AsArray().size();
+  auto* cpp_type_dim = new xls::dslx::TypeDim(cpp_size);
+  return reinterpret_cast<xls_dslx_type_dim*>(cpp_type_dim);
+}
+
+struct xls_dslx_enum_def* xls_dslx_type_get_enum_def(struct xls_dslx_type* type) {
+  auto* cpp_type = reinterpret_cast<xls::dslx::Type*>(type);
+  CHECK(cpp_type->IsEnum());
+  const xls::dslx::EnumType& enum_type = cpp_type->AsEnum();
+  const xls::dslx::EnumDef& cpp_enum_def = enum_type.nominal_type();
+  const auto* enum_def = reinterpret_cast<const xls_dslx_enum_def*>(&cpp_enum_def);
+  // Const cast is ok because the C API can only do immutable query-like things with
+  // the node anyway.
+  return const_cast<xls_dslx_enum_def*>(enum_def);
+}
+
+struct xls_dslx_struct_def* xls_dslx_type_get_struct_def(struct xls_dslx_type* type) {
+  auto* cpp_type = reinterpret_cast<xls::dslx::Type*>(type);
+  CHECK(cpp_type->IsStruct());
+  const xls::dslx::StructType& struct_type = cpp_type->AsStruct();
+  const xls::dslx::StructDef& cpp_struct_def = struct_type.nominal_type();
+  const auto* struct_def = reinterpret_cast<const xls_dslx_struct_def*>(&cpp_struct_def);
+  // Const cast is ok because the C API can only do immutable query-like things with
+  // the node anyway.
+  return const_cast<xls_dslx_struct_def*>(struct_def);
+}
+
 bool xls_dslx_type_to_string(const struct xls_dslx_type* type, char** error_out,
                              char** result_out) {
   const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
