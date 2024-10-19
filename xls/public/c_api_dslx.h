@@ -167,6 +167,25 @@ bool xls_dslx_type_is_bits_like(struct xls_dslx_type*,
                                 struct xls_dslx_type_dim** is_signed,
                                 struct xls_dslx_type_dim** size);
 
+bool xls_dslx_type_is_enum(const struct xls_dslx_type*);
+
+bool xls_dslx_type_is_struct(const struct xls_dslx_type*);
+
+bool xls_dslx_type_is_array(const struct xls_dslx_type*);
+
+// Precondition: xls_dslx_type_is_enum
+struct xls_dslx_enum_def* xls_dslx_type_get_enum_def(struct xls_dslx_type*);
+
+// Precondition: xls_dslx_type_is_struct
+struct xls_dslx_struct_def* xls_dslx_type_get_struct_def(struct xls_dslx_type*);
+
+// Precondition: xls_dslx_type_is_array
+struct xls_dslx_type* xls_dslx_type_array_get_element_type(struct xls_dslx_type*);
+
+// Note: returned xls_dslx_type_dim is owned by the caller and must be
+// deallocated.
+struct xls_dslx_type_dim* xls_dslx_type_array_get_size(struct xls_dslx_type*);
+
 // -- type_dim (deduced type information)
 
 bool xls_dslx_type_dim_is_parametric(struct xls_dslx_type_dim*);
