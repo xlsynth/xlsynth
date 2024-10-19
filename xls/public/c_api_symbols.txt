@@ -6,6 +6,7 @@ xls_c_str_free
 xls_dslx_enum_def_get_identifier
 xls_dslx_enum_def_get_member
 xls_dslx_enum_def_get_member_count
+xls_dslx_enum_def_get_underlying
 xls_dslx_enum_member_get_name
 xls_dslx_enum_member_get_value
 xls_dslx_import_data_create
