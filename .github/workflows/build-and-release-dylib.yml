@@ -37,7 +37,7 @@ jobs:
         chmod +x bazel-arm64
         ./bazel-arm64 info
         ./bazel-arm64 test -c opt --host_cpu=darwin_arm64 //xls/public:test_c_api_symbols
-        ./bazel-arm64 build -c opt --host_cpu=darwin_arm64 //xls/public:libxls.dylib //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main
+        ./bazel-arm64 build -c opt --host_cpu=darwin_arm64 //xls/public:libxls.dylib //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main
 
     - name: Verify arm64 binaries
       run: |
@@ -49,6 +49,7 @@ jobs:
         cp bazel-bin/xls/dslx/interpreter_main osx-artifacts-arm64/dslx_interpreter_main-arm64
         cp bazel-bin/xls/dslx/lsp/dslx_ls osx-artifacts-arm64/dslx_ls-arm64
         cp bazel-bin/xls/tools/opt_main osx-artifacts-arm64/opt_main-arm64
+        cp bazel-bin/xls/tools/delay_info_main osx-artifacts-arm64/delay_info_main-arm64
         cp bazel-bin/xls/tools/codegen_main osx-artifacts-arm64/codegen_main-arm64
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main osx-artifacts-arm64/ir_converter_main-arm64
 
@@ -86,7 +87,7 @@ jobs:
         chmod +x bazel-x86_64
         ./bazel-x86_64 info
         ./bazel-x86_64 test -c opt //xls/public:test_c_api_symbols
-        ./bazel-x86_64 build -c opt //xls/public:libxls.dylib //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main
+        ./bazel-x86_64 build -c opt //xls/public:libxls.dylib //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main
 
     - name: Verify x86_64 binaries
       run: |
@@ -98,6 +99,7 @@ jobs:
         cp bazel-bin/xls/dslx/interpreter_main osx-artifacts-x64/dslx_interpreter_main-x64
         cp bazel-bin/xls/dslx/lsp/dslx_ls osx-artifacts-x64/dslx_ls-x64
         cp bazel-bin/xls/tools/opt_main osx-artifacts-x64/opt_main-x64
+        cp bazel-bin/xls/tools/delay_info_main osx-artifacts-x64/delay_info_main-x64
         cp bazel-bin/xls/tools/codegen_main osx-artifacts-x64/codegen_main-x64
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main osx-artifacts-x64/ir_converter_main-x64
 
@@ -149,19 +151,20 @@ jobs:
     - name: Build Bazel target
       run: |
         CC=clang-17 CXX=clang++-17 bazelisk test -c opt //xls/public:test_c_api_symbols
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main
 
     - name: Create artifact directory
       run: mkdir -p rocky8-artifacts
 
     - name: Copy Bazel target to rocky8-artifacts
       run: |
-        cp bazel-bin/xls/public/libxls.so rocky8-artifacts/libxls-rocky8.so
-        cp bazel-bin/xls/dslx/interpreter_main rocky8-artifacts/dslx_interpreter_main-rocky8
-        cp bazel-bin/xls/dslx/lsp/dslx_ls rocky8-artifacts/dslx_ls-rocky8
-        cp bazel-bin/xls/tools/opt_main rocky8-artifacts/opt_main-rocky8
-        cp bazel-bin/xls/tools/codegen_main rocky8-artifacts/codegen_main-rocky8
-        cp bazel-bin/xls/dslx/ir_convert/ir_converter_main rocky8-artifacts/ir_converter_main-rocky8
+        cp bazel-bin/xls/public/libxls.so                   rocky8-artifacts/libxls-rocky8.so
+        cp bazel-bin/xls/dslx/interpreter_main              rocky8-artifacts/dslx_interpreter_main-rocky8
+        cp bazel-bin/xls/dslx/lsp/dslx_ls                   rocky8-artifacts/dslx_ls-rocky8
+        cp bazel-bin/xls/tools/opt_main                     rocky8-artifacts/opt_main-rocky8
+        cp bazel-bin/xls/tools/delay_info_main              rocky8-artifacts/delay_info_main-rocky8
+        cp bazel-bin/xls/tools/codegen_main                 rocky8-artifacts/codegen_main-rocky8
+        cp bazel-bin/xls/dslx/ir_convert/ir_converter_main  rocky8-artifacts/ir_converter_main-rocky8
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -201,7 +204,7 @@ jobs:
     - name: Build Bazel target
       run: |
         CC=clang-17 CXX=clang++-17 bazelisk test -c opt //xls/public:test_c_api_symbols
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main
 
     - name: Create artifact directory
       run: mkdir -p ubuntu2004-artifacts
@@ -212,6 +215,7 @@ jobs:
         cp bazel-bin/xls/dslx/interpreter_main             ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004
         cp bazel-bin/xls/dslx/lsp/dslx_ls                  ubuntu2004-artifacts/dslx_ls-ubuntu2004
         cp bazel-bin/xls/tools/opt_main                    ubuntu2004-artifacts/opt_main-ubuntu2004
+        cp bazel-bin/xls/tools/delay_info_main             ubuntu2004-artifacts/delay_info_main-ubuntu2004
         cp bazel-bin/xls/tools/codegen_main                ubuntu2004-artifacts/codegen_main-ubuntu2004
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main ubuntu2004-artifacts/ir_converter_main-ubuntu2004
 
@@ -266,7 +270,7 @@ jobs:
     - name: Build Bazel target
       run: |
         CC=clang-17 CXX=clang++-17 bazelisk test -c opt //xls/public:test_c_api_symbols
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main
 
     - name: Create artifact directory
       run: mkdir -p ubuntu2204-artifacts
@@ -277,6 +281,7 @@ jobs:
         cp bazel-bin/xls/dslx/interpreter_main             ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204
         cp bazel-bin/xls/dslx/lsp/dslx_ls                  ubuntu2204-artifacts/dslx_ls-ubuntu2204
         cp bazel-bin/xls/tools/opt_main                    ubuntu2204-artifacts/opt_main-ubuntu2204
+        cp bazel-bin/xls/tools/delay_info_main             ubuntu2204-artifacts/delay_info_main-ubuntu2204
         cp bazel-bin/xls/tools/codegen_main                ubuntu2204-artifacts/codegen_main-ubuntu2204
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main ubuntu2204-artifacts/ir_converter_main-ubuntu2204
 
@@ -355,6 +360,7 @@ jobs:
           osx-artifacts-arm64/dslx_interpreter_main-arm64 \
           osx-artifacts-arm64/dslx_ls-arm64               \
           osx-artifacts-arm64/opt_main-arm64              \
+          osx-artifacts-arm64/delay_info_main-arm64       \
           osx-artifacts-arm64/codegen_main-arm64          \
           osx-artifacts-arm64/ir_converter_main-arm64     \
           \
@@ -362,6 +368,7 @@ jobs:
           osx-artifacts-x64/dslx_interpreter_main-x64     \
           osx-artifacts-x64/dslx_ls-x64                   \
           osx-artifacts-x64/opt_main-x64                  \
+          osx-artifacts-x64/delay_info_main-x64           \
           osx-artifacts-x64/codegen_main-x64              \
           osx-artifacts-x64/ir_converter_main-x64         \
           \
@@ -370,6 +377,7 @@ jobs:
           ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004   \
           ubuntu2004-artifacts/dslx_ls-ubuntu2004                 \
           ubuntu2004-artifacts/opt_main-ubuntu2004                \
+          ubuntu2004-artifacts/delay_info_main-ubuntu2004         \
           ubuntu2004-artifacts/codegen_main-ubuntu2004            \
           ubuntu2004-artifacts/ir_converter_main-ubuntu2004       \
           \
@@ -377,6 +385,7 @@ jobs:
           ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204   \
           ubuntu2204-artifacts/dslx_ls-ubuntu2204                 \
           ubuntu2204-artifacts/opt_main-ubuntu2204                \
+          ubuntu2204-artifacts/delay_info_main-ubuntu2204         \
           ubuntu2204-artifacts/codegen_main-ubuntu2204            \
           ubuntu2204-artifacts/ir_converter_main-ubuntu2204       \
           \
@@ -384,6 +393,7 @@ jobs:
           rocky8-artifacts/dslx_interpreter_main-rocky8 \
           rocky8-artifacts/dslx_ls-rocky8               \
           rocky8-artifacts/opt_main-rocky8              \
+          rocky8-artifacts/delay_info_main-rocky8       \
           rocky8-artifacts/codegen_main-rocky8          \
           rocky8-artifacts/ir_converter_main-rocky8     \
           \
