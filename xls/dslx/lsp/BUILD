@@ -54,13 +54,13 @@ cc_library(
     srcs = ["language_server_adapter.cc"],
     hdrs = ["language_server_adapter.h"],
     deps = [
-        "//xls/common/file:filesystem",
-        "//xls/common/status:ret_check",
-        ":import_sensitivity",
         ":document_symbols",
         ":find_definition",
+        ":import_sensitivity",
         ":lsp_type_utils",
         "//xls/common:casts",
+        "//xls/common/file:filesystem",
+        "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
         "//xls/dslx:create_import_data",
         "//xls/dslx:extract_module_name",
@@ -156,10 +156,10 @@ cc_library(
     srcs = ["import_sensitivity.cc"],
     hdrs = ["import_sensitivity.h"],
     deps = [
-        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/container:btree",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/container:btree",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -169,7 +169,7 @@ cc_test(
     srcs = ["import_sensitivity_test.cc"],
     deps = [
         ":import_sensitivity",
-        "@com_google_googletest//:gtest",
         "//xls/common:xls_gunit_main",
+        "@com_google_googletest//:gtest",
     ],
 )

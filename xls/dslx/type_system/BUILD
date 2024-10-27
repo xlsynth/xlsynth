@@ -108,6 +108,8 @@ cc_library(
     name = "deduce",
     srcs = [
         "deduce.cc",
+        "deduce_colon_ref.cc",
+        "deduce_colon_ref.h",
         "deduce_enum_def.cc",
         "deduce_enum_def.h",
         "deduce_expr.cc",
@@ -452,6 +454,8 @@ cc_test(
         ":typecheck_test_utils",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:parse_and_typecheck",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest",

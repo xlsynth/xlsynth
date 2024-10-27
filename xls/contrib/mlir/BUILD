@@ -343,6 +343,23 @@ cc_library(
 )
 
 cc_library(
+    name = "array_to_bits",
+    srcs = ["transforms/array_to_bits.cc"],
+    deps = [
+        ":mlir_xls",
+        ":xls_transforms_passes_inc_gen",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:FuncTransforms",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Rewrite",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TransformUtils",
+    ],
+)
+
+cc_library(
     name = "xls_dialect_registration",
     srcs = ["IR/init.cc"],
     hdrs = ["IR/register.h"],
@@ -355,6 +372,7 @@ cc_library(
     hdrs = ["transforms/xls_lower.h"],
     deps = [
         ":arith_to_xls",  # buildcleaner: keep
+        ":array_to_bits",  # buildcleaner: keep
         ":expand_macro_ops",  # buildcleaner: keep
         ":index_type_conversion",  # buildcleaner: keep
         ":instantiate_eprocs",  # buildcleaner: keep
@@ -443,12 +461,14 @@ cc_binary(
     srcs = ["tools/xls_opt/xls_opt.cc"],
     deps = [
         ":arith_to_xls",
+        ":array_to_bits",  # buildcleaner: keep
         ":expand_macro_ops",
         ":extraction_utils",
         ":instantiate_eprocs",
         ":mlir_xls",
         ":normalize_xls_calls",
         ":proc_elaboration",
+        ":proc_utils",
         ":scalarize",
         ":scf_to_xls",
         ":transforms/lower_counted_for",
@@ -467,8 +487,12 @@ cc_library(
     name = "xls_translate_lib",
     srcs = ["tools/xls_translate/xls_translate.cc"],
     hdrs = ["tools/xls_translate/xls_translate.h"],
+    data = [
+        "stdlib/fp_ext_trunc.x",
+    ],
     deps = [
         ":mlir_xls",
+        "//xls/codegen/vast",
         "//xls/common/file:filesystem",
         "//xls/common/file:get_runfile_path",
         "//xls/ir:bits",
@@ -502,9 +526,6 @@ cc_library(
 cc_binary(
     name = "xls_translate",
     srcs = ["tools/xls_translate/xls_translate_main.cc"],
-    data = [
-        "stdlib/fp_ext_trunc.x",
-    ],
     deps = [
         ":xls_dialect_registration",
         ":xls_translate_lib",
@@ -572,5 +593,22 @@ cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Support",
+    ],
+)
+
+cc_library(
+    name = "proc_utils",
+    srcs = ["util/proc_utils.cc"],
+    hdrs = ["util/proc_utils.h"],
+    deps = [
+        ":mlir_xls",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:Analysis",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TransformUtils",
     ],
 )

@@ -51,6 +51,7 @@
 #include "clang/include/clang/AST/APValue.h"
 #include "clang/include/clang/AST/ASTContext.h"
 #include "clang/include/clang/AST/Attr.h"
+#include "clang/include/clang/AST/Attrs.inc"
 #include "clang/include/clang/AST/Decl.h"
 #include "clang/include/clang/AST/DeclCXX.h"
 #include "clang/include/clang/AST/DeclTemplate.h"
@@ -214,8 +215,6 @@ absl::Status Translator::PopContext(const xls::SourceInfo& loc) {
   context().return_cval = popped.return_cval;
   context().last_return_condition = popped.last_return_condition;
   context().have_returned_condition = popped.have_returned_condition;
-  context().last_intrinsic_annotation_call =
-      popped.last_intrinsic_annotation_call;
 
   for (const auto& [decl, count] : popped.variables_accessed) {
     if (!context().variables_accessed.contains(decl)) {
@@ -710,9 +709,12 @@ absl::StatusOr<FunctionInProgress> Translator::GenerateIR_Function_Header(
 
   // Pragma at class or method level
   XLS_ASSIGN_OR_RETURN(sf.in_synthetic_int, FunctionIsInSyntheticInt(funcdecl));
-  // TODO(seanhaskell): Implement via attribute b/371085056
-  const bool synthetic_int_pragma = false;
-  sf.in_synthetic_int = sf.in_synthetic_int || synthetic_int_pragma;
+  for (const clang::AnnotateAttr* attr :
+       funcdecl->specific_attrs<clang::AnnotateAttr>()) {
+    if (attr->getAnnotation() == "hls_synthetic_int") {
+      sf.in_synthetic_int = true;
+    }
+  }
 
   // Functions need a clean context
   context() = TranslationContext();
@@ -1275,19 +1277,19 @@ absl::Status Translator::ScanStruct(const clang::RecordDecl* sd) {
         signature->base()->getNameAsString());
   }
 
-  const clang::AnnotateAttr* attr = sd->getAttr<clang::AnnotateAttr>();
-
-  std::string annotation;
-
-  if (attr != nullptr) {
-    annotation = attr->getAnnotation().str();
+  bool no_tuple_attribute = false;
+  bool synthetic_int_attribute = false;
+  for (const clang::AnnotateAttr* attr :
+       sd->specific_attrs<clang::AnnotateAttr>()) {
+    if (attr->getAnnotation() == "hls_no_tuple") {
+      no_tuple_attribute = true;
+    } else if (attr->getAnnotation() == "hls_synthetic_int") {
+      synthetic_int_attribute = true;
+    }
   }
-
-  const bool no_tuple_pragma = (annotation == "hls_no_tuple");
-  const bool synthetic_int_pragma = (annotation == "hls_synthetic_int");
-
   new_type = std::make_shared<CStructType>(
-      fields, synthetic_int_pragma || no_tuple_pragma, synthetic_int_pragma);
+      fields, synthetic_int_attribute || no_tuple_attribute,
+      synthetic_int_attribute);
 
   inst_types_[signature] = new_type;
   return absl::OkStatus();
@@ -2824,10 +2826,6 @@ absl::StatusOr<std::string> Translator::GetStringLiteral(
 absl::StatusOr<std::pair<bool, CValue>> Translator::GenerateIR_BuiltInCall(
     const clang::CallExpr* call, const xls::SourceInfo& loc) {
   const clang::FunctionDecl* funcdecl = call->getDirectCallee();
-  if (IsIntrinsicCallAnnotation(call)) {
-    context().last_intrinsic_annotation_call = call;
-    return std::make_pair(true, CValue());
-  }
 
   if (funcdecl->getNameAsString() == "__xlscc_unimplemented") {
     return absl::UnimplementedError(ErrorMessage(loc, "Unimplemented marker"));
@@ -5059,35 +5057,47 @@ absl::Status Translator::GenerateIR_ReturnStmt(const clang::ReturnStmt* rts,
 
 absl::Status Translator::GenerateIR_Stmt(const clang::Stmt* stmt,
                                          clang::ASTContext& ctx) {
-  // TODO(seanhaskell): Remove both of these once b/371085056 is fixed
-  context().last_stmt = stmt;
-
-  // Intrinsic calls only apply to the next statement
-  auto null_last_intrinsic_call = MakeLambdaGuard([this]() {
-    if (context().last_stmt == context().last_intrinsic_annotation_call) {
-      return;
-    }
-    context().last_intrinsic_annotation_call = nullptr;
-  });
-
   const xls::SourceInfo loc = GetLoc(*stmt);
 
-  if (!clang::isa<clang::CompoundStmt>(stmt) &&
-      !clang::isa<clang::LabelStmt>(stmt)) {
-    for (const clang::Stmt* child : stmt->children()) {
-      if (child == nullptr) {
-        continue;
-      }
-      const clang::CallExpr* call =
-          clang::dyn_cast<const clang::CallExpr>(child);
-      if (call == nullptr) {
-        continue;
-      }
-      if (IsIntrinsicCallAnnotation(call)) {
-        return absl::InvalidArgumentError(ErrorMessage(
-            loc, "Intrinsic calls must be in a compound statement"));
-      }
+  std::vector<const clang::Attr*> attrs;
+  bool label_with_loop_attributes = false;
+  while (clang::isa<clang::AttributedStmt>(stmt) ||
+         clang::isa<clang::LabelStmt>(stmt)) {
+    if (const clang::AttributedStmt* attributed =
+            clang::dyn_cast<clang::AttributedStmt>(stmt);
+        attributed != nullptr) {
+      attrs.insert(attrs.end(), attributed->getAttrs().begin(),
+                   attributed->getAttrs().end());
+      stmt = attributed->getSubStmt();
+      continue;
     }
+
+    // Just ignore labels for now - but fetch any relevant attributes!
+    const clang::LabelStmt* lblstmt = clang::dyn_cast<clang::LabelStmt>(stmt);
+    CHECK_NE(lblstmt, nullptr);
+    const clang::LabelDecl* lbl = lblstmt->getDecl();
+    for (const clang::Attr* attr : lbl->attrs()) {
+      const clang::AnnotateAttr* annotate =
+          clang::dyn_cast<clang::AnnotateAttr>(attr);
+      if (annotate == nullptr) {
+        continue;
+      }
+      if (annotate->getAnnotation() != "xlscc_asap" &&
+          annotate->getAnnotation() != "hls_unroll" &&
+          annotate->getAnnotation() != "hls_pipeline_init_interval") {
+        continue;
+      }
+      label_with_loop_attributes = true;
+      attrs.push_back(attr);
+    }
+    stmt = lblstmt->getSubStmt();
+  }
+
+  if (label_with_loop_attributes && !clang::isa<clang::ForStmt>(stmt) &&
+      !clang::isa<clang::WhileStmt>(stmt) && !clang::isa<clang::DoStmt>(stmt)) {
+    LOG(WARNING) << WarningMessage(loc,
+                                   "Warning: loop attribute(s) applied to "
+                                   "non-loop statement; will be ignored");
   }
 
   if (const clang::Expr* expr = clang::dyn_cast<const clang::Expr>(stmt)) {
@@ -5196,21 +5206,21 @@ absl::Status Translator::GenerateIR_Stmt(const clang::Stmt* stmt,
     }
   } else if (auto forst = clang::dyn_cast<const clang::ForStmt>(stmt)) {
     XLS_RETURN_IF_ERROR(GenerateIR_Loop(
-        /*always_first_iter=*/false, /*loop_stmt=*/forst,
+        /*always_first_iter=*/false, /*loop_stmt=*/forst, /*attrs=*/attrs,
         /*init=*/forst->getInit(), /*cond_expr=*/forst->getCond(),
         /*inc=*/forst->getInc(), /*body=*/forst->getBody(),
         GetPresumedLoc(*forst), loc, ctx));
   } else if (auto forst = clang::dyn_cast<const clang::WhileStmt>(stmt)) {
     XLS_RETURN_IF_ERROR(
         GenerateIR_Loop(/*always_first_iter=*/false,
-                        /*loop_stmt=*/forst,
+                        /*loop_stmt=*/forst, /*attrs=*/attrs,
                         /*init=*/nullptr, /*cond_expr=*/forst->getCond(),
                         /*inc=*/nullptr, /*body=*/forst->getBody(),
                         GetPresumedLoc(*forst), loc, ctx));
   } else if (auto dost = clang::dyn_cast<const clang::DoStmt>(stmt)) {
     XLS_RETURN_IF_ERROR(
         GenerateIR_Loop(/*always_first_iter=*/true,
-                        /*loop_stmt=*/dost,
+                        /*loop_stmt=*/dost, /*attrs=*/attrs,
                         /*init=*/nullptr, /*cond_expr=*/dost->getCond(),
                         /*inc=*/nullptr, /*body=*/dost->getBody(),
                         GetPresumedLoc(*dost), loc, ctx));
@@ -5257,9 +5267,6 @@ absl::Status Translator::GenerateIR_Stmt(const clang::Stmt* stmt,
     XLS_RETURN_IF_ERROR(GenerateIR_Compound(stmt, ctx));
   } else if (clang::isa<clang::NullStmt>(stmt)) {
     // Empty line (just ;)
-  } else if (auto label_stmt = clang::dyn_cast<const clang::LabelStmt>(stmt)) {
-    // Just ignore labels for now
-    return GenerateIR_Stmt(label_stmt->getSubStmt(), ctx);
   } else {
     stmt->dump();
     return absl::UnimplementedError(ErrorMessage(
@@ -6157,23 +6164,6 @@ absl::StatusOr<xls::solvers::z3::IrTranslator*> Translator::GetZ3Translator(
             /*source=*/nullptr, /*allow_unsupported=*/false));
   }
   return iter->second.get();
-}
-
-bool Translator::IsIntrinsicCallAnnotation(const clang::CallExpr* call) {
-  const clang::FunctionDecl* funcdecl = call->getDirectCallee();
-  CHECK(funcdecl != nullptr);
-  if (funcdecl->getNameAsString() == "__xlscc_pipeline" ||
-      funcdecl->getNameAsString() == "__xlscc_unroll" ||
-      funcdecl->getNameAsString() == "__xlscc_asap") {
-    return true;
-  }
-  return false;
-}
-
-const clang::CallExpr* Translator::FindIntrinsicCallFor(
-    const clang::Stmt* stmt) {
-  CHECK(context().last_stmt == stmt);
-  return context().last_intrinsic_annotation_call;
 }
 
 }  // namespace xlscc

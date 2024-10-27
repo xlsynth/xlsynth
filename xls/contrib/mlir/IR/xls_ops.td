@@ -665,6 +665,7 @@ def Xls_ArrayUpdateSliceOp : Xls_Op<"array_update_slice", [Pure, ShapesAreConsis
   let arguments = (ins
     Xls_ArrayType:$array,
     Xls_ArrayType:$slice,
+    // TODO(jpienaar): Expand to support Xls_ScalarBits.
     I32:$start,
     I64Attr:$width
   );
@@ -1281,10 +1282,14 @@ def Xls_EprocOp : Xls_Op<"eproc", [
     future without complicating the grammar.
 
     If `discardable` is true, the eproc may be discarded if it is not used.
+
+    The `min_pipeline_stages` attribute has the same meaning as in SprocOp. See
+    SprocOp for more details.
   }];
   let arguments = (ins
     SymbolNameAttr:$sym_name,
-    UnitAttr:$discardable
+    UnitAttr:$discardable,
+    DefaultValuedAttr<I64Attr, "1">:$min_pipeline_stages
   );
   let regions = (region
     SizedRegion<1>:$body
@@ -1406,6 +1411,13 @@ def Xls_SchanOp : Xls_Op<"schan", [Pure, HasParent<"SprocOp">]> {
     Xls_SchanType:$in
   );
   let hasCustomAssemblyFormat = 1;
+  let builders = [
+    OpBuilder<(ins "::mlir::StringRef":$name, "::mlir::Type":$element_type), [{
+      auto inChanTy = SchanType::get($_builder.getContext(), element_type, /*isInput=*/true);
+      auto outChanTy = SchanType::get($_builder.getContext(), element_type, /*isInput=*/false);
+      build($_builder, $_state, ::mlir::TypeRange{outChanTy, inChanTy}, name, element_type);
+    }]>
+  ];
 }
 
 def Xls_SprocOp : Xls_Op<"sproc", [
@@ -1460,11 +1472,27 @@ def Xls_SprocOp : Xls_Op<"sproc", [
       }
     }
     ```
+
+    The `min_pipeline_stages` attribute tracks the mininum number of pipeline
+    stages that XLS must be given in order to have a chance of scheduling the
+    proc. The default is 1, but some transforms guarantee that the proc will no
+    longer schedule in one pipeline stage; for example:
+
+      myop(...) -> xls.sblocking_receive(xls.ssend(...))
+
+    The above transform will guarantee that the proc requires at least two
+    pipeline stages.
+
+    The min_pipeline_stages attribute is not intended to guarantee that the proc
+    will schedule in the given number of pipeline stages, only that it is known
+    that it will *not* schedule in fewer than the given number of pipeline
+    stages.
   }];
   let arguments = (ins
     SymbolNameAttr:$sym_name,
     BoolAttr:$is_top,
-    OptionalAttr<ArrayAttr>:$boundary_channel_names
+    OptionalAttr<ArrayAttr>:$boundary_channel_names,
+    DefaultValuedAttr<I64Attr, "1">:$min_pipeline_stages
   );
   let regions = (region
     SizedRegion<1>:$spawns,
@@ -1628,11 +1656,11 @@ def Xls_SSendOp : Xls_Op<"ssend", []> {
   );
   let builders = [
     OpBuilder<(ins "::mlir::Value":$token, "::mlir::Value":$value, "::mlir::Value":$channel), [{
-      build($_builder, $_state, value.getType(), token, value, channel, nullptr);
+      build($_builder, $_state, token.getType(), token, value, channel, nullptr);
     }]>,
     OpBuilder<(ins "::mlir::Value":$value, "::mlir::Value":$channel), [{
       ::mlir::Value token = $_builder.create<AfterAllOp>($_builder.getUnknownLoc());
-      build($_builder, $_state, value.getType(), token, value, channel, nullptr);
+      build($_builder, $_state, token.getType(), token, value, channel, nullptr);
     }]>
   ];
 

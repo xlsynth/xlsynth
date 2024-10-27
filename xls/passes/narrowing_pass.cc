@@ -59,6 +59,7 @@
 #include "xls/ir/type.h"
 #include "xls/ir/value.h"
 #include "xls/ir/value_utils.h"
+#include "xls/passes/aliasing_query_engine.h"
 #include "xls/passes/context_sensitive_range_query_engine.h"
 #include "xls/passes/optimization_pass.h"
 #include "xls/passes/optimization_pass_registry.h"
@@ -80,7 +81,7 @@ using AnalysisType = NarrowingPass::AnalysisType;
 class SpecializedQueryEngines {
  public:
   SpecializedQueryEngines(AnalysisType type, PredicateDominatorAnalysis& pda,
-                          const QueryEngine& base)
+                          AliasingQueryEngine& base)
       : type_(type), base_(base), pda_(pda) {}
   const QueryEngine& ForSelect(PredicateState state) const {
     if (type_ != AnalysisType::kRangeWithContext) {
@@ -98,9 +99,13 @@ class SpecializedQueryEngines {
     return ForSelect(pda_.GetSingleNearestPredicate(node));
   }
 
+  absl::Status AddAlias(Node* new_node, Node* alias_target) const {
+    return base_.AddAlias(new_node, alias_target);
+  }
+
  private:
   AnalysisType type_;
-  const QueryEngine& base_;
+  AliasingQueryEngine& base_;
   const PredicateDominatorAnalysis& pda_;
   mutable absl::flat_hash_map<PredicateState, std::unique_ptr<QueryEngine>>
       engines_;
@@ -341,11 +346,11 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
           Node * narrowed_input,
           neg->function_base()->MakeNode<BitSlice>(
               neg->loc(), neg->operand(UnOp::kArgOperand), 0, 1));
-      XLS_RETURN_IF_ERROR(
-          neg->ReplaceUsesWithNew<ExtendOp>(narrowed_input,
-                                            neg->BitCountOrDie(), Op::kSignExt)
-              .status());
-      return Change();
+      XLS_ASSIGN_OR_RETURN(
+          Node * replacement,
+          neg->ReplaceUsesWithNew<ExtendOp>(
+              narrowed_input, neg->BitCountOrDie(), Op::kSignExt));
+      return Change(/*original=*/neg, replacement);
     }
     // Slice then neg then extend the negated value.
     XLS_ASSIGN_OR_RETURN(Node * narrowed_input,
@@ -355,10 +360,10 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
     XLS_ASSIGN_OR_RETURN(Node * narrowed_neg,
                          neg->function_base()->MakeNode<UnOp>(
                              neg->loc(), narrowed_input, Op::kNeg));
-    XLS_RETURN_IF_ERROR(neg->ReplaceUsesWithNew<ExtendOp>(
-                               narrowed_neg, neg->BitCountOrDie(), Op::kSignExt)
-                            .status());
-    return Change();
+    XLS_ASSIGN_OR_RETURN(Node * replacement,
+                         neg->ReplaceUsesWithNew<ExtendOp>(
+                             narrowed_neg, neg->BitCountOrDie(), Op::kSignExt));
+    return Change(/*original=*/neg, replacement);
   }
 
   // Try to narrow the operands of comparison operations. Returns true if the
@@ -671,18 +676,19 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
       // Shift amount is zero. Replace with (slice of) input operand of shift.
       if (shift->BitCountOrDie() == shift->operand(0)->BitCountOrDie()) {
         XLS_RETURN_IF_ERROR(shift->ReplaceUsesWith(shift->operand(0)));
-      } else {
-        // Shift instruction is narrower than its input operand. Replace with
-        // slice of input.
-        XLS_RET_CHECK_LE(shift->BitCountOrDie(),
-                         shift->operand(0)->BitCountOrDie());
-        XLS_RETURN_IF_ERROR(
-            shift
-                ->ReplaceUsesWithNew<BitSlice>(shift->operand(0), /*start=*/0,
-                                               /*width=*/shift->BitCountOrDie())
-                .status());
+        // Operand(0) should already have ranges associated with it so no need
+        // to mark an alias.
+        return Change();
       }
-      return Change();
+      // Shift instruction is narrower than its input operand. Replace with
+      // slice of input.
+      XLS_RET_CHECK_LE(shift->BitCountOrDie(),
+                       shift->operand(0)->BitCountOrDie());
+      XLS_ASSIGN_OR_RETURN(Node * replacement,
+                           shift->ReplaceUsesWithNew<BitSlice>(
+                               shift->operand(0), /*start=*/0,
+                               /*width=*/shift->BitCountOrDie()));
+      return Change(/*original=*/shift, /*replacement=*/replacement);
     }
 
     // Prune the leading zeros from the shift amount.
@@ -691,12 +697,11 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
         shift->function_base()->MakeNode<BitSlice>(
             shift->loc(), shift->operand(1), /*start=*/0,
             /*width=*/shift->operand(1)->BitCountOrDie() - leading_zeros));
-    XLS_RETURN_IF_ERROR(shift
-                            ->ReplaceUsesWithNew<BinOp>(shift->operand(0),
-                                                        narrowed_shift_amount,
-                                                        shift->op())
-                            .status());
-    return Change();
+    XLS_ASSIGN_OR_RETURN(
+        Node * replacment,
+        shift->ReplaceUsesWithNew<BinOp>(shift->operand(0),
+                                         narrowed_shift_amount, shift->op()));
+    return Change(/*original=*/shift, replacment);
   }
 
   absl::Status HandleDecode(Decode* decode) override {
@@ -742,13 +747,12 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
                              decode->loc(), narrowed_index, new_decode_width));
     if (new_decode_width == result_width) {
       XLS_RETURN_IF_ERROR(decode->ReplaceUsesWith(narrowed_decode));
-    } else {
-      XLS_RETURN_IF_ERROR(decode
-                              ->ReplaceUsesWithNew<ExtendOp>(
-                                  narrowed_decode, result_width, Op::kZeroExt)
-                              .status());
+      return Change(/*original=*/decode, /*replacement=*/narrowed_decode);
     }
-    return Change();
+    XLS_ASSIGN_OR_RETURN(Node * replacement,
+                         decode->ReplaceUsesWithNew<ExtendOp>(
+                             narrowed_decode, result_width, Op::kZeroExt));
+    return Change(/*original=*/decode, /*replacement=*/replacement);
   }
 
   // TODO(allight): 2023-11-08: We could simplify this and add by recognizing
@@ -777,10 +781,10 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
       XLS_ASSIGN_OR_RETURN(Node * new_sub,
                            sub->function_base()->MakeNode<BinOp>(
                                sub->loc(), new_lhs, new_rhs, Op::kSub));
-      XLS_RETURN_IF_ERROR(
-          sub->ReplaceUsesWithNew<ExtendOp>(new_sub, bit_count, Op::kZeroExt)
-              .status());
-      return Change();
+      XLS_ASSIGN_OR_RETURN(
+          Node * replacement,
+          sub->ReplaceUsesWithNew<ExtendOp>(new_sub, bit_count, Op::kZeroExt));
+      return Change(/*original=*/sub, /*replacement=*/replacement);
     }
     if (analysis_ == AnalysisType::kTernary) {
       // Ternary means we can't get any real information about ranges so we are
@@ -811,10 +815,10 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
           Node * narrowed_sub,
           sub->function_base()->MakeNode<BinOp>(sub->loc(), narrowed_lhs,
                                                 narrowed_rhs, Op::kSub));
-      XLS_RETURN_IF_ERROR(sub->ReplaceUsesWithNew<ExtendOp>(
-                                 narrowed_sub, bit_count, Op::kSignExt)
-                              .status());
-      return Change();
+      XLS_ASSIGN_OR_RETURN(Node * replacement,
+                           sub->ReplaceUsesWithNew<ExtendOp>(
+                               narrowed_sub, bit_count, Op::kSignExt));
+      return Change(/*original=*/sub, /*replacement=*/replacement);
     }
     return NoChange();
   }
@@ -846,8 +850,10 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
           Node * narrowed_add,
           add->function_base()->MakeNode<BinOp>(add->loc(), narrowed_lhs,
                                                 narrowed_rhs, Op::kAdd));
-      return add->ReplaceUsesWithNew<ExtendOp>(narrowed_add, bit_count, extend)
-          .status();
+      XLS_ASSIGN_OR_RETURN(
+          Node * new_add,
+          add->ReplaceUsesWithNew<ExtendOp>(narrowed_add, bit_count, extend));
+      return Change(/*original=*/add, /*replacement=*/new_add);
     };
     if (common_leading_zeros > 1) {
       // Narrow the add removing all but one of the known-zero leading
@@ -861,9 +867,7 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
         return NoChange();
       }
       int64_t narrowed_bit_count = bit_count - common_leading_zeros + 1;
-      XLS_RETURN_IF_ERROR(
-          make_narrow_add(lhs, rhs, narrowed_bit_count, Op::kZeroExt));
-      return Change();
+      return make_narrow_add(lhs, rhs, narrowed_bit_count, Op::kZeroExt);
     }
 
     if (analysis_ == AnalysisType::kTernary) {
@@ -884,9 +888,7 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
       }
       // We can do a smaller add and sign-extend. Need to leave an extra bit to
       // ensure we don't overflow.
-      XLS_RETURN_IF_ERROR(
-          make_narrow_add(lhs, rhs, min_signed_size + 1, Op::kSignExt));
-      return Change();
+      return make_narrow_add(lhs, rhs, min_signed_size + 1, Op::kSignExt);
     }
 
     return NoChange();
@@ -927,7 +929,7 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
                            MaybeExtend(narrowed_mul, result_bit_count,
                                        /*is_signed=*/mul->op() == Op::kSMul));
       XLS_RETURN_IF_ERROR(mul->ReplaceUsesWith(replacement));
-      return Change();
+      return Change(/*original=*/mul, /*replacement=*/replacement);
     }
 
     // The operands can be unconditionally narrowed to the result width.
@@ -940,11 +942,11 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
       if (rhs_bit_count > result_bit_count) {
         XLS_ASSIGN_OR_RETURN(narrowed_rhs, MaybeNarrow(rhs, result_bit_count));
       }
-      XLS_RETURN_IF_ERROR(
+      XLS_ASSIGN_OR_RETURN(
+          Node * replacement,
           mul->ReplaceUsesWithNew<ArithOp>(narrowed_lhs, narrowed_rhs,
-                                           result_bit_count, mul->op())
-              .status());
-      return Change();
+                                           result_bit_count, mul->op()));
+      return Change(/*original=*/mul, /*replacement=*/replacement);
     }
 
     // A multiply where the result and both operands are the same width is the
@@ -989,12 +991,12 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
       XLS_ASSIGN_OR_RETURN(std::optional<Node*> narrowed_rhs,
                            MaybeNarrowUnsignedOperand(rhs, mul));
       XLS_RET_CHECK(narrowed_lhs.has_value() || narrowed_rhs.has_value());
-      XLS_RETURN_IF_ERROR(
+      XLS_ASSIGN_OR_RETURN(
+          Node * replacement,
           mul->ReplaceUsesWithNew<ArithOp>(narrowed_lhs.value_or(lhs),
                                            narrowed_rhs.value_or(rhs),
-                                           result_bit_count, Op::kUMul)
-              .status());
-      return Change();
+                                           result_bit_count, Op::kUMul));
+      return Change(/*original=*/mul, /*replacement=*/replacement);
     }
 
     if (can_narrow_signed) {
@@ -1003,12 +1005,12 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
       XLS_ASSIGN_OR_RETURN(std::optional<Node*> narrowed_rhs,
                            MaybeNarrowSignedOperand(rhs, mul));
       XLS_RET_CHECK(narrowed_lhs.has_value() || narrowed_rhs.has_value());
-      XLS_RETURN_IF_ERROR(
+      XLS_ASSIGN_OR_RETURN(
+          Node * replacement,
           mul->ReplaceUsesWithNew<ArithOp>(narrowed_lhs.value_or(lhs),
                                            narrowed_rhs.value_or(rhs),
-                                           result_bit_count, Op::kSMul)
-              .status());
-      return Change();
+                                           result_bit_count, Op::kSMul));
+      return Change(/*original=*/mul, /*replacement=*/replacement);
     }
 
     int64_t left_trailing_zeros = CountTrailingKnownZeros(lhs, mul);
@@ -1038,10 +1040,10 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
                            mul->function_base()->MakeNodeWithName<Literal>(
                                mul->loc(), Value(Bits(known_zero_bits)),
                                mul->GetName() + "_TrailingBits_"));
-      XLS_RETURN_IF_ERROR(mul->ReplaceUsesWithNew<Concat>(
-                                 absl::Span<Node* const>{new_mul, zeros})
-                              .status());
-      return Change();
+      XLS_ASSIGN_OR_RETURN(Node * replacement,
+                           mul->ReplaceUsesWithNew<Concat>(
+                               absl::Span<Node* const>{new_mul, zeros}));
+      return Change(/*original=*/mul, /*replacement=*/replacement);
     }
 
     return NoChange();
@@ -1052,10 +1054,11 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
     if (analysis_ == AnalysisType::kRange &&
         options_.convert_array_index_to_select.has_value()) {
       int64_t threshold = options_.convert_array_index_to_select.value();
-      XLS_ASSIGN_OR_RETURN(bool subpass_changed, MaybeConvertArrayIndexToSelect(
-                                                     array_index, threshold));
-      if (subpass_changed) {
-        return Change();
+      XLS_ASSIGN_OR_RETURN(
+          std::optional<Node*> chain_select,
+          MaybeConvertArrayIndexToSelect(array_index, threshold));
+      if (chain_select) {
+        return Change(/*original=*/array_index, /*replacement=*/*chain_select);
       }
     }
 
@@ -1127,11 +1130,10 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
       new_indices.push_back(index);
     }
     if (changed) {
-      XLS_RETURN_IF_ERROR(array_index
-                              ->ReplaceUsesWithNew<ArrayIndex>(
-                                  array_index->array(), new_indices)
-                              .status());
-      return Change();
+      XLS_ASSIGN_OR_RETURN(Node * new_idx,
+                           array_index->ReplaceUsesWithNew<ArrayIndex>(
+                               array_index->array(), new_indices));
+      return Change(/*original=*/array_index, /*replacement=*/new_idx);
     }
     return NoChange();
   }
@@ -1186,7 +1188,7 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
                                        /*is_signed=*/mul->op() == Op::kSMulp));
       XLS_RETURN_IF_ERROR(
           (*add_immediately_after)->ReplaceUsesWith(extended_sum));
-      return Change();
+      return Change(/*original=*/*add_immediately_after, /*to*/ extended_sum);
     }
 
     // The operands can be unconditionally narrowed to the result width.
@@ -1199,11 +1201,11 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
       if (rhs_bit_count > result_bit_count) {
         XLS_ASSIGN_OR_RETURN(narrowed_rhs, MaybeNarrow(rhs, result_bit_count));
       }
-      XLS_RETURN_IF_ERROR(
-          mul->ReplaceUsesWithNew<PartialProductOp>(narrowed_lhs, narrowed_rhs,
-                                                    result_bit_count, mul->op())
-              .status());
-      return Change();
+      XLS_ASSIGN_OR_RETURN(
+          Node * narrow_mul,
+          mul->ReplaceUsesWithNew<PartialProductOp>(
+              narrowed_lhs, narrowed_rhs, result_bit_count, mul->op()));
+      return Change(/*original=*/mul, /*replacement=*/narrow_mul);
     }
 
     // A multiply where the result and both operands are the same width is the
@@ -1248,12 +1250,12 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
       XLS_ASSIGN_OR_RETURN(std::optional<Node*> narrowed_rhs,
                            MaybeNarrowUnsignedOperand(rhs, mul));
       XLS_RET_CHECK(narrowed_lhs.has_value() || narrowed_rhs.has_value());
-      XLS_RETURN_IF_ERROR(mul->ReplaceUsesWithNew<PartialProductOp>(
-                                 narrowed_lhs.value_or(lhs),
-                                 narrowed_rhs.value_or(rhs), result_bit_count,
-                                 Op::kUMulp)
-                              .status());
-      return Change();
+      XLS_ASSIGN_OR_RETURN(
+          Node * narrow_mul,
+          mul->ReplaceUsesWithNew<PartialProductOp>(
+              narrowed_lhs.value_or(lhs), narrowed_rhs.value_or(rhs),
+              result_bit_count, Op::kUMulp));
+      return Change(/*original=*/mul, /*replacement=*/narrow_mul);
     }
 
     if (can_narrow_signed) {
@@ -1262,12 +1264,12 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
       XLS_ASSIGN_OR_RETURN(std::optional<Node*> narrowed_rhs,
                            MaybeNarrowSignedOperand(rhs, mul));
       XLS_RET_CHECK(narrowed_lhs.has_value() || narrowed_rhs.has_value());
-      XLS_RETURN_IF_ERROR(mul->ReplaceUsesWithNew<PartialProductOp>(
-                                 narrowed_lhs.value_or(lhs),
-                                 narrowed_rhs.value_or(rhs), result_bit_count,
-                                 Op::kSMulp)
-                              .status());
-      return Change();
+      XLS_ASSIGN_OR_RETURN(
+          Node * narrow_mul,
+          mul->ReplaceUsesWithNew<PartialProductOp>(
+              narrowed_lhs.value_or(lhs), narrowed_rhs.value_or(rhs),
+              result_bit_count, Op::kSMulp));
+      return Change(/*original=*/mul, /*replacement=*/narrow_mul);
     }
 
     // TODO(meheff): If either lhs or rhs has trailing zeros, the multiply can
@@ -1431,10 +1433,10 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
 
   // If an ArrayIndex has a small set of possible indexes (based on range
   // analysis), replace it with a small select chain.
-  absl::StatusOr<bool> MaybeConvertArrayIndexToSelect(ArrayIndex* array_index,
-                                                      int64_t threshold) {
+  absl::StatusOr<std::optional<Node*>> MaybeConvertArrayIndexToSelect(
+      ArrayIndex* array_index, int64_t threshold) {
     if (array_index->indices().empty()) {
-      return false;
+      return std::nullopt;
     }
 
     // The dimension of the multidimensional array, truncated to the number of
@@ -1475,12 +1477,12 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
       int64_t index_space_size = 1;
       for (const IntervalSet& index_interval_set : index_intervals) {
         if (index_space_size > threshold) {
-          return false;
+          return std::nullopt;
         }
         if (std::optional<int64_t> size = index_interval_set.Size()) {
           index_space_size *= (*size);
         } else {
-          return false;
+          return std::nullopt;
         }
       }
 
@@ -1489,11 +1491,11 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
       // literals as part of this optimization, so failing to skip this would
       // result in an infinite amount of code being generated.
       if (index_space_size == 1) {
-        return false;
+        return std::nullopt;
       }
 
       if (index_space_size > threshold) {
-        return false;
+        return std::nullopt;
       }
     }
 
@@ -1611,12 +1613,12 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
     }
 
     if (rest_of_chain == nullptr) {
-      return false;
+      return std::nullopt;
     }
 
     XLS_RETURN_IF_ERROR(array_index->ReplaceUsesWith(rest_of_chain));
 
-    return true;
+    return rest_of_chain;
   }
 
   // If it exists, returns the unique add immediately following a mulp.
@@ -1656,6 +1658,15 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
   }
 
   absl::Status NoChange() { return absl::OkStatus(); }
+  // Record a change as having occurred rewritten node 'from' to 'to'. This is
+  // not necessary when the 'to' node is a literal. If the 'to' node is only
+  // used by a single other node noting it is not needed.
+  absl::Status Change(Node* original, Node* replacement) {
+    XLS_RETURN_IF_ERROR(
+        specialized_query_engine_.AddAlias(replacement, original));
+    changed_ = true;
+    return absl::OkStatus();
+  }
   absl::Status Change() {
     changed_ = true;
     return absl::OkStatus();
@@ -1668,13 +1679,9 @@ class NarrowVisitor final : public DfsVisitorWithDefault {
   bool changed_ = false;
 };
 
-}  // namespace
-
-template <typename RangeEngine>
-static void RangeAnalysisLog(FunctionBase* f,
-                             const TernaryQueryEngine& ternary_query_engine,
-                             const RangeEngine& range_query_engine) {
-  int64_t bits_saved = 0;
+void AnalysisLog(FunctionBase* f, const QueryEngine& query_engine) {
+  VLOG(3) << "narrowing pass: Preliminary analysis prediction for : "
+          << f->name();
   absl::flat_hash_map<Node*, absl::flat_hash_set<Node*>> parents_map;
 
   for (Node* node : f->nodes()) {
@@ -1686,7 +1693,7 @@ static void RangeAnalysisLog(FunctionBase* f,
   StatelessQueryEngine stateless_query_engine;
   for (Node* node : f->nodes()) {
     if (node->GetType()->IsBits()) {
-      IntervalSet intervals = range_query_engine.GetIntervals(node).Get({});
+      IntervalSet intervals = query_engine.GetIntervals(node).Get({});
       int64_t current_size = node->BitCountOrDie();
       Bits compressed_total(current_size + 1);
       for (const Interval& interval : intervals.Intervals()) {
@@ -1703,7 +1710,7 @@ static void RangeAnalysisLog(FunctionBase* f,
         for (Node* parent : parents_map[node]) {
           parents.push_back(parent->ToString());
         }
-        VLOG(3) << "narrowing_pass: " << OpToString(node->op())
+        VLOG(3) << "  narrowing_pass: " << OpToString(node->op())
                 << " shrinkable: " << "current size = " << current_size << "; "
                 << "compressed size = " << compressed_size << "; "
                 << "convex hull size = " << hull_size << "; " << "parents = ["
@@ -1715,8 +1722,7 @@ static void RangeAnalysisLog(FunctionBase* f,
         if (!operand->GetType()->IsBits()) {
           break;
         }
-        IntervalSet intervals =
-            range_query_engine.GetIntervals(operand).Get({});
+        IntervalSet intervals = query_engine.GetIntervals(operand).Get({});
         intervals.Normalize();
         if (!intervals.IsMaximal()) {
           inputs_all_maximal = false;
@@ -1724,51 +1730,21 @@ static void RangeAnalysisLog(FunctionBase* f,
         }
       }
       if (!inputs_all_maximal &&
-          range_query_engine.GetIntervals(node).Get({}).IsMaximal()) {
-        VLOG(3) << "narrowing_pass: range analysis lost precision for " << node
-                << "\n";
-      }
-
-      if (ternary_query_engine.IsTracked(node) &&
-          range_query_engine.IsTracked(node)) {
-        std::optional<LeafTypeTree<TernaryVector>> ternary_result =
-            ternary_query_engine.GetTernary(node);
-        std::optional<LeafTypeTree<TernaryVector>> range_result =
-            range_query_engine.GetTernary(node);
-        TernaryVector ternary_vec =
-            ternary_result.has_value()
-                ? ternary_result->Get({})
-                : TernaryVector(node->BitCountOrDie(), TernaryValue::kUnknown);
-        TernaryVector range_vec =
-            range_result.has_value()
-                ? range_result->Get({})
-                : TernaryVector(node->BitCountOrDie(), TernaryValue::kUnknown);
-        std::optional<TernaryVector> difference =
-            ternary_ops::Difference(range_vec, ternary_vec);
-        CHECK(difference.has_value())
-            << "Inconsistency detected in node: " << node->GetName();
-        bits_saved += ternary_ops::NumberOfKnownBits(difference.value());
+          query_engine.GetIntervals(node).Get({}).IsMaximal()) {
+        VLOG(3) << "  narrowing_pass: range analysis lost precision for "
+                << node << "\n";
       }
     }
   }
-
-  if (bits_saved != 0) {
-    VLOG(3) << "narrowing_pass: range analysis saved " << bits_saved
-            << " bits in " << f << "\n";
-  }
 }
 
-static absl::StatusOr<std::unique_ptr<QueryEngine>> GetQueryEngine(
-    FunctionBase* f, AnalysisType analysis) {
+absl::StatusOr<AliasingQueryEngine> GetQueryEngine(FunctionBase* f,
+                                                   AnalysisType analysis) {
   std::unique_ptr<QueryEngine> query_engine;
   if (analysis == AnalysisType::kRangeWithContext) {
     auto ternary_query_engine = std::make_unique<TernaryQueryEngine>();
     auto range_query_engine =
         std::make_unique<ContextSensitiveRangeQueryEngine>();
-
-    if (VLOG_IS_ON(3)) {
-      RangeAnalysisLog(f, *ternary_query_engine, *range_query_engine);
-    }
 
     std::vector<std::unique_ptr<QueryEngine>> engines;
     engines.push_back(std::make_unique<StatelessQueryEngine>());
@@ -1778,10 +1754,6 @@ static absl::StatusOr<std::unique_ptr<QueryEngine>> GetQueryEngine(
   } else if (analysis == AnalysisType::kRange) {
     auto ternary_query_engine = std::make_unique<TernaryQueryEngine>();
     auto range_query_engine = std::make_unique<RangeQueryEngine>();
-
-    if (VLOG_IS_ON(3)) {
-      RangeAnalysisLog(f, *ternary_query_engine, *range_query_engine);
-    }
 
     std::vector<std::unique_ptr<QueryEngine>> engines;
     engines.push_back(std::make_unique<StatelessQueryEngine>());
@@ -1795,17 +1767,22 @@ static absl::StatusOr<std::unique_ptr<QueryEngine>> GetQueryEngine(
     query_engine = std::make_unique<UnionQueryEngine>(std::move(engines));
   }
   XLS_RETURN_IF_ERROR(query_engine->Populate(f).status());
-  return std::move(query_engine);
+  if (VLOG_IS_ON(3)) {
+    AnalysisLog(f, *query_engine);
+  }
+  return AliasingQueryEngine(std::move(query_engine));
 }
+
+}  // namespace
 
 absl::StatusOr<bool> NarrowingPass::RunOnFunctionBaseInternal(
     FunctionBase* f, const OptimizationPassOptions& options,
     PassResults* results) const {
-  XLS_ASSIGN_OR_RETURN(std::unique_ptr<QueryEngine> query_engine,
+  XLS_ASSIGN_OR_RETURN(AliasingQueryEngine query_engine,
                        GetQueryEngine(f, RealAnalysis(options)));
 
   PredicateDominatorAnalysis pda = PredicateDominatorAnalysis::Run(f);
-  SpecializedQueryEngines sqe(RealAnalysis(options), pda, *query_engine);
+  SpecializedQueryEngines sqe(RealAnalysis(options), pda, query_engine);
 
   NarrowVisitor narrower(sqe, RealAnalysis(options), options,
                          SplitsEnabled(opt_level_));

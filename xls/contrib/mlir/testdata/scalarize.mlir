@@ -31,8 +31,8 @@ func.func @empty(%arg0: tensor<2xi32>, %arg1: i32) -> tensor<2xi32> attributes {
 }
 
 // CHECK-LABEL: @tensor_insert
-// CHECK: constant_scalar
-// CHECK-SAME: value = 13
+// CHECK: constant
+// CHECK-SAME: 13
 // CHECK-NEXT: array_update
 // CHECK-SAME: xls.array<14 x i32>
 func.func @tensor_insert(%arg0: tensor<2x7xi32>, %arg1: i32) -> tensor<2x7xi32> attributes { "xls" = true } {
@@ -40,6 +40,14 @@ func.func @tensor_insert(%arg0: tensor<2x7xi32>, %arg1: i32) -> tensor<2x7xi32> 
   %1 = arith.constant 6 : index
   %2 = tensor.insert %arg1 into %arg0[%0, %1] : tensor<2x7xi32>
   return %2 : tensor<2x7xi32>
+}
+
+// CHECK-LABEL: @tensor_concat
+// CHECK: xls.array_concat
+// CHECK-SAME: xls.array<28 x f32>
+func.func @tensor_concat(%arg0: tensor<2x7xf32>, %arg1: tensor<2x7xf32>) -> tensor<4x7xf32> attributes { "xls" = true } {
+  %0 = tensor.concat dim(0) %arg0, %arg1 : (tensor<2x7xf32>, tensor<2x7xf32>) -> tensor<4x7xf32>
+  return %0 : tensor<4x7xf32>
 }
 
 // CHECK-LABEL: @tensor_extract_element
@@ -103,6 +111,15 @@ func.func @tensor_extract_single_slice_2d_unit(%arg0: tensor<3x3xi32>, %arg1: in
 // CHECK-NEXT: return
 func.func @tensor_extract_single_slice_2d_subset(%arg0: tensor<3x3xi32>, %arg1: index) -> tensor<2x3xi32> attributes { "xls" = true } {
   %0 = tensor.extract_slice %arg0[0, %arg1] [2, 3] [1, 1] : tensor<3x3xi32> to tensor<2x3xi32>
+  return %0 : tensor<2x3xi32>
+}
+
+// CHECK-LABEL: @tensor_extract_single_slice_2d_subset_leading_unit
+// CHECK-NOT: xls.array_index
+// CHECK: xls.array_slice
+// CHECK-NEXT: return
+func.func @tensor_extract_single_slice_2d_subset_leading_unit(%arg0: tensor<1x1x3x3x1x1x1xi32>, %arg1: index) -> tensor<2x3xi32> attributes { "xls" = true } {
+  %0 = tensor.extract_slice %arg0[0, 0, 0, %arg1, 0, 0, 0] [1, 1, 2, 3, 1, 1, 1] [1, 1, 1, 1, 1, 1, 1] : tensor<1x1x3x3x1x1x1xi32> to tensor<2x3xi32>
   return %0 : tensor<2x3xi32>
 }
 
@@ -213,4 +230,12 @@ func.func @call_dslx_with_splat(%arg0: tensor<4xi32>, %arg1: i32) -> tensor<4xf3
   // CHECK: xls.call_dslx "foo.x" : "f"
   %0 = xls.call_dslx "foo.x": "f"(%arg0, %arg1) : (tensor<4xi32>, i32) -> tensor<4xf32>
   return %0 : tensor<4xf32>
+}
+
+// CHECK-LABEL: @select
+// CHECK-NEXT: xls.sel
+// CHECK-NEXT: return
+func.func @select(%arg0: tensor<2xi32>, %arg1: tensor<2xi32>, %arg2: tensor<2xi1>) -> tensor<2xi32> attributes {xls = true} {
+  %0 = "xls.sel"(%arg2, %arg0, %arg1) : (tensor<2xi1>, tensor<2xi32>, tensor<2xi32>) -> tensor<2xi32>
+  return %0 : tensor<2xi32>
 }

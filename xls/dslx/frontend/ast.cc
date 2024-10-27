@@ -285,6 +285,8 @@ std::string_view AstNodeKindToString(AstNodeKind kind) {
       return "enum definition";
     case AstNodeKind::kStructDef:
       return "struct definition";
+    case AstNodeKind::kProcDef:
+      return "proc definition";
     case AstNodeKind::kQuickCheck:
       return "quick-check";
     case AstNodeKind::kXlsTuple:
@@ -293,6 +295,8 @@ std::string_view AstNodeKindToString(AstNodeKind kind) {
       return "rest of tuple";
     case AstNodeKind::kFor:
       return "for";
+    case AstNodeKind::kFunctionRef:
+      return "function-ref";
     case AstNodeKind::kStatementBlock:
       return "statement-block";
     case AstNodeKind::kCast:
@@ -320,6 +324,7 @@ AnyNameDef TypeDefinitionGetNameDef(const TypeDefinition& td) {
       Visitor{
           [](TypeAlias* n) -> AnyNameDef { return &n->name_def(); },
           [](StructDef* n) -> AnyNameDef { return n->name_def(); },
+          [](ProcDef* n) -> AnyNameDef { return n->name_def(); },
           [](EnumDef* n) -> AnyNameDef { return n->name_def(); },
           [](ColonRef* n) -> AnyNameDef {
             return GetSubjectNameDef(n->subject());
@@ -744,6 +749,7 @@ TypeRef::TypeRef(Module* owner, Span span, TypeDefinition type_definition)
 std::string TypeRef::ToString() const {
   return absl::visit(Visitor{[&](TypeAlias* n) { return n->identifier(); },
                              [&](StructDef* n) { return n->identifier(); },
+                             [&](ProcDef* n) { return n->identifier(); },
                              [&](EnumDef* n) { return n->identifier(); },
                              [&](ColonRef* n) { return n->ToString(); }},
                      type_definition_);
@@ -1090,6 +1096,23 @@ std::string Instantiation::FormatParametrics() const {
                       ">");
 }
 
+// -- class FunctionRef
+
+FunctionRef::FunctionRef(Module* owner, Span span, Expr* callee,
+                         std::vector<ExprOrType> explicit_parametrics)
+    : Instantiation(owner, std::move(span), callee,
+                    std::move(explicit_parametrics)) {}
+
+FunctionRef::~FunctionRef() = default;
+
+std::vector<AstNode*> FunctionRef::GetChildren(bool want_types) const {
+  std::vector<AstNode*> results = {callee()};
+  for (const ExprOrType& eot : explicit_parametrics()) {
+    results.push_back(ToAstNode(eot));
+  }
+  return results;
+}
+
 // -- class Invocation
 
 Invocation::Invocation(Module* owner, Span span, Expr* callee,
@@ -1240,11 +1263,12 @@ std::string FormatMacro::FormatArgs() const {
   });
 }
 
-// -- class StructDef
+// -- class StructDefBase
 
-StructDef::StructDef(Module* owner, Span span, NameDef* name_def,
-                     std::vector<ParametricBinding*> parametric_bindings,
-                     std::vector<StructMember> members, bool is_public)
+StructDefBase::StructDefBase(
+    Module* owner, Span span, NameDef* name_def,
+    std::vector<ParametricBinding*> parametric_bindings,
+    std::vector<StructMember> members, bool is_public)
     : AstNode(owner),
       span_(std::move(span)),
       name_def_(name_def),
@@ -1252,9 +1276,9 @@ StructDef::StructDef(Module* owner, Span span, NameDef* name_def,
       members_(std::move(members)),
       public_(is_public) {}
 
-StructDef::~StructDef() = default;
+StructDefBase::~StructDefBase() = default;
 
-std::vector<AstNode*> StructDef::GetChildren(bool want_types) const {
+std::vector<AstNode*> StructDefBase::GetChildren(bool want_types) const {
   std::vector<AstNode*> results = {name_def_};
   for (auto* pb : parametric_bindings_) {
     results.push_back(pb);
@@ -1267,7 +1291,8 @@ std::vector<AstNode*> StructDef::GetChildren(bool want_types) const {
   return results;
 }
 
-std::string StructDef::ToString() const {
+std::string StructDefBase::ToStringWithEntityKeywordAndAttribute(
+    std::string_view keyword, std::string_view attribute) const {
   std::string parametric_str;
   if (!parametric_bindings_.empty()) {
     std::string guts =
@@ -1277,10 +1302,9 @@ std::string StructDef::ToString() const {
                       });
     parametric_str = absl::StrFormat("<%s>", guts);
   }
-  std::string extern_type_def = MakeExternTypeAttr(extern_type_name_);
   std::string result =
-      absl::StrFormat("%s%sstruct %s%s {\n", extern_type_def,
-                      public_ ? "pub " : "", identifier(), parametric_str);
+      absl::StrFormat("%s%s%s %s%s {\n", attribute, public_ ? "pub " : "",
+                      keyword, identifier(), parametric_str);
   for (const auto& item : members_) {
     absl::StrAppendFormat(&result, "%s%s: %s,\n", kRustOneIndent, item.name,
                           item.type->ToString());
@@ -1289,7 +1313,7 @@ std::string StructDef::ToString() const {
   return result;
 }
 
-std::vector<std::string> StructDef::GetMemberNames() const {
+std::vector<std::string> StructDefBase::GetMemberNames() const {
   std::vector<std::string> names;
   names.reserve(members_.size());
   for (auto& item : members_) {
@@ -1298,12 +1322,25 @@ std::vector<std::string> StructDef::GetMemberNames() const {
   return names;
 }
 
-std::optional<ConstantDef*> StructDef::GetImplConstant(
+std::optional<ConstantDef*> StructDefBase::GetImplConstant(
     std::string_view constant_name) {
   if (!impl_.has_value()) {
     return std::nullopt;
   }
   return impl_.value()->GetConstant(constant_name);
+}
+
+// -- class StructDef
+
+std::string StructDef::ToString() const {
+  return ToStringWithEntityKeywordAndAttribute(
+      "struct", MakeExternTypeAttr(extern_type_name_));
+}
+
+// -- class ProcDef
+
+std::string ProcDef::ToString() const {
+  return ToStringWithEntityKeywordAndAttribute("proc");
 }
 
 // -- class Impl
@@ -1883,9 +1920,8 @@ std::string TupleTypeAnnotation::ToString() const {
 
 // -- class Statement
 
-/* static */ absl::StatusOr<
-    std::variant<Expr*, TypeAlias*, Let*, ConstAssert*, VerbatimNode*>>
-Statement::NodeToWrapped(AstNode* n) {
+/* static */ absl::StatusOr<Statement::Wrapped> Statement::NodeToWrapped(
+    AstNode* n) {
   if (auto* e = dynamic_cast<Expr*>(n)) {
     return e;
   }
@@ -1897,6 +1933,9 @@ Statement::NodeToWrapped(AstNode* n) {
   }
   if (auto* d = dynamic_cast<ConstAssert*>(n)) {
     return d;
+  }
+  if (auto* v = dynamic_cast<VerbatimNode*>(n)) {
+    return v;
   }
   return absl::InvalidArgumentError(absl::StrCat(
       "AST node could not be wrapped in a statement: ", n->GetNodeTypeName()));

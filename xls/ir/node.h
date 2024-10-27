@@ -24,7 +24,6 @@
 #include <string_view>
 #include <utility>
 
-#include "absl/container/btree_set.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
@@ -230,7 +229,7 @@ class Node {
   };
 
   // Returns the unique set of users of this node sorted by id.
-  const absl::btree_set<Node*, NodeIdLessThan>& users() const { return users_; }
+  absl::Span<Node* const> users() const { return users_; }
 
   // Helper for querying whether "target" is a user of this node.
   bool HasUser(const Node* target) const;
@@ -313,6 +312,10 @@ class Node {
   void AddUser(Node* user);
   void RemoveUser(Node* user);
 
+  // The number of users that we consider small enough to perform linear-time
+  // algorithms on.
+  static constexpr int64_t kSmallUserCount = 8;
+
   FunctionBase* function_base_;
   int64_t id_;
   Op op_;
@@ -324,7 +327,7 @@ class Node {
   absl::InlinedVector<Node*, 2> operands_;
 
   // Set of users sorted by node_id for stability.
-  absl::btree_set<Node*, NodeIdLessThan> users_;
+  absl::InlinedVector<Node*, 2> users_;
 };
 
 inline std::ostream& operator<<(std::ostream& os, const Node& node) {

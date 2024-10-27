@@ -40,10 +40,8 @@
 #include "absl/types/span.h"
 #include "absl/types/variant.h"
 #include "xls/common/casts.h"
-#include "xls/common/logging/log_lines.h"
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
-#include "xls/common/visitor.h"
 #include "xls/dslx/bytecode/bytecode.h"
 #include "xls/dslx/bytecode/bytecode_emitter.h"
 #include "xls/dslx/bytecode/bytecode_interpreter.h"
@@ -57,9 +55,9 @@
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/frontend/token_utils.h"
-#include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_bindings.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/type_system/deduce_colon_ref.h"
 #include "xls/dslx/type_system/deduce_ctx.h"
 #include "xls/dslx/type_system/deduce_enum_def.h"
 #include "xls/dslx/type_system/deduce_expr.h"
@@ -70,7 +68,6 @@
 #include "xls/dslx/type_system/deduce_utils.h"
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/parametric_expression.h"
-#include "xls/dslx/type_system/scoped_fn_stack_entry.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/type_system/unwrap_meta_type.h"
@@ -274,7 +271,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceConstantDef(const ConstantDef* node,
   ctx->type_info()->NoteConstExpr(node->value(), constexpr_value);
   ctx->type_info()->NoteConstExpr(node->name_def(), constexpr_value);
 
-  VLOG(5) << "DeduceConstantDef restult: " << result->ToString();
+  VLOG(5) << "DeduceConstantDef result: " << result->ToString();
   return result;
 }
 
@@ -915,205 +912,6 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceStatementBlock(
 
   DetectUselessTrailingTuplePattern(node, ctx);
   return last;
-}
-
-// Deduces a colon-ref in the particular case when the subject is known to be an
-// import.
-static absl::StatusOr<std::unique_ptr<Type>> DeduceColonRefToModule(
-    const ColonRef* node, Module* module, DeduceCtx* ctx) {
-  VLOG(5) << "DeduceColonRefToModule: " << node->ToString();
-
-  XLS_VLOG_LINES(5, ctx->GetFnStackDebugString());
-
-  std::optional<ModuleMember*> elem = module->FindMemberWithName(node->attr());
-  if (!elem.has_value()) {
-    return TypeInferenceErrorStatus(
-        node->span(), nullptr,
-        absl::StrFormat("Attempted to refer to module %s member '%s' "
-                        "which does not exist.",
-                        module->name(), node->attr()),
-        ctx->file_table());
-  }
-  if (!IsPublic(*elem.value())) {
-    return TypeInferenceErrorStatus(
-        node->span(), nullptr,
-        absl::StrFormat("Attempted to refer to module member %s that "
-                        "is not public.",
-                        ToAstNode(*elem.value())->ToString()),
-        ctx->file_table());
-  }
-
-  XLS_ASSIGN_OR_RETURN(TypeInfo * imported_type_info,
-                       ctx->import_data()->GetRootTypeInfo(module));
-  if (std::holds_alternative<Function*>(*elem.value())) {
-    auto* f_ptr = std::get<Function*>(*elem.value());
-    XLS_RET_CHECK(f_ptr != nullptr);
-    auto& f = *f_ptr;
-
-    if (!imported_type_info->Contains(f.name_def())) {
-      VLOG(2) << "Function name not in imported_type_info; indicates it is "
-                 "parametric.";
-      XLS_RET_CHECK(f.IsParametric());
-      // We don't type check parametric functions until invocations.
-      // Let's typecheck this imported parametric function with respect to its
-      // module (this will only get the type signature, the body gets
-      // typechecked after parametric instantiation).
-      std::unique_ptr<DeduceCtx> imported_ctx =
-          ctx->MakeCtx(imported_type_info, module);
-      const FnStackEntry& peek_entry = ctx->fn_stack().back();
-      imported_ctx->AddFnStackEntry(peek_entry);
-      XLS_RETURN_IF_ERROR(ctx->typecheck_function()(f, imported_ctx.get()));
-      imported_type_info = imported_ctx->type_info();
-    }
-  }
-
-  AstNode* member_node = ToAstNode(*elem.value());
-  std::optional<Type*> type = imported_type_info->GetItem(member_node);
-  XLS_RET_CHECK(type.has_value()) << member_node->ToString();
-  return type.value()->CloneToUnique();
-}
-
-static absl::StatusOr<std::unique_ptr<Type>> DeduceColonRefToBuiltinNameDef(
-    BuiltinNameDef* builtin_name_def, const ColonRef* node) {
-  VLOG(5) << "DeduceColonRefToBuiltinNameDef: " << node->ToString();
-
-  const FileTable& file_table = *builtin_name_def->owner()->file_table();
-  const auto& sized_type_keywords = GetSizedTypeKeywordsMetadata();
-  if (auto it = sized_type_keywords.find(builtin_name_def->identifier());
-      it != sized_type_keywords.end()) {
-    auto [is_signed, size] = it->second;
-    if (IsBuiltinBitsTypeAttr(node->attr())) {
-      return std::make_unique<BitsType>(is_signed, size);
-    }
-    return TypeInferenceErrorStatus(
-        node->span(), nullptr,
-        absl::StrFormat("Builtin type '%s' does not have attribute '%s'.",
-                        builtin_name_def->identifier(), node->attr()),
-        file_table);
-  }
-  return TypeInferenceErrorStatus(
-      node->span(), nullptr,
-      absl::StrFormat("Builtin '%s' has no attributes.",
-                      builtin_name_def->identifier()),
-      file_table);
-}
-
-static absl::StatusOr<std::unique_ptr<Type>> DeduceColonRefToArrayType(
-    ArrayTypeAnnotation* array_type, const ColonRef* node, DeduceCtx* ctx) {
-  VLOG(5) << "DeduceColonRefToArrayType: " << node->ToString();
-
-  XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> resolved, ctx->Deduce(array_type));
-  XLS_ASSIGN_OR_RETURN(resolved,
-                       UnwrapMetaType(std::move(resolved), array_type->span(),
-                                      "array type", ctx->file_table()));
-  if (!IsBitsLike(*resolved)) {
-    return TypeInferenceErrorStatus(
-        node->span(), nullptr,
-        absl::StrFormat("Cannot use '::' on type %s -- only bits types support "
-                        "'::' attributes",
-                        resolved->ToString()),
-        ctx->file_table());
-  }
-  if (IsBuiltinBitsTypeAttr(node->attr())) {
-    VLOG(5) << "DeduceColonRefToArrayType result: " << resolved->ToString();
-    return resolved;
-  }
-  return TypeInferenceErrorStatus(
-      node->span(), nullptr,
-      absl::StrFormat("Type '%s' does not have attribute '%s'.",
-                      array_type->ToString(), node->attr()),
-      ctx->file_table());
-}
-
-static absl::StatusOr<std::unique_ptr<Type>> DeduceColonRefToImpl(
-    StructDef* struct_def, const ColonRef* node, DeduceCtx* ctx) {
-  VLOG(5) << "DeduceColonRefToImpl: " << node->ToString();
-  if (!struct_def->impl().has_value()) {
-    return TypeInferenceErrorStatus(
-        node->span(), nullptr,
-        absl::StrFormat("Struct '%s' has no impl defining '%s'",
-                        struct_def->identifier(), node->attr()),
-        ctx->file_table());
-  }
-  Impl* impl = struct_def->impl().value();
-  std::optional<ConstantDef*> constant = impl->GetConstant(node->attr());
-  if (!constant.has_value()) {
-    return TypeInferenceErrorStatus(
-        node->span(), nullptr,
-        absl::StrFormat("Name '%s' is not defined by the impl for struct '%s'.",
-                        node->attr(), struct_def->identifier()),
-        ctx->file_table());
-  }
-  return ctx->Deduce(constant.value());
-}
-
-absl::StatusOr<std::unique_ptr<Type>> DeduceColonRef(const ColonRef* node,
-                                                     DeduceCtx* ctx) {
-  VLOG(5) << "DeduceColonRef: " << node->ToString() << " @ "
-          << node->span().ToString(ctx->file_table());
-
-  XLS_VLOG_LINES(5, ctx->GetFnStackDebugString());
-
-  ImportData* import_data = ctx->import_data();
-  XLS_ASSIGN_OR_RETURN(auto subject, ResolveColonRefSubjectForTypeChecking(
-                                         import_data, ctx->type_info(), node));
-
-  // We get the root type information for the referred-to entity's module (the
-  // subject of the colon-ref) and create a fresh deduce context for its top
-  // level.
-  using ReturnT = absl::StatusOr<std::unique_ptr<Type>>;
-  Module* subject_module = ToAstNode(subject)->owner();
-  XLS_ASSIGN_OR_RETURN(TypeInfo * subject_type_info,
-                       import_data->GetRootTypeInfo(subject_module));
-  auto subject_ctx = ctx->MakeCtx(subject_type_info, subject_module);
-
-  ScopedFnStackEntry top =
-      ScopedFnStackEntry::MakeForTop(subject_ctx.get(), subject_module);
-
-  XLS_ASSIGN_OR_RETURN(
-      std::unique_ptr<Type> result,
-      absl::visit(
-          Visitor{
-              [&](Module* module) -> ReturnT {
-                return DeduceColonRefToModule(node, module, subject_ctx.get());
-              },
-              [&](EnumDef* enum_def) -> ReturnT {
-                if (!enum_def->HasValue(node->attr())) {
-                  return TypeInferenceErrorStatus(
-                      node->span(), nullptr,
-                      absl::StrFormat(
-                          "Name '%s' is not defined by the enum %s.",
-                          node->attr(), enum_def->identifier()),
-                      ctx->file_table());
-                }
-                XLS_ASSIGN_OR_RETURN(
-                    auto enum_type, DeduceEnumDef(enum_def, subject_ctx.get()));
-                return UnwrapMetaType(std::move(enum_type), node->span(),
-                                      "enum type", ctx->file_table());
-              },
-              [&](BuiltinNameDef* builtin_name_def) -> ReturnT {
-                return DeduceColonRefToBuiltinNameDef(builtin_name_def, node);
-              },
-              [&](ArrayTypeAnnotation* type) -> ReturnT {
-                return DeduceColonRefToArrayType(type, node, subject_ctx.get());
-              },
-              [&](StructDef* struct_def) -> ReturnT {
-                return DeduceColonRefToImpl(struct_def, node,
-                                            subject_ctx.get());
-              },
-              [&](ColonRef* colon_ref) -> ReturnT {
-                // Note: this should be unreachable, as it's a colon-reference
-                // that refers *directly* to another colon-ref. Generally you
-                // need an intervening construct, like a type alias.
-                return absl::InternalError(
-                    "Colon-reference subject was another colon-reference.");
-              },
-          },
-          subject));
-  top.Finish();
-
-  VLOG(5) << "DeduceColonRef result: " << result->ToString();
-  return result;
 }
 
 // Returns (start, width), resolving indices via DSLX bit slice semantics.
@@ -2111,6 +1909,13 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceConstRef(const ConstRef* node,
   return type;
 }
 
+absl::StatusOr<std::unique_ptr<Type>> DeduceProcDef(const ProcDef* node,
+                                                    DeduceCtx* ctx) {
+  // TODO: https://github.com/google/xls/issues/836 - Support this.
+  return absl::InvalidArgumentError(
+      "Type deduction for impl-style procs is not yet supported.");
+}
+
 absl::StatusOr<std::unique_ptr<Type>> DeduceImpl(const Impl* node,
                                                  DeduceCtx* ctx) {
   VLOG(5) << "DeduceImpl: " << node->ToString();
@@ -2127,10 +1932,14 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceImpl(const Impl* node,
                                     "Impl must be for a struct type",
                                     ctx->file_table());
   }
-
-  for (const auto& constant : node->constants()) {
-    XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> constType,
-                         ctx->Deduce(ToAstNode(constant)));
+  TypeRefTypeAnnotation* type_ref =
+      dynamic_cast<TypeRefTypeAnnotation*>(node->struct_ref());
+  XLS_RET_CHECK(type_ref != nullptr);
+  if (type_ref->parametrics().empty()) {
+    for (const auto& constant : node->constants()) {
+      XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> constType,
+                           ctx->Deduce(ToAstNode(constant)));
+    }
   }
   return type;
 }
@@ -2162,6 +1971,7 @@ class DeduceVisitor : public AstNodeVisitor {
   DEDUCE_DISPATCH(Cast, DeduceCast)
   DEDUCE_DISPATCH(ConstAssert, DeduceConstAssert)
   DEDUCE_DISPATCH(StructDef, DeduceStructDef)
+  DEDUCE_DISPATCH(ProcDef, DeduceProcDef)
   DEDUCE_DISPATCH(Impl, DeduceImpl)
   DEDUCE_DISPATCH(Array, DeduceArray)
   DEDUCE_DISPATCH(Attr, DeduceAttr)
@@ -2226,6 +2036,9 @@ class DeduceVisitor : public AstNodeVisitor {
     return Fatal(n);
   }
   absl::Status HandleVerbatimNode(const VerbatimNode* n) override {
+    return Fatal(n);
+  }
+  absl::Status HandleFunctionRef(const FunctionRef* n) override {
     return Fatal(n);
   }
 

@@ -321,10 +321,8 @@ DocRef Fmt(const TupleTypeAnnotation& n, const Comments& comments,
 DocRef Fmt(const TypeRef& n, const Comments& comments, DocArena& arena) {
   return absl::visit(
       Visitor{
-          [&](const TypeAlias* n) { return arena.MakeText(n->identifier()); },
-          [&](const StructDef* n) { return arena.MakeText(n->identifier()); },
-          [&](const EnumDef* n) { return arena.MakeText(n->identifier()); },
           [&](const ColonRef* n) { return Fmt(*n, comments, arena); },
+          [&](const auto* n) { return arena.MakeText(n->identifier()); },
       },
       n.type_definition());
 }
@@ -994,19 +992,33 @@ DocRef FmtExprOrType(const ExprOrType& n, const Comments& comments,
       n);
 }
 
+std::optional<DocRef> FmtExplicitParametrics(const Instantiation& n,
+                                             const Comments& comments,
+                                             DocArena& arena) {
+  if (n.explicit_parametrics().empty()) {
+    return std::nullopt;
+  }
+  return ConcatNGroup(
+      arena, {arena.oangle(), arena.break0(),
+              FmtJoin<ExprOrType>(absl::MakeConstSpan(n.explicit_parametrics()),
+                                  Joiner::kCommaSpace, FmtParametricArg,
+                                  comments, arena),
+              arena.cangle()});
+}
+
+DocRef Fmt(const FunctionRef& n, const Comments& comments, DocArena& arena) {
+  DocRef callee_doc = Fmt(*n.callee(), comments, arena);
+  std::optional<DocRef> parametrics_doc =
+      FmtExplicitParametrics(n, comments, arena);
+  return parametrics_doc.has_value()
+             ? ConcatN(arena, {callee_doc, *parametrics_doc})
+             : callee_doc;
+}
+
 DocRef Fmt(const Invocation& n, const Comments& comments, DocArena& arena) {
   DocRef callee_doc = Fmt(*n.callee(), comments, arena);
-
-  std::optional<DocRef> parametrics_doc;
-  if (!n.explicit_parametrics().empty()) {
-    // Group for the parametrics.
-    parametrics_doc = ConcatNGroup(
-        arena, {arena.oangle(), arena.break0(),
-                FmtJoin<ExprOrType>(
-                    absl::MakeConstSpan(n.explicit_parametrics()),
-                    Joiner::kCommaSpace, FmtParametricArg, comments, arena),
-                arena.cangle()});
-  }
+  std::optional<DocRef> parametrics_doc =
+      FmtExplicitParametrics(n, comments, arena);
 
   DocRef args_doc_internal =
       FmtJoin<const Expr*>(n.args(), Joiner::kCommaBreak1AsGroupNoTrailingComma,
@@ -2210,7 +2222,7 @@ static DocRef Fmt(const QuickCheck& n, const Comments& comments,
   return ConcatN(arena, pieces);
 }
 
-static void FmtStructMembers(const StructDef& n, const Comments& comments,
+static void FmtStructMembers(const StructDefBase& n, const Comments& comments,
                              DocArena& arena, std::vector<DocRef>& pieces) {
   if (!n.members().empty()) {
     pieces.push_back(arena.break1());
@@ -2285,18 +2297,19 @@ static void FmtStructMembers(const StructDef& n, const Comments& comments,
   }
 }
 
-static DocRef Fmt(const StructDef& n, const Comments& comments,
-                  DocArena& arena) {
+static DocRef FmtStructDefBase(
+    const StructDefBase& n, const Comments& comments, DocArena& arena,
+    Keyword keyword, const std::optional<std::string>& extern_type_name) {
   std::vector<DocRef> pieces;
   std::optional<DocRef> attr;
-  if (n.extern_type_name()) {
-    attr = FmtSvTypeAttribute(*n.extern_type_name(), arena);
+  if (extern_type_name.has_value()) {
+    attr = FmtSvTypeAttribute(*extern_type_name, arena);
   }
   if (n.is_public()) {
     pieces.push_back(arena.Make(Keyword::kPub));
     pieces.push_back(arena.space());
   }
-  pieces.push_back(arena.Make(Keyword::kStruct));
+  pieces.push_back(arena.Make(keyword));
   pieces.push_back(arena.space());
   pieces.push_back(arena.MakeText(n.identifier()));
 
@@ -2315,6 +2328,17 @@ static DocRef Fmt(const StructDef& n, const Comments& comments,
 
   pieces.push_back(arena.ccurl());
   return JoinWithAttr(attr, ConcatNGroup(arena, pieces), arena);
+}
+
+static DocRef Fmt(const StructDef& n, const Comments& comments,
+                  DocArena& arena) {
+  return FmtStructDefBase(n, comments, arena, Keyword::kStruct,
+                          n.extern_type_name());
+}
+
+static DocRef Fmt(const ProcDef& n, const Comments& comments, DocArena& arena) {
+  return FmtStructDefBase(n, comments, arena, Keyword::kProc,
+                          /*extern_type_name=*/std::nullopt);
 }
 
 static DocRef Fmt(const Impl& n, const Comments& comments, DocArena& arena) {
@@ -2499,6 +2523,7 @@ static DocRef Fmt(const ModuleMember& n, const Comments& comments,
             return arena.MakeConcat(Fmt(*n, comments, arena), arena.semi());
           },
           [&](const StructDef* n) { return Fmt(*n, comments, arena); },
+          [&](const ProcDef* n) { return Fmt(*n, comments, arena); },
           [&](const Impl* n) { return Fmt(*n, comments, arena); },
           [&](const ConstantDef* n) { return Fmt(*n, comments, arena); },
           [&](const EnumDef* n) { return Fmt(*n, comments, arena); },

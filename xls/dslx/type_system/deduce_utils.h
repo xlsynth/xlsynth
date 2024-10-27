@@ -67,8 +67,9 @@ absl::Status ValidateNumber(const Number& number, const Type& type);
 // * an enum definition
 // * a builtin type (with a constant item on it, a la `u7::MAX`)
 // * a constant defined via `impl` on a `StructDef`.
-absl::StatusOr<std::variant<Module*, EnumDef*, BuiltinNameDef*,
-                            ArrayTypeAnnotation*, StructDef*, ColonRef*>>
+absl::StatusOr<
+    std::variant<Module*, EnumDef*, BuiltinNameDef*, ArrayTypeAnnotation*,
+                 StructDef*, StructInstance*, Param*, ColonRef*>>
 ResolveColonRefSubjectForTypeChecking(ImportData* import_data,
                                       const TypeInfo* type_info,
                                       const ColonRef* colon_ref);
@@ -154,14 +155,14 @@ absl::StatusOr<std::vector<ParametricWithType>> ParametricBindingsToTyped(
 absl::StatusOr<StructDef*> DerefToStruct(const Span& span,
                                          std::string_view original_ref_text,
                                          TypeDefinition current,
-                                         TypeInfo* type_info);
+                                         const TypeInfo* type_info);
 
 // Wrapper around the DerefToStruct above (that works on TypeDefinitions) that
 // takes a `TypeAnnotation` instead.
 absl::StatusOr<StructDef*> DerefToStruct(const Span& span,
                                          std::string_view original_ref_text,
                                          const TypeAnnotation& type_annotation,
-                                         TypeInfo* type_info);
+                                         const TypeInfo* type_info);
 
 // Checks that the number of tuple elements in the name def tree matches the
 // number of tuple elements in the type; if a "rest of tuple" leaf is

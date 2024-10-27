@@ -272,6 +272,53 @@ impl foo {
 })");
 }
 
+TEST_F(ParserTest, ProcWithImplRoundTrip) {
+  RoundTrip(R"(pub proc Foo {
+    a: bits[9],
+    b: bits[16],
+}
+impl Foo {
+})");
+}
+
+TEST_F(ParserTest, ProcWithImplAndSemicolonSeparator) {
+  constexpr std::string_view kProgram = R"(pub proc Foo {
+    a: bits[9];
+    b: bits[16];
+}
+impl Foo {
+})";
+
+  FileTable file_table;
+  Scanner s{file_table, Fileno(0), std::string(kProgram)};
+  Parser parser{"test", &s};
+  auto module_or = parser.ParseModule();
+  EXPECT_THAT(
+      module_or.status(),
+      StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          HasSubstr("Impl-style procs must use commas to separate members.")));
+}
+
+TEST_F(ParserTest, ProcWithNoImplAndCommaSeparator) {
+  constexpr std::string_view kProgram = R"(pub proc Foo {
+    x: u32,
+    y: u32,
+    config() { () }
+    init { (u32:0, u32:0) }
+    next(addend: u32) { x + y + addend }
+})";
+
+  FileTable file_table;
+  Scanner s{file_table, Fileno(0), std::string(kProgram)};
+  Parser parser{"test", &s};
+  auto module_or = parser.ParseModule();
+  EXPECT_THAT(module_or.status(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Non-impl-style procs must use semicolons to "
+                                 "separate members.")));
+}
+
 TEST_F(ParserTest, ImplWithConstRoundTrip) {
   RoundTrip(R"(pub struct foo {
     a: bits[9],
@@ -627,17 +674,17 @@ TEST_F(ParserTest, ParseSimpleProc) {
   Scanner s{file_table_, Fileno(0), std::string{text}};
   Parser parser{"test", &s};
   Bindings bindings;
-  auto proc_or = parser.ParseProc(/*is_public=*/false, /*bindings=*/bindings);
-  if (!proc_or.ok()) {
+  auto proc = parser.ParseProc(/*is_public=*/false, /*bindings=*/bindings);
+  if (!proc.ok()) {
     TryPrintError(
-        proc_or.status(),
+        proc.status(),
         [&](std::string_view path) -> absl::StatusOr<std::string> {
           return std::string(text);
         },
         file_table_);
-    XLS_ASSERT_OK(proc_or.status());
+    XLS_ASSERT_OK(proc.status());
   }
-  const Proc* p = proc_or.value();
+  const Proc* p = std::get<Proc*>(*proc);
   EXPECT_EQ(p->ToString(), text);
 }
 
@@ -769,16 +816,16 @@ TEST_F(ParserTest, ParseNextTooManyArgs) {
   Scanner s{file_table_, Fileno(0), std::string{text}};
   Parser parser{"test", &s};
   Bindings bindings;
-  auto proc_or = parser.ParseProc(/*is_public=*/false, /*bindings=*/bindings);
-  if (!proc_or.ok()) {
+  auto proc = parser.ParseProc(/*is_public=*/false, /*bindings=*/bindings);
+  if (!proc.ok()) {
     TryPrintError(
-        proc_or.status(),
+        proc.status(),
         [&](std::string_view path) -> absl::StatusOr<std::string> {
           return std::string(text);
         },
         file_table_);
   }
-  EXPECT_THAT(proc_or,
+  EXPECT_THAT(proc,
               StatusIs(absl::StatusCode::kInvalidArgument,
                        testing::HasSubstr(
                            "<no-file>:4:47-4:47 A Proc next function takes one "
@@ -804,17 +851,17 @@ TEST_F(ParserTest, ParseSimpleProcWithAlias) {
   Scanner s{file_table_, Fileno(0), std::string{text}};
   Parser parser{"test", &s};
   Bindings bindings;
-  auto proc_or = parser.ParseProc(/*is_public=*/false, /*bindings=*/bindings);
-  if (!proc_or.ok()) {
+  auto proc = parser.ParseProc(/*is_public=*/false, /*bindings=*/bindings);
+  if (!proc.ok()) {
     TryPrintError(
-        proc_or.status(),
+        proc.status(),
         [&](std::string_view path) -> absl::StatusOr<std::string> {
           return std::string(text);
         },
         file_table_);
-    XLS_ASSERT_OK(proc_or.status());
+    XLS_ASSERT_OK(proc.status());
   }
-  const Proc* p = proc_or.value();
+  const Proc* p = std::get<Proc*>(*proc);
   EXPECT_EQ(p->ToString(), text)
       << "Proc ToString() did not match original text.";
 }
@@ -838,17 +885,17 @@ TEST_F(ParserTest, ParseSimpleProcWithDepdenentTypeAlias) {
   Scanner s{file_table_, Fileno(0), std::string{text}};
   Parser parser{"test", &s};
   Bindings bindings;
-  auto proc_or = parser.ParseProc(/*is_public=*/false, /*bindings=*/bindings);
-  if (!proc_or.ok()) {
+  auto proc = parser.ParseProc(/*is_public=*/false, /*bindings=*/bindings);
+  if (!proc.ok()) {
     TryPrintError(
-        proc_or.status(),
+        proc.status(),
         [&](std::string_view path) -> absl::StatusOr<std::string> {
           return std::string(text);
         },
         file_table_);
-    XLS_ASSERT_OK(proc_or.status());
+    XLS_ASSERT_OK(proc.status());
   }
-  const Proc* p = proc_or.value();
+  const Proc* p = std::get<Proc*>(*proc);
   EXPECT_EQ(p->ToString(), text)
       << "Proc ToString() did not match original text.";
 }
@@ -1766,6 +1813,15 @@ fn f(x: u32) {
 })");
 }
 
+TEST_F(ParserTest, MatchWithMultiplePatterns) {
+  RoundTrip(R"(fn f(x: u32) {
+    match x {
+        u32:42 | u32:64 => u32:64,
+        _ => u32:42,
+    }
+})");
+}
+
 TEST_F(ParserTest, MatchWithNumberRangePattern) {
   RoundTrip(R"(fn f(x: u32) {
     match x {
@@ -2646,12 +2702,9 @@ fn main(x: u32, y: u32, z: bool) -> bool {
 
   Scanner s{file_table_, Fileno(0), std::string(kProgram)};
   Parser parser{"test", &s};
-  EXPECT_THAT(
-      parser.ParseModule(),
-      StatusIs(
-          absl::StatusCode::kInvalidArgument,
-          HasSubstr(
-              "Expected a '(' after parametrics for function invocation.")));
+  EXPECT_THAT(parser.ParseModule(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Expected '}', got 'identifier'")));
 }
 
 TEST_F(ParserTest, ChannelDeclWithFifoDepthExpression) {
@@ -2867,23 +2920,21 @@ TEST_F(ParserTest, ParseParametricProcWithConstAssert) {
   Scanner s{file_table_, Fileno(0), std::string{text}};
   Parser parser{"test", &s};
   Bindings bindings;
-  auto proc_or = parser.ParseProc(/*is_public=*/false, /*bindings=*/bindings);
-  if (!proc_or.ok()) {
+  auto proc = parser.ParseProc(/*is_public=*/false, /*bindings=*/bindings);
+  if (!proc.ok()) {
     TryPrintError(
-        proc_or.status(),
+        proc.status(),
         [&](std::string_view path) -> absl::StatusOr<std::string> {
           return std::string(text);
         },
         file_table_);
-    XLS_ASSERT_OK(proc_or.status());
+    XLS_ASSERT_OK(proc.status());
   }
-  const Proc* p = proc_or.value();
+  const Proc* p = std::get<Proc*>(*proc);
   EXPECT_EQ(p->ToString(), text);
 }
 
-// TODO: google/xls#1412 - Enable this test once parametric instantiations can
-// be parsed like values.
-TEST_F(ParserTest, DISABLED_ParseParametericInMapBuiltin) {
+TEST_F(ParserTest, ParseParametricInMapBuiltin) {
   constexpr std::string_view kProgram = R"(
 fn truncate<OUT: u32, IN: u32>(x: bits[IN]) -> bits[OUT] {
     x[0:OUT]

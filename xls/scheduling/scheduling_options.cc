@@ -63,9 +63,15 @@ absl::StatusOr<SchedulingOptions> OptionsFromFlagProto(
   if (proto.worst_case_throughput() != 1) {
     scheduling_options.worst_case_throughput(proto.worst_case_throughput());
   }
+  scheduling_options.minimize_worst_case_throughput(
+      proto.minimize_worst_case_throughput());
   if (proto.additional_input_delay_ps() != 0) {
     scheduling_options.additional_input_delay_ps(
         proto.additional_input_delay_ps());
+  }
+  if (proto.additional_output_delay_ps() != 0) {
+    scheduling_options.additional_output_delay_ps(
+        proto.additional_output_delay_ps());
   }
   if (proto.ffi_fallback_delay_ps() != 0) {
     scheduling_options.ffi_fallback_delay_ps(proto.ffi_fallback_delay_ps());

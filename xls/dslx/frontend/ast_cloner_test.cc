@@ -93,6 +93,29 @@ fn main() -> u32 {
   XLS_ASSERT_OK(VerifyClone(body_expr, clone, *module->file_table()));
 }
 
+TEST(AstClonerTest, FunctionRef) {
+  constexpr std::string_view kProgram = R"(
+fn f<X:u32>() -> u32 { X }
+
+fn main() -> u32[3] {
+    map([u32:1, u32:2, u32:3], f<u32:4>)
+})";
+
+  constexpr std::string_view kExpected = R"({
+    map([u32:1, u32:2, u32:3], f<u32:4>)
+})";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(auto module, ParseModule(kProgram, "fake_path.x",
+                                                    "the_module", file_table));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f,
+                           module->GetMemberOrError<Function>("main"));
+  StatementBlock* body_expr = f->body();
+  XLS_ASSERT_OK_AND_ASSIGN(AstNode * clone, CloneAst(body_expr));
+  EXPECT_EQ(kExpected, clone->ToString());
+  XLS_ASSERT_OK(VerifyClone(body_expr, clone, *module->file_table()));
+}
+
 TEST(AstClonerTest, ReplaceOneOfTwoNameRefs) {
   constexpr std::string_view kProgram = R"(
 fn main() -> u32 {
@@ -207,6 +230,29 @@ fn main() -> MyStruct {
   XLS_ASSERT_OK_AND_ASSIGN(clone, CloneAst(f));
   EXPECT_EQ(kExpectedFunction, clone->ToString());
   XLS_ASSERT_OK(VerifyClone(f, clone, *module->file_table()));
+}
+
+TEST(AstClonerTest, ProcDefAndImpl) {
+  constexpr std::string_view kProgram = R"(
+proc MyProc {
+    a: u32,
+    b: s64
+}
+
+impl MyProc {}
+)";
+
+  constexpr std::string_view kExpectedProcDef = R"(proc MyProc {
+    a: u32,
+    b: s64,
+})";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(auto module, ParseModule(kProgram, "fake_path.x",
+                                                    "the_module", file_table));
+  ProcDef* proc_def = module->GetProcDefs().at(0);
+  XLS_ASSERT_OK_AND_ASSIGN(AstNode * clone, CloneAst(proc_def));
+  EXPECT_EQ(kExpectedProcDef, clone->ToString());
 }
 
 TEST(AstClonerTest, StructDefAndImpl) {

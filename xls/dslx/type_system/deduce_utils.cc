@@ -54,7 +54,7 @@ namespace {
 
 using ColonRefSubjectT =
     std::variant<Module*, EnumDef*, BuiltinNameDef*, ArrayTypeAnnotation*,
-                 StructDef*, ColonRef*>;
+                 StructDef*, StructInstance*, Param*, ColonRef*>;
 
 }  // namespace
 
@@ -255,27 +255,28 @@ absl::Status ValidateNumber(const Number& number, const Type& type) {
       file_table);
 }
 
-static std::optional<StructDef*> TryResolveStructDefFromNode(AstNode* definer) {
+static std::optional<std::variant<StructDef*, StructInstance*, Param*>>
+TryResolveStructType(AstNode* definer) {
   if (StructDef* struct_def = dynamic_cast<StructDef*>(definer);
       struct_def != nullptr) {
     return struct_def;
   }
 
-  TypeRefTypeAnnotation* type_ref = nullptr;
-  if (Param* param = dynamic_cast<Param*>(definer); param != nullptr) {
-    type_ref = dynamic_cast<TypeRefTypeAnnotation*>(param->type_annotation());
-  } else if (StructInstance* struct_instance =
-                 dynamic_cast<StructInstance*>(definer);
-             struct_instance != nullptr) {
-    type_ref =
-        dynamic_cast<TypeRefTypeAnnotation*>(struct_instance->struct_ref());
+  if (StructInstance* struct_instance = dynamic_cast<StructInstance*>(definer);
+      struct_instance != nullptr) {
+    return struct_instance;
   }
 
-  if (type_ref != nullptr) {
-    if (absl::StatusOr<StructDef*> struct_def =
-            ResolveLocalStructDef(type_ref->type_ref()->type_definition());
-        struct_def.ok()) {
-      return struct_def.value();
+  TypeRefTypeAnnotation* type_ref = nullptr;
+  if (Param* param = dynamic_cast<Param*>(definer); param != nullptr) {
+    if (type_ref =
+            dynamic_cast<TypeRefTypeAnnotation*>(param->type_annotation());
+        type_ref != nullptr) {
+      if (absl::StatusOr<StructDef*> struct_def =
+              ResolveLocalStructDef(type_ref->type_ref()->type_definition());
+          struct_def.ok()) {
+        return param;
+      }
     }
   }
   return std::nullopt;
@@ -355,9 +356,10 @@ static absl::StatusOr<ColonRefSubjectT> ResolveColonRefNameRefSubject(
     return enum_def;
   }
 
-  std::optional<StructDef*> struct_def = TryResolveStructDefFromNode(definer);
-  if (struct_def.has_value()) {
-    return struct_def.value();
+  std::optional<std::variant<StructDef*, StructInstance*, Param*>> struct_type =
+      TryResolveStructType(definer);
+  if (struct_type.has_value()) {
+    return WidenVariantTo<ColonRefSubjectT>(struct_type.value());
   }
 
   TypeAlias* type_alias = dynamic_cast<TypeAlias*>(definer);
@@ -434,10 +436,25 @@ absl::StatusOr<ColonRefSubjectT> ResolveColonRefSubjectForTypeChecking(
             return WidenVariantTo<ColonRefSubjectT>(resolved);
           },
           [](StructDef* struct_def) -> ReturnT { return struct_def; },
+          [](ProcDef* proc_def) -> ReturnT {
+            // TODO: https://github.com/google/xls/issues/836 - Support this.
+            LOG(FATAL)
+                << "Type deduction for impl-style procs is not yet supported.";
+          },
           [](EnumDef* enum_def) -> ReturnT { return enum_def; },
           [](ColonRef* colon_ref) -> ReturnT { return colon_ref; },
       },
       td.value());
+}
+
+static absl::StatusOr<Impl*> ImplFromTypeRef(Span span,
+                                             const TypeAnnotation& type_ref,
+                                             const TypeInfo* type_info) {
+  XLS_ASSIGN_OR_RETURN(
+      StructDef * struct_def,
+      DerefToStruct(span, type_ref.ToString(), type_ref, type_info));
+  XLS_RET_CHECK(struct_def->impl().has_value());
+  return struct_def->impl().value();
 }
 
 absl::StatusOr<std::variant<Module*, EnumDef*, BuiltinNameDef*,
@@ -460,6 +477,20 @@ ResolveColonRefSubjectAfterTypeChecking(ImportData* import_data,
             std::optional<Impl*> impl = x->impl();
             XLS_RET_CHECK(impl.has_value());
             return impl.value();
+          },
+          [&](Param* x) -> ReturnT {
+            const TypeAnnotation* type_annot = x->type_annotation();
+            XLS_ASSIGN_OR_RETURN(
+                Impl * impl,
+                ImplFromTypeRef(colon_ref->span(), *type_annot, type_info));
+            return impl;
+          },
+          [&](StructInstance* x) -> ReturnT {
+            const TypeAnnotation* struct_ref = x->struct_ref();
+            XLS_ASSIGN_OR_RETURN(
+                Impl * impl,
+                ImplFromTypeRef(colon_ref->span(), *struct_ref, type_info));
+            return impl;
           },
           [](ColonRef*) -> ReturnT {
             return absl::InternalError(
@@ -531,7 +562,7 @@ absl::StatusOr<std::vector<ParametricWithType>> ParametricBindingsToTyped(
 absl::StatusOr<StructDef*> DerefToStruct(const Span& span,
                                          std::string_view original_ref_text,
                                          TypeDefinition current,
-                                         TypeInfo* type_info) {
+                                         const TypeInfo* type_info) {
   const FileTable& file_table = type_info->file_table();
   while (true) {
     StructDef* retval = nullptr;
@@ -543,6 +574,11 @@ absl::StatusOr<StructDef*> DerefToStruct(const Span& span,
             [&](StructDef* n) -> absl::Status {  // Done dereferencing.
               retval = n;
               return absl::OkStatus();
+            },
+            [&](ProcDef* n) -> absl::Status {
+              // TODO: https://github.com/google/xls/issues/836 - Support this.
+              return absl::InvalidArgumentError(
+                  "Type deduction for impl-style procs is not yet supported.");
             },
             [&](TypeAlias* type_alias) -> absl::Status {
               TypeAnnotation& annotation = type_alias->type_annotation();
@@ -613,7 +649,7 @@ absl::StatusOr<StructDef*> DerefToStruct(const Span& span,
 absl::StatusOr<StructDef*> DerefToStruct(const Span& span,
                                          std::string_view original_ref_text,
                                          const TypeAnnotation& type_annotation,
-                                         TypeInfo* type_info) {
+                                         const TypeInfo* type_info) {
   const FileTable& file_table = type_info->file_table();
   auto* type_ref_type_annotation =
       dynamic_cast<const TypeRefTypeAnnotation*>(&type_annotation);

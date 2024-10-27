@@ -31,6 +31,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "llvm/include/llvm/ADT/APFloat.h"
+#include "llvm/include/llvm/ADT/APInt.h"
 #include "llvm/include/llvm/ADT/STLExtras.h"
 #include "llvm/include/llvm/ADT/Sequence.h"
 #include "llvm/include/llvm/ADT/StringExtras.h"
@@ -57,6 +58,7 @@
 #include "mlir/include/mlir/Support/LLVM.h"
 #include "mlir/include/mlir/Support/LogicalResult.h"
 #include "mlir/include/mlir/Transforms/Passes.h"
+#include "xls/codegen/vast/vast.h"
 #include "xls/common/file/filesystem.h"
 #include "xls/common/file/get_runfile_path.h"
 #include "xls/contrib/mlir/IR/xls_ops.h"
@@ -66,11 +68,7 @@
 #include "xls/public/ir.h"
 #include "xls/public/ir_parser.h"
 #include "xls/public/runtime_build_actions.h"
-#include "xls/tools/codegen_flags.h"
-#include "xls/tools/codegen_flags.pb.h"
 #include "xls/tools/opt.h"
-#include "xls/tools/scheduling_options_flags.h"
-#include "xls/tools/scheduling_options_flags.pb.h"
 
 namespace mlir::xls {
 namespace {
@@ -157,7 +155,7 @@ class TranslationState {
 
   ::xls::SourceInfo getLoc(Operation* op) const;
 
-  ::xls::Type* getType(Type t);
+  ::xls::Type* getType(Type t) const;
 
   LogicalResult recordOpaqueTypes(mlir::func::FuncOp func,
                                   ::xls::Function* xls_func);
@@ -176,7 +174,7 @@ class TranslationState {
   llvm::StringMap<PackageInfo> package_map_;
   llvm::StringMap<TranslationLinkage> linkage_map_;
   Package& package_;
-  llvm::DenseMap<Type, ::xls::Type*> type_map_;
+  mutable llvm::DenseMap<Type, ::xls::Type*> type_map_;
 
   // Acts as a cache for symbol lookups, should be available even in const
   // functions.
@@ -212,7 +210,7 @@ class TranslationState {
       ::xls::Colno(file_loc.getColumn())));
 }
 
-::xls::Type* TranslationState::getType(Type t) {
+::xls::Type* TranslationState::getType(Type t) const {
   auto& xls_type = type_map_[t];
   if (xls_type != nullptr) {
     return xls_type;
@@ -719,8 +717,41 @@ BValue convertOp(arith::ConstantOp op, const TranslationState& state,
 // Bitcasts
 BValue convertOp(arith::BitcastOp op, const TranslationState& state,
                  BuilderBase& fb) {
-  // TODO(jmolloy): Check the converted types are the same?
-  return state.getXlsValue(op.getOperand());
+  BValue operand = state.getXlsValue(op.getOperand());
+  ::xls::Type* expected_type = state.getType(op.getType());
+  if (operand.GetType() == expected_type) {
+    return operand;
+  }
+
+  // Handle conversion from int to float.
+  if (isa<FloatType>(op.getType()) &&
+      !isa<FloatType>(op.getOperand().getType())) {
+    auto float_type = cast<FloatType>(op.getType());
+    // Note that getFPMantissaWidth() includes the sign bit.
+    int exponent_width =
+        float_type.getWidth() - float_type.getFPMantissaWidth();
+    std::vector<BValue> elements = {
+        /*Sign*/ fb.BitSlice(operand, float_type.getWidth() - 1, 1),
+        /*Exponent*/
+        fb.BitSlice(operand, float_type.getFPMantissaWidth() - 1,
+                    exponent_width),
+        /*Mantissa*/
+        fb.BitSlice(operand, 0, float_type.getFPMantissaWidth() - 1),
+    };
+    return fb.Tuple(elements);
+  }
+  // Handle conversion from float to int.
+  if (!isa<FloatType>(op.getType()) &&
+      isa<FloatType>(op.getOperand().getType())) {
+    return fb.Concat({
+        fb.TupleIndex(operand, 0),
+        fb.TupleIndex(operand, 1),
+        fb.TupleIndex(operand, 2),
+    });
+  }
+
+  llvm::errs() << "Unsupported bitcast: " << op << "\n";
+  return {};
 }
 BValue convertOp(arith::IndexCastOp op, const TranslationState& state,
                  BuilderBase& fb) {
@@ -956,6 +987,18 @@ FailureOr<::xls::Value> zeroLiteral(Type type) {
     }
     return ::xls::Value::TupleOwned(std::move(values));  // NOLINT
   }
+  if (auto float_type = dyn_cast<FloatType>(type)) {
+    std::vector<::xls::Value> values(3);  // NOLINT
+    // Note that getFPMantissaWidth() includes the sign bit.
+    int exponent_width =
+        float_type.getWidth() - float_type.getFPMantissaWidth();
+    values[0] = ::xls::Value(convertAPInt(llvm::APInt(1, 0)));  // NOLINT
+    values[1] =
+        ::xls::Value(convertAPInt(llvm::APInt(exponent_width, 0)));  // NOLINT
+    values[2] = ::xls::Value(                                        // NOLINT
+        convertAPInt(llvm::APInt(float_type.getFPMantissaWidth() - 1, 0)));
+    return ::xls::Value::TupleOwned(std::move(values));  // NOLINT
+  }
   llvm::errs() << "Unsupported type: " << type << "\n";
   return failure();
 }
@@ -1143,9 +1186,27 @@ FailureOr<std::unique_ptr<Package>> mlirXlsToXls(
       }
 
       // TODO(jpienaar): Do something better here with names.
+      DenseMap<Value, std::string> valueNameMap;
+      llvm::StringMap<int> usedNames;
       auto get_name = [&](Value v) -> std::string {
-        return mlir::debugString(v.getLoc());
+        if (auto it = valueNameMap.find(v); it != valueNameMap.end()) {
+          return it->second;
+        }
+        std::string name;
+        if (auto loc = dyn_cast<NameLoc>(v.getLoc())) {
+          name = ::xls::verilog::SanitizeIdentifier(loc.getName().str());
+        } else {
+          name = ::xls::verilog::SanitizeIdentifier(debugString(v.getLoc()));
+        }
+        auto& count = usedNames[name];
+        // If not unique, append counter.
+        if (count > 0) {
+          name += std::to_string(count);
+        }
+        ++count;
+        return valueNameMap[v] = name;
       };
+
       DenseMap<Value, BValue> valueMap;
       translation_state.setValueMap(valueMap);
 
@@ -1265,12 +1326,10 @@ LogicalResult MlirXlsToXlsTranslate(Operation* op, llvm::raw_ostream& output,
   }
 
   if (options.optimize_ir) {
-    ::xls::tools::OptOptions options = {
-        .opt_level = 1,
-        .top = (*package)->GetTop().value()->name(),
-    };
+    ::xls::tools::OptOptions opt_options = options.opt_options;
+    opt_options.top = (*package)->GetTop().value()->name();
     absl::Status status =
-        ::xls::tools::OptimizeIrForTop(package->get(), options);
+        ::xls::tools::OptimizeIrForTop(package->get(), opt_options);
     if (!status.ok()) {
       llvm::errs() << "Failed to optimize IR: " << status.ToString() << "\n";
       return failure();
@@ -1283,32 +1342,9 @@ LogicalResult MlirXlsToXlsTranslate(Operation* op, llvm::raw_ostream& output,
     return success();
   }
 
-  auto scheduling_options_flags_proto = ::xls::GetSchedulingOptionsFlagsProto();
-  if (!scheduling_options_flags_proto.ok()) {
-    llvm::errs() << "Failed to get scheduling options flags proto: "
-                 << scheduling_options_flags_proto.status().message() << "\n";
-    return failure();
-  }
-  auto codegen_flags_proto = ::xls::GetCodegenFlags();
-  if (!codegen_flags_proto.ok()) {
-    llvm::errs() << "Failed to get codegen flags proto: "
-                 << codegen_flags_proto.status().message() << "\n";
-    return failure();
-  }
-
-  if (options.pipeline_stages > 0) {
-    codegen_flags_proto->set_generator(::xls::GENERATOR_KIND_PIPELINE);
-  } else {
-    codegen_flags_proto->set_generator(::xls::GENERATOR_KIND_COMBINATIONAL);
-  }
-  codegen_flags_proto->set_register_merge_strategy(
-      ::xls::RegisterMergeStrategyProto::STRATEGY_DONT_MERGE);
-  scheduling_options_flags_proto->set_delay_model(options.delay_model);
-  scheduling_options_flags_proto->set_pipeline_stages(options.pipeline_stages);
-  codegen_flags_proto->set_reset(options.reset_signal_name);
-
   auto xls_codegen_results = ::xls::ScheduleAndCodegenPackage(
-      package->get(), *scheduling_options_flags_proto, *codegen_flags_proto,
+      package->get(), options.scheduling_options_flags_proto,
+      options.codegen_flags_proto,
       /*with_delay_model=*/false);
   if (!xls_codegen_results.ok()) {
     llvm::errs() << "Failed to codegen: "

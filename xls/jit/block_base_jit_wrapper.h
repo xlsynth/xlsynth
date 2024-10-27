@@ -34,6 +34,7 @@
 #include "xls/ir/block.h"
 #include "xls/ir/package.h"
 #include "xls/ir/value.h"
+#include "xls/jit/aot_entrypoint.pb.h"
 #include "xls/jit/block_jit.h"
 #include "xls/jit/function_base_jit.h"
 #include "xls/public/ir_parser.h"
@@ -69,6 +70,7 @@ class BaseBlockJitWrapperContinuation {
   absl::Status SetRegisters(absl::Span<const Value> values) {
     XLS_RET_CHECK(to_set_registers_.empty())
         << "Cannot use both 'set...' and all-inputs set in a single cycle.";
+    saved_output_registers_.clear();
     return inner_->SetRegisters(values);
   }
   // Overwrite all registers with given values.
@@ -76,6 +78,7 @@ class BaseBlockJitWrapperContinuation {
       const absl::flat_hash_map<std::string, Value>& regs) {
     XLS_RET_CHECK(to_set_registers_.empty())
         << "Cannot use both 'set...' and all-inputs set in a single cycle.";
+    saved_output_registers_.clear();
     return inner_->SetRegisters(regs);
   }
 

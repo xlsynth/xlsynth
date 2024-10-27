@@ -32,6 +32,7 @@
 #include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
 #include "absl/types/variant.h"
@@ -57,6 +58,7 @@
   X(ConstRef)                      \
   X(For)                           \
   X(FormatMacro)                   \
+  X(FunctionRef)                   \
   X(Index)                         \
   X(Invocation)                    \
   X(Let)                           \
@@ -94,6 +96,7 @@
   X(Param)                        \
   X(ParametricBinding)            \
   X(Proc)                         \
+  X(ProcDef)                      \
   X(ProcMember)                   \
   X(QuickCheck)                   \
   X(RestOfTuple)                  \
@@ -1168,7 +1171,7 @@ class ConstantArray : public Array {
 // Several different AST nodes define types that can be referred to by a
 // TypeRef.
 using TypeDefinition =
-    std::variant<TypeAlias*, StructDef*, EnumDef*, ColonRef*>;
+    std::variant<TypeAlias*, StructDef*, ProcDef*, EnumDef*, ColonRef*>;
 
 // Returns the name definition that (most locally) defined this type definition
 // AST node.
@@ -1891,6 +1894,42 @@ class Instantiation : public Expr {
   std::vector<ExprOrType> explicit_parametrics_;
 };
 
+// A reference to a function, with possible explicit parametrics. Currently,
+// this is only used for the function argument of a `map()` call, which is not a
+// direct invocation context. `FunctionRef` is counterintuitively never used as
+// the `callee` of an `Invocation`, but we may eventually retrofit `Invocation`
+// so that the `callee` is a `FunctionRef`.
+class FunctionRef : public Instantiation {
+ public:
+  FunctionRef(Module* owner, Span span, Expr* callee,
+              std::vector<ExprOrType> explicit_parametrics);
+
+  ~FunctionRef() override;
+
+  AstNodeKind kind() const override { return AstNodeKind::kFunctionRef; }
+
+  absl::Status Accept(AstNodeVisitor* v) const override {
+    return v->HandleFunctionRef(this);
+  }
+
+  absl::Status AcceptExpr(ExprVisitor* v) const override {
+    return v->HandleFunctionRef(this);
+  }
+
+  std::string_view GetNodeTypeName() const override { return "FunctionRef"; }
+
+  std::vector<AstNode*> GetChildren(bool want_types) const override;
+
+  Precedence GetPrecedenceWithoutParens() const final {
+    return Precedence::kStrongest;
+  }
+
+ private:
+  std::string ToStringInternal() const final {
+    return absl::StrCat(callee()->ToString(), FormatParametrics());
+  }
+};
+
 // Represents an invocation expression; e.g. `f(a, b, c)` or an implicit
 // invocation for the config & next members of a spawned Proc.
 class Invocation : public Instantiation {
@@ -2256,27 +2295,24 @@ struct StructMember {
   Span GetSpan() const { return Span(name_span.start(), type->span().limit()); }
 };
 
-// Represents a struct definition.
-class StructDef : public AstNode {
+// Base class for a struct-like entity, which has a name and members, along with
+// optional parametric bindings and an optional impl.
+class StructDefBase : public AstNode {
  public:
-  StructDef(Module* owner, Span span, NameDef* name_def,
-            std::vector<ParametricBinding*> parametric_bindings,
-            std::vector<StructMember> members, bool is_public);
+  StructDefBase(Module* owner, Span span, NameDef* name_def,
+                std::vector<ParametricBinding*> parametric_bindings,
+                std::vector<StructMember> members, bool is_public);
 
-  ~StructDef() override;
+  ~StructDefBase() override;
 
-  AstNodeKind kind() const override { return AstNodeKind::kStructDef; }
-
-  absl::Status Accept(AstNodeVisitor* v) const override {
-    return v->HandleStructDef(this);
-  }
+  // Returns a string for what to call the type of entity represented by this
+  // `StructDefBase` in error messages such as "A %s can't have two members with
+  // the same name."
+  virtual std::string_view EntityTypeStringForErrorMessages() const = 0;
 
   bool IsParametric() const { return !parametric_bindings_.empty(); }
 
   const std::string& identifier() const { return name_def_->identifier(); }
-
-  std::string_view GetNodeTypeName() const override { return "Struct"; }
-  std::string ToString() const override;
 
   std::vector<AstNode*> GetChildren(bool want_types) const override;
 
@@ -2297,13 +2333,6 @@ class StructDef : public AstNode {
 
   int64_t size() const { return members_.size(); }
 
-  void set_extern_type_name(std::string_view n) {
-    extern_type_name_ = std::string(n);
-  }
-  const std::optional<std::string>& extern_type_name() const {
-    return extern_type_name_;
-  }
-
   std::optional<Span> GetParametricBindingsSpan() const {
     if (parametric_bindings_.empty()) {
       return std::nullopt;
@@ -2318,16 +2347,80 @@ class StructDef : public AstNode {
 
   std::optional<ConstantDef*> GetImplConstant(std::string_view constant_name);
 
+ protected:
+  // Helper for a subclass to implement `ToString()`, given the entity keyword
+  // for the subclass (like "struct" or "proc") and an optional DSLX attribute
+  // string.
+  std::string ToStringWithEntityKeywordAndAttribute(
+      std::string_view keyword, std::string_view attribute = "") const;
+
  private:
   Span span_;
   NameDef* name_def_;
   std::vector<ParametricBinding*> parametric_bindings_;
   std::vector<StructMember> members_;
   bool public_;
-  // The external verilog type name
-  std::optional<std::string> extern_type_name_;
   std::optional<Impl*> impl_;
 };
+
+// Represents a struct definition.
+class StructDef : public StructDefBase {
+ public:
+  using StructDefBase::StructDefBase;
+
+  absl::Status Accept(AstNodeVisitor* v) const override {
+    return v->HandleStructDef(this);
+  }
+
+  AstNodeKind kind() const override { return AstNodeKind::kStructDef; }
+
+  std::string_view GetNodeTypeName() const override { return "Struct"; }
+
+  std::string_view EntityTypeStringForErrorMessages() const override {
+    return "struct";
+  }
+
+  std::string ToString() const override;
+
+  void set_extern_type_name(std::string_view n) {
+    extern_type_name_ = std::string(n);
+  }
+  const std::optional<std::string>& extern_type_name() const {
+    return extern_type_name_;
+  }
+
+ private:
+  // The external verilog type name
+  std::optional<std::string> extern_type_name_;
+};
+
+// Represents a proc declared with struct-like syntax, with the functions in an
+// impl.
+class ProcDef : public StructDefBase {
+ public:
+  using StructDefBase::StructDefBase;
+
+  absl::Status Accept(AstNodeVisitor* v) const override {
+    return v->HandleProcDef(this);
+  }
+
+  AstNodeKind kind() const override { return AstNodeKind::kProcDef; }
+
+  std::string_view GetNodeTypeName() const override { return "ProcDef"; }
+
+  std::string_view EntityTypeStringForErrorMessages() const override {
+    return "proc";
+  }
+
+  std::string ToString() const override;
+};
+
+// Gets the `StructDefBase` contained in a `TypeDefinition` if it contains one.
+inline std::optional<StructDefBase*> TypeDefinitionToStructDefBase(
+    TypeDefinition def) {
+  auto* result = dynamic_cast<StructDefBase*>(ToAstNode(def));
+  return result == nullptr ? std::nullopt : std::make_optional(result);
+}
 
 // Represents an impl for a struct.
 class Impl : public AstNode {
@@ -3221,18 +3314,18 @@ class ChannelDecl : public Expr {
 // formatter.
 class VerbatimNode : public AstNode {
  public:
-  VerbatimNode(Module* owner, Span span, const std::string_view text)
-      : AstNode(owner), span_(std::move(span)), text_(text) {}
+  VerbatimNode(Module* owner, Span span, const std::string text)
+      : AstNode(owner), span_(std::move(span)), text_(std::move(text)) {}
 
   ~VerbatimNode() override;
 
-  std::string_view text() const { return text_; }
+  std::string text() const { return text_; }
 
   AstNodeKind kind() const override { return AstNodeKind::kVerbatimNode; }
 
   std::string_view GetNodeTypeName() const override { return "VerbatimNode"; }
 
-  std::string ToString() const override { return std::string(text_); }
+  std::string ToString() const override { return text_; }
 
   std::vector<AstNode*> GetChildren(bool want_types) const override {
     return {};
@@ -3247,7 +3340,7 @@ class VerbatimNode : public AstNode {
 
  private:
   Span span_;
-  std::string_view text_;
+  std::string text_;
 };
 
 // Helper for determining whether an AST node is constant (e.g. can be

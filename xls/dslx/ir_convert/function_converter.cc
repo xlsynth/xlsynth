@@ -340,6 +340,7 @@ class FunctionConverterVisitor : public AstNodeVisitor {
   // These are always custom-visited (i.e. traversed to in a specialized way
   // from their parent nodes).
   // keep-sorted start
+  INVALID(FunctionRef);
   INVALID(MatchArm)
   INVALID(NameDef)
   INVALID(NameDefTree)
@@ -375,6 +376,7 @@ class FunctionConverterVisitor : public AstNodeVisitor {
   INVALID(QuickCheck)
   INVALID(Spawn)
   INVALID(StructDef)
+  INVALID(ProcDef)
   INVALID(TypeAlias)
   // keep-sorted end
 
@@ -1639,7 +1641,12 @@ absl::StatusOr<BValue> FunctionConverter::HandleMap(const Invocation* node) {
   VLOG(5) << "Function being mapped AST: " << fn_node->ToString();
   std::optional<const ParametricEnv*> node_parametric_env =
       GetInvocationCalleeBindings(node);
-
+  if (auto* callee_ref = dynamic_cast<FunctionRef*>(fn_node);
+      callee_ref != nullptr) {
+    // The callee is currently only a `FunctionRef` if it has explicit
+    // parametrics.
+    fn_node = callee_ref->callee();
+  }
   std::string map_fn_name;
   Module* lookup_module = nullptr;
   if (auto* name_ref = dynamic_cast<NameRef*>(fn_node)) {
@@ -2822,12 +2829,8 @@ absl::Status FunctionConverter::HandleColonRef(const ColonRef* node) {
             return absl::OkStatus();
           },
           [&](Impl* impl) -> absl::Status {
-            std::optional<ConstantDef*> constant_def =
-                impl->GetConstant(node->attr());
-            XLS_RET_CHECK(constant_def.has_value());
-            XLS_ASSIGN_OR_RETURN(
-                InterpValue iv,
-                current_type_info_->GetConstExpr(constant_def.value()));
+            XLS_ASSIGN_OR_RETURN(InterpValue iv,
+                                 current_type_info_->GetConstExpr(node));
             XLS_ASSIGN_OR_RETURN(Value value, InterpValueToValue(iv));
             DefConst(node, value);
             return absl::OkStatus();

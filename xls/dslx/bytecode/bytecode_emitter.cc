@@ -862,12 +862,8 @@ absl::StatusOr<InterpValue> BytecodeEmitter::HandleColonRefInternal(
             return HandleColonRefToValue(module, node);
           },
           [&](Impl* impl) -> absl::StatusOr<InterpValue> {
-            std::optional<ConstantDef*> constant_def =
-                impl->GetConstant(node->attr());
-            XLS_RET_CHECK(constant_def.has_value());
-            return type_info_->GetConstExpr(constant_def.value());
-          },
-      },
+            return type_info_->GetConstExpr(node);
+          }},
       resolved_subject);
 }
 
@@ -985,6 +981,10 @@ absl::Status BytecodeEmitter::HandleFor(const For* node) {
   bytecode_.at(start_jump_idx)
       .PatchJumpTarget(bytecode_.size() - start_jump_idx - 1);
   return absl::OkStatus();
+}
+
+absl::Status BytecodeEmitter::HandleFunctionRef(const FunctionRef* node) {
+  return node->callee()->AcceptExpr(this);
 }
 
 absl::Status BytecodeEmitter::HandleZeroMacro(const ZeroMacro* node) {

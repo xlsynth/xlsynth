@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -31,12 +32,15 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
 #include "absl/time/time.h"
+#include "clang/include/clang/AST/Attr.h"
 #include "clang/include/clang/AST/Decl.h"
 #include "clang/include/clang/AST/Expr.h"
+#include "clang/include/clang/AST/Stmt.h"
+#include "clang/include/clang/Basic/LLVM.h"
 #include "clang/include/clang/Basic/SourceLocation.h"
+#include "llvm/include/llvm/Support/Casting.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/common/stopwatch.h"
-#include "xls/contrib/xlscc/cc_parser.h"
 #include "xls/contrib/xlscc/translator.h"
 #include "xls/contrib/xlscc/xlscc_logging.h"
 #include "xls/ir/bits.h"
@@ -62,10 +66,10 @@ namespace xlscc {
 
 absl::Status Translator::GenerateIR_Loop(
     bool always_first_iter, const clang::Stmt* loop_stmt,
-    const clang::Stmt* init, const clang::Expr* cond_expr,
-    const clang::Stmt* inc, const clang::Stmt* body,
-    const clang::PresumedLoc& presumed_loc, const xls::SourceInfo& loc,
-    clang::ASTContext& ctx) {
+    clang::ArrayRef<const clang::Attr*> attrs, const clang::Stmt* init,
+    const clang::Expr* cond_expr, const clang::Stmt* inc,
+    const clang::Stmt* body, const clang::PresumedLoc& presumed_loc,
+    const xls::SourceInfo& loc, clang::ASTContext& ctx) {
   if (cond_expr != nullptr && cond_expr->isIntegerConstantExpr(ctx)) {
     // special case for "for (;0;) {}" (essentially no op)
     XLS_ASSIGN_OR_RETURN(auto constVal, EvaluateInt64(*cond_expr, ctx, loc));
@@ -74,51 +78,66 @@ absl::Status Translator::GenerateIR_Loop(
     }
   }
 
-  bool have_asap_intrinsic = false;
+  int64_t init_interval = -1;
+  int64_t unroll_factor = context().for_loops_default_unroll
+                              ? std::numeric_limits<int64_t>::max()
+                              : 0;
+  bool is_asap = false;
+  for (const clang::Attr* attr : attrs) {
+    if (const clang::AnnotateAttr* annotate =
+            llvm::dyn_cast<clang::AnnotateAttr>(attr);
+        annotate != nullptr) {
+      if (annotate->getAnnotation() == "hls_unroll") {
+        if (annotate->args_size() == 0) {
+          unroll_factor = std::numeric_limits<int64_t>::max();
+        } else if (annotate->args_size() > 1) {
+          return absl::InvalidArgumentError(
+              "hls_unroll must have at most one argument");
+        } else if (clang::Expr::EvalResult result;
+                   (*annotate->args().begin())->EvaluateAsInt(result, ctx) &&
+                   result.Val.getInt().isStrictlyPositive() &&
+                   result.Val.getInt().isRepresentableByInt64()) {
+          unroll_factor = result.Val.getInt().getExtValue();
+        } else {
+          return absl::InvalidArgumentError(
+              "hls_unroll argument (if provided) must be a positive integer");
+        }
+        continue;
+      }
 
-  bool have_relevant_intrinsic = false;
-  bool intrinsic_unroll = false;
+      if (annotate->getAnnotation() == "hls_pipeline_init_interval") {
+        if (annotate->args_size() != 1) {
+          return absl::InvalidArgumentError(
+              "hls_pipeline_init_interval must have exactly one argument");
+        }
+        clang::Expr::EvalResult result;
+        if (!(*annotate->args().begin())->EvaluateAsInt(result, ctx) ||
+            !result.Val.getInt().isStrictlyPositive() ||
+            !result.Val.getInt().isRepresentableByInt64()) {
+          return absl::InvalidArgumentError(
+              "the argument to the 'hls_pipeline_init_interval' attribute must "
+              "be an integer >= 1");
+        }
+        init_interval = result.Val.getInt().getExtValue();
+        continue;
+      }
 
-  const clang::CallExpr* intrinsic_call = FindIntrinsicCallFor(loop_stmt);
-  if (intrinsic_call != nullptr) {
-    const std::string& intrinsic_name =
-        intrinsic_call->getDirectCallee()->getNameAsString();
-
-    if (intrinsic_name == "__xlscc_pipeline") {
-      have_relevant_intrinsic = true;
-      intrinsic_unroll = false;
-    } else if (intrinsic_name == "__xlscc_unroll") {
-      have_relevant_intrinsic = true;
-      intrinsic_unroll = true;
-    } else if (intrinsic_name == "__xlscc_asap") {
-      have_relevant_intrinsic = false;
-      have_asap_intrinsic = true;
+      if (annotate->getAnnotation() == "xlscc_asap") {
+        is_asap = true;
+      }
     }
   }
 
-  bool do_unroll = false;
-
-  if ((have_relevant_intrinsic && intrinsic_unroll) ||
-      context().for_loops_default_unroll) {
-    do_unroll = true;
-  }
-
-  if (do_unroll) {
+  if (unroll_factor > 0) {
+    if (unroll_factor < std::numeric_limits<int64_t>::max()) {
+      LOG(WARNING) << WarningMessage(loc,
+                                     "XLS[cc] currently supports only "
+                                     "unbounded loop unrolling; ignoring "
+                                     "specified depth %d",
+                                     unroll_factor);
+    }
     return GenerateIR_UnrolledLoop(always_first_iter, init, cond_expr, inc,
                                    body, ctx, loc);
-  }
-
-  int64_t init_interval = -1;
-
-  if (have_relevant_intrinsic) {
-    XLSCC_CHECK(!intrinsic_unroll, loc);
-    XLSCC_CHECK_EQ(intrinsic_call->getNumArgs(), 1, loc);
-    XLS_ASSIGN_OR_RETURN(init_interval,
-                         EvaluateInt64(*intrinsic_call->getArg(0), ctx, loc));
-    if (init_interval <= 0) {
-      return absl::InvalidArgumentError(
-          ErrorMessage(loc, "Invalid initiation interval %i", init_interval));
-    }
   }
 
   // Pipelined loops can inherit their initiation interval from enclosing
@@ -131,12 +150,11 @@ absl::Status Translator::GenerateIR_Loop(
 
   if (init_interval <= 0) {
     return absl::UnimplementedError(
-        ErrorMessage(loc, "For loop missing #pragma or __xlscc_ intrinsic"));
+        ErrorMessage(loc, "Loop statement missing #pragma or attribute"));
   }
 
-  // Pipelined do-while
   return GenerateIR_PipelinedLoop(always_first_iter, init, cond_expr, inc, body,
-                                  init_interval, have_asap_intrinsic, ctx, loc);
+                                  init_interval, is_asap, ctx, loc);
 }
 
 absl::Status Translator::GenerateIR_UnrolledLoop(bool always_first_iter,
