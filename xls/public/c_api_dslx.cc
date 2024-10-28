@@ -260,7 +260,6 @@ struct xls_dslx_colon_ref* xls_dslx_type_definition_get_colon_ref(
   return nullptr;
 }
 
->>>>>>> cdleary/2024-10-28-type-alias-c-apis
 // -- enum_def
 
 char* xls_dslx_enum_def_get_identifier(struct xls_dslx_enum_def* n) {
