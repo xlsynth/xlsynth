@@ -12,11 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Tests for public artifacts exposing extern "C" symbols."""
+
 import os
 import subprocess
 import unittest
 
 class TestCApiSymbols(unittest.TestCase):
+    """Tests for public artifacts exposing extern "C" symbols."""
+
     def test_symbols_match(self):
         """Tests c_api_symbols.txt matches extern C symbols in .a files."""
         # Get the runfiles directory
@@ -24,8 +28,10 @@ class TestCApiSymbols(unittest.TestCase):
 
         # Construct paths
         workspace_name = os.environ['TEST_WORKSPACE']
-        c_api_symbols_path = os.path.join(runfiles_dir, workspace_name, "xls/public/c_api_symbols.txt")
-        static_libs_dir = os.path.join(runfiles_dir, workspace_name, "xls/public")
+        c_api_symbols_path = os.path.join(
+            runfiles_dir, workspace_name, "xls/public/c_api_symbols.txt")
+        static_libs_dir = os.path.join(
+            runfiles_dir, workspace_name, "xls/public")
 
         # Read symbols from c_api_symbols.txt
         with open(c_api_symbols_path, 'r') as f:
@@ -42,9 +48,10 @@ class TestCApiSymbols(unittest.TestCase):
         actual_symbols = set()
         for lib in static_libs:
             # Run nm on each .a file
-            result = subprocess.run(['nm', lib], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if result.returncode != 0:
-                self.fail(f"nm failed on {lib} with error: {result.stderr}")
+            result = subprocess.run(
+                ['nm', lib], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, check=True)
+            # Add all the defined extern "C" XLS symbols to our observed list.
             for line in result.stdout.splitlines():
                 parts = line.strip().split()
                 if len(parts) >= 3 and parts[1] in {'T', 'R', 'D'}:
@@ -55,7 +62,10 @@ class TestCApiSymbols(unittest.TestCase):
                         actual_symbols.add(symbol[1:])
 
         # Compare the symbols
-        self.assertEqual(expected_symbols, actual_symbols, "Mismatch between c_api_symbols.txt and symbols extracted from .a files.")
+        self.assertEqual(
+            expected_symbols, actual_symbols,
+            "Mismatch between c_api_symbols.txt and symbols extracted "
+            "from .a files.")
 
 if __name__ == '__main__':
     unittest.main()

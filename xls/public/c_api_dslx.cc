@@ -167,6 +167,15 @@ struct xls_dslx_enum_def* xls_dslx_module_get_type_definition_as_enum_def(
   return reinterpret_cast<xls_dslx_enum_def*>(cpp_enum_def);
 }
 
+struct xls_dslx_type_alias* xls_dslx_module_get_type_definition_as_type_alias(
+    struct xls_dslx_module* module, int64_t i) {
+  auto* cpp_module = reinterpret_cast<xls::dslx::Module*>(module);
+  xls::dslx::TypeDefinition cpp_type_definition =
+      cpp_module->GetTypeDefinitions().at(i);
+  auto* cpp_type_alias = std::get<xls::dslx::TypeAlias*>(cpp_type_definition);
+  return reinterpret_cast<xls_dslx_type_alias*>(cpp_type_alias);
+}
+
 char* xls_dslx_struct_def_get_identifier(struct xls_dslx_struct_def* n) {
   auto* cpp_struct_def = reinterpret_cast<xls::dslx::StructDef*>(n);
   std::string result = cpp_struct_def->identifier();
@@ -183,6 +192,75 @@ int64_t xls_dslx_struct_def_get_member_count(struct xls_dslx_struct_def* n) {
   return cpp_struct_def->size();
 }
 
+// -- colon_ref
+
+struct xls_dslx_import* xls_dslx_colon_ref_resolve_import_subject(
+    struct xls_dslx_colon_ref* n) {
+  auto* cpp_colon_ref = reinterpret_cast<xls::dslx::ColonRef*>(n);
+  std::optional<xls::dslx::Import*> cpp_import =
+      cpp_colon_ref->ResolveImportSubject();
+  if (!cpp_import.has_value()) {
+    return nullptr;
+  }
+  return reinterpret_cast<xls_dslx_import*>(cpp_import.value());
+}
+
+// -- type_alias
+
+char* xls_dslx_type_alias_get_identifier(struct xls_dslx_type_alias* n) {
+  auto* cpp = reinterpret_cast<xls::dslx::TypeAlias*>(n);
+  std::string result = cpp->identifier();
+  return xls::ToOwnedCString(result);
+}
+
+struct xls_dslx_type_annotation* xls_dslx_type_alias_get_type_annotation(
+    struct xls_dslx_type_alias* n) {
+  auto* cpp = reinterpret_cast<xls::dslx::TypeAlias*>(n);
+  xls::dslx::TypeAnnotation& cpp_type_annotation = cpp->type_annotation();
+  return reinterpret_cast<xls_dslx_type_annotation*>(&cpp_type_annotation);
+}
+
+// -- type_annotation
+
+struct xls_dslx_type_ref_type_annotation*
+xls_dslx_type_annotation_get_type_ref_type_annotation(
+    struct xls_dslx_type_annotation* n) {
+  auto* cpp = reinterpret_cast<xls::dslx::TypeAnnotation*>(n);
+  auto* cpp_type_ref = dynamic_cast<xls::dslx::TypeRefTypeAnnotation*>(cpp);
+  return reinterpret_cast<xls_dslx_type_ref_type_annotation*>(cpp_type_ref);
+}
+
+// -- type_ref_type_annotation
+
+struct xls_dslx_type_ref* xls_dslx_type_ref_type_annotation_get_type_ref(
+    struct xls_dslx_type_ref_type_annotation* n) {
+  auto* cpp = reinterpret_cast<xls::dslx::TypeRefTypeAnnotation*>(n);
+  auto* cpp_type_ref = cpp->type_ref();
+  return reinterpret_cast<xls_dslx_type_ref*>(cpp_type_ref);
+}
+
+// -- type_ref
+
+struct xls_dslx_type_definition* xls_dslx_type_ref_get_type_definition(
+    struct xls_dslx_type_ref* n) {
+  auto* cpp = reinterpret_cast<xls::dslx::TypeRef*>(n);
+  xls::dslx::TypeDefinition& cpp_type_def = cpp->type_definition();
+  return reinterpret_cast<xls_dslx_type_definition*>(&cpp_type_def);
+}
+
+// -- type_definition
+
+struct xls_dslx_colon_ref* xls_dslx_type_definition_get_colon_ref(
+    struct xls_dslx_type_definition* n) {
+  auto* cpp = reinterpret_cast<xls::dslx::TypeDefinition*>(n);
+  if (std::holds_alternative<xls::dslx::ColonRef*>(*cpp)) {
+    auto* colon_ref = std::get<xls::dslx::ColonRef*>(*cpp);
+    return reinterpret_cast<xls_dslx_colon_ref*>(colon_ref);
+  }
+  return nullptr;
+}
+
+>>>>>>> cdleary/2024-10-28-type-alias-c-apis
 // -- enum_def
 
 char* xls_dslx_enum_def_get_identifier(struct xls_dslx_enum_def* n) {
@@ -335,6 +413,8 @@ bool xls_dslx_interp_value_convert_to_ir(struct xls_dslx_interp_value* v,
   *error_out = nullptr;
   return true;
 }
+
+// -- type
 
 bool xls_dslx_type_is_signed_bits(const struct xls_dslx_type* type,
                                   char** error_out, bool* result_out) {

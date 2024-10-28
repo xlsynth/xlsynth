@@ -100,7 +100,12 @@ XLS_DLL_EXPORT
 struct xls_dslx_type_alias* xls_dslx_module_get_type_definition_as_type_alias(
     struct xls_dslx_module* module, int64_t i);
 
-// -- struct_def (AST node)
+// -- type_definition
+
+struct xls_dslx_colon_ref* xls_dslx_type_defintion_get_colon_ref(
+    struct xls_dslx_type_definition*);
+
+// -- struct_def
 
 // Note: the return value is owned by the caller and must be freed via
 // `xls_c_str_free`.
@@ -145,6 +150,43 @@ char* xls_dslx_enum_member_get_name(struct xls_dslx_enum_member*);
 
 struct xls_dslx_expr* xls_dslx_enum_member_get_value(
     struct xls_dslx_enum_member*);
+
+// -- type_annotation
+
+// Attempts to convert the given type annotation to a TypeRefTypeAnnotation --
+// returns nullptr if the conversion is not viable.
+struct xls_dslx_type_ref_type_annotation*
+xls_dslx_type_annotation_get_type_ref_type_annotation(
+    struct xls_dslx_type_annotation*);
+
+// -- type_ref_type_annotation
+
+struct xls_dslx_type_ref* xls_dslx_type_ref_type_annotation_get_type_ref(
+    struct xls_dslx_type_ref_type_annotation*);
+
+// -- type_ref
+
+struct xls_dslx_type_definition* xls_dslx_type_ref_get_type_definition(
+    struct xls_dslx_type_ref*);
+
+// -- type_definition
+
+struct xls_dslx_colon_ref* xls_dslx_type_definition_get_colon_ref(
+    struct xls_dslx_type_definition*);
+
+// -- colon_ref
+
+struct xls_dslx_import* xls_dslx_colon_ref_resolve_import_subject(
+    struct xls_dslx_colon_ref*);
+
+// -- type_alias
+
+// Note: the return value is owned by the caller and must be freed via
+// `xls_c_str_free`.
+char* xls_dslx_type_alias_get_identifier(struct xls_dslx_type_alias*);
+
+struct xls_dslx_type_annotation* xls_dslx_type_alias_get_type_annotation(
+    struct xls_dslx_type_alias*);
 
 // -- interp_value
 
@@ -226,6 +268,13 @@ bool xls_dslx_type_dim_get_as_int64(struct xls_dslx_type_dim*,
                                     char** error_out, int64_t* result_out);
 
 void xls_dslx_type_dim_free(struct xls_dslx_type_dim*);
+
+// Precondition: `type` must be an array type.
+struct xls_dslx_type* xls_dslx_type_array_get_element_type(
+    struct xls_dslx_type* type);
+
+struct xls_dslx_type_dim* xls_dslx_type_array_get_size(
+    struct xls_dslx_type* type);
 
 }  // extern "C"
 
