@@ -48,9 +48,9 @@ llvm_toolchain(
     llvm_version = "17.0.6",
 )
 
-load("@llvm_toolchain//:toolchains.bzl", "llvm_register_toolchains")
+#load("@llvm_toolchain//:toolchains.bzl", "llvm_register_toolchains")
 
-llvm_register_toolchains()
+#llvm_register_toolchains()
 
 load("//dependency_support:load_external.bzl", "load_external_repositories")
 

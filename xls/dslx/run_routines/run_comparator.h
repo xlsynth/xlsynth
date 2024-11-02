@@ -32,7 +32,12 @@
 #include "xls/ir/events.h"
 #include "xls/ir/package.h"
 #include "xls/ir/value.h"
-#include "xls/jit/function_jit.h"
+//#include "xls/jit/function_jit.h"
+
+// Forward decl.
+namespace xls {
+class FunctionJit;
+}
 
 namespace xls::dslx {
 
@@ -77,7 +82,6 @@ class RunComparator : public AbstractRunComparator {
   XLS_FRIEND_TEST(RunRoutinesTest, QuickcheckInvokedFunctionDoesJit);
   XLS_FRIEND_TEST(RunRoutinesTest, NoSeedStillQuickChecks);
 
-  absl::flat_hash_map<std::string, std::unique_ptr<FunctionJit>> jit_cache_;
   CompareMode mode_;
 };
 

@@ -51,8 +51,8 @@
 #include "xls/dslx/warning_kind.h"
 #include "xls/interpreter/evaluator_options.h"
 #include "xls/interpreter/function_interpreter.h"
-#include "xls/interpreter/interpreter_proc_runtime.h"
-#include "xls/interpreter/proc_runtime.h"
+//#include "xls/interpreter/interpreter_proc_runtime.h"
+//#include "xls/interpreter/proc_runtime.h"
 #include "xls/ir/channel.h"
 #include "xls/ir/events.h"
 #include "xls/ir/format_preference.h"
@@ -60,10 +60,12 @@
 #include "xls/ir/package.h"
 #include "xls/ir/proc_elaboration.h"
 #include "xls/ir/value.h"
-#include "xls/jit/function_jit.h"
-#include "xls/jit/jit_proc_runtime.h"
 #include "xls/passes/dfe_pass.h"
 #include "xls/passes/pass_base.h"
+
+namespace xls {
+class ProcRuntime;
+}
 
 namespace xls::dslx {
 namespace {
@@ -72,15 +74,12 @@ class IrRunner : public AbstractParsedTestRunner {
   IrRunner(
       absl::flat_hash_map<std::string, std::unique_ptr<Package>>&& packages,
       absl::flat_hash_map<std::string, std::string>&& finish_chan_names,
-      std::function<absl::StatusOr<std::unique_ptr<ProcRuntime>>(xls::Package*)>
-          proc_runner,
       std::function<absl::StatusOr<InterpreterResult<Value>>(
           xls::Function* f, absl::Span<Value const>)>
           func_runner,
       ImportData* import_data)
       : packages_(std::move(packages)),
         finish_chan_names_(std::move(finish_chan_names)),
-        proc_runner_(std::move(proc_runner)),
         func_runner_(std::move(func_runner)),
         import_data_(import_data) {}
 
@@ -89,6 +88,8 @@ class IrRunner : public AbstractParsedTestRunner {
   absl::StatusOr<RunResult> RunTestSingleProc(
       xls::Proc* proc, Channel* terminate,
       const BytecodeInterpreterOptions& options) {
+    return absl::UnimplementedError("JIT is disabled");
+#if 0
     XLS_RET_CHECK(options.post_fn_eval_hook() == nullptr)
         << "hooks not supported using non-dslx interpreters";
     XLS_ASSIGN_OR_RETURN(std::unique_ptr<ProcRuntime> rt,
@@ -126,6 +127,7 @@ class IrRunner : public AbstractParsedTestRunner {
     }
     return RunResult{.result =
                          absl::AbortedError(absl::StrJoin(asserts, "\n"))};
+#endif
   }
 
   absl::StatusOr<RunResult> RunTestProc(
@@ -185,8 +187,6 @@ class IrRunner : public AbstractParsedTestRunner {
 
   absl::flat_hash_map<std::string, std::unique_ptr<Package>> packages_;
   absl::flat_hash_map<std::string, std::string> finish_chan_names_;
-  std::function<absl::StatusOr<std::unique_ptr<ProcRuntime>>(xls::Package*)>
-      proc_runner_;
   std::function<absl::StatusOr<InterpreterResult<Value>>(
       xls::Function* f, absl::Span<Value const>)>
       func_runner_;
@@ -197,9 +197,7 @@ absl::StatusOr<std::unique_ptr<AbstractParsedTestRunner>> MakeRunner(
     ImportData* import_data, TypeInfo* type_info, Module* module,
     std::function<absl::StatusOr<InterpreterResult<Value>>(
         xls::Function* f, absl::Span<Value const>)>
-        func,
-    std::function<absl::StatusOr<std::unique_ptr<ProcRuntime>>(xls::Package*)>
-        proc) {
+        func) {
   ConvertOptions base_option{
       .emit_fail_as_assert = true,
       .verify_ir = false,
@@ -230,7 +228,7 @@ absl::StatusOr<std::unique_ptr<AbstractParsedTestRunner>> MakeRunner(
     packages[name] = std::move(package_data.package);
   }
   return std::make_unique<IrRunner>(
-      std::move(packages), std::move(finish_chan_names), std::move(proc),
+      std::move(packages), std::move(finish_chan_names),
       std::move(func), import_data);
 }
 }  // namespace
@@ -238,6 +236,7 @@ absl::StatusOr<std::unique_ptr<AbstractParsedTestRunner>> MakeRunner(
 absl::StatusOr<std::unique_ptr<AbstractParsedTestRunner>>
 IrJitTestRunner::CreateTestRunner(ImportData* import_data, TypeInfo* type_info,
                                   Module* module) const {
+#if 0
   return MakeRunner(
       import_data, type_info, module,
       [](xls::Function* f,
@@ -248,6 +247,8 @@ IrJitTestRunner::CreateTestRunner(ImportData* import_data, TypeInfo* type_info,
       [](xls::Package* p) -> absl::StatusOr<std::unique_ptr<ProcRuntime>> {
         return CreateJitSerialProcRuntime(p, EvaluatorOptions());
       });
+#endif
+  return absl::UnimplementedError("JIT is disabled");
 }
 
 absl::StatusOr<std::unique_ptr<AbstractParsedTestRunner>>
@@ -258,9 +259,6 @@ IrInterpreterTestRunner::CreateTestRunner(ImportData* import_data,
       import_data, type_info, module,
       [&](xls::Function* f, absl::Span<Value const> args) {
         return InterpretFunction(f, args);
-      },
-      [](xls::Package* p) -> absl::StatusOr<std::unique_ptr<ProcRuntime>> {
-        return CreateInterpreterSerialProcRuntime(p, EvaluatorOptions());
       });
 }
 

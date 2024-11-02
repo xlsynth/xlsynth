@@ -37,12 +37,14 @@
 #include "xls/ir/function.h"
 #include "xls/ir/package.h"
 #include "xls/ir/value.h"
-#include "xls/jit/function_jit.h"
+//#include "xls/jit/function_jit.h"
 
 namespace xls::dslx {
 
 absl::StatusOr<FunctionJit*> RunComparator::GetOrCompileJitFunction(
     std::string_view ir_name, xls::Function* ir_function) {
+  return absl::UnimplementedError("JIT support is disabled");
+#if 0
   auto it = jit_cache_.find(ir_name);
   if (it != jit_cache_.end()) {
     return it->second.get();
@@ -52,6 +54,7 @@ absl::StatusOr<FunctionJit*> RunComparator::GetOrCompileJitFunction(
   FunctionJit* result = jit.get();
   jit_cache_[ir_name] = std::move(jit);
   return result;
+#endif
 }
 
 absl::Status RunComparator::RunComparison(Package* ir_package,
@@ -97,6 +100,8 @@ absl::Status RunComparator::RunComparison(Package* ir_package,
   Value ir_result;
   switch (mode_) {
     case CompareMode::kJit: {  // Compare to IR JIT.
+      return absl::UnimplementedError("JIT disabled");
+#if 0
       // TODO(https://github.com/google/xls/issues/506): Also compare events
       // once the DSLX interpreter supports them (and the JIT supports traces).
       XLS_ASSIGN_OR_RETURN(FunctionJit * jit,
@@ -104,6 +109,7 @@ absl::Status RunComparator::RunComparison(Package* ir_package,
       XLS_ASSIGN_OR_RETURN(ir_result, DropInterpreterEvents(jit->Run(ir_args)));
       mode_str = "JIT";
       break;
+#endif
     }
     case CompareMode::kInterpreter: {  // Compare to IR interpreter.
       XLS_ASSIGN_OR_RETURN(ir_result, DropInterpreterEvents(InterpretFunction(
@@ -141,9 +147,12 @@ absl::Status RunComparator::RunComparison(Package* ir_package,
 absl::StatusOr<InterpreterResult<xls::Value>> RunComparator::RunIrFunction(
     std::string_view ir_name, xls::Function* ir_function,
     absl::Span<const xls::Value> ir_args) {
+  return absl::UnimplementedError("JIT support disabled");
+#if 0
   XLS_ASSIGN_OR_RETURN(FunctionJit * jit,
                        GetOrCompileJitFunction(ir_name, ir_function));
   return jit->Run(ir_args);
+#endif
 }
 
 }  // namespace xls::dslx
