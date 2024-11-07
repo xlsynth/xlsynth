@@ -1230,6 +1230,8 @@ class TypeRef : public AstNode {
   }
 
   const TypeDefinition& type_definition() const { return type_definition_; }
+  TypeDefinition& type_definition() { return type_definition_; }
+
   const Span& span() const { return span_; }
   std::optional<Span> GetSpan() const override { return span_; }
 

@@ -18,6 +18,7 @@
 #include <cstdint>
 
 #include "absl/log/log.h"
+#include "absl/base/casts.h"
 
 extern "C" void* c_export_xls_GetEmulatedMsanTLSAddr(void* selector) {
   return xls::GetEmulatedMsanTLSAddr(selector);
@@ -60,12 +61,12 @@ void* GetEmulatedMsanTLSAddr(void* selector) {
     return nullptr;
   }
   VLOG(2) << "EMU_MSAN (enabled: " << kHasMsan << ") Called with "
-          << std::bit_cast<uintptr_t>(selector);
-  switch (std::bit_cast<uintptr_t>(selector)) {
+          << absl::bit_cast<uintptr_t>(selector);
+  switch (absl::bit_cast<uintptr_t>(selector)) {
     case kParamTlsEntry:
-      return std::bit_cast<void*>(&param_tls);
+      return absl::bit_cast<void*>(&param_tls);
     case kRetvalTlsEntry:
-      return std::bit_cast<void*>(&retval_tls);
+      return absl::bit_cast<void*>(&retval_tls);
     default:
       LOG(ERROR) << "Unexpected TLS addr request: " << selector;
       return nullptr;
