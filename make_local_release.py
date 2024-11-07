@@ -39,6 +39,7 @@ smoke_test_targets = [
     "//xls/public:test_c_api_symbols",
     "//xls/public:c_api_vast_test",
     "//xls/public:c_api_test",
+    "//xls/dslx/type_system:typecheck_main"
 ]
 
 # Function to get the current git hash and cleanliness status
