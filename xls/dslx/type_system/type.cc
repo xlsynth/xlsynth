@@ -461,6 +461,11 @@ const ArrayType& Type::AsArray() const {
   return *s;
 }
 
+ArrayType& Type::AsArray() {
+  const auto* self = this;
+  return const_cast<ArrayType&>(self->AsArray());
+}
+
 const TupleType& Type::AsTuple() const {
   auto* s = dynamic_cast<const TupleType*>(this);
   CHECK(s != nullptr) << "Type is not a tuple: " << *this;

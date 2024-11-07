@@ -1,0 +1,58 @@
+# For experimenting with the Rocky8 linux build.
+#
+# We can alter this file to trigger the workflow, note that we can't get the UI
+# element to manually trigger since it lives on a non-default branch.
+
+name: Rocky8 Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cdleary/release-dylib-workflow
+    paths:
+      - .github/workflows/build-rocky8.yml  # Only trigger on changes to this specific file
+
+jobs:
+  build-rocky8:
+    runs-on: ubuntu-latest  # Use a GitHub-hosted runner
+    container: rockylinux:8 # Specify the Docker container
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Cache Bazel output
+      uses: actions/cache@v2
+      id: cache-bazel
+      with:
+        path: |
+          ~/.cache/bazel
+          bazel-out
+        key: ${{ runner.os }}-bazel-${{ hashFiles('**/BUILD') }}
+        restore-keys: |
+          ${{ runner.os }}-bazel-
+
+    - name: Install bazelisk
+      run: |
+        dnf install -y curl unzip
+        curl -Lo bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
+        chmod +x bazelisk
+        mv bazelisk /usr/local/bin/
+        bazelisk version
+
+    - name: Install Clang-17
+      run: |
+        dnf install -y llvm-toolset
+
+    - name: Note Clang version
+      run: clang-17 --version
+
+    - name: Install build essentials
+      run: |
+        dnf groupinstall -y "Development Tools"
+        dnf install -y libstdc++-devel
+        dnf install -y python3
+
+    - name: Build Bazel target
+      run: |
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/visualization/ir_viz:app --build_python_zip
