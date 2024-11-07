@@ -10,3 +10,4 @@ user.bazelrc
 .cache
 docs/
 .jj/
+MODULE.bazel.lock
