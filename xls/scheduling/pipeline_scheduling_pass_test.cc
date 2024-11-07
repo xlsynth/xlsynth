@@ -255,7 +255,9 @@ TEST_F(PipelineSchedulingPassTest, MultipleProcsWithIOConstraint) {
                                    Eq(2)))))))));
 }
 
-TEST_F(PipelineSchedulingPassTest, FdoWithMultipleProcs) {
+// TODO(cdleary): 2024-09-01 Disabled because FDO is currently disabled in this
+// release.
+TEST_F(PipelineSchedulingPassTest, DISABLED_FdoWithMultipleProcs) {
   auto p = CreatePackage();
   auto make_func =
       [p = p.get()](std::string_view name) -> absl::StatusOr<Function*> {

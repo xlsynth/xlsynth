@@ -21,6 +21,19 @@ This module is intended to be loaded by the xls/public/BUILD file.
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_python//python:py_test.bzl", "py_test")
 
+# The estimator targets include static initializers which the MacOS toolchain
+# strips out (maybe because they are packaged into an source-less library?).
+# To work around this, we force-load the static libraries for the estimators
+# when building the libxls.dylib.
+ESTIMATOR_TARGETS = [
+    "//xls/estimators/delay_model/models:model_unit",
+    "//xls/estimators/delay_model/models:model_asap7",
+    "//xls/estimators/delay_model/models:model_sky130",
+    "//xls/estimators/area_model/models:area_model_unit",
+    "//xls/estimators/area_model/models:area_model_asap7",
+    "//xls/estimators/area_model/models:area_model_sky130",
+]
+
 def libxls_dylib_binary(name = "libxls.dylib"):
     # Create a variant of the c_api_symbols.txt file that has leading
     # underscores on each symbol, as those are the OS X symbols.
@@ -41,6 +54,9 @@ def libxls_dylib_binary(name = "libxls.dylib"):
             "-fno-exceptions",
         ],
         linkopts = [
+            "-force_load $(location " + target + ")"
+            for target in ESTIMATOR_TARGETS
+        ] + [
             "@$(location :generate_linker_params_underscores)",
             "-exported_symbols_list $(location :c_api_symbols_underscores.txt)",
         ],
@@ -50,8 +66,13 @@ def libxls_dylib_binary(name = "libxls.dylib"):
             "//conditions:default": ["@platforms//:incompatible"],
         }),
         deps = [
-            ":c_api",
-        ],
+                   ":c_api",
+                   "@com_google_absl//absl/base",
+                   "@com_google_absl//absl/status",
+                   "@com_google_absl//absl/log",
+                   "@com_google_absl//absl/log:check",
+               ] +
+               ESTIMATOR_TARGETS,
     )
 
 def py_test_c_api_symbols(name = "test_c_api_symbols"):
