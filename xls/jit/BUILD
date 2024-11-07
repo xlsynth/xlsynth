@@ -398,6 +398,7 @@ cc_library(
     srcs = ["jit_emulated_tls.cc"],
     hdrs = ["jit_emulated_tls.h"],
     deps = [
+        "@com_google_absl//absl/base",
         "@com_google_absl//absl/log",
     ],
 )
