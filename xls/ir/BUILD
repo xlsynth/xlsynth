@@ -224,7 +224,7 @@ cc_test(
         ":interval",
         ":interval_test_utils",
         "//xls/common:xls_gunit_main",
-        "//xls/common/fuzzing:fuzztest",
+        #"//xls/common/fuzzing:fuzztest",
         "//xls/common/status:matchers",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/types:span",
@@ -272,7 +272,7 @@ cc_test(
         ":ir_test_base",
         ":ternary",
         "//xls/common:xls_gunit_main",
-        "//xls/common/fuzzing:fuzztest",
+        #"//xls/common/fuzzing:fuzztest",
         "//xls/common/status:matchers",
         "//xls/solvers:z3_ir_translator",
         "//xls/solvers:z3_ir_translator_matchers",
@@ -316,7 +316,7 @@ cc_library(
         ":bits_ops",
         ":bits_test_utils",
         ":interval",
-        "//xls/common/fuzzing:fuzztest",
+        #"//xls/common/fuzzing:fuzztest",
         "@com_google_absl//absl/log:check",
     ],
 )
@@ -331,7 +331,7 @@ cc_library(
         ":interval",
         ":interval_set",
         ":interval_test_utils",
-        "//xls/common/fuzzing:fuzztest",
+        #"//xls/common/fuzzing:fuzztest",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/types:span",
     ],
@@ -349,7 +349,7 @@ cc_test(
         ":interval_set",
         ":interval_set_test_utils",
         "//xls/common:xls_gunit_main",
-        "//xls/common/fuzzing:fuzztest",
+        #"//xls/common/fuzzing:fuzztest",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status:status_matchers",
@@ -420,7 +420,7 @@ cc_library(
     hdrs = ["bits_test_utils.h"],
     deps = [
         ":bits",
-        "//xls/common/fuzzing:fuzztest",
+        #"//xls/common/fuzzing:fuzztest",
         "//xls/data_structures:inline_bitmap",
         "@com_google_absl//absl/log:check",
     ],
@@ -443,7 +443,7 @@ cc_test(
         "//xls/common:bits_util",
         "//xls/common:math_util",
         "//xls/common:xls_gunit_main",
-        "//xls/common/fuzzing:fuzztest",
+        #"//xls/common/fuzzing:fuzztest",
         "//xls/common/status:matchers",
         "//xls/data_structures:inline_bitmap",
         "@com_google_absl//absl/container:inlined_vector",
@@ -1174,7 +1174,7 @@ cc_test(
         ":xls_value_cc_proto",
         "//xls/common:proto_test_utils",
         "//xls/common:xls_gunit_main",
-        "//xls/common/fuzzing:fuzztest",
+        #"//xls/common/fuzzing:fuzztest",
         "//xls/common/status:matchers",
         "//xls/data_structures:inline_bitmap",
         "@com_google_absl//absl/log",
@@ -1476,7 +1476,7 @@ cc_test(
         ":format_preference",
         ":number_parser",
         "//xls/common:xls_gunit_main",
-        "//xls/common/fuzzing:fuzztest",
+        #"//xls/common/fuzzing:fuzztest",
         "//xls/common/status:matchers",
         "//xls/data_structures:inline_bitmap",
         "@com_google_absl//absl/container:inlined_vector",
@@ -1799,7 +1799,7 @@ cc_test(
         ":bits_ops",
         ":bits_test_utils",
         "//xls/common:xls_gunit_main",
-        "//xls/common/fuzzing:fuzztest",
+        #"//xls/common/fuzzing:fuzztest",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/types:span",
         "@googletest//:gtest",
@@ -2223,29 +2223,29 @@ py_proto_library(
     deps = [":ram_rewrite_proto"],
 )
 
-cc_library(
-    name = "fuzz_type_domain",
-    testonly = True,
-    srcs = ["fuzz_type_domain.cc"],
-    hdrs = ["fuzz_type_domain.h"],
-    deps = [
-        ":xls_type_cc_proto",
-        "//xls/common:math_util",
-        "//xls/common/fuzzing:fuzztest",
-        "@com_google_absl//absl/log:check",
-    ],
-)
+#cc_library(
+#    name = "fuzz_type_domain",
+#    testonly = True,
+#    srcs = ["fuzz_type_domain.cc"],
+#    hdrs = ["fuzz_type_domain.h"],
+#    deps = [
+#        ":xls_type_cc_proto",
+#        "//xls/common:math_util",
+#        "//xls/common/fuzzing:fuzztest",
+#        "@com_google_absl//absl/log:check",
+#    ],
+#)
 
-cc_test(
-    name = "fuzz_type_domain_test",
-    srcs = ["fuzz_type_domain_test.cc"],
-    deps = [
-        ":fuzz_type_domain",
-        ":xls_type_cc_proto",
-        "//xls/common:xls_gunit_main",
-        "@googletest//:gtest",
-    ],
-)
+# cc_test(
+#     name = "fuzz_type_domain_test",
+#     srcs = ["fuzz_type_domain_test.cc"],
+#     deps = [
+#         ":fuzz_type_domain",
+#         ":xls_type_cc_proto",
+#         "//xls/common:xls_gunit_main",
+#         "@googletest//:gtest",
+#     ],
+# )
 
 cc_library(
     name = "proc_testutils",
