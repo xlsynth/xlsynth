@@ -63,8 +63,10 @@ absl::StatusOr<SignednessAndBitCountResult> GetSignednessAndBitCount(
     // Handle things like `s32` and `u32`, which have an implied signedness and
     // bit count.
     XLS_ASSIGN_OR_RETURN(bool signedness, builtin_annotation->GetSignedness());
-    return SignednessAndBitCountResult(signedness,
-                                       builtin_annotation->GetBitCount());
+    return SignednessAndBitCountResult{
+        .signedness = signedness,
+        .bit_count = builtin_annotation->GetBitCount(),
+    };
   }
   if (const auto* array_annotation =
           dynamic_cast<const ArrayTypeAnnotation*>(annotation)) {
