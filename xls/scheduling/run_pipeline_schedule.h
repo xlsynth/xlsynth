@@ -17,12 +17,17 @@
 
 #include "absl/status/statusor.h"
 #include "xls/estimators/delay_model/delay_estimator.h"
-#include "xls/fdo/synthesizer.h"
+//#include "xls/fdo/synthesizer.h"
 #include "xls/ir/function_base.h"
 #include "xls/scheduling/pipeline_schedule.h"
 #include "xls/scheduling/scheduling_options.h"
 
 namespace xls {
+
+// Forward decl.
+namespace synthesis {
+class Synthesizer;
+}
 
 // Produces a pipeline schedule using the given delay model and scheduling
 // options. The synthesizer argument should be non-null when we are doing
