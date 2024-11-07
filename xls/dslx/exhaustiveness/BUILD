@@ -62,7 +62,7 @@ cc_test(
     deps = [
         ":nd_region",
         "//xls/common:xls_gunit_main",
-        "//xls/common/fuzzing:fuzztest",
+        #"//xls/common/fuzzing:fuzztest",
         "//xls/common/status:matchers",
         "//xls/common/status:status_macros",
         "@googletest//:gtest",
