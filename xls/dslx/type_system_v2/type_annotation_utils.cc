@@ -150,9 +150,8 @@ absl::StatusOr<SignednessAndBitCountResult> GetSignednessAndBitCount(
       case BuiltinType::kToken:
       case BuiltinType::kChannelIn:
       case BuiltinType::kChannelOut:
-        return absl::NotFoundError(
-            absl::StrCat("Annotation is not bits-like: ",
-                         builtin_annotation->annotation_kind()));
+        return absl::NotFoundError(absl::StrCat("Annotation is not bits-like: ",
+                                                annotation->ToString()));
       default:
         // Handle things like `s32` and `u32`, which have an implied signedness
         // and bit count. This logic also handles `bits`, which stores its
@@ -201,9 +200,9 @@ absl::StatusOr<SignednessAndBitCountResult> GetSignednessAndBitCount(
           result.signedness = array_annotation->dim();
         } else if (multi_dimensional) {
           // This is something like uN[32][2].
-          return absl::NotFoundError(
-              absl::StrCat("Type annotation is multi-dimentional: ",
-                           builtin_element_annotation->annotation_kind()));
+          return absl::NotFoundError(absl::Substitute(
+              "Type annotation $0 does not have a signedness and bit count.",
+              annotation->ToString()));
         } else {
           // All other types, e.g. `uN`, `sN`, and `bits`, have an implied
           // signedness that we can just get as a bool.
@@ -215,9 +214,9 @@ absl::StatusOr<SignednessAndBitCountResult> GetSignednessAndBitCount(
       }
     }
   }
-  return absl::NotFoundError(absl::StrCat(
-      "Cannot extract signedness and bit count from annotation kind: ",
-      annotation->annotation_kind()));
+  return absl::NotFoundError(
+      absl::StrCat("Cannot extract signedness and bit count from annotation: ",
+                   annotation->ToString()));
 }
 
 absl::StatusOr<SignednessAndBitCountResult>
