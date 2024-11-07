@@ -1,0 +1,519 @@
+name: Build and Release Bazel Target
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write  # Ensure the token has write permission for contents
+
+jobs:
+  build-osx-arm64:
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: 11.0
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Cache Bazel output
+      uses: actions/cache@v4
+      id: cache-bazel
+      with:
+        path: |
+          ~/.cache/bazel
+          bazel-out
+        key: ${{ runner.os }}-bazel-${{ hashFiles('**/BUILD') }}
+        restore-keys: |
+          ${{ runner.os }}-bazel-
+
+    - name: Create artifact directory
+      run: mkdir -p osx-artifacts-arm64
+
+    - name: Build for arm64
+      run: |
+        wget -q https://github.com/bazelbuild/bazel/releases/download/7.3.1rc2/bazel-7.3.1rc2-darwin-arm64
+        mv bazel-7.3.1rc2-darwin-arm64 bazel-arm64
+        chmod +x bazel-arm64
+        ./bazel-arm64 info
+        ./bazel-arm64 test -c opt --host_cpu=darwin_arm64 --action_env=MACOSX_DEPLOYMENT_TARGET --macos_minimum_os=11.0 //xls/public:test_c_api_symbols
+        ./bazel-arm64 build -c opt --host_cpu=darwin_arm64 --action_env=MACOSX_DEPLOYMENT_TARGET --macos_minimum_os=11.0 \
+          //xls/public:libxls.dylib \
+          //xls/dslx:interpreter_main \
+          //xls/dslx/lsp:dslx_ls \
+          //xls/tools:opt_main \
+          //xls/tools:codegen_main \
+          //xls/dslx/ir_convert:ir_converter_main \
+          //xls/tools:delay_info_main \
+          //xls/dslx:dslx_fmt \
+          //xls/dslx:prove_quickcheck_main \
+          //xls/dslx/type_system:typecheck_main \
+          //xls/dslx:highlight_main \
+          //xls/dev_tools:check_ir_equivalence_main \
+          //xls/tools:block_to_verilog_main
+
+    - name: Verify arm64 binaries
+      run: |
+        lipo -info bazel-bin/xls/public/libxls.dylib
+
+    - name: Collect arm64 artifacts
+      run: |
+        gzip -c bazel-bin/xls/public/libxls.dylib > osx-artifacts-arm64/libxls-arm64.dylib.gz
+        shasum -a 256 osx-artifacts-arm64/libxls-arm64.dylib.gz > osx-artifacts-arm64/libxls-arm64.dylib.gz.sha256
+        shasum -a 256 bazel-bin/xls/public/libxls.dylib > osx-artifacts-arm64/libxls-arm64.dylib.sha256
+
+        cp bazel-bin/xls/dslx/interpreter_main              osx-artifacts-arm64/dslx_interpreter_main-arm64
+        shasum -a 256 osx-artifacts-arm64/dslx_interpreter_main-arm64 > osx-artifacts-arm64/dslx_interpreter_main-arm64.sha256
+
+        cp bazel-bin/xls/dslx/lsp/dslx_ls                   osx-artifacts-arm64/dslx_ls-arm64
+        shasum -a 256 osx-artifacts-arm64/dslx_ls-arm64 > osx-artifacts-arm64/dslx_ls-arm64.sha256
+
+        cp bazel-bin/xls/tools/opt_main                     osx-artifacts-arm64/opt_main-arm64
+        shasum -a 256 osx-artifacts-arm64/opt_main-arm64 > osx-artifacts-arm64/opt_main-arm64.sha256
+
+        cp bazel-bin/xls/tools/delay_info_main              osx-artifacts-arm64/delay_info_main-arm64
+        shasum -a 256 osx-artifacts-arm64/delay_info_main-arm64 > osx-artifacts-arm64/delay_info_main-arm64.sha256
+
+        cp bazel-bin/xls/dslx/dslx_fmt                      osx-artifacts-arm64/dslx_fmt-arm64
+        shasum -a 256 osx-artifacts-arm64/dslx_fmt-arm64 > osx-artifacts-arm64/dslx_fmt-arm64.sha256
+
+        cp bazel-bin/xls/dslx/prove_quickcheck_main         osx-artifacts-arm64/prove_quickcheck_main-arm64
+        shasum -a 256 osx-artifacts-arm64/prove_quickcheck_main-arm64 > osx-artifacts-arm64/prove_quickcheck_main-arm64.sha256
+
+        cp bazel-bin/xls/tools/codegen_main                 osx-artifacts-arm64/codegen_main-arm64
+        shasum -a 256 osx-artifacts-arm64/codegen_main-arm64 > osx-artifacts-arm64/codegen_main-arm64.sha256
+
+        cp bazel-bin/xls/dslx/ir_convert/ir_converter_main  osx-artifacts-arm64/ir_converter_main-arm64
+        shasum -a 256 osx-artifacts-arm64/ir_converter_main-arm64 > osx-artifacts-arm64/ir_converter_main-arm64.sha256
+
+        cp bazel-bin/xls/dslx/type_system/typecheck_main    osx-artifacts-arm64/typecheck_main-arm64
+        shasum -a 256 osx-artifacts-arm64/typecheck_main-arm64 > osx-artifacts-arm64/typecheck_main-arm64.sha256
+
+        cp bazel-bin/xls/dslx/highlight_main              osx-artifacts-arm64/highlight_main-arm64
+        shasum -a 256 osx-artifacts-arm64/highlight_main-arm64 > osx-artifacts-arm64/highlight_main-arm64.sha256
+
+        cp bazel-bin/xls/dev_tools/check_ir_equivalence_main osx-artifacts-arm64/check_ir_equivalence_main-arm64
+        shasum -a 256 osx-artifacts-arm64/check_ir_equivalence_main-arm64 > osx-artifacts-arm64/check_ir_equivalence_main-arm64.sha256
+
+        cp bazel-bin/xls/tools/block_to_verilog_main        osx-artifacts-arm64/block_to_verilog_main-arm64
+        shasum -a 256 osx-artifacts-arm64/block_to_verilog_main-arm64 > osx-artifacts-arm64/block_to_verilog_main-arm64.sha256
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: osx-artifacts-arm64
+        path: osx-artifacts-arm64/
+
+  build-rocky8:
+    runs-on: ubuntu-latest  # Use a GitHub-hosted runner
+    container: rockylinux:8.9 # Specify the Docker container
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Cache Bazel output
+      uses: actions/cache@v4
+      id: cache-bazel
+      with:
+        path: |
+          ~/.cache/bazel
+          bazel-out
+        key: ${{ runner.os }}-bazel-${{ hashFiles('**/BUILD') }}
+        restore-keys: |
+          ${{ runner.os }}-bazel-
+
+    - name: Install bazelisk
+      run: |
+        dnf install -y curl unzip
+        curl -Lo bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
+        chmod +x bazelisk
+        mv bazelisk /usr/local/bin/
+        bazelisk version
+
+    - name: Install Clang
+      run: |
+        dnf install -y llvm-toolset
+
+    - name: Note Clang version
+      run: |
+        clang --version
+
+    - name: Install build essentials
+      run: |
+        dnf groupinstall -y "Development Tools"
+        dnf install -y libstdc++-devel
+        dnf install -y python3
+        dnf install -y sudo
+
+    - name: Create non-root user to build as
+      run: |
+          useradd -m build-user
+          usermod -aG wheel build-user
+
+    - name: Fix workspace permissions
+      run: |
+          chown -R build-user:wheel $GITHUB_WORKSPACE
+
+    - name: Build Bazel target
+      run: |
+        sudo -u build-user env PATH=$PATH bazelisk test -c opt --action_env=CC=clang --action_env=CXX=clang++ //xls/public:test_c_api_symbols
+        sudo -u build-user env PATH=$PATH bazelisk build -c opt --action_env=CC=clang --action_env=CXX=clang++ \
+          //xls/public:libxls.so \
+          //xls/public:c_api \
+          //xls/dslx:interpreter_main \
+          //xls/dslx/lsp:dslx_ls \
+          //xls/tools:opt_main \
+          //xls/tools:codegen_main \
+          //xls/dslx/ir_convert:ir_converter_main \
+          //xls/tools:delay_info_main \
+          //xls/dslx:dslx_fmt \
+          //xls/dslx:prove_quickcheck_main \
+          //xls/dslx/type_system:typecheck_main \
+          //xls/dslx:highlight_main \
+          //xls/dev_tools:check_ir_equivalence_main \
+          //xls/tools:block_to_verilog_main
+
+    - name: Create artifact directory
+      run: mkdir -p rocky8-artifacts
+
+    - name: Copy Bazel target to rocky8-artifacts
+      run: |
+        gzip -c bazel-bin/xls/public/libxls.so > rocky8-artifacts/libxls-rocky8.so.gz
+        sha256sum rocky8-artifacts/libxls-rocky8.so.gz > rocky8-artifacts/libxls-rocky8.so.gz.sha256
+        sha256sum bazel-bin/xls/public/libxls.so > rocky8-artifacts/libxls-rocky8.so.sha256
+
+        cp bazel-bin/xls/dslx/interpreter_main              rocky8-artifacts/dslx_interpreter_main-rocky8
+        sha256sum rocky8-artifacts/dslx_interpreter_main-rocky8 > rocky8-artifacts/dslx_interpreter_main-rocky8.sha256
+
+        cp bazel-bin/xls/dslx/lsp/dslx_ls                   rocky8-artifacts/dslx_ls-rocky8
+        sha256sum rocky8-artifacts/dslx_ls-rocky8 > rocky8-artifacts/dslx_ls-rocky8.sha256
+
+        cp bazel-bin/xls/tools/opt_main                     rocky8-artifacts/opt_main-rocky8
+        sha256sum rocky8-artifacts/opt_main-rocky8 > rocky8-artifacts/opt_main-rocky8.sha256
+
+        cp bazel-bin/xls/tools/delay_info_main              rocky8-artifacts/delay_info_main-rocky8
+        sha256sum rocky8-artifacts/delay_info_main-rocky8 > rocky8-artifacts/delay_info_main-rocky8.sha256
+
+        cp bazel-bin/xls/dslx/dslx_fmt                      rocky8-artifacts/dslx_fmt-rocky8
+        sha256sum rocky8-artifacts/dslx_fmt-rocky8 > rocky8-artifacts/dslx_fmt-rocky8.sha256
+
+        cp bazel-bin/xls/dslx/prove_quickcheck_main         rocky8-artifacts/prove_quickcheck_main-rocky8
+        sha256sum rocky8-artifacts/prove_quickcheck_main-rocky8 > rocky8-artifacts/prove_quickcheck_main-rocky8.sha256
+
+        cp bazel-bin/xls/tools/codegen_main                 rocky8-artifacts/codegen_main-rocky8
+        sha256sum rocky8-artifacts/codegen_main-rocky8 > rocky8-artifacts/codegen_main-rocky8.sha256
+
+        cp bazel-bin/xls/dslx/ir_convert/ir_converter_main  rocky8-artifacts/ir_converter_main-rocky8
+        sha256sum rocky8-artifacts/ir_converter_main-rocky8 > rocky8-artifacts/ir_converter_main-rocky8.sha256
+
+        cp bazel-bin/xls/dslx/type_system/typecheck_main    rocky8-artifacts/typecheck_main-rocky8
+        sha256sum rocky8-artifacts/typecheck_main-rocky8 > rocky8-artifacts/typecheck_main-rocky8.sha256
+
+        cp bazel-bin/xls/dslx/highlight_main  rocky8-artifacts/highlight_main-rocky8
+        sha256sum rocky8-artifacts/highlight_main-rocky8 > rocky8-artifacts/highlight_main-rocky8.sha256
+
+        cp bazel-bin/xls/dev_tools/check_ir_equivalence_main rocky8-artifacts/check_ir_equivalence_main-rocky8
+        sha256sum rocky8-artifacts/check_ir_equivalence_main-rocky8 > rocky8-artifacts/check_ir_equivalence_main-rocky8.sha256
+
+        cp bazel-bin/xls/tools/block_to_verilog_main         rocky8-artifacts/block_to_verilog_main-rocky8
+        sha256sum rocky8-artifacts/block_to_verilog_main-rocky8 > rocky8-artifacts/block_to_verilog_main-rocky8.sha256
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: rocky8-artifacts
+        path: rocky8-artifacts/
+
+  build-ubuntu2004:
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+    - name: Set timezone to UTC (non-interactive)
+      run: |
+        echo 'Etc/UTC' > /etc/timezone
+        ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime
+        if dpkg -s tzdata >/dev/null 2>&1; then
+          dpkg-reconfigure -f noninteractive tzdata
+        fi
+
+    - name: Install sudo
+      run: |
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y sudo
+
+    - name: Install node
+      run: |
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y curl
+        curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+        apt-get install -y nodejs
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Cache Bazel output
+      uses: actions/cache@v4
+      id: cache-bazel
+      with:
+        path: |
+          ~/.cache/bazel
+          bazel-out
+        key: ${{ runner.os }}-bazel-${{ hashFiles('**/BUILD') }}
+        restore-keys: |
+          ${{ runner.os }}-bazel-
+
+    - name: Install bazelisk
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y curl
+        curl -Lo bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
+        chmod +x bazelisk
+        mv bazelisk /usr/local/bin/
+        bazelisk version
+
+    - name: Install Clang-18
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget gnupg lsb-release software-properties-common
+        wget https://apt.llvm.org/llvm.sh
+        chmod +x llvm.sh
+        sudo ./llvm.sh 18
+        sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev
+
+    - name: Install zlib development headers
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y zlib1g-dev
+
+    - name: Install git
+      run: sudo apt-get install -y git
+
+    - name: Note Clang version
+      run: clang-18 --version
+
+    - name: Create non-root user to build as
+      run: |
+          useradd -m build-user
+          usermod -aG sudo build-user
+
+    - name: Fix workspace permissions
+      run: |
+          chown -R build-user:sudo $GITHUB_WORKSPACE
+
+    - name: Build Bazel target
+      run: |
+        sudo -u build-user env PATH=$PATH bazelisk test -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+          --cxxopt="-stdlib=libc++" --linkopt="-stdlib=libc++" \
+          //xls/public:test_c_api_symbols
+        sudo -u build-user env PATH=$PATH bazelisk build -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+          --cxxopt="-stdlib=libc++" --linkopt="-stdlib=libc++" \
+          //xls/public:libxls.so \
+          //xls/public:c_api \
+          //xls/dslx:interpreter_main \
+          //xls/dslx/lsp:dslx_ls \
+          //xls/tools:opt_main \
+          //xls/tools:codegen_main \
+          //xls/dslx/ir_convert:ir_converter_main \
+          //xls/tools:delay_info_main \
+          //xls/dslx:dslx_fmt \
+          //xls/dslx:prove_quickcheck_main \
+          //xls/dslx/type_system:typecheck_main \
+          //xls/dslx:highlight_main \
+          //xls/dev_tools:check_ir_equivalence_main \
+          //xls/tools:block_to_verilog_main
+
+    - name: Create artifact directory
+      run: mkdir -p ubuntu2004-artifacts
+
+    - name: Copy Bazel target to ubuntu2004-artifacts
+      run: |
+        gzip -c bazel-bin/xls/public/libxls.so > ubuntu2004-artifacts/libxls-ubuntu2004.so.gz
+        sha256sum ubuntu2004-artifacts/libxls-ubuntu2004.so.gz > ubuntu2004-artifacts/libxls-ubuntu2004.so.gz.sha256
+        sha256sum bazel-bin/xls/public/libxls.so > ubuntu2004-artifacts/libxls-ubuntu2004.so.sha256
+
+        cp bazel-bin/xls/dslx/interpreter_main             ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004 > ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004.sha256
+
+        cp bazel-bin/xls/dslx/lsp/dslx_ls                  ubuntu2004-artifacts/dslx_ls-ubuntu2004
+        sha256sum ubuntu2004-artifacts/dslx_ls-ubuntu2004 > ubuntu2004-artifacts/dslx_ls-ubuntu2004.sha256
+
+        cp bazel-bin/xls/tools/opt_main                    ubuntu2004-artifacts/opt_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/opt_main-ubuntu2004 > ubuntu2004-artifacts/opt_main-ubuntu2004.sha256
+
+        cp bazel-bin/xls/tools/delay_info_main             ubuntu2004-artifacts/delay_info_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/delay_info_main-ubuntu2004 > ubuntu2004-artifacts/delay_info_main-ubuntu2004.sha256
+
+        cp bazel-bin/xls/dslx/dslx_fmt                     ubuntu2004-artifacts/dslx_fmt-ubuntu2004
+        sha256sum ubuntu2004-artifacts/dslx_fmt-ubuntu2004 > ubuntu2004-artifacts/dslx_fmt-ubuntu2004.sha256
+
+        cp bazel-bin/xls/dslx/prove_quickcheck_main        ubuntu2004-artifacts/prove_quickcheck_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/prove_quickcheck_main-ubuntu2004 > ubuntu2004-artifacts/prove_quickcheck_main-ubuntu2004.sha256
+
+        cp bazel-bin/xls/tools/codegen_main                ubuntu2004-artifacts/codegen_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/codegen_main-ubuntu2004 > ubuntu2004-artifacts/codegen_main-ubuntu2004.sha256
+
+        cp bazel-bin/xls/dslx/ir_convert/ir_converter_main ubuntu2004-artifacts/ir_converter_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/ir_converter_main-ubuntu2004 > ubuntu2004-artifacts/ir_converter_main-ubuntu2004.sha256
+
+        cp bazel-bin/xls/dslx/type_system/typecheck_main   ubuntu2004-artifacts/typecheck_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/typecheck_main-ubuntu2004 > ubuntu2004-artifacts/typecheck_main-ubuntu2004.sha256
+
+        cp bazel-bin/xls/dslx/highlight_main  ubuntu2004-artifacts/highlight_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/highlight_main-ubuntu2004 > ubuntu2004-artifacts/highlight_main-ubuntu2004.sha256
+
+        cp bazel-bin/xls/dev_tools/check_ir_equivalence_main ubuntu2004-artifacts/check_ir_equivalence_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/check_ir_equivalence_main-ubuntu2004 > ubuntu2004-artifacts/check_ir_equivalence_main-ubuntu2004.sha256
+
+        cp bazel-bin/xls/tools/block_to_verilog_main         ubuntu2004-artifacts/block_to_verilog_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/block_to_verilog_main-ubuntu2004 > ubuntu2004-artifacts/block_to_verilog_main-ubuntu2004.sha256
+
+    - name: Tarball stdlib files to ubuntu2004-artifacts
+      run: |
+        tar -czvvf ubuntu2004-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
+        sha256sum ubuntu2004-artifacts/dslx_stdlib.tar.gz > ubuntu2004-artifacts/dslx_stdlib.tar.gz.sha256
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ubuntu2004-artifacts
+        path: ubuntu2004-artifacts/
+
+  release:
+    needs:
+      - build-osx-arm64
+      - build-ubuntu2004
+      - build-rocky8
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Download osx-artifacts-arm64
+      uses: actions/download-artifact@v4
+      with:
+        name: osx-artifacts-arm64
+        path: osx-artifacts-arm64
+
+    - name: Download ubuntu2004-artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: ubuntu2004-artifacts
+        path: ubuntu2004-artifacts
+
+    - name: Download rocky8-artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: rocky8-artifacts
+        path: rocky8-artifacts
+
+    - name: Extract tag name
+      id: extract_tag
+      run: |
+        TAG_NAME=${GITHUB_REF#refs/tags/}
+        echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+        echo "Extracted tag name: $TAG_NAME"
+
+    - name: Download GitHub CLI
+      run: |
+        curl -sSL https://github.com/cli/cli/releases/download/v2.30.0/gh_2.30.0_linux_amd64.tar.gz -o ghcli.tar.gz
+        tar -xzf ghcli.tar.gz
+        sudo mv gh_2.30.0_linux_amd64/bin/gh /usr/local/bin/
+
+    - name: Create GitHub release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        TAG_NAME: ${{ env.TAG_NAME }}
+      run: |
+        export GH_TOKEN=${{ secrets.GITHUB_TOKEN }}
+        gh release create "$TAG_NAME" \
+          osx-artifacts-arm64/libxls-arm64.dylib.gz \
+          osx-artifacts-arm64/libxls-arm64.dylib.gz.sha256 \
+          osx-artifacts-arm64/libxls-arm64.dylib.sha256 \
+          osx-artifacts-arm64/dslx_interpreter_main-arm64 \
+          osx-artifacts-arm64/dslx_interpreter_main-arm64.sha256 \
+          osx-artifacts-arm64/dslx_ls-arm64 \
+          osx-artifacts-arm64/dslx_ls-arm64.sha256 \
+          osx-artifacts-arm64/opt_main-arm64 \
+          osx-artifacts-arm64/opt_main-arm64.sha256 \
+          osx-artifacts-arm64/delay_info_main-arm64 \
+          osx-artifacts-arm64/delay_info_main-arm64.sha256 \
+          osx-artifacts-arm64/dslx_fmt-arm64 \
+          osx-artifacts-arm64/dslx_fmt-arm64.sha256 \
+          osx-artifacts-arm64/prove_quickcheck_main-arm64 \
+          osx-artifacts-arm64/prove_quickcheck_main-arm64.sha256 \
+          osx-artifacts-arm64/codegen_main-arm64 \
+          osx-artifacts-arm64/codegen_main-arm64.sha256 \
+          osx-artifacts-arm64/ir_converter_main-arm64 \
+          osx-artifacts-arm64/ir_converter_main-arm64.sha256 \
+          osx-artifacts-arm64/typecheck_main-arm64 \
+          osx-artifacts-arm64/typecheck_main-arm64.sha256 \
+          osx-artifacts-arm64/highlight_main-arm64 \
+          osx-artifacts-arm64/highlight_main-arm64.sha256 \
+          osx-artifacts-arm64/check_ir_equivalence_main-arm64 \
+          osx-artifacts-arm64/check_ir_equivalence_main-arm64.sha256 \
+          osx-artifacts-arm64/block_to_verilog_main-arm64 \
+          osx-artifacts-arm64/block_to_verilog_main-arm64.sha256 \
+          ubuntu2004-artifacts/dslx_stdlib.tar.gz \
+          ubuntu2004-artifacts/dslx_stdlib.tar.gz.sha256 \
+          ubuntu2004-artifacts/libxls-ubuntu2004.so.gz \
+          ubuntu2004-artifacts/libxls-ubuntu2004.so.gz.sha256 \
+          ubuntu2004-artifacts/libxls-ubuntu2004.so.sha256 \
+          ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004 \
+          ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004.sha256 \
+          ubuntu2004-artifacts/dslx_ls-ubuntu2004 \
+          ubuntu2004-artifacts/dslx_ls-ubuntu2004.sha256 \
+          ubuntu2004-artifacts/opt_main-ubuntu2004 \
+          ubuntu2004-artifacts/opt_main-ubuntu2004.sha256 \
+          ubuntu2004-artifacts/delay_info_main-ubuntu2004 \
+          ubuntu2004-artifacts/delay_info_main-ubuntu2004.sha256 \
+          ubuntu2004-artifacts/dslx_fmt-ubuntu2004 \
+          ubuntu2004-artifacts/dslx_fmt-ubuntu2004.sha256 \
+          ubuntu2004-artifacts/prove_quickcheck_main-ubuntu2004 \
+          ubuntu2004-artifacts/prove_quickcheck_main-ubuntu2004.sha256 \
+          ubuntu2004-artifacts/codegen_main-ubuntu2004 \
+          ubuntu2004-artifacts/codegen_main-ubuntu2004.sha256 \
+          ubuntu2004-artifacts/ir_converter_main-ubuntu2004 \
+          ubuntu2004-artifacts/ir_converter_main-ubuntu2004.sha256 \
+          ubuntu2004-artifacts/typecheck_main-ubuntu2004 \
+          ubuntu2004-artifacts/typecheck_main-ubuntu2004.sha256 \
+          ubuntu2004-artifacts/highlight_main-ubuntu2004 \
+          ubuntu2004-artifacts/highlight_main-ubuntu2004.sha256 \
+          ubuntu2004-artifacts/check_ir_equivalence_main-ubuntu2004 \
+          ubuntu2004-artifacts/check_ir_equivalence_main-ubuntu2004.sha256 \
+          ubuntu2004-artifacts/block_to_verilog_main-ubuntu2004 \
+          ubuntu2004-artifacts/block_to_verilog_main-ubuntu2004.sha256 \
+          rocky8-artifacts/libxls-rocky8.so.gz \
+          rocky8-artifacts/libxls-rocky8.so.gz.sha256 \
+          rocky8-artifacts/libxls-rocky8.so.sha256 \
+          rocky8-artifacts/dslx_interpreter_main-rocky8 \
+          rocky8-artifacts/dslx_interpreter_main-rocky8.sha256 \
+          rocky8-artifacts/dslx_ls-rocky8 \
+          rocky8-artifacts/dslx_ls-rocky8.sha256 \
+          rocky8-artifacts/opt_main-rocky8 \
+          rocky8-artifacts/opt_main-rocky8.sha256 \
+          rocky8-artifacts/delay_info_main-rocky8 \
+          rocky8-artifacts/delay_info_main-rocky8.sha256 \
+          rocky8-artifacts/dslx_fmt-rocky8 \
+          rocky8-artifacts/dslx_fmt-rocky8.sha256 \
+          rocky8-artifacts/prove_quickcheck_main-rocky8 \
+          rocky8-artifacts/prove_quickcheck_main-rocky8.sha256 \
+          rocky8-artifacts/codegen_main-rocky8 \
+          rocky8-artifacts/codegen_main-rocky8.sha256 \
+          rocky8-artifacts/ir_converter_main-rocky8 \
+          rocky8-artifacts/ir_converter_main-rocky8.sha256 \
+          rocky8-artifacts/typecheck_main-rocky8 \
+          rocky8-artifacts/typecheck_main-rocky8.sha256 \
+          rocky8-artifacts/highlight_main-rocky8 \
+          rocky8-artifacts/highlight_main-rocky8.sha256 \
+          rocky8-artifacts/check_ir_equivalence_main-rocky8 \
+          rocky8-artifacts/check_ir_equivalence_main-rocky8.sha256 \
+          rocky8-artifacts/block_to_verilog_main-rocky8 \
+          rocky8-artifacts/block_to_verilog_main-rocky8.sha256 \
+          --title "Release $TAG_NAME" \
+          --notes "Automated release of $TAG_NAME"

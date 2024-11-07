@@ -17,6 +17,7 @@ XLS uses."""
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
+load("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
 
 def repo():
     # See MODULE.bazel for the bzlmod-enabled deps.
@@ -40,4 +41,5 @@ def repo():
         urls = [
             "https://github.com/hdl/bazel_rules_hdl/archive/%s.tar.gz" % git_hash,
         ],
+        patches = ["//dependency_support/rules_hdl:rules_hdl.patch"],
     )
