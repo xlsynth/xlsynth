@@ -56,6 +56,7 @@ def load_external_repositories():
         integrity = "sha256-gaAsLGTGTWw98jP1kYa5VieZCtoMTC/JAcnCWnByZyo=",
         strip_prefix = "z3-z3-4.14.1",
         build_file = "//dependency_support/z3:bundled.BUILD.bazel",
+        patches = ["//dependency_support:z3.patch"],
     )
 
     # Release 2024-02-23, current as of 2024-06-26
