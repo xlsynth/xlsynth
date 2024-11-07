@@ -14,6 +14,7 @@
 
 #include "xls/dslx/type_system_v2/type_annotation_utils.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -30,7 +31,6 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/substitute.h"
-#include "xls/common/casts.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/errors.h"
 #include "xls/dslx/frontend/ast.h"
@@ -120,7 +120,7 @@ TypeAnnotation* CreateStructAnnotation(Module& module,
                                        const StructOrProcRef& ref) {
   CHECK(ref.def->kind() == AstNodeKind::kStructDef);
   return CreateStructAnnotation(
-      module, down_cast<StructDef*>(const_cast<StructDefBase*>(ref.def)),
+      module, dynamic_cast<StructDef*>(const_cast<StructDefBase*>(ref.def)),
       ref.parametrics, std::nullopt);
 }
 
@@ -139,14 +139,12 @@ ChannelTypeAnnotation* GetChannelArrayElementType(
 
 absl::StatusOr<SignednessAndBitCountResult> GetSignednessAndBitCount(
     const TypeAnnotation* annotation, bool ignore_missing_dimensions) {
-  if (annotation->IsAnnotation<BuiltinTypeAnnotation>()) {
-    const auto* builtin_annotation =
-        annotation->AsAnnotation<BuiltinTypeAnnotation>();
+  if (const auto* builtin_annotation =
+          dynamic_cast<const BuiltinTypeAnnotation*>(annotation)) {
     if (ignore_missing_dimensions) {
       absl::StatusOr<bool> signedness = builtin_annotation->GetSignedness();
-      return SignednessAndBitCountResult{
-          .signedness = signedness.value_or(false),
-          .bit_count = builtin_annotation->GetBitCount()};
+      return SignednessAndBitCountResult(signedness.value_or(false),
+                                         builtin_annotation->GetBitCount());
     }
     switch (builtin_annotation->builtin_type()) {
       case BuiltinType::kXN:
@@ -167,25 +165,24 @@ absl::StatusOr<SignednessAndBitCountResult> GetSignednessAndBitCount(
         // array-style bit count inside the builtin annotation.
         XLS_ASSIGN_OR_RETURN(bool signedness,
                              builtin_annotation->GetSignedness());
-        return SignednessAndBitCountResult{
-            .signedness = signedness,
-            .bit_count = builtin_annotation->GetBitCount()};
+        return SignednessAndBitCountResult(signedness,
+                                           builtin_annotation->GetBitCount());
     }
   }
-  if (annotation->IsAnnotation<ArrayTypeAnnotation>()) {
-    const auto* array_annotation =
-        annotation->AsAnnotation<ArrayTypeAnnotation>();
+  if (const auto* array_annotation =
+          dynamic_cast<const ArrayTypeAnnotation*>(annotation)) {
     SignednessAndBitCountResult result;
     bool multi_dimensional = false;
-    if (array_annotation->element_type()->IsAnnotation<ArrayTypeAnnotation>()) {
+    if (const auto* inner_array_annotation =
+            dynamic_cast<const ArrayTypeAnnotation*>(
+                array_annotation->element_type())) {
       // If the array has 2 dimensions, let's work with the hypothesis that it's
       // an `xN[S][N]` kind of annotation. We retain the bit count, which is the
       // outer dim, and unwrap the inner array to be processed below. If it
       // turns out to be some other multi-dimensional array type that does not
       // have a signedness and bit count, we will fail below.
       result.bit_count = array_annotation->dim();
-      array_annotation =
-          array_annotation->element_type()->AsAnnotation<ArrayTypeAnnotation>();
+      array_annotation = inner_array_annotation;
       multi_dimensional = true;
     }
     // If the element type has a zero bit count, that means the bit count is
@@ -193,34 +190,32 @@ absl::StatusOr<SignednessAndBitCountResult> GetSignednessAndBitCount(
     // it's an array of multiple integers with an implied bit count (e.g.
     // `s32[N]`). This function isn't applicable to the latter, and will error
     // below.
-    if (array_annotation->element_type()
-            ->IsAnnotation<BuiltinTypeAnnotation>()) {
-      const auto* builtin_element_annotation =
-          array_annotation->element_type()
-              ->AsAnnotation<BuiltinTypeAnnotation>();
-      if (builtin_element_annotation->GetBitCount() == 0) {
-        if (builtin_element_annotation->builtin_type() == BuiltinType::kXN) {
-          // `xN` has an expression for the signedness, which appears as the
-          // inner array dim.
-          if (!multi_dimensional && !ignore_missing_dimensions) {
-            return absl::InvalidArgumentError(
-                "`xN` requires a specified bit count.");
-          }
-          result.signedness = array_annotation->dim();
-        } else if (multi_dimensional) {
-          // This is something like uN[32][2].
-          return absl::NotFoundError(absl::Substitute(
-              "Type annotation $0 does not have a signedness and bit count.",
-              annotation->ToString()));
-        } else {
-          // All other types, e.g. `uN`, `sN`, and `bits`, have an implied
-          // signedness that we can just get as a bool.
-          result.bit_count = array_annotation->dim();
-          XLS_ASSIGN_OR_RETURN(result.signedness,
-                               builtin_element_annotation->GetSignedness());
+    if (const auto* builtin_element_annotation =
+            dynamic_cast<const BuiltinTypeAnnotation*>(
+                array_annotation->element_type());
+        builtin_element_annotation != nullptr &&
+        builtin_element_annotation->GetBitCount() == 0) {
+      if (builtin_element_annotation->builtin_type() == BuiltinType::kXN) {
+        // `xN` has an expression for the signedness, which appears as the inner
+        // array dim.
+        if (!multi_dimensional && !ignore_missing_dimensions) {
+          return absl::InvalidArgumentError(
+              "`xN` requires a specified bit count.");
         }
-        return result;
+        result.signedness = array_annotation->dim();
+      } else if (multi_dimensional) {
+        // This is something like uN[32][2].
+        return absl::NotFoundError(absl::Substitute(
+            "Type annotation $0 does not have a signedness and bit count.",
+            annotation->ToString()));
+      } else {
+        // All other types, e.g. `uN`, `sN`, and `bits`, have an implied
+        // signedness that we can just get as a bool.
+        result.bit_count = array_annotation->dim();
+        XLS_ASSIGN_OR_RETURN(result.signedness,
+                             builtin_element_annotation->GetSignedness());
       }
+      return result;
     }
   }
   return absl::NotFoundError(
@@ -290,7 +285,9 @@ const TypeAnnotation* GetReturnType(Module& module, const Function& fn) {
 
 const ArrayTypeAnnotation* CastToNonBitsArrayTypeAnnotation(
     const TypeAnnotation* annotation) {
-  if (!annotation->IsAnnotation<ArrayTypeAnnotation>()) {
+  const auto* array_annotation =
+      dynamic_cast<const ArrayTypeAnnotation*>(annotation);
+  if (array_annotation == nullptr) {
     return nullptr;
   }
   // If the signedness and bit count can be retrieved, then it's some flavor of
@@ -301,7 +298,7 @@ const ArrayTypeAnnotation* CastToNonBitsArrayTypeAnnotation(
       GetSignednessAndBitCount(annotation);
   return !signedness_and_bit_count.ok() &&
                  !absl::IsInvalidArgument(signedness_and_bit_count.status())
-             ? annotation->AsAnnotation<ArrayTypeAnnotation>()
+             ? array_annotation
              : nullptr;
 }
 
@@ -331,13 +328,12 @@ absl::Status VerifyAllParametricsSatisfied(
 CloneReplacer NameRefMapper(
     const absl::flat_hash_map<const NameDef*, ExprOrType>& map) {
   return [&](const AstNode* node) -> absl::StatusOr<std::optional<AstNode*>> {
-    if (node->kind() == AstNodeKind::kNameRef) {
-      const auto* ref = down_cast<const NameRef*>(node);
-      if (std::holds_alternative<const NameDef*>(ref->name_def())) {
-        const auto it = map.find(std::get<const NameDef*>(ref->name_def()));
-        if (it != map.end()) {
-          return ToAstNode(it->second);
-        }
+    if (const auto* ref = dynamic_cast<const NameRef*>(node);
+        ref != nullptr &&
+        std::holds_alternative<const NameDef*>(ref->name_def())) {
+      const auto it = map.find(std::get<const NameDef*>(ref->name_def()));
+      if (it != map.end()) {
+        return ToAstNode(it->second);
       }
     }
     return std::nullopt;
@@ -412,16 +408,18 @@ absl::StatusOr<InterpValueWithTypeAnnotation> GetBuiltinMember(
 }
 
 bool IsToken(const TypeAnnotation* annotation) {
-  return annotation->IsAnnotation<BuiltinTypeAnnotation>() &&
-         annotation->AsAnnotation<BuiltinTypeAnnotation>()->builtin_type() ==
-             BuiltinType::kToken;
+  if (const auto* built_in =
+          dynamic_cast<const BuiltinTypeAnnotation*>(annotation)) {
+    return built_in->builtin_type() == BuiltinType::kToken;
+  }
+  return false;
 }
 
 const BuiltinTypeAnnotation* CastToTokenType(const TypeAnnotation* annotation) {
   if (!IsToken(annotation)) {
     return nullptr;
   }
-  return down_cast<const BuiltinTypeAnnotation*>(annotation);
+  return dynamic_cast<const BuiltinTypeAnnotation*>(annotation);
 }
 
 const FunctionTypeAnnotation* ExpandVarargs(
@@ -440,21 +438,36 @@ const FunctionTypeAnnotation* ExpandVarargs(
 }
 
 bool IsBitsLikeFragment(const TypeAnnotation* annotation) {
-  if (annotation->IsAnnotation<BuiltinTypeAnnotation>()) {
-    const auto* builtin = annotation->AsAnnotation<BuiltinTypeAnnotation>();
+  if (const auto* builtin =
+          dynamic_cast<const BuiltinTypeAnnotation*>(annotation)) {
     return builtin->builtin_type() == BuiltinType::kXN ||
            builtin->builtin_type() == BuiltinType::kUN ||
            builtin->builtin_type() == BuiltinType::kSN ||
            builtin->builtin_type() == BuiltinType::kBits;
   }
-  if (annotation->IsAnnotation<ArrayTypeAnnotation>()) {
+  if (const auto* array =
+          dynamic_cast<const ArrayTypeAnnotation*>(annotation)) {
     // The immediate element type of a complete xN annotation would be a nested
     // array type and not xN.
-    const auto* array = annotation->AsAnnotation<ArrayTypeAnnotation>();
-    return array->element_type()->IsAnnotation<BuiltinTypeAnnotation>() &&
-           array->element_type()
-                   ->AsAnnotation<BuiltinTypeAnnotation>()
-                   ->builtin_type() == BuiltinType::kXN;
+    const auto* builtin_element =
+        dynamic_cast<const BuiltinTypeAnnotation*>(array->element_type());
+    return builtin_element != nullptr &&
+           builtin_element->builtin_type() == BuiltinType::kXN;
+  }
+  return false;
+}
+
+bool IsRangeInMatchArm(const Range* range) {
+  if (const NameDefTree* namedef =
+          dynamic_cast<const NameDefTree*>(range->parent())) {
+    if (const MatchArm* matcharm =
+            dynamic_cast<const MatchArm*>(namedef->parent())) {
+      auto& patterns = matcharm->patterns();
+      if (std::find(patterns.begin(), patterns.end(), namedef) !=
+          patterns.end()) {
+        return true;
+      }
+    }
   }
   return false;
 }
