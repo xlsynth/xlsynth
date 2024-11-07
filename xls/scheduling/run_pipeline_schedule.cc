@@ -44,9 +44,9 @@
 #include "xls/common/status/status_macros.h"
 #include "xls/data_structures/binary_search.h"
 #include "xls/estimators/delay_model/delay_estimator.h"
-#include "xls/fdo/delay_manager.h"
-#include "xls/fdo/iterative_sdc_scheduler.h"
-#include "xls/fdo/synthesizer.h"
+//#include "xls/fdo/delay_manager.h"
+//#include "xls/fdo/iterative_sdc_scheduler.h"
+//#include "xls/fdo/synthesizer.h"
 #include "xls/ir/channel.h"
 #include "xls/ir/channel_ops.h"
 #include "xls/ir/function.h"
@@ -576,6 +576,8 @@ absl::StatusOr<PipelineSchedule> RunPipelineScheduleInternal(
   if (options.strategy() == SchedulingStrategy::SDC) {
     // Enable iterative SDC scheduling when use_fdo is true
     if (options.use_fdo()) {
+      LOG(FATAL) << "Iterative SDC (FDO) is not supported in this release.";
+#if 0
       if (!options.clock_period_ps().has_value()) {
         return absl::UnimplementedError(
             "Iterative SDC scheduling is only supported when a clock period is "
@@ -610,6 +612,7 @@ absl::StatusOr<PipelineSchedule> RunPipelineScheduleInternal(
 
       XLS_VLOG_LINES(3, "Schedule\n" + schedule.ToString());
       return schedule;
+#endif
     }
 
     XLS_RETURN_IF_ERROR(initialize_sdc_scheduler());
