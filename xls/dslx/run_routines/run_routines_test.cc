@@ -23,30 +23,21 @@
 #include <utility>
 #include <vector>
 
-<<<<<<< HEAD
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
-=======
->>>>>>> 05df0774f ([DSLX] Get quickchecks of enums to work properly.)
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
-<<<<<<< HEAD
-=======
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "re2/re2.h"
->>>>>>> 05df0774f ([DSLX] Get quickchecks of enums to work properly.)
 #include "xls/common/file/filesystem.h"
 #include "xls/common/file/temp_file.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/default_dslx_stdlib_path.h"
-<<<<<<< HEAD
 #include "xls/dslx/frontend/ast.h"
-=======
->>>>>>> 05df0774f ([DSLX] Get quickchecks of enums to work properly.)
 #include "xls/dslx/run_routines/ir_test_runner.h"
 #include "xls/dslx/run_routines/run_comparator.h"
 #include "xls/dslx/type_system/type.h"
