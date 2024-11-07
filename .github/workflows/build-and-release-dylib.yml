@@ -50,7 +50,7 @@ jobs:
         cp bazel-bin/xls/dslx/lsp/dslx_ls osx-artifacts-arm64/dslx_ls-arm64
         cp bazel-bin/xls/tools/opt_main osx-artifacts-arm64/opt_main-arm64
         cp bazel-bin/xls/tools/delay_info_main osx-artifacts-arm64/delay_info_main-arm64
-        cp bazel-bin/xls/tools/dslx_fmt osx-artifacts-arm64/dslx_fmt-arm64
+        cp bazel-bin/xls/dslx/dslx_fmt osx-artifacts-arm64/dslx_fmt-arm64
         cp bazel-bin/xls/tools/codegen_main osx-artifacts-arm64/codegen_main-arm64
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main osx-artifacts-arm64/ir_converter_main-arm64
 
@@ -101,7 +101,7 @@ jobs:
         cp bazel-bin/xls/dslx/lsp/dslx_ls osx-artifacts-x64/dslx_ls-x64
         cp bazel-bin/xls/tools/opt_main osx-artifacts-x64/opt_main-x64
         cp bazel-bin/xls/tools/delay_info_main osx-artifacts-x64/delay_info_main-x64
-        cp bazel-bin/xls/tools/dslx_fmt osx-artifacts-x64/dslx_fmt-x64
+        cp bazel-bin/xls/dslx/dslx_fmt osx-artifacts-x64/dslx_fmt-x64
         cp bazel-bin/xls/tools/codegen_main osx-artifacts-x64/codegen_main-x64
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main osx-artifacts-x64/ir_converter_main-x64
 
@@ -165,7 +165,7 @@ jobs:
         cp bazel-bin/xls/dslx/lsp/dslx_ls                   rocky8-artifacts/dslx_ls-rocky8
         cp bazel-bin/xls/tools/opt_main                     rocky8-artifacts/opt_main-rocky8
         cp bazel-bin/xls/tools/delay_info_main              rocky8-artifacts/delay_info_main-rocky8
-        cp bazel-bin/xls/tools/dslx_fmt                     rocky8-artifacts/dslx_fmt-rocky8
+        cp bazel-bin/xls/dslx/dslx_fmt                      rocky8-artifacts/dslx_fmt-rocky8
         cp bazel-bin/xls/tools/codegen_main                 rocky8-artifacts/codegen_main-rocky8
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main  rocky8-artifacts/ir_converter_main-rocky8
 
@@ -219,7 +219,7 @@ jobs:
         cp bazel-bin/xls/dslx/lsp/dslx_ls                  ubuntu2004-artifacts/dslx_ls-ubuntu2004
         cp bazel-bin/xls/tools/opt_main                    ubuntu2004-artifacts/opt_main-ubuntu2004
         cp bazel-bin/xls/tools/delay_info_main             ubuntu2004-artifacts/delay_info_main-ubuntu2004
-        cp bazel-bin/xls/tools/dslx_fmt                    ubuntu2004-artifacts/dslx_fmt-ubuntu2004
+        cp bazel-bin/xls/dslx/dslx_fmt                     ubuntu2004-artifacts/dslx_fmt-ubuntu2004
         cp bazel-bin/xls/tools/codegen_main                ubuntu2004-artifacts/codegen_main-ubuntu2004
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main ubuntu2004-artifacts/ir_converter_main-ubuntu2004
 
@@ -286,7 +286,7 @@ jobs:
         cp bazel-bin/xls/dslx/lsp/dslx_ls                  ubuntu2204-artifacts/dslx_ls-ubuntu2204
         cp bazel-bin/xls/tools/opt_main                    ubuntu2204-artifacts/opt_main-ubuntu2204
         cp bazel-bin/xls/tools/delay_info_main             ubuntu2204-artifacts/delay_info_main-ubuntu2204
-        cp bazel-bin/xls/tools/dslx_fmt                    ubuntu2204-artifacts/dslx_fmt-ubuntu2204
+        cp bazel-bin/xls/dslx/dslx_fmt                     ubuntu2204-artifacts/dslx_fmt-ubuntu2204
         cp bazel-bin/xls/tools/codegen_main                ubuntu2204-artifacts/codegen_main-ubuntu2204
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main ubuntu2204-artifacts/ir_converter_main-ubuntu2204
 
