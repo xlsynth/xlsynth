@@ -404,6 +404,7 @@ class Type {
   const ProcType& AsProc() const;
   const EnumType& AsEnum() const;
   const ArrayType& AsArray() const;
+  ArrayType& AsArray();
   const MetaType& AsMeta() const;
   const TupleType& AsTuple() const;
 
@@ -781,7 +782,9 @@ class ArrayType : public Type {
   }
 
   const Type& element_type() const { return *element_type_; }
+  Type& element_type() { return *element_type_; }
   const TypeDim& size() const { return size_; }
+  TypeDim& size() { return size_; }
 
  private:
   std::unique_ptr<Type> element_type_;
