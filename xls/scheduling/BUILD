@@ -213,6 +213,18 @@ cc_library(
     srcs = ["run_pipeline_schedule.cc"],
     hdrs = ["run_pipeline_schedule.h"],
     deps = [
+        "//xls/common/logging:log_lines",
+        "//xls/common/status:ret_check",
+        "//xls/common/status:status_macros",
+        "//xls/data_structures:binary_search",
+        "//xls/estimators/delay_model:delay_estimator",
+        #"//xls/fdo:delay_manager",
+        #"//xls/fdo:synthesizer",
+        "//xls/ir",
+        "//xls/ir:channel",
+        "//xls/ir:channel_ops",
+        "//xls/ir:node_util",
+        "//xls/ir:op",
         ":min_cut_scheduler",
         ":pipeline_schedule",
         ":schedule_bounds",
@@ -245,6 +257,7 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
+        #"//xls/fdo:iterative_sdc_scheduler",
     ],
 )
 
