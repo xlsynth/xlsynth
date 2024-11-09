@@ -42,7 +42,7 @@ jobs:
 
     - name: Install Clang
       run: |
-        dnf install llvm-toolset
+        dnf install -y llvm-toolset
 
     - name: Note Clang version
       run: clang --version
