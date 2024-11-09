@@ -42,7 +42,7 @@ jobs:
 
     - name: Install Clang-17
       run: |
-        dnf install -y llvm-toolset
+        dnf install -y llvm-toolset:17
 
     - name: Note Clang version
       run: clang-17 --version
