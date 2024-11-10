@@ -115,7 +115,7 @@ jobs:
 
   build-rocky8:
     runs-on: ubuntu-latest  # Use a GitHub-hosted runner
-    container: rockylinux:8 # Specify the Docker container
+    container: rockylinux:8.9 # Specify the Docker container
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
@@ -139,12 +139,12 @@ jobs:
         mv bazelisk /usr/local/bin/
         bazelisk version
 
-    - name: Install Clang-17
+    - name: Install Clang
       run: |
         dnf install -y llvm-toolset
 
     - name: Note Clang version
-      run: clang-17 --version
+      run: clang --version
 
     - name: Install build essentials
       run: |
@@ -154,8 +154,8 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        CC=clang-17 CXX=clang++-17 bazelisk test -c opt //xls/public:test_c_api_symbols
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main //xls/dslx:dslx_fmt //xls/dslx:prove_quickcheck_main
+        CC=clang CXX=clang++ bazelisk test -c opt //xls/public:test_c_api_symbols
+        CC=clang CXX=clang++ bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main //xls/dslx:dslx_fmt //xls/dslx:prove_quickcheck_main
 
     - name: Create artifact directory
       run: mkdir -p rocky8-artifacts
