@@ -520,7 +520,7 @@ fn test_all_ones_macro() {
 
 The `all_ones!<T>` macro can also be used with the struct update syntax to
 initialize a subset of fields to zero. In the example below all fields except
-`foo` are initialized to zero in the struct returned by `f`.
+`foo` are initialized to all ones in the struct returned by `f`.
 
 ```dslx
 struct MyStruct {
