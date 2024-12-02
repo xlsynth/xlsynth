@@ -73,6 +73,9 @@ struct xls_dslx_type_info* xls_dslx_typechecked_module_get_type_info(
 int64_t xls_dslx_module_get_type_definition_count(
     struct xls_dslx_module* module);
 
+// Note: return value is owned by the caller, free via `xls_c_str_free`.
+char* xls_dslx_module_get_name(struct xls_dslx_module*);
+
 xls_dslx_type_definition_kind xls_dslx_module_get_type_definition_kind(
     struct xls_dslx_module* module, int64_t i);
 
@@ -149,10 +152,18 @@ struct xls_dslx_type_definition* xls_dslx_type_ref_get_type_definition(
 struct xls_dslx_colon_ref* xls_dslx_type_definition_get_colon_ref(
     struct xls_dslx_type_definition*);
 
+// -- import
+
+int64_t xls_dslx_import_get_subject_count(struct xls_dslx_import*);
+char* xls_dslx_import_get_subject(struct xls_dslx_import*, int64_t);
+
 // -- colon_ref
 
 struct xls_dslx_import* xls_dslx_colon_ref_resolve_import_subject(
     struct xls_dslx_colon_ref*);
+
+// Note: return value is owned by the caller, free via `xls_c_str_free`.
+char* xls_dslx_colon_ref_get_attr(struct xls_dslx_colon_ref*);
 
 // -- type_alias
 
@@ -277,7 +288,8 @@ struct xls_dslx_enum_def* xls_dslx_type_get_enum_def(struct xls_dslx_type*);
 struct xls_dslx_struct_def* xls_dslx_type_get_struct_def(struct xls_dslx_type*);
 
 // Precondition: xls_dslx_type_is_array
-struct xls_dslx_type* xls_dslx_type_array_get_element_type(struct xls_dslx_type*);
+struct xls_dslx_type* xls_dslx_type_array_get_element_type(
+    struct xls_dslx_type*);
 
 // Note: returned xls_dslx_type_dim is owned by the caller and must be
 // deallocated.
@@ -287,11 +299,11 @@ struct xls_dslx_type_dim* xls_dslx_type_array_get_size(struct xls_dslx_type*);
 
 bool xls_dslx_type_dim_is_parametric(struct xls_dslx_type_dim*);
 
-bool xls_dslx_type_dim_get_as_bool(struct xls_dslx_type_dim*,
-                                   char** error_out, bool* result_out);
+bool xls_dslx_type_dim_get_as_bool(struct xls_dslx_type_dim*, char** error_out,
+                                   bool* result_out);
 
-bool xls_dslx_type_dim_get_as_int64(struct xls_dslx_type_dim*,
-                                    char** error_out, int64_t* result_out);
+bool xls_dslx_type_dim_get_as_int64(struct xls_dslx_type_dim*, char** error_out,
+                                    int64_t* result_out);
 
 void xls_dslx_type_dim_free(struct xls_dslx_type_dim*);
 

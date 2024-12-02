@@ -17,8 +17,8 @@
 #include <bit>
 #include <cstdint>
 
-#include "absl/log/log.h"
 #include "absl/base/casts.h"
+#include "absl/log/log.h"
 
 extern "C" void* c_export_xls_GetEmulatedMsanTLSAddr(void* selector) {
   return xls::GetEmulatedMsanTLSAddr(selector);
