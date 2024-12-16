@@ -226,6 +226,13 @@ std::optional<ModuleMember*> Module::FindMemberWithName(
       if (std::get<Function*>(member)->identifier() == target) {
         return &member;
       }
+    } else if (std::holds_alternative<Use*>(member)) {
+      Use* use = std::get<Use*>(member);
+      for (const auto& name : use->GetLeafIdentifiers()) {
+        if (name == target) {
+          return &member;
+        }
+      }
     } else if (std::holds_alternative<Proc*>(member)) {
       if (std::get<Proc*>(member)->identifier() == target) {
         return &member;

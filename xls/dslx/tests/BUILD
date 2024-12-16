@@ -691,6 +691,11 @@ xls_dslx_library(
 )
 
 dslx_lang_test(
+    name = "mod_use_multi",
+    dslx_deps = [":mod_imported_dslx"],
+)
+
+dslx_lang_test(
     name = "mod_importer",
     dslx_deps = [":mod_imported_dslx"],
 )
