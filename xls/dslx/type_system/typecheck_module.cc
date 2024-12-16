@@ -226,9 +226,16 @@ absl::Status TypecheckModuleMember(const ModuleMember& member, Module* module,
                                         imported->type_info());
             return absl::OkStatus();
           },
-          [](Use* use) -> absl::Status {
-            return absl::UnimplementedError(
-                "`use` statements are not yet supported for typechecking");
+          [import_data, ctx](Use* use) -> absl::Status {
+            std::vector<UseSubject> subjects = use->LinearizeToSubjects();
+            for (const UseSubject& subject : subjects) {
+              XLS_ASSIGN_OR_RETURN(ModuleInfo* imported, DoImportViaUse(
+                ctx->typecheck_module(), subject, import_data, subject.name_def->span(), import_data->vfs()));
+
+              ctx->type_info()->AddImport(use, &imported->module(),
+                                          imported->type_info());
+            }
+            return absl::OkStatus();
           },
           [ctx](ConstantDef* member) -> absl::Status {
             return ctx->Deduce(ToAstNode(member)).status();

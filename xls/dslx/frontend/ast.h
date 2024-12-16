@@ -1364,6 +1364,13 @@ class UseInteriorEntry {
   std::vector<UseTreeEntry*> subtrees_;
 };
 
+struct UseSubject {
+  std::vector<std::string> identifiers;
+  const NameDef* name_def;
+
+  std::string ToErrorString() const;
+};
+
 // Arbitrary entry (interior or leaf) in the `use` construct tree.
 class UseTreeEntry : public AstNode {
  public:
@@ -1388,6 +1395,10 @@ class UseTreeEntry : public AstNode {
     return payload_;
   }
   const Span& span() const { return span_; }
+
+  void LinearizeToSubjects(
+      std::vector<std::string>& prefix,
+      std::vector<UseSubject>& results) const;
 
  private:
   std::variant<UseInteriorEntry, NameDef*> payload_;
@@ -1430,11 +1441,19 @@ class Use : public AstNode {
 
   std::vector<AstNode*> GetChildren(bool want_types) const override;
 
+  // Returns all the identifiers of the `NameDef`s at the leaves of the tree.
   std::vector<std::string> GetLeafIdentifiers() const {
     return root_->GetLeafIdentifiers();
   }
   std::vector<NameDef*> GetLeafNameDefs() const {
     return root_->GetLeafNameDefs();
+  }
+
+  std::vector<UseSubject> LinearizeToSubjects() const {
+    std::vector<std::string> prefix;
+    std::vector<UseSubject> results;
+    root_->LinearizeToSubjects(prefix, results);
+    return results;
   }
 
   UseTreeEntry& root() { return *root_; }

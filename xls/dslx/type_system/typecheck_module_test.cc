@@ -561,6 +561,20 @@ proc Bar {
       ParseAndTypecheck(kProgram, "fake_main_path.x", "main", &import_data));
 }
 
+TEST(TypecheckTest, UseOfConstant) {
+  constexpr std::string_view kImported = R"(
+pub const MY_CONSTANT: u32 = u32:42;
+)";
+  constexpr std::string_view kProgram = R"(
+use imported::MY_CONSTANT;
+
+fn f() -> u32 {
+  MY_CONSTANT
+}
+)";
+  XLS_EXPECT_OK(Typecheck(kProgram));
+}
+
 TEST(TypecheckTest, FailsOnProcWithImplAsImportedStructMember) {
   constexpr std::string_view kImported = R"(
 pub proc Foo {

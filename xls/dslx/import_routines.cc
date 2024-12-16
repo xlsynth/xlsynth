@@ -171,36 +171,21 @@ static absl::StatusOr<DslxPath> FindExistingPath(
       vfs.GetCurrentDirectory().value(), stdlib_path));
 }
 
-absl::StatusOr<ModuleInfo*> DoImport(const TypecheckModuleFn& ftypecheck,
-                                     const ImportTokens& subject,
-                                     ImportData* import_data,
-                                     const Span& import_span,
-                                     VirtualizableFilesystem& vfs) {
-  XLS_RET_CHECK(import_data != nullptr);
-  if (import_data->Contains(subject)) {
-    VLOG(3) << "DoImport (cached) subject: " << subject.ToString();
-    return import_data->Get(subject);
-  }
-
-  VLOG(3) << "DoImport (uncached) subject: " << subject.ToString();
-
-  FileTable& file_table = import_data->file_table();
-  XLS_ASSIGN_OR_RETURN(DslxPath dslx_path,
-                       FindExistingPath(subject, import_data->stdlib_path(),
-                                        import_data->additional_search_paths(),
-                                        import_span, file_table, vfs));
-
-  VLOG(3) << "Found DSLX path: " << dslx_path.ToString();
-
+static absl::StatusOr<std::unique_ptr<ModuleInfo>>
+DslxPathToModuleInfo(
+  ImportData* import_data, const ImportTokens& subject, const DslxPath& dslx_path,
+  const Span& span,
+  FileTable& file_table,
+  VirtualizableFilesystem& vfs) {
   // We make a note about the import that's about to happen:
   // - so we can detect circular imports
   // - so that external entities can observe what's happening in the import
   // process, e.g. if they
   //   wanted to understand the dependency DAG
   XLS_RETURN_IF_ERROR(
-      import_data->AddToImporterStack(import_span, dslx_path.source_path));
+      import_data->AddToImporterStack(span, dslx_path.source_path));
   absl::Cleanup cleanup = absl::MakeCleanup(
-      [&] { CHECK_OK(import_data->PopFromImporterStack(import_span)); });
+      [&] { CHECK_OK(import_data->PopFromImporterStack(span)); });
 
   // Use the "filesystem_path" for reading the contents but the "source_path"
   // for other uses. This avoids decorated paths like
@@ -225,9 +210,89 @@ absl::StatusOr<ModuleInfo*> DoImport(const TypecheckModuleFn& ftypecheck,
 
   VLOG(3) << "Parsing and typechecking " << fully_qualified_name << ": done";
 
+  return std::make_unique<ModuleInfo>(std::move(module), type_info,
+                                            std::move(dslx_path.source_path))
+}
+
+absl::StatusOr<ModuleInfo*> DoImport(const TypecheckModuleFn& ftypecheck,
+                                     const ImportTokens& subject,
+                                     ImportData* import_data,
+                                     const Span& import_span,
+                                     VirtualizableFilesystem& vfs) {
+  XLS_RET_CHECK(import_data != nullptr);
+  if (import_data->Contains(subject)) {
+    VLOG(3) << "DoImport (cached) subject: " << subject.ToString();
+    return import_data->Get(subject);
+  }
+
+  VLOG(3) << "DoImport (uncached) subject: " << subject.ToString();
+
+  FileTable& file_table = import_data->file_table();
+  XLS_ASSIGN_OR_RETURN(DslxPath dslx_path,
+                       FindExistingPath(subject, import_data->stdlib_path(),
+                                        import_data->additional_search_paths(),
+                                        import_span, file_table, vfs));
+
+  VLOG(3) << "Found DSLX path: " << dslx_path.ToString();
+
+  XLS_ASSIGN_OR_RETURN(std::unique_ptr<ModuleInfo> module_info, DslxPathToModuleInfo(
+    import_data, subject, dslx_path, import_span));
+
   return import_data->Put(
-      subject, std::make_unique<ModuleInfo>(std::move(module), type_info,
-                                            std::move(dslx_path.source_path)));
+      subject, std::move(module_info));
+}
+
+absl::StatusOr<UseImportResult> DoImportViaUse(
+  const TypecheckModuleFn& ftypecheck,
+  const UseSubject& subject,
+  ImportData* import_data,
+  const Span& name_def_span,
+  FileTable& file_table,
+  VirtualizableFilesystem& vfs) {
+  // 1. Try to import the leaf `NameDef` as a module path.
+  //
+  //    For example in `use foo::bar::baz;` if `foo/bar/baz.x` is present, that is the result of the use statement.
+  absl::StatusOr<DslxPath> dslx_path = FindExistingPath(ImportTokens(subject.identifiers), import_data->stdlib_path(),
+                                        import_data->additional_search_paths(),
+                                        name_def_span, import_data->file_table(),
+                                        vfs);
+  if (dslx_path.ok()) {
+    ImportTokens import_subject(subject.identifiers);
+    XLS_ASSIGN_OR_RETURN(std::unique_ptr<ModuleInfo> module_info, DslxPathToModuleInfo(
+      import_data, import_subject, *dslx_path, name_def_span, vfs));
+    XLS_ASSIGN_OR_RETURN(ModuleInfo* module_info_ptr, import_data->Put(import_subject, std::move(module_info)));
+    return UseImportResult{
+      .imported_module = module_info_ptr,
+      .imported_member = nullptr
+    };
+  }
+
+  // 2. If that is not present, check whether the NameDef refers to an entity inside of the enclosing module.
+  //
+  //    For example in `use foo::bar::baz;` if `baz.x` is not present, we are requesting an attribute access of
+  //    the top level entity `baz` within the module `foo/bar.x`.
+  dslx_path = FindExistingPath(ImportTokens(subject.identifiers.subspan(0, subject.identifiers.size() - 1)), import_data->stdlib_path(),
+                              import_data->additional_search_paths(), name_def_span, import_data->file_table(), vfs);
+  if (dslx_path.ok()) {
+    ImportTokens import_subject(subject.identifiers.subspan(0, subject.identifiers.size() - 1));
+    XLS_ASSIGN_OR_RETURN(std::unique_ptr<ModuleInfo> module_info, DslxPathToModuleInfo(
+      import_data, import_subject, *dslx_path, name_def_span, vfs));
+    XLS_ASSIGN_OR_RETURN(ModuleInfo* module_info_ptr, import_data->Put(import_subject, std::move(module_info)));
+    std::optional<ModuleMember*> member = module_info_ptr->module().FindMemberWithName(subject.name_def->identifier());
+    if (!member.has_value()) {
+      return absl::NotFoundError(absl::StrFormat(
+        "ImportError: %s Could not find member %s within (successfully imported) module %s",
+        name_def_span.ToString(file_table), subject.name_def->identifier(), import_subject.ToString()));
+    }
+    return UseImportResult{
+      .imported_module = module_info_ptr,
+      .imported_member = member.value()
+    };
+  }
+
+  return absl::NotFoundError(absl::StrFormat(
+    "ImportError: %s Could not find import for use of `%s`",
+    name_def_span.ToString(file_table), subject.ToErrorString()));
 }
 
 }  // namespace xls::dslx
