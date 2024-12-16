@@ -719,7 +719,6 @@ absl::Status FunctionConverter::HandleParam(const Param* node) {
 
 absl::Status FunctionConverter::HandleNameRef(const NameRef* node) {
   AstNode* from = ToAstNode(node->name_def());
-
   if (!node_to_ir_.contains(from)) {
     XLS_RET_CHECK(proc_id_.has_value());
     XLS_RET_CHECK(proc_data_->id_to_members.contains(proc_id_.value()));
@@ -2821,7 +2820,9 @@ absl::Status FunctionConverter::HandleColonRef(const ColonRef* node) {
     return DefAlias(constant_def->name_def(), /*to=*/node);
   }
 
-  XLS_ASSIGN_OR_RETURN(auto subject,
+  using SubjectT = std::variant<Module*, EnumDef*, BuiltinNameDef*,
+                                 ArrayTypeAnnotation*, Impl*>;
+  XLS_ASSIGN_OR_RETURN(SubjectT subject,
                        ResolveColonRefSubjectAfterTypeChecking(
                            import_data_, current_type_info_, node));
   return absl::visit(

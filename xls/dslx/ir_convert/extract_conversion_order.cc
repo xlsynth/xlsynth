@@ -289,8 +289,13 @@ class InvocationVisitor : public ExprVisitor {
     if (auto* colon_ref = dynamic_cast<ColonRef*>(node->callee())) {
       XLS_ASSIGN_OR_RETURN(callee_info, HandleColonRefInvocation(colon_ref));
     } else if (auto* name_ref = dynamic_cast<NameRef*>(node->callee())) {
-      XLS_ASSIGN_OR_RETURN(callee_info,
-                           HandleNameRefInvocation(name_ref, node));
+      if (IsExternNameRef(*name_ref)) {
+        XLS_ASSIGN_OR_RETURN(callee_info,
+                             HandleExternNameRefInvocation(name_ref));
+      } else {
+        XLS_ASSIGN_OR_RETURN(callee_info,
+                             HandleNameRefInvocation(name_ref, node));
+      }
     } else {
       return absl::UnimplementedError(
           "Only calls to named functions are currently supported "
@@ -501,6 +506,11 @@ class InvocationVisitor : public ExprVisitor {
     XLS_ASSIGN_OR_RETURN(Function * f,
                          this_m->GetMemberOrError<Function>(identifier));
     return CalleeInfo{.module = this_m, .callee = f, .type_info = type_info_};
+  }
+
+  absl::StatusOr<CalleeInfo> HandleExternNameRefInvocation(
+      const NameRef* name_ref) {
+    return absl::UnimplementedError("ExternNameRefInvocation");
   }
 
   // Helper for invocations of NameRef callees.

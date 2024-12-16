@@ -246,15 +246,17 @@ class TypeInfo {
   //
   // Note that added type information and such will generally be owned by the
   // import cache.
-  void AddImport(Import* import, Module* module, TypeInfo* type_info);
+  void AddImport(std::variant<UseTreeEntry*, Import*> import, Module* module,
+                 TypeInfo* type_info);
 
   // Returns information on the imported module (its module AST node and
   // top-level type information).
   std::optional<const ImportedInfo*> GetImported(Import* import) const;
   absl::StatusOr<const ImportedInfo*> GetImportedOrError(Import* import) const;
-  const absl::flat_hash_map<Import*, ImportedInfo>& imports() const {
-    return imports_;
-  }
+
+  // Returns the imported module information associated with the given use-tree-entry.
+  absl::StatusOr<ImportedInfo*> GetImportedOrError(UseTreeEntry* use_tree_entry);
+  absl::StatusOr<const ImportedInfo*> GetImportedOrError(UseTreeEntry* use_tree_entry) const;
 
   // Returns the type information for m, if it is available either as this
   // module or an import of this module.
@@ -324,6 +326,11 @@ class TypeInfo {
     return GetRoot()->invocations();
   }
 
+  const absl::flat_hash_map<std::variant<UseTreeEntry*, Import*>, ImportedInfo>&
+  GetRootImports() const {
+    return GetRoot()->imports();
+  }
+
   // Returns a reference to the underlying mapping that associates an AST node
   // with its deduced type.
   const absl::flat_hash_map<const AstNode*, std::unique_ptr<Type>>& dict()
@@ -370,6 +377,11 @@ class TypeInfo {
   // dervied type info for e.g. a parametric instantiation context).
   bool IsRoot() const { return this == GetRoot(); }
 
+  const absl::flat_hash_map<std::variant<UseTreeEntry*, Import*>, ImportedInfo>&
+  imports() const {
+    return imports_;
+  }
+
   Module* module_;
 
   // Node to type mapping -- this is present on "derived" type info (i.e. for
@@ -388,7 +400,7 @@ class TypeInfo {
       unrolled_loops_;
 
   // The following are only present on the root type info.
-  absl::flat_hash_map<Import*, ImportedInfo> imports_;
+  absl::flat_hash_map<std::variant<UseTreeEntry*, Import*>, ImportedInfo> imports_;
   absl::flat_hash_map<const Invocation*, InvocationData> invocations_;
   absl::flat_hash_map<Slice*, SliceData> slices_;
   absl::flat_hash_map<const Function*, bool> requires_implicit_token_;
