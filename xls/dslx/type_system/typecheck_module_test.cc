@@ -572,7 +572,15 @@ fn f() -> u32 {
   MY_CONSTANT
 }
 )";
-  XLS_EXPECT_OK(Typecheck(kProgram));
+  absl::flat_hash_map<std::filesystem::path, std::string> files = {
+    {std::filesystem::path("/imported.x"), std::string(kImported)},
+    {std::filesystem::path("/fake_main_path.x"), std::string(kProgram)},
+  };
+  auto vfs = std::make_unique<FakeFilesystem>(files, /*cwd=*/std::filesystem::path("/"));
+  ImportData import_data = CreateImportDataForTest(std::move(vfs));
+  absl::StatusOr<TypecheckedModule> main_module = ParseAndTypecheck(kProgram, "fake_main_path.x", "main", &import_data);
+  XLS_EXPECT_OK(main_module.status())
+    << main_module.status();
 }
 
 TEST(TypecheckTest, FailsOnProcWithImplAsImportedStructMember) {

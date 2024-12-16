@@ -229,11 +229,22 @@ absl::Status TypecheckModuleMember(const ModuleMember& member, Module* module,
           [import_data, ctx](Use* use) -> absl::Status {
             std::vector<UseSubject> subjects = use->LinearizeToSubjects();
             for (const UseSubject& subject : subjects) {
-              XLS_ASSIGN_OR_RETURN(ModuleInfo* imported, DoImportViaUse(
-                ctx->typecheck_module(), subject, import_data, subject.name_def->span(), import_data->vfs()));
+              XLS_ASSIGN_OR_RETURN(UseImportResult result, DoImportViaUse(
+                /*ftypecheck=*/ctx->typecheck_module(),
+                /*subject=*/subject,
+                /*import_data=*/import_data,
+                /*name_def_span=*/subject.name_def->span(),
+                /*file_table=*/import_data->file_table(),
+                /*vfs=*/import_data->vfs()));
 
-              ctx->type_info()->AddImport(use, &imported->module(),
-                                          imported->type_info());
+              ctx->type_info()->AddImport(use, &result.imported_module->module(),
+                                          result.imported_module->type_info());
+
+              if (result.imported_member != nullptr) {
+                std::optional<Type*> type = result.imported_module->type_info()->GetItem(ToAstNode(*result.imported_member));
+                XLS_RET_CHECK(type.has_value());
+                ctx->type_info()->SetItem(subject.name_def, *type.value());
+              }
             }
             return absl::OkStatus();
           },

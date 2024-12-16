@@ -305,6 +305,6 @@ cc_binary(
     ],
 )
 
-libxls_dylib_binary()
+#libxls_dylib_binary()
 
 pytype_test_test_c_api_symbols()

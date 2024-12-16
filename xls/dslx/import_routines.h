@@ -64,11 +64,13 @@ struct UseImportResult {
     ModuleMember* imported_member;
 };
 
-absl::StatusOr<UseImportResult> DoImportViaUse(const TypecheckModuleFn& ftypecheck,
-                                          const UseSubject& subject,
-                                          ImportData* import_data,
-                                          const Span& name_def_span,
-                                          VirtualizableFilesystem& vfs);
+absl::StatusOr<UseImportResult> DoImportViaUse(
+    const TypecheckModuleFn& ftypecheck,
+    const UseSubject& subject,
+    ImportData* import_data,
+    const Span& name_def_span,
+    FileTable& file_table,
+    VirtualizableFilesystem& vfs);
 
 }  // namespace xls::dslx
 
