@@ -12,13 +12,5 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use xls::dslx::tests::mod_imported_multi_const::{MOL, ONE};
-
-fn main() -> u32 {
-    MOL + ONE
-}
-
-#[test]
-fn test_main() {
-    assert_eq(main(), u32:43);
-}
+pub const MOL = u32:42;
+pub const ONE = u32:1;
