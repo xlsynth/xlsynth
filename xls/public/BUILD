@@ -220,6 +220,7 @@ cc_library(
     srcs = ["c_api.cc"],
     hdrs = ["c_api.h"],
     deps = [
+        "//xls/estimators/delay_model:delay_estimator",
         ":c_api_dslx",
         ":c_api_format_preference",
         ":c_api_impl_helpers",

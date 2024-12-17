@@ -77,6 +77,12 @@ xls_function_type_to_string
 xls_init_xls
 xls_interpret_function
 xls_mangle_dslx_name
+xls_node_get_all_operands_identical
+xls_node_get_literal_operands
+xls_node_get_operand_count
+xls_node_get_operand_flat_bit_count
+xls_node_get_result_bit_count
+xls_node_has_literal_operand
 xls_optimize_ir
 xls_package_free
 xls_package_get_function
@@ -86,6 +92,7 @@ xls_package_set_top_by_name
 xls_package_to_string
 xls_parse_ir_package
 xls_parse_typed_value
+xls_register_delay_estimator
 xls_schedule_and_codegen_package
 xls_schedule_and_codegen_result_free
 xls_schedule_and_codegen_result_get_verilog_text

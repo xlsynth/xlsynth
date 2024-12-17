@@ -46,6 +46,7 @@
 #include "xls/public/c_api_impl_helpers.h"
 #include "xls/public/c_api_vast.h"
 #include "xls/public/runtime_build_actions.h"
+#include "xls/estimators/delay_model/delay_estimator.h"
 
 extern "C" {
 
@@ -482,6 +483,88 @@ bool xls_interpret_function(struct xls_function* function, size_t argc,
       new xls::Value(std::move(result_value.value())));
   *error_out = nullptr;
   return true;
+}
+
+namespace xls {
+class CApiDelayEstimator : public DelayEstimator {
+ public:
+  CApiDelayEstimator(std::string_view name, xls_delay_estimator_fn fn, void* context)
+    : DelayEstimator(name), fn_(fn), context_(context) {}
+
+  ~CApiDelayEstimator() override = default;
+
+  absl::StatusOr<int64_t> GetOperationDelayInPs(Node* node) const override {
+    return fn_(context_, reinterpret_cast<xls_node*>(node));
+  }
+
+ private:
+  xls_delay_estimator_fn fn_;
+  void* context_;
+};
+}  // namespace xls
+
+bool xls_register_delay_estimator(const char* name, xls_delay_estimator_fn fn, void* context,
+                                  char** error_out) {
+  auto c_api_estimator = std::make_unique<xls::CApiDelayEstimator>(name, fn, context);
+  xls::DelayEstimatorManager& manager = xls::GetDelayEstimatorManagerSingleton();
+  absl::Status status = manager.RegisterDelayEstimator(std::move(c_api_estimator), xls::DelayEstimatorPrecedence::kHigh);
+  if (!status.ok()) {
+    *error_out = xls::ToOwnedCString(status.ToString());
+    return false;
+  }
+  *error_out = nullptr;
+  return true;
+}
+
+int64_t xls_node_get_operand_count(struct xls_node* node) {
+  CHECK(node != nullptr);
+  xls::Node* cpp_node = reinterpret_cast<xls::Node*>(node);
+  return cpp_node->operand_count();
+}
+
+int64_t xls_node_get_operand_flat_bit_count(struct xls_node* node, int64_t operand_index) {
+  CHECK(node != nullptr);
+  xls::Node* cpp_node = reinterpret_cast<xls::Node*>(node);
+  return cpp_node->operand_count();
+}
+
+int64_t xls_node_get_result_bit_count(struct xls_node* node) {
+  CHECK(node != nullptr);
+  xls::Node* cpp_node = reinterpret_cast<xls::Node*>(node);
+  return cpp_node->GetType()->GetFlatBitCount();
+}
+
+bool xls_node_get_all_operands_identical(struct xls_node* node) {
+  CHECK(node != nullptr);
+  xls::Node* cpp_node = reinterpret_cast<xls::Node*>(node);
+  absl::Span<const xls::Node* const> operands = cpp_node->operands();
+  for (const xls::Node* operand : operands.subspan(1)) {
+    if (operand != operands[0]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool xls_node_has_literal_operand(struct xls_node* node) {
+  CHECK(node != nullptr);
+  xls::Node* cpp_node = reinterpret_cast<xls::Node*>(node);
+  for (const xls::Node* operand : cpp_node->operands()) {
+    if (operand->Is<xls::Literal>()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void xls_node_get_literal_operands(struct xls_node* node, uint8_t* result_out) {
+  CHECK(node != nullptr);
+  CHECK(result_out != nullptr);
+  xls::Node* cpp_node = reinterpret_cast<xls::Node*>(node);
+  for (int64_t i = 0; i < cpp_node->operand_count(); ++i) {
+    const xls::Node* operand = cpp_node->operand(i);
+    result_out[i] = operand->Is<xls::Literal>();
+  }
 }
 
 }  // extern "C"

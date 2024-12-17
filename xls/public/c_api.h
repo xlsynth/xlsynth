@@ -50,6 +50,7 @@ struct xls_function_base;
 struct xls_type;
 struct xls_function_type;
 struct xls_schedule_and_codegen_result;
+struct xls_node;
 
 void xls_init_xls(const char* usage, int argc, char* argv[]);
 
@@ -213,6 +214,26 @@ bool xls_function_type_to_string(struct xls_function_type* xls_function_type,
 bool xls_interpret_function(struct xls_function* function, size_t argc,
                             const struct xls_value** args, char** error_out,
                             struct xls_value** result_out);
+
+// -- Delay Estimation plugin API
+
+typedef int64_t (*xls_delay_estimator_fn)(void* context, struct xls_node* node);
+
+bool xls_register_delay_estimator(const char* name, xls_delay_estimator_fn fn, void* context,
+                                  char** error_out);
+
+int64_t xls_node_get_operand_count(struct xls_node* node);
+int64_t xls_node_get_operand_flat_bit_count(struct xls_node* node, int64_t operand_index);
+int64_t xls_node_get_result_bit_count(struct xls_node* node);
+bool xls_node_get_all_operands_identical(struct xls_node* node);
+bool xls_node_has_literal_operand(struct xls_node* node);
+
+// Note: the `result_out` is effectively an array of `bool` values, the array is
+// provided as `uint8_t` cells to avoid any ABI concerns around the boolean type.
+//
+// Precondition: `result_out` must be an array of `bool` values of length
+// `xls_node_get_operand_count(node)`.
+void xls_node_get_literal_operands(struct xls_node* node, uint8_t* result_out);
 
 }  // extern "C"
 
