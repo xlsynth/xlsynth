@@ -255,7 +255,9 @@ absl::StatusOr<UseImportResult> DoImportViaUse(
   // Keep track of what we attempted to import.
   std::vector<ImportTokens> attempted;
 
-  auto to_module_info = [&](const ImportTokens& import_tokens, const DslxPath& dslx_path) -> absl::StatusOr<ModuleInfo*> {
+  auto to_module_info =
+      [&](const ImportTokens& import_tokens,
+          const DslxPath& dslx_path) -> absl::StatusOr<ModuleInfo*> {
     // If it's already imported, return it.
     if (absl::StatusOr<ModuleInfo*> module_info =
             import_data->Get(import_tokens);
@@ -306,19 +308,19 @@ absl::StatusOr<UseImportResult> DoImportViaUse(
       /*file_table=*/import_data->file_table(),
       /*vfs=*/vfs);
   if (dslx_path.ok()) {
-    XLS_ASSIGN_OR_RETURN(ModuleInfo* module_info_ptr,
+    XLS_ASSIGN_OR_RETURN(ModuleInfo * module_info_ptr,
                          to_module_info(attempted.back(), dslx_path.value()));
     std::optional<ModuleMember*> member =
-        module_info_ptr->module().FindMemberWithName(subject.name_def->identifier());
-      if (!member.has_value()) {
-        return absl::NotFoundError(
-            absl::StrFormat("ImportError: %s Could not find member %s within "
-                            "(successfully imported) module %s",
-                            name_def_span.ToString(file_table), name,
-                            import_tokens.ToString()));
-      }
-      return UseImportResult{.imported_module = module_info_ptr,
-                            .imported_member = member.value()};
+        module_info_ptr->module().FindMemberWithName(
+            subject.name_def->identifier());
+    if (!member.has_value()) {
+      return absl::NotFoundError(absl::StrFormat(
+          "ImportError: %s Could not find member %s within "
+          "(successfully imported) module %s",
+          name_def_span.ToString(file_table), name, import_tokens.ToString()));
+    }
+    return UseImportResult{.imported_module = module_info_ptr,
+                           .imported_member = member.value()};
   }
 
   return absl::NotFoundError(absl::StrFormat(
