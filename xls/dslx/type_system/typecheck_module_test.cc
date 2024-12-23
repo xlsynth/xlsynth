@@ -1011,6 +1011,18 @@ fn f() -> u32 {
 )"));
 }
 
+TEST(TypecheckTest, UseOfClog2InModuleScopedConstantDefinition) {
+  XLS_EXPECT_OK(Typecheck(R"(
+use std::clog2;
+
+const MAX_BITS: u32 = clog2(u32:256);
+
+fn main() -> u32 {
+    MAX_BITS
+}
+)"));
+}
+
 TEST(TypecheckTest, ConstAssertParametricOk) {
   XLS_EXPECT_OK(Typecheck(R"(
 fn p<N: u32>() -> u32 {

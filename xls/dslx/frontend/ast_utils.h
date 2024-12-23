@@ -84,6 +84,9 @@ absl::StatusOr<InterpValue> GetArrayTypeColonAttr(
     const ArrayTypeAnnotation* type, uint64_t constexpr_dim,
     std::string_view attr);
 
+// Returns true if `name_ref` is bound by a `use` statement.
+bool IsExternNameRef(const NameRef& name_ref);
+
 // -- Template Metaprogramming helpers for dealing with AST node variants
 
 // TMP helper that gets the Nth type from a parameter pack.

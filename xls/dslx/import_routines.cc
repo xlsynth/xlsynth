@@ -288,7 +288,9 @@ absl::StatusOr<UseImportResult> DoImportViaUse(
                        import_data->additional_search_paths(), name_def_span,
                        import_data->file_table(), vfs);
   if (dslx_path.ok()) {
-    return to_module_info(attempted.back(), dslx_path.value());
+    XLS_ASSIGN_OR_RETURN(ModuleInfo* module_info, to_module_info(attempted.back(), dslx_path.value()));
+    return UseImportResult{.imported_module = module_info,
+                           .imported_member = nullptr};
   }
 
   // 2. If that is not present, check whether the NameDef refers to an entity
@@ -308,16 +310,17 @@ absl::StatusOr<UseImportResult> DoImportViaUse(
       /*file_table=*/import_data->file_table(),
       /*vfs=*/vfs);
   if (dslx_path.ok()) {
+    const ImportTokens& import_tokens = attempted.back();
+    const std::string& member_name = subject.name_def->identifier();
     XLS_ASSIGN_OR_RETURN(ModuleInfo * module_info_ptr,
-                         to_module_info(attempted.back(), dslx_path.value()));
+                         to_module_info(import_tokens, dslx_path.value()));
     std::optional<ModuleMember*> member =
-        module_info_ptr->module().FindMemberWithName(
-            subject.name_def->identifier());
+        module_info_ptr->module().FindMemberWithName(member_name);
     if (!member.has_value()) {
       return absl::NotFoundError(absl::StrFormat(
-          "ImportError: %s Could not find member %s within "
-          "(successfully imported) module %s",
-          name_def_span.ToString(file_table), name, import_tokens.ToString()));
+          "ImportError: %s Could not find member `%s` within "
+          "(successfully imported) module `%s`",
+          name_def_span.ToString(file_table), member_name, import_tokens.ToString()));
     }
     return UseImportResult{.imported_module = module_info_ptr,
                            .imported_member = member.value()};

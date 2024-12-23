@@ -244,10 +244,15 @@ absl::Status TypecheckModuleMember(const ModuleMember& member, Module* module,
                                           result.imported_module->type_info());
 
               if (result.imported_member != nullptr) {
+                AstNode* imported_member = ToAstNode(*result.imported_member);
+                XLS_RET_CHECK_EQ(imported_member->owner(),
+                                 &result.imported_module->module());
                 std::optional<Type*> type =
                     result.imported_module->type_info()->GetItem(
-                        ToAstNode(*result.imported_member));
-                XLS_RET_CHECK(type.has_value());
+                        imported_member);
+                XLS_RET_CHECK(type.has_value())
+                  << absl::StreamFormat("Used module member had no type: `%s`",
+                                        imported_member->ToString());
                 ctx->type_info()->SetItem(subject.name_def, *type.value());
               }
             }
