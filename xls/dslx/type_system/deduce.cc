@@ -49,6 +49,7 @@
 #include "xls/dslx/channel_direction.h"
 #include "xls/dslx/constexpr_evaluator.h"
 #include "xls/dslx/errors.h"
+#include "xls/dslx/exhaustiveness/match_exhaustiveness_checker.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/ast_cloner.h"
 #include "xls/dslx/frontend/ast_node.h"
@@ -74,7 +75,6 @@
 #include "xls/dslx/type_system/unwrap_meta_type.h"
 #include "xls/dslx/warning_kind.h"
 #include "xls/ir/bits.h"
-#include "xls/dslx/exhaustiveness/match_exhaustiveness_checker.h"
 
 namespace xls::dslx {
 namespace {
@@ -1441,13 +1441,12 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceMatch(const Match* node,
         ctx->file_table());
   }
 
-  // TODO(cdleary): 2024-12-24 Right now we can only check exhaustiveness when the matched-on
-  // expression is a bits-like type.
+  // TODO(cdleary): 2024-12-24 Right now we can only check exhaustiveness when
+  // the matched-on expression is a bits-like type.
   std::optional<MatchExhaustivenessChecker> match_exhaustiveness_checker;
   if (std::optional<BitsLikeProperties> bits_like = GetBitsLike(*matched)) {
-    XLS_ASSIGN_OR_RETURN(
-        auto checker,
-        MatchExhaustivenessChecker::Make(*node, *ctx->type_info()));
+    XLS_ASSIGN_OR_RETURN(auto checker, MatchExhaustivenessChecker::Make(
+                                           *node, *ctx->type_info()));
     match_exhaustiveness_checker.emplace(std::move(checker));
   }
 
