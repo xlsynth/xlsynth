@@ -40,12 +40,19 @@ InterpValueRange ExhaustiveRangeFor(BitsLikeProperties bits_like) {
 
 InterpValue MinStart(const std::optional<InterpValueRange>& lhs, const std::optional<InterpValueRange>& rhs) {
     if (lhs.has_value() && rhs.has_value()) {
-        return std::min(lhs->min(), rhs->min());
+        if (lhs->min() < rhs->min()) {
+            LOG(ERROR) << "returning lhs min: " << lhs->min().ToString();
+            return lhs->min();
+        }
+        LOG(ERROR) << "returning rhs min: " << rhs->min().ToString();
+        return rhs->min();
     }
     if (lhs.has_value()) {
+        LOG(ERROR) << "returning lhs min: " << lhs->min().ToString();
         return lhs->min();
     }
     if (rhs.has_value()) {
+        LOG(ERROR) << "returning rhs min: " << rhs->min().ToString();
         return rhs->min();
     }
     LOG(FATAL) << "At least one of the ranges must be provided";
@@ -94,7 +101,11 @@ int64_t InterpValueRange::GetBitCount() const {
 bool InterpValueRange::ShouldMergeWith(const InterpValueRange& other) const {
     InterpValue one = InterpValue::MakeOneValue(IsSigned(), GetBitCount());
     InterpValue this_max_plus_one = max_.Add(one).value();
-    return this_max_plus_one.Ge(other.min_)->IsTrue();
+    // FIXME XXX we're checking for overflow here, we should do it more elegantly.
+    bool result = this_max_plus_one.Ge(other.min_)->IsTrue() || max_.Eq(other.min_);
+    LOG(ERROR) << absl::StreamFormat("ShouldMergeWith(%s, %s) this_max_plus_one=%s other.min_=%s result=%s",
+        ToString(), other.ToString(), this_max_plus_one.ToString(), other.min_.ToString(), result ? "true" : "false");
+    return result;
 }
 
 BitsValueRange BitsValueRange::MakeSingleRange(BitsLikeProperties bits_like, InterpValue min,
@@ -104,6 +115,10 @@ BitsValueRange BitsValueRange::MakeSingleRange(BitsLikeProperties bits_like, Int
 
 BitsValueRange BitsValueRange::MakeEmpty(BitsLikeProperties bits_like) {
     return BitsValueRange(bits_like, absl::btree_set<InterpValueRange>{});
+}
+
+BitsValueRange BitsValueRange::MakeFull(BitsLikeProperties bits_like) {
+    return BitsValueRange(bits_like, absl::btree_set<InterpValueRange>{ExhaustiveRangeFor(bits_like)});
 }
 
 int64_t BitsValueRange::GetBitCount() const {
@@ -178,7 +193,7 @@ BitsValueRange BitsValueRange::Merge(const BitsValueRange& lhs, const BitsValueR
 
     if (current_range.has_value()) {
         result.insert(current_range.value());
-        LOG(ERROR) << "emitting current_range: " << current_range->ToString();
+        LOG(ERROR) << "emitting final current_range: " << current_range->ToString();
     }
 
     return BitsValueRange(lhs.bits_like_, std::move(result));

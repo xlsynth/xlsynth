@@ -21,11 +21,22 @@ cc_test(
     ],
 )
 
+cc_library(
+    name = "match_exhaustiveness_checker",
+    srcs = ["match_exhaustiveness_checker.cc"],
+    hdrs = ["match_exhaustiveness_checker.h"],
+    deps = [
+        ":exhaustiveness",
+        "//xls/dslx/type_system:type_info",
+        "//xls/dslx/type_system:type",
+    ],
+)
+
 cc_test(
     name = "exhaustiveness_match_test",
     srcs = ["exhaustiveness_match_test.cc"],
     deps = [
-        ":exhaustiveness",
+        ":match_exhaustiveness_checker",
         "//xls/dslx:parse_and_typecheck",
         "@com_google_googletest//:gtest",
         "//xls/common:xls_gunit_main",

@@ -26,27 +26,27 @@ TEST(InterpValueRangeTest, ShouldMerge) {
 }
 
 TEST(ExhaustivenessTest, ExhaustiveBooleanRange) {
-  auto bits_type = BitsType::MakeU1();
-  auto range = BitsValueRange::MakeSingleRange(*bits_type, InterpValue::MakeUBits(1, 0), InterpValue::MakeUBits(1, 1));
+  BitsLikeProperties properties = BitsLikeProperties{TypeDim::CreateBool(false), TypeDim::CreateU32(1)};
+  auto range = BitsValueRange::MakeSingleRange(properties, InterpValue::MakeUBits(1, 0), InterpValue::MakeUBits(1, 1));
   EXPECT_TRUE(range.IsExhaustive());
 }
 
 TEST(ExhaustivenessTest, InexhaustiveBooleanRangeJustFalse) {
-  auto bits_type = BitsType::MakeU1();
-  auto range = BitsValueRange::MakeSingleRange(*bits_type, InterpValue::MakeUBits(1, 0), InterpValue::MakeUBits(1, 0));
+  BitsLikeProperties properties = BitsLikeProperties{TypeDim::CreateBool(false), TypeDim::CreateU32(1)};
+  auto range = BitsValueRange::MakeSingleRange(properties, InterpValue::MakeUBits(1, 0), InterpValue::MakeUBits(1, 0));
   EXPECT_FALSE(range.IsExhaustive());
 }
 
 TEST(ExhaustivenessTest, InexhaustiveBooleanRangeJustTrue) {
-  auto bits_type = BitsType::MakeU1();
-  auto range = BitsValueRange::MakeSingleRange(*bits_type, InterpValue::MakeUBits(1, 1), InterpValue::MakeUBits(1, 1));
+  BitsLikeProperties properties = BitsLikeProperties{TypeDim::CreateBool(false), TypeDim::CreateU32(1)};
+  auto range = BitsValueRange::MakeSingleRange(properties, InterpValue::MakeUBits(1, 1), InterpValue::MakeUBits(1, 1));
   EXPECT_FALSE(range.IsExhaustive());
 }
 
 TEST(ExhaustivenessTest, MergeTwoInexhaustiveBooleanRangesMakesExhaustive) {
-  auto bits_type = BitsType::MakeU1();
-  auto range1 = BitsValueRange::MakeSingleRange(*bits_type, InterpValue::MakeUBits(1, 0), InterpValue::MakeUBits(1, 0));
-  auto range2 = BitsValueRange::MakeSingleRange(*bits_type, InterpValue::MakeUBits(1, 1), InterpValue::MakeUBits(1, 1));
+  BitsLikeProperties properties = BitsLikeProperties{TypeDim::CreateBool(false), TypeDim::CreateU32(1)};
+  auto range1 = BitsValueRange::MakeSingleRange(properties, InterpValue::MakeUBits(1, 0), InterpValue::MakeUBits(1, 0));
+  auto range2 = BitsValueRange::MakeSingleRange(properties, InterpValue::MakeUBits(1, 1), InterpValue::MakeUBits(1, 1));
   auto merged = BitsValueRange::Merge(range1, range2);
   EXPECT_EQ(merged.disjoint().size(), 1);
   LOG(ERROR) << "merged: " << merged.ToString();
@@ -57,15 +57,15 @@ TEST(ExhaustivenessTest, MergeTwoInexhaustiveBooleanRangesMakesExhaustive) {
 // Make a three bit uint range and fill in the middle value last.
 TEST(ExhaustivenessTest, ThreeBitRangeFillInMiddleLast) {
   constexpr int64_t kBitCount = 3;
-  BitsType bits_type(/*is_signed=*/false, kBitCount);
-  auto low_02 = BitsValueRange::MakeSingleRange(bits_type, InterpValue::MakeUBits(kBitCount, 0), InterpValue::MakeUBits(kBitCount, 2));
-  auto high_47 = BitsValueRange::MakeSingleRange(bits_type, InterpValue::MakeUBits(kBitCount, 4), InterpValue::MakeUBits(kBitCount, 7));
+  BitsLikeProperties properties = BitsLikeProperties{TypeDim::CreateBool(false), TypeDim::CreateU32(kBitCount)};
+  auto low_02 = BitsValueRange::MakeSingleRange(properties, InterpValue::MakeUBits(kBitCount, 0), InterpValue::MakeUBits(kBitCount, 2));
+  auto high_47 = BitsValueRange::MakeSingleRange(properties, InterpValue::MakeUBits(kBitCount, 4), InterpValue::MakeUBits(kBitCount, 7));
   auto merged = BitsValueRange::Merge(low_02, high_47);
   EXPECT_EQ(merged.disjoint().size(), 2);
   LOG(ERROR) << "merged: " << merged.ToString();
   EXPECT_FALSE(merged.IsExhaustive());
 
-  auto range_with_3 = BitsValueRange::MakeSingleRange(bits_type, InterpValue::MakeUBits(kBitCount, 3), InterpValue::MakeUBits(kBitCount, 3));
+  auto range_with_3 = BitsValueRange::MakeSingleRange(properties, InterpValue::MakeUBits(kBitCount, 3), InterpValue::MakeUBits(kBitCount, 3));
   auto merged_with_3 = BitsValueRange::Merge(merged, range_with_3);
   EXPECT_EQ(merged_with_3.disjoint().size(), 1);
   LOG(ERROR) << "merged_with_3: " << merged_with_3.ToString();

@@ -23,51 +23,19 @@
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/common/status/matchers.h"
+#include "xls/dslx/exhaustiveness/match_exhaustiveness_checker.h"
 
 namespace xls::dslx {
-namespace {
+    namespace {
 
-bool IsBool(const BitsLikeProperties& bits_like) {
-    return bits_like.size.GetAsInt64().value() == 1 && !bits_like.is_signed.GetAsBool().value();
-}
-
-}  // namespace
-
-bool IsKnownExhaustiveMatchBool(const Match& match, const BitsLikeProperties& bits_like, const TypeInfo& type_info) {
-    auto tested = BitsValueRange::MakeEmpty(bits_like);
+std::vector<const NameDefTree*> GetPatterns(const Match& match) {
+    std::vector<const NameDefTree*> patterns;
     for (const MatchArm* arm : match.arms()) {
         for (const NameDefTree* pattern : arm->patterns()) {
-            CHECK(pattern->is_leaf());
-            if (pattern->IsIrrefutable()) {
-                return true;
-            }
-            absl::visit(Visitor{
-                [&](auto* node) {
-                    std::optional<InterpValue> value = type_info.GetConstExprOption(node);
-                    CHECK(value.has_value());
-                    tested = BitsValueRange::Merge(tested, BitsValueRange::MakeSingleRange(bits_like, *value, *value));
-                },
-                [&](Range* range) {
-                    std::optional<InterpValue> start = type_info.GetConstExprOption(range->start());
-                    CHECK(start.has_value());
-                    std::optional<InterpValue> end = type_info.GetConstExprOption(range->end());
-                    CHECK(end.has_value());
-                    tested = BitsValueRange::Merge(tested, BitsValueRange::MakeSingleRange(bits_like, *start, *end));
-                },
-                [](RestOfTuple* rest_of_tuple) {
-                    LOG(FATAL) << "RestOfTuple not valid for boolean value match";
-                },
-            }, pattern->leaf());
+            patterns.push_back(pattern);
         }
     }
-    return tested.IsExhaustive();
-}
-
-bool IsKnownExhaustiveMatch(const Match& match, const BitsLikeProperties& bits_like, const TypeInfo& type_info) {
-    if (IsBool(bits_like)) {
-        return IsKnownExhaustiveMatchBool(match, bits_like, type_info);
-    }
-    LOG(FATAL) << "Not implemented";
+    return patterns;
 }
 
 TEST(ExhaustivenessMatchTest, MatchBoolTrueFalse) {
@@ -87,12 +55,43 @@ TEST(ExhaustivenessMatchTest, MatchBoolTrueFalse) {
     const Statement& statement = *body->statements().front();
     Match* match = dynamic_cast<Match*>(std::get<Expr*>(statement.wrapped()));
     ASSERT_TRUE(match != nullptr);
-    Expr* matched = match->matched();
-    const TypeInfo& type_info = *tm.type_info;
-    XLS_ASSERT_OK_AND_ASSIGN(const Type* matched_type, type_info.GetItemOrError(matched));
-    std::optional<BitsLikeProperties> bits_like = GetBitsLike(*matched_type);
-    ASSERT_TRUE(bits_like.has_value());
-    EXPECT_TRUE(IsKnownExhaustiveMatch(*match, bits_like.value(), type_info));
+
+    XLS_ASSERT_OK_AND_ASSIGN(MatchExhaustivenessChecker checker, MatchExhaustivenessChecker::Make(*match, *tm.type_info));
+
+    std::vector<const NameDefTree*> patterns = GetPatterns(*match);
+    for (int64_t i = 0; i < patterns.size(); ++i) {
+        bool now_exhaustive = checker.AddPattern(*patterns[i]);
+        // We expect it to become exhaustive with the last match arm.
+        bool expect_now_exhaustive = i+1 == patterns.size();
+        EXPECT_EQ(now_exhaustive, expect_now_exhaustive);
+    }
 }
 
+TEST(ExhaustivenessMatchTest, MatchBoolJustTrue) {
+    constexpr std::string_view kMatch = R"(fn main(x: bool) -> u32 {
+    match x {
+        true => u32:42,
+    }
+})";
+    ImportData import_data = CreateImportDataForTest();
+    XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm, ParseAndTypecheck(kMatch, "test.x", "test", &import_data));
+    std::optional<Function*> func = tm.module->GetFunction("main");
+    ASSERT_TRUE(func.has_value());
+    StatementBlock* body = func.value()->body();
+    ASSERT_EQ(body->statements().size(), 1);
+    const Statement& statement = *body->statements().front();
+    Match* match = dynamic_cast<Match*>(std::get<Expr*>(statement.wrapped()));
+    ASSERT_TRUE(match != nullptr);
+
+    XLS_ASSERT_OK_AND_ASSIGN(MatchExhaustivenessChecker checker, MatchExhaustivenessChecker::Make(*match, *tm.type_info));
+
+    std::vector<const NameDefTree*> patterns = GetPatterns(*match);
+    for (int64_t i = 0; i < patterns.size(); ++i) {
+        bool now_exhaustive = checker.AddPattern(*patterns[i]);
+        // This one never becomes exhaustive.
+        EXPECT_FALSE(now_exhaustive);
+    }
+}
+
+    }  // namespace
 }  // namespace xls::dslx

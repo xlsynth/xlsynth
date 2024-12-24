@@ -59,6 +59,8 @@ class BitsValueRange {
   // Make an empty range for the given bits type.
   static BitsValueRange MakeEmpty(BitsLikeProperties bits_like);
 
+  static BitsValueRange MakeFull(BitsLikeProperties bits_like);
+
   static BitsValueRange Merge(const BitsValueRange& lhs, const BitsValueRange& rhs);
 
   BitsValueRange(const BitsValueRange& other) = default;
