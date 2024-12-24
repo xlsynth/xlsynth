@@ -116,9 +116,8 @@ bool InterpValueRange::ShouldMergeWith(const InterpValueRange& other) const {
   //
   // However, notably the max+1 calculation can overflow.
   bool did_overflow = this_max_plus_one.Le(max_)->IsTrue();
-  bool result =
-      (this_max_plus_one.Ge(other.min_)->IsTrue() && !did_overflow) ||
-      max_.Eq(other.min_);
+  bool result = (this_max_plus_one.Ge(other.min_)->IsTrue() && !did_overflow) ||
+                max_.Eq(other.min_);
   VLOG(5) << absl::StreamFormat(
       "ShouldMergeWith(%s, %s) this_max_plus_one=%s other.min_=%s result=%s",
       ToString(), other.ToString(), this_max_plus_one.ToString(),
@@ -203,8 +202,7 @@ BitsValueRange BitsValueRange::Merge(const BitsValueRange& lhs,
     CHECK(current_range.has_value());
     if (lhs_iter != lhs_ranges.end() &&
         current_range->ShouldMergeWith(*lhs_iter)) {
-      VLOG(5) << "extending via lhs contiguous range: "
-                 << lhs_iter->ToString();
+      VLOG(5) << "extending via lhs contiguous range: " << lhs_iter->ToString();
       current_range->ExtendToInclude(lhs_iter->max());
       VLOG(5) << "current_range is now: " << current_range->ToString();
       ++lhs_iter;
@@ -212,8 +210,7 @@ BitsValueRange BitsValueRange::Merge(const BitsValueRange& lhs,
     }
     if (rhs_iter != rhs_ranges.end() &&
         current_range->ShouldMergeWith(*rhs_iter)) {
-      VLOG(5) << "extending via rhs contiguous range: "
-                 << rhs_iter->ToString();
+      VLOG(5) << "extending via rhs contiguous range: " << rhs_iter->ToString();
       current_range->ExtendToInclude(rhs_iter->max());
       VLOG(5) << "current_range is now: " << current_range->ToString();
       ++rhs_iter;
