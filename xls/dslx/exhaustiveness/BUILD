@@ -18,6 +18,7 @@ cc_test(
         ":exhaustiveness",
         "@com_google_googletest//:gtest",
         "//xls/common:xls_gunit_main",
+        "//xls/common/fuzzing:fuzztest",
     ],
 )
 

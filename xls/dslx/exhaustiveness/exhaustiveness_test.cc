@@ -14,8 +14,10 @@
 
 #include "xls/dslx/exhaustiveness/exhaustiveness.h"
 
-#include "absl/log/log.h"
 #include "gtest/gtest.h"
+#include "xls/common/fuzzing/fuzztest.h"
+
+#include "absl/log/log.h"
 
 namespace xls::dslx {
 
@@ -60,7 +62,7 @@ TEST(ExhaustivenessTest, MergeTwoInexhaustiveBooleanRangesMakesExhaustive) {
       properties, InterpValue::MakeUBits(1, 1), InterpValue::MakeUBits(1, 1));
   auto merged = BitsValueRange::Merge(range1, range2);
   EXPECT_EQ(merged.disjoint().size(), 1);
-  LOG(ERROR) << "merged: " << merged.ToString();
+  LOG(INFO) << "merged: " << merged.ToString();
   EXPECT_TRUE(merged.IsExhaustive());
   EXPECT_EQ(merged.disjoint().begin()->ToString(), "(u1:0, u1:1)");
 }
@@ -78,7 +80,7 @@ TEST(ExhaustivenessTest, ThreeBitRangeFillInMiddleLast) {
       InterpValue::MakeUBits(kBitCount, 7));
   auto merged = BitsValueRange::Merge(low_02, high_47);
   EXPECT_EQ(merged.disjoint().size(), 2);
-  LOG(ERROR) << "merged: " << merged.ToString();
+  LOG(INFO) << "merged: " << merged.ToString();
   EXPECT_FALSE(merged.IsExhaustive());
 
   auto range_with_3 = BitsValueRange::MakeSingleRange(
@@ -86,9 +88,44 @@ TEST(ExhaustivenessTest, ThreeBitRangeFillInMiddleLast) {
       InterpValue::MakeUBits(kBitCount, 3));
   auto merged_with_3 = BitsValueRange::Merge(merged, range_with_3);
   EXPECT_EQ(merged_with_3.disjoint().size(), 1);
-  LOG(ERROR) << "merged_with_3: " << merged_with_3.ToString();
+  LOG(INFO) << "merged_with_3: " << merged_with_3.ToString();
   EXPECT_TRUE(merged_with_3.IsExhaustive());
   EXPECT_EQ(merged_with_3.disjoint().begin()->ToString(), "(u3:0, u3:7)");
 }
+
+void MergeFullRangeAndEmptyRangeIsFullRange(bool is_signed, uint8_t bit_count) {
+    if (bit_count == 0) {
+        return;
+    }
+    BitsLikeProperties properties = BitsLikeProperties{
+        TypeDim::CreateBool(is_signed), TypeDim::CreateU32(bit_count)};
+    auto full_range = BitsValueRange::MakeFull(properties);
+    auto empty_range = BitsValueRange::MakeEmpty(properties);
+    EXPECT_TRUE(full_range.IsExhaustive());
+    EXPECT_FALSE(empty_range.IsExhaustive());
+    auto merged = BitsValueRange::Merge(full_range, empty_range);
+    EXPECT_TRUE(merged.IsExhaustive());
+}
+FUZZ_TEST(ExhaustivenessFuzzTest, MergeFullRangeAndEmptyRangeIsFullRange);
+
+void TakeMaxValueFromFullRangeAndAddItBackIsFullRange(bool is_signed, uint8_t bit_count) {
+    if (bit_count <= 1) {
+        return;
+    }
+    BitsLikeProperties properties = BitsLikeProperties{
+        TypeDim::CreateBool(is_signed), TypeDim::CreateU32(bit_count)};
+    InterpValue min_value = InterpValue::MakeMinValue(is_signed, bit_count);
+    InterpValue max_value_m1 = InterpValue::MakeMaxValue(is_signed, bit_count).Sub(InterpValue::MakeOneValue(is_signed, bit_count)).value();
+    auto almost_full_range = BitsValueRange::MakeSingleRange(properties, min_value, max_value_m1);
+    EXPECT_FALSE(almost_full_range.IsExhaustive());
+    InterpValue max_value = InterpValue::MakeMaxValue(is_signed, bit_count);
+    auto range_with_max = BitsValueRange::MakeSingleRange(properties, max_value, max_value);
+    EXPECT_FALSE(range_with_max.IsExhaustive());
+    auto merged = BitsValueRange::Merge(almost_full_range, range_with_max);
+    EXPECT_TRUE(merged.IsExhaustive());
+}
+FUZZ_TEST(ExhaustivenessFuzzTest, TakeMaxValueFromFullRangeAndAddItBackIsFullRange);
+
+
 
 }  // namespace xls::dslx

@@ -42,18 +42,18 @@ InterpValue MinStart(const std::optional<InterpValueRange>& lhs,
                      const std::optional<InterpValueRange>& rhs) {
   if (lhs.has_value() && rhs.has_value()) {
     if (lhs->min() < rhs->min()) {
-      LOG(ERROR) << "returning lhs min: " << lhs->min().ToString();
+      VLOG(5) << "returning lhs min: " << lhs->min().ToString();
       return lhs->min();
     }
-    LOG(ERROR) << "returning rhs min: " << rhs->min().ToString();
+    VLOG(5) << "returning rhs min: " << rhs->min().ToString();
     return rhs->min();
   }
   if (lhs.has_value()) {
-    LOG(ERROR) << "returning lhs min: " << lhs->min().ToString();
+    VLOG(5) << "returning lhs min: " << lhs->min().ToString();
     return lhs->min();
   }
   if (rhs.has_value()) {
-    LOG(ERROR) << "returning rhs min: " << rhs->min().ToString();
+    VLOG(5) << "returning rhs min: " << rhs->min().ToString();
     return rhs->min();
   }
   LOG(FATAL) << "At least one of the ranges must be provided";
@@ -105,10 +105,21 @@ int64_t InterpValueRange::GetBitCount() const {
 bool InterpValueRange::ShouldMergeWith(const InterpValueRange& other) const {
   InterpValue one = InterpValue::MakeOneValue(IsSigned(), GetBitCount());
   InterpValue this_max_plus_one = max_.Add(one).value();
-  // FIXME XXX we're checking for overflow here, we should do it more elegantly.
+  // Note: we should merge when the ranges look like so:
+  // ```
+  // min  max
+  // |-----|
+  //         max+1   c
+  //         |-------|
+  // ```
+  // i.e. if the current range's max+1 is >= the other range's min.
+  //
+  // However, notably the max+1 calculation can overflow.
+  bool did_overflow = this_max_plus_one.Le(max_)->IsTrue();
   bool result =
-      this_max_plus_one.Ge(other.min_)->IsTrue() || max_.Eq(other.min_);
-  LOG(ERROR) << absl::StreamFormat(
+      (this_max_plus_one.Ge(other.min_)->IsTrue() && !did_overflow) ||
+      max_.Eq(other.min_);
+  VLOG(5) << absl::StreamFormat(
       "ShouldMergeWith(%s, %s) this_max_plus_one=%s other.min_=%s result=%s",
       ToString(), other.ToString(), this_max_plus_one.ToString(),
       other.min_.ToString(), result ? "true" : "false");
@@ -170,7 +181,7 @@ BitsValueRange BitsValueRange::Merge(const BitsValueRange& lhs,
                                   : std::make_optional(*rhs_ranges.begin()));
   std::optional<InterpValueRange> current_range =
       InterpValueRange(init_start, init_start);
-  LOG(ERROR) << "current_range init: " << current_range->ToString();
+  VLOG(5) << "current_range init: " << current_range->ToString();
   auto lhs_iter = lhs_ranges.begin();
   auto rhs_iter = rhs_ranges.begin();
   while (true) {
@@ -186,36 +197,36 @@ BitsValueRange BitsValueRange::Merge(const BitsValueRange& lhs,
           rhs_iter == rhs_ranges.end() ? std::nullopt
                                        : std::make_optional(*rhs_iter));
       current_range = InterpValueRange(min_start, min_start);
-      LOG(ERROR) << "current_range is now: " << current_range->ToString();
+      VLOG(5) << "current_range is now: " << current_range->ToString();
       continue;
     }
     CHECK(current_range.has_value());
     if (lhs_iter != lhs_ranges.end() &&
         current_range->ShouldMergeWith(*lhs_iter)) {
-      LOG(ERROR) << "extending via lhs contiguous range: "
+      VLOG(5) << "extending via lhs contiguous range: "
                  << lhs_iter->ToString();
       current_range->ExtendToInclude(lhs_iter->max());
-      LOG(ERROR) << "current_range is now: " << current_range->ToString();
+      VLOG(5) << "current_range is now: " << current_range->ToString();
       ++lhs_iter;
       continue;
     }
     if (rhs_iter != rhs_ranges.end() &&
         current_range->ShouldMergeWith(*rhs_iter)) {
-      LOG(ERROR) << "extending via rhs contiguous range: "
+      VLOG(5) << "extending via rhs contiguous range: "
                  << rhs_iter->ToString();
       current_range->ExtendToInclude(rhs_iter->max());
-      LOG(ERROR) << "current_range is now: " << current_range->ToString();
+      VLOG(5) << "current_range is now: " << current_range->ToString();
       ++rhs_iter;
       continue;
     }
     result.insert(current_range.value());
-    LOG(ERROR) << "emitting current_range: " << current_range->ToString();
+    VLOG(5) << "emitting current_range: " << current_range->ToString();
     current_range = std::nullopt;
   }
 
   if (current_range.has_value()) {
     result.insert(current_range.value());
-    LOG(ERROR) << "emitting final current_range: " << current_range->ToString();
+    VLOG(5) << "emitting final current_range: " << current_range->ToString();
   }
 
   return BitsValueRange(lhs.bits_like_, std::move(result));
