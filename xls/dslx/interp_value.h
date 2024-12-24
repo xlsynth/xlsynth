@@ -84,6 +84,7 @@ class InterpValue {
   static InterpValue MakeSBits(int64_t bit_count, int64_t value);
 
   static InterpValue MakeZeroValue(bool is_signed, int64_t bit_count);
+  static InterpValue MakeOneValue(bool is_signed, int64_t bit_count);
   static InterpValue MakeMaxValue(bool is_signed, int64_t bit_count);
   static InterpValue MakeMinValue(bool is_signed, int64_t bit_count);
 
