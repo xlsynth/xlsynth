@@ -52,6 +52,8 @@ absl::StatusOr<std::string_view> WarningKindToString(WarningKind kind) {
       return "member_naming";
     case WarningKind::kShouldUseAssert:
       return "should_use_assert";
+    case WarningKind::kAlreadyExhaustiveMatch:
+      return "already_exhaustive_match";
   }
   return absl::InvalidArgumentError(
       absl::StrCat("Invalid warning kind: ", static_cast<int>(kind)));

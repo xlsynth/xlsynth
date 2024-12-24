@@ -74,6 +74,7 @@
 #include "xls/dslx/type_system/unwrap_meta_type.h"
 #include "xls/dslx/warning_kind.h"
 #include "xls/ir/bits.h"
+#include "xls/dslx/exhaustiveness/match_exhaustiveness_checker.h"
 
 namespace xls::dslx {
 namespace {
@@ -1440,6 +1441,16 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceMatch(const Match* node,
         ctx->file_table());
   }
 
+  // TODO(cdleary): 2024-12-24 Right now we can only check exhaustiveness when the matched-on
+  // expression is a bits-like type.
+  std::optional<MatchExhaustivenessChecker> match_exhaustiveness_checker;
+  if (std::optional<BitsLikeProperties> bits_like = GetBitsLike(*matched)) {
+    XLS_ASSIGN_OR_RETURN(
+        auto checker,
+        MatchExhaustivenessChecker::Make(*node, *ctx->type_info()));
+    match_exhaustiveness_checker.emplace(std::move(checker));
+  }
+
   absl::flat_hash_set<std::string> seen_patterns;
   for (MatchArm* arm : node->arms()) {
     // We opportunistically identify syntactically identical match arms -- this
@@ -1470,6 +1481,16 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceMatch(const Match* node,
       }
 
       XLS_RETURN_IF_ERROR(Unify(pattern, *matched, ctx));
+
+      if (match_exhaustiveness_checker.has_value()) {
+        bool exhaustive_before = match_exhaustiveness_checker->IsExhaustive();
+        match_exhaustiveness_checker->AddPattern(*pattern);
+        if (exhaustive_before) {
+          ctx->warnings()->Add(
+              pattern->span(), WarningKind::kAlreadyExhaustiveMatch,
+              "Match is already exhaustive before this pattern");
+        }
+      }
     }
   }
 

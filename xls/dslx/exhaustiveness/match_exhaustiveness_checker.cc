@@ -42,6 +42,10 @@ MatchExhaustivenessChecker::MatchExhaustivenessChecker(
       bits_like_(bits_like),
       tested_(BitsValueRange::MakeEmpty(bits_like)) {}
 
+bool MatchExhaustivenessChecker::IsExhaustive() const {
+  return tested_.IsExhaustive();
+}
+
 bool MatchExhaustivenessChecker::AddPattern(const NameDefTree& pattern) {
   CHECK(pattern.is_leaf());
   if (pattern.IsIrrefutable()) {
@@ -53,7 +57,9 @@ bool MatchExhaustivenessChecker::AddPattern(const NameDefTree& pattern) {
           [&](auto* node) {
             std::optional<InterpValue> value =
                 type_info_.GetConstExprOption(node);
-            CHECK(value.has_value());
+            CHECK(value.has_value()) << absl::StreamFormat(
+                "Value is not a constexpr: `%s` (kind: %s)", node->ToString(),
+                node->GetNodeTypeName());
             tested_ = BitsValueRange::Merge(
                 tested_,
                 BitsValueRange::MakeSingleRange(bits_like_, *value, *value));

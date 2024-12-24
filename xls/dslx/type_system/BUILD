@@ -128,6 +128,7 @@ cc_library(
     ],
     hdrs = ["deduce.h"],
     deps = [
+        "//xls/dslx/exhaustiveness:match_exhaustiveness_checker",
         ":ast_env",
         ":deduce_ctx",
         ":deduce_utils",
