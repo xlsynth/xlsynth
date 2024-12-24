@@ -38,173 +38,195 @@ InterpValueRange ExhaustiveRangeFor(BitsLikeProperties bits_like) {
   return InterpValueRange(MakeMinValue(bits_like), MakeMaxValue(bits_like));
 }
 
-InterpValue MinStart(const std::optional<InterpValueRange>& lhs, const std::optional<InterpValueRange>& rhs) {
-    if (lhs.has_value() && rhs.has_value()) {
-        if (lhs->min() < rhs->min()) {
-            LOG(ERROR) << "returning lhs min: " << lhs->min().ToString();
-            return lhs->min();
-        }
-        LOG(ERROR) << "returning rhs min: " << rhs->min().ToString();
-        return rhs->min();
+InterpValue MinStart(const std::optional<InterpValueRange>& lhs,
+                     const std::optional<InterpValueRange>& rhs) {
+  if (lhs.has_value() && rhs.has_value()) {
+    if (lhs->min() < rhs->min()) {
+      LOG(ERROR) << "returning lhs min: " << lhs->min().ToString();
+      return lhs->min();
     }
-    if (lhs.has_value()) {
-        LOG(ERROR) << "returning lhs min: " << lhs->min().ToString();
-        return lhs->min();
-    }
-    if (rhs.has_value()) {
-        LOG(ERROR) << "returning rhs min: " << rhs->min().ToString();
-        return rhs->min();
-    }
-    LOG(FATAL) << "At least one of the ranges must be provided";
+    LOG(ERROR) << "returning rhs min: " << rhs->min().ToString();
+    return rhs->min();
+  }
+  if (lhs.has_value()) {
+    LOG(ERROR) << "returning lhs min: " << lhs->min().ToString();
+    return lhs->min();
+  }
+  if (rhs.has_value()) {
+    LOG(ERROR) << "returning rhs min: " << rhs->min().ToString();
+    return rhs->min();
+  }
+  LOG(FATAL) << "At least one of the ranges must be provided";
 }
 
 }  // namespace
 
-InterpValueRange::InterpValueRange(InterpValue min, InterpValue max) : min_(std::move(min)), max_(std::move(max)) {
-    absl::StatusOr<InterpValue> le = min_.Le(max_);
-    CHECK_OK(le.status());
-    CHECK(le->IsTrue()) << absl::StreamFormat(
-        "need min=%s <= max=%s", min_.ToString(), max_.ToString());
+InterpValueRange::InterpValueRange(InterpValue min, InterpValue max)
+    : min_(std::move(min)), max_(std::move(max)) {
+  absl::StatusOr<InterpValue> le = min_.Le(max_);
+  CHECK_OK(le.status());
+  CHECK(le->IsTrue()) << absl::StreamFormat("need min=%s <= max=%s",
+                                            min_.ToString(), max_.ToString());
 }
 
 bool InterpValueRange::Contains(InterpValue value) const {
-    return min_.Le(value)->IsTrue() && max_.Ge(value)->IsTrue();
+  return min_.Le(value)->IsTrue() && max_.Ge(value)->IsTrue();
 }
 
 std::string InterpValueRange::ToString() const {
-    return absl::StrFormat("(%s, %s)", min_.ToString(), max_.ToString());
+  return absl::StrFormat("(%s, %s)", min_.ToString(), max_.ToString());
 }
 
 void InterpValueRange::ExtendToInclude(InterpValue value) {
-    // If the value is already included in the interval we don't have to do anything.
-    if (Contains(value)) {
-        return;
-    }
+  // If the value is already included in the interval we don't have to do
+  // anything.
+  if (Contains(value)) {
+    return;
+  }
 
-    absl::StatusOr<InterpValue> le = max_.Le(value);
-    CHECK_OK(le.status());
-    CHECK(le->IsTrue()) << absl::StreamFormat(
-        "ExtendToInclude(%s) but current max is %s", value.ToString(), max_.ToString());
-    max_ = value;
+  absl::StatusOr<InterpValue> le = max_.Le(value);
+  CHECK_OK(le.status());
+  CHECK(le->IsTrue()) << absl::StreamFormat(
+      "ExtendToInclude(%s) but current max is %s", value.ToString(),
+      max_.ToString());
+  max_ = value;
 }
 
 bool InterpValueRange::IsSigned() const {
-    CHECK_EQ(min_.IsSigned(), max_.IsSigned());
-    return min_.IsSigned();
+  CHECK_EQ(min_.IsSigned(), max_.IsSigned());
+  return min_.IsSigned();
 }
 
 int64_t InterpValueRange::GetBitCount() const {
-    CHECK_EQ(min_.GetBitCount(), max_.GetBitCount());
-    return min_.GetBitCount().value();
+  CHECK_EQ(min_.GetBitCount(), max_.GetBitCount());
+  return min_.GetBitCount().value();
 }
 
 bool InterpValueRange::ShouldMergeWith(const InterpValueRange& other) const {
-    InterpValue one = InterpValue::MakeOneValue(IsSigned(), GetBitCount());
-    InterpValue this_max_plus_one = max_.Add(one).value();
-    // FIXME XXX we're checking for overflow here, we should do it more elegantly.
-    bool result = this_max_plus_one.Ge(other.min_)->IsTrue() || max_.Eq(other.min_);
-    LOG(ERROR) << absl::StreamFormat("ShouldMergeWith(%s, %s) this_max_plus_one=%s other.min_=%s result=%s",
-        ToString(), other.ToString(), this_max_plus_one.ToString(), other.min_.ToString(), result ? "true" : "false");
-    return result;
+  InterpValue one = InterpValue::MakeOneValue(IsSigned(), GetBitCount());
+  InterpValue this_max_plus_one = max_.Add(one).value();
+  // FIXME XXX we're checking for overflow here, we should do it more elegantly.
+  bool result =
+      this_max_plus_one.Ge(other.min_)->IsTrue() || max_.Eq(other.min_);
+  LOG(ERROR) << absl::StreamFormat(
+      "ShouldMergeWith(%s, %s) this_max_plus_one=%s other.min_=%s result=%s",
+      ToString(), other.ToString(), this_max_plus_one.ToString(),
+      other.min_.ToString(), result ? "true" : "false");
+  return result;
 }
 
-BitsValueRange BitsValueRange::MakeSingleRange(BitsLikeProperties bits_like, InterpValue min,
-                                              InterpValue max) {
-  return BitsValueRange(bits_like, absl::btree_set<InterpValueRange>{InterpValueRange(min, max)});
+BitsValueRange BitsValueRange::MakeSingleRange(BitsLikeProperties bits_like,
+                                               InterpValue min,
+                                               InterpValue max) {
+  return BitsValueRange(
+      bits_like, absl::btree_set<InterpValueRange>{InterpValueRange(min, max)});
 }
 
 BitsValueRange BitsValueRange::MakeEmpty(BitsLikeProperties bits_like) {
-    return BitsValueRange(bits_like, absl::btree_set<InterpValueRange>{});
+  return BitsValueRange(bits_like, absl::btree_set<InterpValueRange>{});
 }
 
 BitsValueRange BitsValueRange::MakeFull(BitsLikeProperties bits_like) {
-    return BitsValueRange(bits_like, absl::btree_set<InterpValueRange>{ExhaustiveRangeFor(bits_like)});
+  return BitsValueRange(bits_like, absl::btree_set<InterpValueRange>{
+                                       ExhaustiveRangeFor(bits_like)});
 }
 
 int64_t BitsValueRange::GetBitCount() const {
-    return bits_like_.size.GetAsInt64().value();
+  return bits_like_.size.GetAsInt64().value();
 }
 
 bool BitsValueRange::IsSigned() const {
-    return bits_like_.is_signed.GetAsInt64().value();
+  return bits_like_.is_signed.GetAsInt64().value();
 }
 
 bool BitsValueRange::IsExhaustive() const {
-    return disjoint_.size() == 1 && *disjoint_.begin() == ExhaustiveRangeFor(bits_like_);
+  return disjoint_.size() == 1 &&
+         *disjoint_.begin() == ExhaustiveRangeFor(bits_like_);
 }
 
-BitsValueRange BitsValueRange::Merge(const BitsValueRange& lhs, const BitsValueRange& rhs) {
-    CHECK_EQ(lhs.bits_like_, rhs.bits_like_);
+BitsValueRange BitsValueRange::Merge(const BitsValueRange& lhs,
+                                     const BitsValueRange& rhs) {
+  CHECK_EQ(lhs.bits_like_, rhs.bits_like_);
 
-    const auto& lhs_ranges = lhs.disjoint();
-    const auto& rhs_ranges = rhs.disjoint();
+  const auto& lhs_ranges = lhs.disjoint();
+  const auto& rhs_ranges = rhs.disjoint();
 
-    if (lhs_ranges.empty() && rhs_ranges.empty()) {
-        return BitsValueRange(lhs.bits_like_, absl::btree_set<InterpValueRange>{});
+  if (lhs_ranges.empty() && rhs_ranges.empty()) {
+    return BitsValueRange(lhs.bits_like_, absl::btree_set<InterpValueRange>{});
+  }
+
+  absl::btree_set<InterpValueRange> result;
+  // Walk through the ranges for the LHS and RHS simultaneously, and if there's
+  // overlap, merge them. Once we walk to a spot there's no overlap, we can emit
+  // the range into the result.
+  //
+  // We do it this way because we need to make sure we only place results that
+  // are maximally contiguous, so we have to ensure there are holes between any
+  // ranges we place into the result.
+  InterpValue init_start =
+      MinStart(lhs_ranges.empty() ? std::nullopt
+                                  : std::make_optional(*lhs_ranges.begin()),
+               rhs_ranges.empty() ? std::nullopt
+                                  : std::make_optional(*rhs_ranges.begin()));
+  std::optional<InterpValueRange> current_range =
+      InterpValueRange(init_start, init_start);
+  LOG(ERROR) << "current_range init: " << current_range->ToString();
+  auto lhs_iter = lhs_ranges.begin();
+  auto rhs_iter = rhs_ranges.begin();
+  while (true) {
+    if (lhs_iter == lhs_ranges.end() && rhs_iter == rhs_ranges.end()) {
+      break;
     }
-
-    absl::btree_set<InterpValueRange> result;
-    // Walk through the ranges for the LHS and RHS simultaneously, and if there's overlap, merge
-    // them. Once we walk to a spot there's no overlap, we can emit the range into the result.
-    //
-    // We do it this way because we need to make sure we only place results that are maximally
-    // contiguous, so we have to ensure there are holes between any ranges we place into the result.
-    InterpValue init_start = MinStart(
-        lhs_ranges.empty() ? std::nullopt : std::make_optional(*lhs_ranges.begin()),
-        rhs_ranges.empty() ? std::nullopt : std::make_optional(*rhs_ranges.begin()));
-    std::optional<InterpValueRange> current_range = InterpValueRange(init_start, init_start);
-    LOG(ERROR) << "current_range init: " << current_range->ToString();
-    auto lhs_iter = lhs_ranges.begin();
-    auto rhs_iter = rhs_ranges.begin();
-    while (true) {
-        if (lhs_iter == lhs_ranges.end() && rhs_iter == rhs_ranges.end()) {
-            break;
-        }
-        if (!current_range.has_value()) {
-            // Make whichever interval is smaller the current range and let them get popped in
-            // subsequent processing steps.
-            InterpValue min_start = MinStart(
-                lhs_iter == lhs_ranges.end() ? std::nullopt : std::make_optional(*lhs_iter),
-                rhs_iter == rhs_ranges.end() ? std::nullopt : std::make_optional(*rhs_iter));
-            current_range = InterpValueRange(min_start, min_start);
-            LOG(ERROR) << "current_range is now: " << current_range->ToString();
-            continue;
-        }
-        CHECK(current_range.has_value());
-        if (lhs_iter != lhs_ranges.end() && current_range->ShouldMergeWith(*lhs_iter)) {
-            LOG(ERROR) << "extending via lhs contiguous range: " << lhs_iter->ToString();
-            current_range->ExtendToInclude(lhs_iter->max());
-            LOG(ERROR) << "current_range is now: " << current_range->ToString();
-            ++lhs_iter;
-            continue;
-        }
-        if (rhs_iter != rhs_ranges.end() && current_range->ShouldMergeWith(*rhs_iter)) {
-            LOG(ERROR) << "extending via rhs contiguous range: " << rhs_iter->ToString();
-            current_range->ExtendToInclude(rhs_iter->max());
-            LOG(ERROR) << "current_range is now: " << current_range->ToString();
-            ++rhs_iter;
-            continue;
-        }
-        result.insert(current_range.value());
-        LOG(ERROR) << "emitting current_range: " << current_range->ToString();
-        current_range = std::nullopt;
+    if (!current_range.has_value()) {
+      // Make whichever interval is smaller the current range and let them get
+      // popped in subsequent processing steps.
+      InterpValue min_start = MinStart(
+          lhs_iter == lhs_ranges.end() ? std::nullopt
+                                       : std::make_optional(*lhs_iter),
+          rhs_iter == rhs_ranges.end() ? std::nullopt
+                                       : std::make_optional(*rhs_iter));
+      current_range = InterpValueRange(min_start, min_start);
+      LOG(ERROR) << "current_range is now: " << current_range->ToString();
+      continue;
     }
-
-
-    if (current_range.has_value()) {
-        result.insert(current_range.value());
-        LOG(ERROR) << "emitting final current_range: " << current_range->ToString();
+    CHECK(current_range.has_value());
+    if (lhs_iter != lhs_ranges.end() &&
+        current_range->ShouldMergeWith(*lhs_iter)) {
+      LOG(ERROR) << "extending via lhs contiguous range: "
+                 << lhs_iter->ToString();
+      current_range->ExtendToInclude(lhs_iter->max());
+      LOG(ERROR) << "current_range is now: " << current_range->ToString();
+      ++lhs_iter;
+      continue;
     }
+    if (rhs_iter != rhs_ranges.end() &&
+        current_range->ShouldMergeWith(*rhs_iter)) {
+      LOG(ERROR) << "extending via rhs contiguous range: "
+                 << rhs_iter->ToString();
+      current_range->ExtendToInclude(rhs_iter->max());
+      LOG(ERROR) << "current_range is now: " << current_range->ToString();
+      ++rhs_iter;
+      continue;
+    }
+    result.insert(current_range.value());
+    LOG(ERROR) << "emitting current_range: " << current_range->ToString();
+    current_range = std::nullopt;
+  }
 
-    return BitsValueRange(lhs.bits_like_, std::move(result));
+  if (current_range.has_value()) {
+    result.insert(current_range.value());
+    LOG(ERROR) << "emitting final current_range: " << current_range->ToString();
+  }
+
+  return BitsValueRange(lhs.bits_like_, std::move(result));
 }
 
 std::string BitsValueRange::ToString() const {
-    std::vector<std::string> pieces;
-    for (const auto& range : disjoint_) {
-        pieces.push_back(range.ToString());
-    }
-    return absl::StrFormat("[%s]", absl::StrJoin(pieces, ", "));
+  std::vector<std::string> pieces;
+  for (const auto& range : disjoint_) {
+    pieces.push_back(range.ToString());
+  }
+  return absl::StrFormat("[%s]", absl::StrJoin(pieces, ", "));
 }
 
 }  // namespace xls::dslx

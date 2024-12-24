@@ -15,9 +15,9 @@
 #ifndef XLS_DSLX_EXHAUSTIVENESS_EXHAUSTIVENESS_H_
 #define XLS_DSLX_EXHAUSTIVENESS_EXHAUSTIVENESS_H_
 
+#include "absl/container/btree_set.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/type.h"
-#include "absl/container/btree_set.h"
 
 namespace xls::dslx {
 
@@ -53,15 +53,16 @@ class InterpValueRange {
 
 class BitsValueRange {
  public:
-  static BitsValueRange MakeSingleRange(BitsLikeProperties bits_like, InterpValue min,
-                                        InterpValue max);
-  
+  static BitsValueRange MakeSingleRange(BitsLikeProperties bits_like,
+                                        InterpValue min, InterpValue max);
+
   // Make an empty range for the given bits type.
   static BitsValueRange MakeEmpty(BitsLikeProperties bits_like);
 
   static BitsValueRange MakeFull(BitsLikeProperties bits_like);
 
-  static BitsValueRange Merge(const BitsValueRange& lhs, const BitsValueRange& rhs);
+  static BitsValueRange Merge(const BitsValueRange& lhs,
+                              const BitsValueRange& rhs);
 
   BitsValueRange(const BitsValueRange& other) = default;
   BitsValueRange(BitsValueRange&& other) = default;

@@ -95,11 +95,10 @@ std::string TagToString(InterpValueTag tag) {
 
 /* static */ InterpValue InterpValue::MakeOneValue(bool is_signed,
                                                    int64_t bit_count) {
-   CHECK_GT(bit_count, 0);
-   return InterpValue(
-    is_signed ? InterpValueTag::kSBits : InterpValueTag::kUBits,
-    Bits(bit_count).UpdateWithSet(0, true)
-   );
+  CHECK_GT(bit_count, 0);
+  return InterpValue(
+      is_signed ? InterpValueTag::kSBits : InterpValueTag::kUBits,
+      Bits(bit_count).UpdateWithSet(0, true));
 }
 
 /* static */ InterpValue InterpValue::MakeMaxValue(bool is_signed,

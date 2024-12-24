@@ -17,18 +17,21 @@
 
 namespace xls::dslx {
 
-// Object that we can incrementally feed match arms/patterns to and ask whether we've reached
-// a point where the patterns are exhaustive. This is useful for flagging a warning right when
-// we've reached the point that the arms are exhaustive.
+// Object that we can incrementally feed match arms/patterns to and ask whether
+// we've reached a point where the patterns are exhaustive. This is useful for
+// flagging a warning right when we've reached the point that the arms are
+// exhaustive.
 class MatchExhaustivenessChecker {
  public:
-  static absl::StatusOr<MatchExhaustivenessChecker> Make(const Match& match, const TypeInfo& type_info);
+  static absl::StatusOr<MatchExhaustivenessChecker> Make(
+      const Match& match, const TypeInfo& type_info);
 
   // Returns whether we've reached a point of exhaustiveness.
   bool AddPattern(const NameDefTree& pattern);
 
  private:
-  MatchExhaustivenessChecker(const Match& match, const TypeInfo& type_info, BitsLikeProperties bits_like);
+  MatchExhaustivenessChecker(const Match& match, const TypeInfo& type_info,
+                             BitsLikeProperties bits_like);
 
   const Match& match_;
   const TypeInfo& type_info_;
