@@ -620,8 +620,8 @@ absl::StatusOr<ImportedInfo*> TypeInfo::GetImportedOrError(UseTreeEntry* use_tre
       absl::StrCat("Could not find import for \"", use_tree_entry->ToString(), "\"."));
 }
 
-absl::StatusOr<const ImportedInfo*> TypeInfo::GetImportedOrError(UseTreeEntry* use_tree_entry) const {
-  return const_cast<TypeInfo*>(this)->GetImportedOrError(use_tree_entry);
+absl::StatusOr<const ImportedInfo*> TypeInfo::GetImportedOrError(const UseTreeEntry* use_tree_entry) const {
+  return const_cast<TypeInfo*>(this)->GetImportedOrError(const_cast<UseTreeEntry*>(use_tree_entry));
 }
 
 std::optional<TypeInfo*> TypeInfo::GetImportedTypeInfo(Module* m) {

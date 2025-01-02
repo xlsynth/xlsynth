@@ -281,13 +281,16 @@ absl::StatusOr<InterpValue> GetArrayTypeColonAttr(
                                 [&] { return array_type->ToString(); });
 }
 
-bool IsExternNameRef(const NameRef& name_ref) {
+std::optional<const UseTreeEntry*> IsExternNameRef(const NameRef& name_ref) {
   const AstNode* definer = name_ref.GetDefiner();
   if (definer == nullptr) {
-    return false;
+    return std::nullopt;
   }
-  auto* use = dynamic_cast<const Use*>(definer);
-  return use != nullptr;
+  auto* use_tree_entry = dynamic_cast<const UseTreeEntry*>(definer);
+  if (use_tree_entry == nullptr) {
+    return std::nullopt;
+  }
+  return use_tree_entry;
 }
 
 // Attempts to evaluate an expression as a literal boolean.

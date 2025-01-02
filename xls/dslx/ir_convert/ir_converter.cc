@@ -173,7 +173,7 @@ absl::Status ConvertOneFunctionInternal(PackageData& package_data,
                               options, proc_data, channel_scope,
                               record.IsTop());
   XLS_ASSIGN_OR_RETURN(auto constant_deps,
-                       GetConstantDepFreevars(record.f()->body()));
+                       GetConstantDepFreevars(record.f()->body(), *record.type_info()));
   for (const auto& dep : constant_deps) {
     converter.AddConstantDep(dep);
   }

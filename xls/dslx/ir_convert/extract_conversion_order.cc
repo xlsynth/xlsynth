@@ -289,13 +289,8 @@ class InvocationVisitor : public ExprVisitor {
     if (auto* colon_ref = dynamic_cast<ColonRef*>(node->callee())) {
       XLS_ASSIGN_OR_RETURN(callee_info, HandleColonRefInvocation(colon_ref));
     } else if (auto* name_ref = dynamic_cast<NameRef*>(node->callee())) {
-      if (IsExternNameRef(*name_ref)) {
-        XLS_ASSIGN_OR_RETURN(callee_info,
-                             HandleExternNameRefInvocation(name_ref));
-      } else {
         XLS_ASSIGN_OR_RETURN(callee_info,
                              HandleNameRefInvocation(name_ref, node));
-      }
     } else {
       return absl::UnimplementedError(
           "Only calls to named functions are currently supported "
@@ -508,11 +503,6 @@ class InvocationVisitor : public ExprVisitor {
     return CalleeInfo{.module = this_m, .callee = f, .type_info = type_info_};
   }
 
-  absl::StatusOr<CalleeInfo> HandleExternNameRefInvocation(
-      const NameRef* name_ref) {
-    return absl::UnimplementedError("ExternNameRefInvocation");
-  }
-
   // Helper for invocations of NameRef callees.
   absl::StatusOr<std::optional<CalleeInfo>> HandleNameRefInvocation(
       const NameRef* name_ref, const Invocation* invocation) {
@@ -526,6 +516,15 @@ class InvocationVisitor : public ExprVisitor {
 
     if (is_builtin) {
       return std::nullopt;
+    }
+
+    if (std::optional<const UseTreeEntry*> tree_entry = IsExternNameRef(*name_ref); tree_entry.has_value()) {
+      XLS_RET_CHECK(tree_entry.value() != nullptr);
+      XLS_ASSIGN_OR_RETURN(const ImportedInfo* imported_info, type_info_->GetImportedOrError(tree_entry.value()));
+      XLS_RET_CHECK(imported_info != nullptr);
+      XLS_ASSIGN_OR_RETURN(Function* f, imported_info->module->GetMemberOrError<Function>(name_ref->identifier()));
+      XLS_RET_CHECK(f != nullptr);
+      return CalleeInfo{.module = imported_info->module, .callee = f, .type_info = imported_info->type_info};
     }
 
     Module* this_m = name_ref->owner();

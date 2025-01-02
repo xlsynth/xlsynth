@@ -256,7 +256,7 @@ class TypeInfo {
 
   // Returns the imported module information associated with the given use-tree-entry.
   absl::StatusOr<ImportedInfo*> GetImportedOrError(UseTreeEntry* use_tree_entry);
-  absl::StatusOr<const ImportedInfo*> GetImportedOrError(UseTreeEntry* use_tree_entry) const;
+  absl::StatusOr<const ImportedInfo*> GetImportedOrError(const UseTreeEntry* use_tree_entry) const;
 
   // Returns the type information for m, if it is available either as this
   // module or an import of this module.
