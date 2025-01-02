@@ -1346,33 +1346,37 @@ absl::Status BytecodeEmitter::HandleNameRef(const NameRef* node) {
 }
 
 absl::StatusOr<InterpValue> BytecodeEmitter::HandleExternRef(
-  const NameRef& name_ref, const NameDef& name_def,
-                                              UseTreeEntry& use_tree_entry) {
+    const NameRef& name_ref, const NameDef& name_def,
+    UseTreeEntry& use_tree_entry) {
   XLS_ASSIGN_OR_RETURN(const ImportedInfo* imported_info,
                        type_info_->GetImportedOrError(&use_tree_entry));
   Module* referenced_module = imported_info->module;
-  std::optional<ModuleMember*> member = referenced_module->FindMemberWithName (name_def.identifier());
+  std::optional<ModuleMember*> member =
+      referenced_module->FindMemberWithName(name_def.identifier());
   XLS_RET_CHECK(member.has_value());
 
-  // Note: we currently do not support re-exporting a `use` binding, when we do, this will need to potentially walk transitively to the definition.
-  std::optional<InterpValue> value = absl::visit(Visitor{
-              [&](Function* f) -> std::optional<InterpValue> {
-                // Type checking should have validated we refer to public members.
+  // Note: we currently do not support re-exporting a `use` binding, when we do,
+  // this will need to potentially walk transitively to the definition.
+  std::optional<InterpValue> value = absl::visit(
+      Visitor{[&](Function* f) -> std::optional<InterpValue> {
+                // Type checking should have validated we refer to public
+                // members.
                 CHECK(f->is_public()) << f->ToString();
                 return InterpValue::MakeFunction(
                     InterpValue::UserFnData{f->owner(), f});
               },
               [&](ConstantDef* cd) -> std::optional<InterpValue> {
-                // Type checking should have validated we refer to public members.
+                // Type checking should have validated we refer to public
+                // members.
                 CHECK(cd->is_public()) << cd->ToString();
-                std::optional<InterpValue> value = imported_info->type_info->GetConstExprOption(cd->value());
-                // ConstantDef should always have a ConstExpr value associated with it.
+                std::optional<InterpValue> value =
+                    imported_info->type_info->GetConstExprOption(cd->value());
+                // ConstantDef should always have a ConstExpr value associated
+                // with it.
                 CHECK(value.has_value());
                 return value;
               },
-              [&](auto) -> std::optional<InterpValue> {
-                return std::nullopt;
-              }},
+              [&](auto) -> std::optional<InterpValue> { return std::nullopt; }},
       *member.value());
   if (value.has_value()) {
     return value.value();

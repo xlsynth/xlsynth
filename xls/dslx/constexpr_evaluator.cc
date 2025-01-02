@@ -443,11 +443,11 @@ absl::Status ConstexprEvaluator::HandleMatch(const Match* expr) {
 }
 
 absl::Status ConstexprEvaluator::HandleExternRef(const NameRef* name_ref,
-                                                const NameDef* name_def,
-                                                UseTreeEntry* use_tree_entry) {
+                                                 const NameDef* name_def,
+                                                 UseTreeEntry* use_tree_entry) {
   const FileTable& file_table = *name_ref->owner()->file_table();
   LOG(ERROR) << "HandleExternRef: " << name_ref->ToString() << " @ "
-              << name_ref->span().ToString(file_table);
+             << name_ref->span().ToString(file_table);
   return absl::OkStatus();
 }
 

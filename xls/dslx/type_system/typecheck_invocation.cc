@@ -67,7 +67,7 @@ static absl::StatusOr<std::unique_ptr<DeduceCtx>> GetImportedDeduceCtx(
     std::variant<UseTreeEntry*, Import*> import_key) {
   auto it = ctx->type_info()->GetRootImports().find(import_key);
   XLS_RET_CHECK(it != ctx->type_info()->GetRootImports().end())
-    << "Could not find import for key: " << ToAstNode(import_key)->ToString();
+      << "Could not find import for key: " << ToAstNode(import_key)->ToString();
   const ImportedInfo* imported = &it->second;
 
   XLS_ASSIGN_OR_RETURN(
@@ -327,10 +327,11 @@ TypecheckParametricBuiltinInvocation(DeduceCtx* ctx,
   return tab;
 }
 
-// Inspects to see whether the given `ref` is a reference to an externally defined entity -- if so, returns
-// the "import key" we can use to resolve the module information for it.
-static std::optional<std::variant<UseTreeEntry*, Import*>>
-IsExternRef(Expr& ref, Module& current_module) {
+// Inspects to see whether the given `ref` is a reference to an externally
+// defined entity -- if so, returns the "import key" we can use to resolve the
+// module information for it.
+static std::optional<std::variant<UseTreeEntry*, Import*>> IsExternRef(
+    Expr& ref, Module& current_module) {
   if (auto* colon_ref = dynamic_cast<ColonRef*>(&ref); colon_ref != nullptr) {
     std::optional<Import*> import = colon_ref->ResolveImportSubject();
     if (import.has_value()) {
@@ -340,7 +341,8 @@ IsExternRef(Expr& ref, Module& current_module) {
   }
   if (auto* name_ref = dynamic_cast<NameRef*>(&ref); name_ref != nullptr) {
     AstNode* definer = name_ref->GetDefiner();
-    if (auto* use_tree_entry = dynamic_cast<UseTreeEntry*>(definer); use_tree_entry != nullptr) {
+    if (auto* use_tree_entry = dynamic_cast<UseTreeEntry*>(definer);
+        use_tree_entry != nullptr) {
       return use_tree_entry;
     }
   }
@@ -392,9 +394,12 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
   // record data in the original module/ctx, so we hold on to the parent.
   DeduceCtx* parent_ctx = ctx;
   std::unique_ptr<DeduceCtx> imported_ctx_holder;
-  if (auto import_key = IsExternRef(*invocation->callee(), *ctx->module()); import_key.has_value()) {
-    XLS_ASSIGN_OR_RETURN(imported_ctx_holder,
-                         GetImportedDeduceCtx(ctx, invocation, caller_parametric_env, import_key.value()));
+  if (auto import_key = IsExternRef(*invocation->callee(), *ctx->module());
+      import_key.has_value()) {
+    XLS_ASSIGN_OR_RETURN(
+        imported_ctx_holder,
+        GetImportedDeduceCtx(ctx, invocation, caller_parametric_env,
+                             import_key.value()));
     ctx = imported_ctx_holder.get();
   }
 
@@ -553,7 +558,7 @@ absl::StatusOr<std::vector<std::unique_ptr<Type>>> TypecheckFunctionParams(
   CHECK_EQ(f.owner(), ctx->type_info()->module())
       << "function owner: " << f.owner()->name()
       << " vs type info module: " << ctx->type_info()->module()->name();
-      
+
   {
     ScopedFnStackEntry parametric_env_expr_scope(f, ctx, WithinProc::kNo);
 

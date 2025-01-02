@@ -103,7 +103,7 @@ class ConstexprEvaluator : public xls::dslx::ExprVisitor {
 
  private:
   absl::Status HandleExternRef(const NameRef* name_ref, const NameDef* name_def,
-                              UseTreeEntry* use_tree_entry);
+                               UseTreeEntry* use_tree_entry);
 
   ConstexprEvaluator(ImportData* import_data, TypeInfo* type_info,
                      WarningCollector* warning_collector,

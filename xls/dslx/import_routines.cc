@@ -282,13 +282,15 @@ absl::StatusOr<UseImportResult> DoImportViaUse(
   //
   //    For example in `use foo::bar::baz;` if `foo/bar/baz.x` is present, that
   //    is the result of the use statement.
-  attempted.push_back(ImportTokens(std::vector<std::string>(subject.identifiers().begin(), subject.identifiers().end())));
+  attempted.push_back(ImportTokens(std::vector<std::string>(
+      subject.identifiers().begin(), subject.identifiers().end())));
   absl::StatusOr<DslxPath> dslx_path =
       FindExistingPath(attempted.back(), import_data->stdlib_path(),
                        import_data->additional_search_paths(), name_def_span,
                        import_data->file_table(), vfs);
   if (dslx_path.ok()) {
-    XLS_ASSIGN_OR_RETURN(ModuleInfo* module_info, to_module_info(attempted.back(), dslx_path.value()));
+    XLS_ASSIGN_OR_RETURN(ModuleInfo * module_info,
+                         to_module_info(attempted.back(), dslx_path.value()));
     return UseImportResult{.imported_module = module_info,
                            .imported_member = nullptr};
   }
@@ -299,9 +301,8 @@ absl::StatusOr<UseImportResult> DoImportViaUse(
   //    For example in `use foo::bar::baz;` if `baz.x` is not present, we are
   //    requesting an attribute access of the top level entity `baz` within the
   //    module `foo/bar.x`.
-  attempted.push_back(
-      ImportTokens::FromSpan(subject.identifiers()
-                                 .subspan(0, subject.identifiers().size() - 1)));
+  attempted.push_back(ImportTokens::FromSpan(
+      subject.identifiers().subspan(0, subject.identifiers().size() - 1)));
   dslx_path = FindExistingPath(
       /*subject=*/attempted.back(),
       /*stdlib_path=*/import_data->stdlib_path(),
@@ -317,10 +318,11 @@ absl::StatusOr<UseImportResult> DoImportViaUse(
     std::optional<ModuleMember*> member =
         module_info_ptr->module().FindMemberWithName(member_name);
     if (!member.has_value()) {
-      return absl::NotFoundError(absl::StrFormat(
-          "ImportError: %s Could not find member `%s` within "
-          "(successfully imported) module `%s`",
-          name_def_span.ToString(file_table), member_name, import_tokens.ToString()));
+      return absl::NotFoundError(
+          absl::StrFormat("ImportError: %s Could not find member `%s` within "
+                          "(successfully imported) module `%s`",
+                          name_def_span.ToString(file_table), member_name,
+                          import_tokens.ToString()));
     }
     return UseImportResult{.imported_module = module_info_ptr,
                            .imported_member = member.value()};

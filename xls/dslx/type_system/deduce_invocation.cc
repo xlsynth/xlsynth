@@ -233,13 +233,19 @@ static absl::StatusOr<Function*> ResolveColonRefToFnForInvocation(
   return resolved;
 }
 
-// Resolves a `UseTreeEntry` to a `Function` (for purposes of doing an invocation).
-static absl::StatusOr<Function*> ResolveUsedFunctionForInvocation(UseTreeEntry* use_tree_entry, TypeInfo* type_info) {
-  XLS_ASSIGN_OR_RETURN(ImportedInfo* imported_info, type_info->GetImportedOrError(use_tree_entry));
+// Resolves a `UseTreeEntry` to a `Function` (for purposes of doing an
+// invocation).
+static absl::StatusOr<Function*> ResolveUsedFunctionForInvocation(
+    UseTreeEntry* use_tree_entry, TypeInfo* type_info) {
+  XLS_ASSIGN_OR_RETURN(ImportedInfo * imported_info,
+                       type_info->GetImportedOrError(use_tree_entry));
   const auto& payload = use_tree_entry->payload();
   XLS_RET_CHECK(std::holds_alternative<NameDef*>(payload));
   const NameDef* name_def = std::get<NameDef*>(payload);
-  XLS_ASSIGN_OR_RETURN(Function* fn, GetMemberOrTypeInferenceError<Function>(imported_info->module, name_def->identifier(), name_def->span()));
+  XLS_ASSIGN_OR_RETURN(
+      Function * fn,
+      GetMemberOrTypeInferenceError<Function>(
+          imported_info->module, name_def->identifier(), name_def->span()));
   return fn;
 }
 
@@ -381,7 +387,8 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceInvocation(const Invocation* node,
       if (auto* use_tree_entry = dynamic_cast<UseTreeEntry*>(definer);
           use_tree_entry != nullptr) {
         // We'll go fetch the function from the other module.
-        XLS_ASSIGN_OR_RETURN(fn, ResolveUsedFunctionForInvocation(use_tree_entry, ctx->type_info()));
+        XLS_ASSIGN_OR_RETURN(fn, ResolveUsedFunctionForInvocation(
+                                     use_tree_entry, ctx->type_info()));
       } else {
         fn = dynamic_cast<Function*>(definer);
         if (fn == nullptr) {

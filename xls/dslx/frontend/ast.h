@@ -1367,7 +1367,8 @@ class UseInteriorEntry {
 // A `use` like `use foo::{bar, baz}` will result in two `UseSubject`s.
 class UseSubject {
  public:
-  UseSubject(std::vector<std::string> identifiers, NameDef& name_def, UseTreeEntry& use_tree_entry);
+  UseSubject(std::vector<std::string> identifiers, NameDef& name_def,
+             UseTreeEntry& use_tree_entry);
 
   absl::Span<std::string const> identifiers() const { return identifiers_; }
   const NameDef& name_def() const { return *name_def_; }
@@ -1419,7 +1420,8 @@ class UseTreeEntry : public AstNode {
   }
   const Span& span() const { return span_; }
 
-  // Note: this is non-const because we capture a mutable AST node pointer in the results.
+  // Note: this is non-const because we capture a mutable AST node pointer in
+  // the results.
   void LinearizeToSubjects(std::vector<std::string>& prefix,
                            std::vector<UseSubject>& results);
 
@@ -1476,7 +1478,8 @@ class Use : public AstNode {
   // individual imported entities that get a name binding in the module) of
   // the `use` statement.
   //
-  // Note: this is non-const because we capture a mutable AST node pointer in the results.
+  // Note: this is non-const because we capture a mutable AST node pointer in
+  // the results.
   std::vector<UseSubject> LinearizeToSubjects() {
     std::vector<std::string> prefix;
     std::vector<UseSubject> results;

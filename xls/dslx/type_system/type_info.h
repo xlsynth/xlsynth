@@ -254,9 +254,12 @@ class TypeInfo {
   std::optional<const ImportedInfo*> GetImported(Import* import) const;
   absl::StatusOr<const ImportedInfo*> GetImportedOrError(Import* import) const;
 
-  // Returns the imported module information associated with the given use-tree-entry.
-  absl::StatusOr<ImportedInfo*> GetImportedOrError(UseTreeEntry* use_tree_entry);
-  absl::StatusOr<const ImportedInfo*> GetImportedOrError(const UseTreeEntry* use_tree_entry) const;
+  // Returns the imported module information associated with the given
+  // use-tree-entry.
+  absl::StatusOr<ImportedInfo*> GetImportedOrError(
+      UseTreeEntry* use_tree_entry);
+  absl::StatusOr<const ImportedInfo*> GetImportedOrError(
+      const UseTreeEntry* use_tree_entry) const;
 
   // Returns the type information for m, if it is available either as this
   // module or an import of this module.
@@ -400,7 +403,8 @@ class TypeInfo {
       unrolled_loops_;
 
   // The following are only present on the root type info.
-  absl::flat_hash_map<std::variant<UseTreeEntry*, Import*>, ImportedInfo> imports_;
+  absl::flat_hash_map<std::variant<UseTreeEntry*, Import*>, ImportedInfo>
+      imports_;
   absl::flat_hash_map<const Invocation*, InvocationData> invocations_;
   absl::flat_hash_map<Slice*, SliceData> slices_;
   absl::flat_hash_map<const Function*, bool> requires_implicit_token_;

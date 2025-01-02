@@ -180,15 +180,19 @@ bool GetRequiresImplicitToken(dslx::Function& f, ImportData* import_data,
   return requires_opt.value() || requires_for_test;
 }
 
-// RAII helper that swaps out the current_type_info_ member on the FunctionConverter within a scope -- this
-// is useful for cases where we temporarily traverse to emit things in other modules than the module containing
-// the function being converted.
+// RAII helper that swaps out the current_type_info_ member on the
+// FunctionConverter within a scope -- this is useful for cases where we
+// temporarily traverse to emit things in other modules than the module
+// containing the function being converted.
 struct ScopedTypeInfoSwap {
-  static absl::StatusOr<std::optional<ScopedTypeInfoSwap>> ForNode(FunctionConverter* converter, AstNode* node) {
+  static absl::StatusOr<std::optional<ScopedTypeInfoSwap>> ForNode(
+      FunctionConverter* converter, AstNode* node) {
     if (node->owner() == converter->current_type_info_->module()) {
       return std::nullopt;
     }
-    XLS_ASSIGN_OR_RETURN(TypeInfo* type_info, converter->import_data_->GetRootTypeInfo(node->owner()));
+    XLS_ASSIGN_OR_RETURN(
+        TypeInfo * type_info,
+        converter->import_data_->GetRootTypeInfo(node->owner()));
     CHECK_EQ(type_info->module(), node->owner());
     return ScopedTypeInfoSwap(converter, type_info);
   }
@@ -757,27 +761,29 @@ absl::Status FunctionConverter::HandleParam(const Param* node) {
   return absl::OkStatus();
 }
 
-absl::Status FunctionConverter::HandleExternNameRef(const NameRef* node, const UseTreeEntry* use_tree_entry) {
-  XLS_ASSIGN_OR_RETURN(const ImportedInfo* imported_info, current_type_info_->GetImportedOrError(use_tree_entry));
-  std::optional<const ModuleMember*> member = imported_info->module->FindMemberWithName(node->identifier());
+absl::Status FunctionConverter::HandleExternNameRef(
+    const NameRef* node, const UseTreeEntry* use_tree_entry) {
+  XLS_ASSIGN_OR_RETURN(const ImportedInfo* imported_info,
+                       current_type_info_->GetImportedOrError(use_tree_entry));
+  std::optional<const ModuleMember*> member =
+      imported_info->module->FindMemberWithName(node->identifier());
   XLS_RET_CHECK(member.has_value());
-  return absl::visit(Visitor{
-      [&](Function* f) -> absl::Status {
-        return DefAlias(f, /*to=*/node);
-      },
-      [&](ConstantDef* c) -> absl::Status {
-        CHECK(node_to_ir_.contains(c->value()))
-          << absl::StreamFormat(
-              "ConstantDef `%s` not found in node_to_ir_ map",
-              c->ToString());
-        return DefAlias(c->value(), /*to=*/node);
-      },
-      [&](auto) -> absl::Status {
-        return absl::UnimplementedError(absl::StrFormat(
-          "Unsupported module member type %s for external name reference: `%s` @ %s",
-          GetModuleMemberTypeName(*member.value()), node->identifier(), node->span().ToString(file_table())));
-      }
-    }, *member.value());
+  return absl::visit(
+      Visitor{
+          [&](Function* f) -> absl::Status { return DefAlias(f, /*to=*/node); },
+          [&](ConstantDef* c) -> absl::Status {
+            CHECK(node_to_ir_.contains(c->value())) << absl::StreamFormat(
+                "ConstantDef `%s` not found in node_to_ir_ map", c->ToString());
+            return DefAlias(c->value(), /*to=*/node);
+          },
+          [&](auto) -> absl::Status {
+            return absl::UnimplementedError(absl::StrFormat(
+                "Unsupported module member type %s for external name "
+                "reference: `%s` @ %s",
+                GetModuleMemberTypeName(*member.value()), node->identifier(),
+                node->span().ToString(file_table())));
+          }},
+      *member.value());
 }
 
 absl::Status FunctionConverter::HandleNameRef(const NameRef* node) {
@@ -785,7 +791,8 @@ absl::Status FunctionConverter::HandleNameRef(const NameRef* node) {
 
   AstNode* from = ToAstNode(node->name_def());
 
-  if (std::optional<const UseTreeEntry*> tree_entry = IsExternNameRef(*node); tree_entry.has_value()) {
+  if (std::optional<const UseTreeEntry*> tree_entry = IsExternNameRef(*node);
+      tree_entry.has_value()) {
     return HandleExternNameRef(node, *tree_entry);
   }
 
@@ -821,9 +828,11 @@ absl::Status FunctionConverter::HandleNameRef(const NameRef* node) {
 
 absl::Status FunctionConverter::HandleConstantDef(const ConstantDef* node) {
   XLS_RET_CHECK_EQ(node->owner(), current_type_info_->module())
-    << absl::StreamFormat(
-      "handling ConstantDef `%s` from module `%s` but current type info is for module `%s`",
-      node->ToString(), node->owner()->name(), current_type_info_->module()->name());
+      << absl::StreamFormat(
+             "handling ConstantDef `%s` from module `%s` but current type info "
+             "is for module `%s`",
+             node->ToString(), node->owner()->name(),
+             current_type_info_->module()->name());
 
   // We've already evaluated constants to their values; we don't need to dive
   // into them for [useless] IR conversion.
@@ -2705,16 +2714,21 @@ absl::Status FunctionConverter::HandleFunction(
   // If there is foreign function data, all constant values are replaced now.
   ir_builder_ptr->SetForeignFunctionData(const_prefill.GetUpdatedFfiData());
 
-  VLOG(5) << absl::StreamFormat("FunctionBuilder %p function `%s` has %d constant deps", ir_builder_ptr, f.identifier(), constant_deps_.size());
+  VLOG(5) << absl::StreamFormat(
+      "FunctionBuilder %p function `%s` has %d constant deps", ir_builder_ptr,
+      f.identifier(), constant_deps_.size());
   for (ConstantDef* dep : constant_deps_) {
     VLOG(5) << "Visiting constant dep: " << dep->ToString();
 
-    // The constant dep may be from a different module than the module for the function we're currently converting.
-    XLS_ASSIGN_OR_RETURN(std::optional<ScopedTypeInfoSwap> stis, ScopedTypeInfoSwap::ForNode(this, dep));
-    CHECK_EQ(current_type_info_->module(), dep->owner())
-      << absl::StreamFormat(
-          "handling ConstantDef `%s` from module `%s` but current type info is for module `%s`",
-          dep->ToString(), dep->owner()->name(), current_type_info_->module()->name());
+    // The constant dep may be from a different module than the module for the
+    // function we're currently converting.
+    XLS_ASSIGN_OR_RETURN(std::optional<ScopedTypeInfoSwap> stis,
+                         ScopedTypeInfoSwap::ForNode(this, dep));
+    CHECK_EQ(current_type_info_->module(), dep->owner()) << absl::StreamFormat(
+        "handling ConstantDef `%s` from module `%s` but current type info is "
+        "for module `%s`",
+        dep->ToString(), dep->owner()->name(),
+        current_type_info_->module()->name());
     XLS_RETURN_IF_ERROR(Visit(dep));
   }
 
@@ -2865,8 +2879,10 @@ absl::Status FunctionConverter::HandleProcNextFunction(
   for (ConstantDef* dep : constant_deps_) {
     VLOG(5) << "Visiting constant dep: " << dep->ToString();
 
-    // The constant dep may be from a different module than the module for the function we're currently converting.
-    XLS_ASSIGN_OR_RETURN(std::optional<ScopedTypeInfoSwap> stis, ScopedTypeInfoSwap::ForNode(this, dep));
+    // The constant dep may be from a different module than the module for the
+    // function we're currently converting.
+    XLS_ASSIGN_OR_RETURN(std::optional<ScopedTypeInfoSwap> stis,
+                         ScopedTypeInfoSwap::ForNode(this, dep));
     XLS_RETURN_IF_ERROR(Visit(dep));
   }
 
@@ -2895,21 +2911,24 @@ absl::Status FunctionConverter::HandleColonRef(const ColonRef* node) {
     // A constant may be defined in terms of other constants
     // (pub const MY_CONST = std::foo(ANOTHER_CONST);), so we need to collect
     // constants transitively so we can visit all dependees.
-    XLS_ASSIGN_OR_RETURN(std::vector<ConstantDef*> constant_deps,
-                         GetConstantDepFreevars(constant_def, *imported.value()->type_info));
+    XLS_ASSIGN_OR_RETURN(
+        std::vector<ConstantDef*> constant_deps,
+        GetConstantDepFreevars(constant_def, *imported.value()->type_info));
     for (ConstantDef* dep : constant_deps) {
-      XLS_ASSIGN_OR_RETURN(std::optional<ScopedTypeInfoSwap> stis, ScopedTypeInfoSwap::ForNode(this, dep));
+      XLS_ASSIGN_OR_RETURN(std::optional<ScopedTypeInfoSwap> stis,
+                           ScopedTypeInfoSwap::ForNode(this, dep));
       XLS_RETURN_IF_ERROR(Visit(dep));
     }
     {
-      XLS_ASSIGN_OR_RETURN(std::optional<ScopedTypeInfoSwap> stis, ScopedTypeInfoSwap::ForNode(this, constant_def));
+      XLS_ASSIGN_OR_RETURN(std::optional<ScopedTypeInfoSwap> stis,
+                           ScopedTypeInfoSwap::ForNode(this, constant_def));
       XLS_RETURN_IF_ERROR(HandleConstantDef(constant_def));
     }
     return DefAlias(constant_def->name_def(), /*to=*/node);
   }
 
   using SubjectT = std::variant<Module*, EnumDef*, BuiltinNameDef*,
-                                 ArrayTypeAnnotation*, Impl*>;
+                                ArrayTypeAnnotation*, Impl*>;
   XLS_ASSIGN_OR_RETURN(SubjectT subject,
                        ResolveColonRefSubjectAfterTypeChecking(
                            import_data_, current_type_info_, node));
@@ -3854,10 +3873,14 @@ absl::StatusOr<Value> InterpValueToValue(const InterpValue& iv) {
   }
 }
 
-absl::StatusOr<std::optional<ConstantDef*>> TryResolveConstantDef(std::string_view identifier, UseTreeEntry* use_tree_entry, TypeInfo& type_info) {
+absl::StatusOr<std::optional<ConstantDef*>> TryResolveConstantDef(
+    std::string_view identifier, UseTreeEntry* use_tree_entry,
+    TypeInfo& type_info) {
   XLS_RET_CHECK_EQ(use_tree_entry->owner(), type_info.module());
-  XLS_ASSIGN_OR_RETURN(ImportedInfo* info, type_info.GetImportedOrError(use_tree_entry));
-  std::optional<ModuleMember*> member = info->module->FindMemberWithName(identifier);
+  XLS_ASSIGN_OR_RETURN(ImportedInfo * info,
+                       type_info.GetImportedOrError(use_tree_entry));
+  std::optional<ModuleMember*> member =
+      info->module->FindMemberWithName(identifier);
   XLS_RET_CHECK(member.has_value());
   if (std::holds_alternative<ConstantDef*>(*member.value())) {
     auto* result = std::get<ConstantDef*>(*member.value());
@@ -3879,21 +3902,28 @@ absl::StatusOr<std::vector<ConstantDef*>> GetConstantDepFreevars(
     }
     const auto* name_def = std::get<const NameDef*>(any_name_def);
     AstNode* definer = name_def->definer();
-    if (auto* use_tree_entry = dynamic_cast<UseTreeEntry*>(definer); use_tree_entry != nullptr) {
-      XLS_ASSIGN_OR_RETURN(std::optional<ConstantDef*> constant_def, TryResolveConstantDef(identifier, use_tree_entry, type_info));
+    if (auto* use_tree_entry = dynamic_cast<UseTreeEntry*>(definer);
+        use_tree_entry != nullptr) {
+      XLS_ASSIGN_OR_RETURN(
+          std::optional<ConstantDef*> constant_def,
+          TryResolveConstantDef(identifier, use_tree_entry, type_info));
       if (constant_def.has_value()) {
-        XLS_ASSIGN_OR_RETURN(auto sub_deps, GetConstantDepFreevars(constant_def.value(), type_info));
+        XLS_ASSIGN_OR_RETURN(
+            auto sub_deps,
+            GetConstantDepFreevars(constant_def.value(), type_info));
         constant_deps.insert(constant_deps.end(), sub_deps.begin(),
                              sub_deps.end());
         constant_deps.push_back(constant_def.value());
       }
     } else if (auto* constant_def = dynamic_cast<ConstantDef*>(definer)) {
-      XLS_ASSIGN_OR_RETURN(auto sub_deps, GetConstantDepFreevars(constant_def, type_info));
+      XLS_ASSIGN_OR_RETURN(auto sub_deps,
+                           GetConstantDepFreevars(constant_def, type_info));
       constant_deps.insert(constant_deps.end(), sub_deps.begin(),
                            sub_deps.end());
       constant_deps.push_back(constant_def);
     } else if (auto* enum_def = dynamic_cast<EnumDef*>(definer)) {
-      XLS_ASSIGN_OR_RETURN(auto sub_deps, GetConstantDepFreevars(enum_def, type_info));
+      XLS_ASSIGN_OR_RETURN(auto sub_deps,
+                           GetConstantDepFreevars(enum_def, type_info));
       constant_deps.insert(constant_deps.end(), sub_deps.begin(),
                            sub_deps.end());
     } else {

@@ -264,7 +264,8 @@ absl::Status TypecheckModuleMember(const ModuleMember& member, Module* module,
                 // to have a "module type" to tag the used `NameDef` with.
                 return TypeInferenceErrorStatus(
                     subject.name_def().span(), nullptr,
-                    "Only importing members from modules is currently supported.",
+                    "Only importing members from modules is currently "
+                    "supported.",
                     ctx->file_table());
               }
             }
