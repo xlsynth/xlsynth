@@ -3916,6 +3916,23 @@ fn main() -> u5 {
       ParseAndTypecheck(kProgram, "fake_main_path.x", "main", &import_data));
 }
 
+TEST(TypecheckTest, InstantiateParametricStructWithPlusOne) {
+  constexpr std::string_view kProgram = R"(
+struct MyStruct<N: u32, NP1: u32 = {N+u32:1}> {
+  x: bits[NP1],
+}
+
+fn f<N: u32>(s: MyStruct<N>) { }
+
+fn main() {
+  const S: MyStruct<8> = zero!<MyStruct<8>>();
+  const_assert!(S.x == u9:0);
+  f(S);
+}
+)";
+  XLS_EXPECT_OK(Typecheck(kProgram));
+}
+
 TEST(TypecheckTest, CallImportedParametricFn) {
   constexpr std::string_view kImported = R"(
 pub fn my_fn<N: u32>(x: uN[N]) -> uN[N] {

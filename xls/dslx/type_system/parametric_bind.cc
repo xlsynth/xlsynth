@@ -64,6 +64,9 @@ absl::Status ParametricBindTuple(const TupleType& param_type,
 absl::Status ParametricBindStruct(const StructType& param_type,
                                   const StructType& arg_type,
                                   ParametricBindContext& ctx) {
+  VLOG(5) << absl::StreamFormat(
+      "ParametricBindStruct; param_type: `%s` arg_type: `%s`",
+      param_type.ToString(), arg_type.ToString());
   XLS_RET_CHECK_EQ(param_type.size(), arg_type.size());
   for (int64_t i = 0; i < param_type.size(); ++i) {
     const Type& param_member = param_type.GetMemberType(i);

@@ -386,7 +386,7 @@ absl::Status ParametricInstantiator::InstantiateOneArg(int64_t i,
   }
 
   VLOG(5) << absl::StreamFormat(
-      "Symbolically binding param %d formal %s against arg %s", i,
+      "Symbolically binding param %d formal `%s` against arg `%s`", i,
       param_type.ToString(), arg_type.ToString());
   ParametricBindContext ctx{
       .span = span_,
