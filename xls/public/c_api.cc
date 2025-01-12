@@ -49,7 +49,6 @@
 #include "xls/public/c_api_impl_helpers.h"
 #include "xls/public/c_api_vast.h"
 #include "xls/public/runtime_build_actions.h"
-
 extern "C" {
 
 void xls_init_xls(const char* usage, int argc, char* argv[]) {
