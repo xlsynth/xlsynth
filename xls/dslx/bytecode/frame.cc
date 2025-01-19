@@ -46,6 +46,11 @@ Frame::Frame(BytecodeFunction* bf, std::vector<InterpValue> args,
   }
 }
 
+std::string Frame::ToString(const FileTable& file_table) const {
+  return absl::StrFormat("Frame(pc: %d, slots: %d, bf.bytecode_count: %d, type_info: %p, bindings: %s, initial_args: %d, bf_holder: %p)",
+                         pc_, slots_.size(), bf_->bytecodes().size(), type_info_, bindings_.has_value() ? bindings_->ToString() : "null", initial_args_.size(), bf_holder_.get());
+}
+
 void Frame::StoreSlot(Bytecode::SlotIndex slot, InterpValue value) {
   // Slots are usually encountered in order of use (and assignment), except for
   // those declared inside conditional branches, which may never be seen,

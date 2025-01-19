@@ -43,7 +43,6 @@
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/parse_and_typecheck.h"
-#include "xls/dslx/run_routines/run_routines.h"
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/virtualizable_file_system.h"
@@ -55,14 +54,22 @@ namespace xls::dslx {
 namespace {
 
 absl::StatusOr<TypecheckedModule> ParseAndTypecheckOrPrintError(
-    std::string_view program, ImportData* import_data) {
+    ImportData& import_data, std::string_view program,
+    std::filesystem::path file_path, std::string_view module_name) {
   // Parse/typecheck and print a helpful error.
   absl::StatusOr<TypecheckedModule> tm =
-      ParseAndTypecheck(program, "test.x", "test", import_data);
+      ParseAndTypecheck(program, file_path.c_str(), module_name, &import_data);
   if (!tm.ok()) {
     UniformContentFilesystem vfs(program);
-    TryPrintError(tm.status(), import_data->file_table(), vfs);
+    TryPrintError(tm.status(), import_data.file_table(), vfs);
+    return tm.status();
   }
+
+  // Spot check that the root type info is the same one we got back in the `TypecheckedModule` result.
+  absl::StatusOr<TypeInfo*> root_type_info = import_data.GetRootTypeInfo(tm.value().module);
+  XLS_RET_CHECK(root_type_info.ok());
+  XLS_RET_CHECK_EQ(root_type_info.value(), tm.value().type_info);
+
   return tm;
 }
 
@@ -70,12 +77,55 @@ using ::absl_testing::IsOkAndHolds;
 using ::absl_testing::StatusIs;
 using ::testing::HasSubstr;
 
+// Helper that runs the bytecode interpreter after emitting an entry function as
+// bytecode.
+//
+// Within a `BytecodeInterpreterTest` prefer `Interpret()` method.
+static absl::StatusOr<InterpValue> InterpretForTest(
+    ImportData& import_data,
+    std::string_view program, std::string_view entry,
+    absl::Span<const InterpValue> args = {},
+    const BytecodeInterpreterOptions& options = BytecodeInterpreterOptions()) {
+  const std::filesystem::path file_path = "test.x";
+  const std::string_view module_name = "test";
+  XLS_ASSIGN_OR_RETURN(TypecheckedModule tm,
+                       ParseAndTypecheckOrPrintError(import_data, program, file_path, module_name));
+
+  XLS_ASSIGN_OR_RETURN(Function * f,
+                       tm.module->GetMemberOrError<Function>(entry));
+  XLS_RET_CHECK(f != nullptr);
+  XLS_ASSIGN_OR_RETURN(
+      std::unique_ptr<BytecodeFunction> bf,
+      BytecodeEmitter::Emit(
+          &import_data, tm.type_info, *f, ParametricEnv(),
+          BytecodeEmitterOptions{.format_preference =
+                                     options.format_preference()}));
+  XLS_RET_CHECK_EQ(bf->owner(), f->owner());
+
+  return BytecodeInterpreter::Interpret(&import_data, bf.get(), args,
+                                        /*channel_manager=*/std::nullopt,
+                                        options);
+}
+
 class BytecodeInterpreterTest : public ::testing::Test {
  public:
-  void SetUp() override { import_data_.emplace(CreateImportDataForTest()); }
+  void SetUp() override {
+    CHECK_EQ(import_data_, nullptr);
+    import_data_ = CreateImportDataPtrForTest();
+  }
+  void TearDown() override { import_data_ = nullptr; }
 
- protected:
-  std::optional<ImportData> import_data_;
+  ImportData& import_data() { return *import_data_; }
+
+  absl::StatusOr<InterpValue> Interpret(
+      std::string_view program, std::string_view entry,
+      absl::Span<const InterpValue> args = {},
+      const BytecodeInterpreterOptions& options = BytecodeInterpreterOptions()) {
+    return InterpretForTest(import_data(), program, entry, args, options);
+  }
+
+ private:
+  std::unique_ptr<ImportData> import_data_;
 };
 
 TEST_F(BytecodeInterpreterTest, TraceDataToString) {
@@ -94,38 +144,6 @@ TEST_F(BytecodeInterpreterTest, TraceDataToString) {
   EXPECT_EQ("x: 42 y: 4", result);
 }
 
-// Helper that runs the bytecode interpreter after emitting an entry function as
-// bytecode.
-static absl::StatusOr<InterpValue> Interpret(
-    std::string_view program, std::string_view entry,
-    const std::vector<InterpValue>& args = {},
-    const BytecodeInterpreterOptions& options = BytecodeInterpreterOptions(),
-    ImportData* import_data = nullptr) {
-  std::optional<ImportData> local_import_data;
-  if (import_data == nullptr) {
-    local_import_data.emplace(CreateImportDataForTest());
-    import_data = &local_import_data.value();
-  }
-
-  XLS_ASSIGN_OR_RETURN(TypecheckedModule tm,
-                       ParseAndTypecheckOrPrintError(program, import_data));
-
-  XLS_ASSIGN_OR_RETURN(Function * f,
-                       tm.module->GetMemberOrError<Function>(entry));
-  XLS_RET_CHECK(f != nullptr);
-  XLS_ASSIGN_OR_RETURN(
-      std::unique_ptr<BytecodeFunction> bf,
-      BytecodeEmitter::Emit(
-          import_data, tm.type_info, *f, ParametricEnv(),
-          BytecodeEmitterOptions{.format_preference =
-                                     options.format_preference()}));
-  XLS_RET_CHECK_EQ(bf->owner(), f->owner());
-
-  return BytecodeInterpreter::Interpret(import_data, bf.get(), args,
-                                        /*hierarchy_interpreter=*/std::nullopt,
-                                        options);
-}
-
 static const Pos kFakePos(Fileno(0), 0, 0);
 static const Span kFakeSpan = Span(kFakePos, kFakePos);
 
@@ -142,7 +160,7 @@ TEST_F(BytecodeInterpreterTest, DupLiteral) {
   options.set_validate_final_stack_depth(false);
   XLS_ASSERT_OK_AND_ASSIGN(
       InterpValue result, BytecodeInterpreter::Interpret(
-                              &import_data_.value(), bfunc.get(), {},
+                              &import_data(), bfunc.get(), {},
                               /*hierarchy_interpreter=*/std::nullopt, options));
   EXPECT_EQ(result.ToString(), "u32:42");
 }
@@ -158,7 +176,7 @@ TEST_F(BytecodeInterpreterTest, DupEmptyStack) {
       BytecodeFunction::Create(/*owner=*/nullptr, /*source_fn=*/nullptr,
                                /*type_info=*/nullptr, std::move(bytecodes)));
   ASSERT_THAT(
-      BytecodeInterpreter::Interpret(&import_data_.value(), bfunc.get(), {}),
+      BytecodeInterpreter::Interpret(&import_data(), bfunc.get(), {}),
       StatusIs(absl::StatusCode::kInternal,
                ::testing::HasSubstr("!stack_.empty()")));
 }
@@ -519,7 +537,7 @@ fn main() -> u32{
 
 // TODO(meheff): 2024/06/25 Enable auto-formatting of assert_eq messages in
 // structs.
-TEST(DISABLED_BytecodeInterpreterTest, AssertEqFailStructAutoFormatMixed) {
+TEST_F(BytecodeInterpreterTest, DISABLED_AssertEqFailStructAutoFormatMixed) {
   constexpr std::string_view kProgram = R"(
 struct MyStruct {
   x: u32,
@@ -729,6 +747,7 @@ fn main() {
 )";
   XLS_EXPECT_OK(Interpret(kProgram, "main"));
 }
+
 TEST_F(BytecodeInterpreterTest, DestructuringLet) {
   constexpr std::string_view kProgram = R"(
 fn has_name_def_tree() -> (u32, u64, uN[128]) {
@@ -943,7 +962,7 @@ fn main(x: u32, y: u32, z: u32) -> u32 {
   InterpValue three(InterpValue::MakeU32(3));
   InterpValue four(InterpValue::MakeU32(4));
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
-                           Interpret(kProgram, "main", {one, one, two}));
+                            Interpret(kProgram, "main", {one, one, two}));
   EXPECT_EQ(value, two) << value.ToString();
 
   XLS_ASSERT_OK_AND_ASSIGN(value, Interpret(kProgram, "main", {two, one, two}));
@@ -1576,16 +1595,14 @@ fn cast_bits_to_enum() -> MyEnum {
   a as MyEnum
 })";
 
-  auto import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm, ParseAndTypecheckOrPrintError(
-                                                     kProgram, &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm, ParseAndTypecheck(kProgram, "test.x", "test", &import_data()));
 
   XLS_ASSERT_OK_AND_ASSIGN(
       Function * f, tm.module->GetMemberOrError<Function>("cast_bits_to_enum"));
   ASSERT_TRUE(f != nullptr);
   XLS_ASSERT_OK_AND_ASSIGN(
       std::unique_ptr<BytecodeFunction> bf,
-      BytecodeEmitter::Emit(&import_data, tm.type_info, *f, ParametricEnv()));
+      BytecodeEmitter::Emit(&import_data(), tm.type_info, *f, ParametricEnv()));
 
   // Get a modifiable copy of the bytecodes.
   std::vector<Bytecode> bytecodes = bf->CloneBytecodes();
@@ -1596,7 +1613,7 @@ fn cast_bits_to_enum() -> MyEnum {
                            BytecodeFunction::Create(f->owner(), f, tm.type_info,
                                                     std::move(bytecodes)));
   absl::StatusOr<InterpValue> result =
-      BytecodeInterpreter::Interpret(&import_data, bf.get(), {});
+      BytecodeInterpreter::Interpret(&import_data(), bf.get(), {});
   EXPECT_THAT(result.status(),
               StatusIs(absl::StatusCode::kInternal,
                        HasSubstr("Cast op requires Type data.")));
@@ -2251,7 +2268,7 @@ fn doomed() {
                              HasSubstr("Flowers::VIOLETS  // u24:15631086"))));
 }
 
-TEST_F(BytecodeInterpreterTest, CheckedCastSnToSn) {
+TEST(BytecodeInterpreterTestCustomImportData, CheckedCastSnToSn) {
   constexpr std::string_view kProgram = R"(
 fn main(x: s32) -> s4 {
   checked_cast<s4>(x)
@@ -2259,8 +2276,9 @@ fn main(x: s32) -> s4 {
 )";
 
   for (int64_t x = -32; x <= 32; ++x) {
+    auto import_data = CreateImportDataForTest();
     absl::StatusOr<InterpValue> value =
-        Interpret(kProgram, "main", {InterpValue::MakeSBits(32, x)});
+        InterpretForTest(import_data, kProgram, "main", {InterpValue::MakeSBits(32, x)});
 
     if (x >= -8 && x < 8) {
       XLS_ASSERT_OK_AND_ASSIGN(int64_t bit_value, value->GetBitValueViaSign());
@@ -2272,7 +2290,7 @@ fn main(x: s32) -> s4 {
   }
 }
 
-TEST_F(BytecodeInterpreterTest, CheckedCastSnToUn) {
+TEST(BytecodeInterpreterTestCustomImportData, CheckedCastSnToUn) {
   constexpr std::string_view kProgram = R"(
 fn main(x: s32) -> u4 {
   checked_cast<u4>(x)
@@ -2280,8 +2298,9 @@ fn main(x: s32) -> u4 {
 )";
 
   for (int64_t x = -32; x <= 32; ++x) {
+    auto import_data = CreateImportDataForTest();
     absl::StatusOr<InterpValue> value =
-        Interpret(kProgram, "main", {InterpValue::MakeSBits(32, x)});
+        InterpretForTest(import_data, kProgram, "main", {InterpValue::MakeSBits(32, x)});
 
     if (x >= 0 && x < 16) {
       XLS_ASSERT_OK_AND_ASSIGN(int64_t bit_value, value->GetBitValueViaSign());
@@ -2293,7 +2312,7 @@ fn main(x: s32) -> u4 {
   }
 }
 
-TEST_F(BytecodeInterpreterTest, CheckedCastUnToSn) {
+TEST(BytecodeInterpreterTestCustomImportData, CheckedCastUnToSn) {
   constexpr std::string_view kProgram = R"(
 fn main(x: u32) -> s4 {
   checked_cast<s4>(x)
@@ -2301,8 +2320,9 @@ fn main(x: u32) -> s4 {
 )";
 
   for (int64_t x = 0; x <= 32; ++x) {
+    auto import_data = CreateImportDataForTest();
     absl::StatusOr<InterpValue> value =
-        Interpret(kProgram, "main", {InterpValue::MakeUBits(32, x)});
+        InterpretForTest(import_data, kProgram, "main", {InterpValue::MakeUBits(32, x)});
 
     if (x < 8) {
       XLS_ASSERT_OK_AND_ASSIGN(int64_t bit_value, value->GetBitValueViaSign());
@@ -2314,7 +2334,7 @@ fn main(x: u32) -> s4 {
   }
 }
 
-TEST_F(BytecodeInterpreterTest, CheckedCastUnToUn) {
+TEST(BytecodeInterpreterTestCustomImportData, CheckedCastUnToUn) {
   constexpr std::string_view kProgram = R"(
 fn main(x: u32) -> u4 {
   checked_cast<u4>(x)
@@ -2322,8 +2342,9 @@ fn main(x: u32) -> u4 {
 )";
 
   for (int64_t x = 0; x < 32; ++x) {
+    auto import_data = CreateImportDataForTest();
     absl::StatusOr<InterpValue> value =
-        Interpret(kProgram, "main", {InterpValue::MakeUBits(32, x)});
+        InterpretForTest(import_data, kProgram, "main", {InterpValue::MakeUBits(32, x)});
 
     if (x < 16) {
       XLS_ASSERT_OK_AND_ASSIGN(int64_t bit_value, value->GetBitValueViaSign());
@@ -2398,8 +2419,7 @@ fn main(x: u2, y: u2) -> u2 {
 )";
 
   for (uint64_t flat = 0; flat < 16; ++flat) {
-    ImportData import_data = CreateImportDataForTest();
-    const FileTable& file_table = import_data.file_table();
+    const FileTable& file_table = import_data().file_table();
     uint64_t x = (flat >> 0) & 0x3;
     uint64_t y = (flat >> 2) & 0x3;
     std::vector<Span> source_spans;
@@ -2411,8 +2431,7 @@ fn main(x: u2, y: u2) -> u2 {
                       InterpValue::MakeUBits(2, y),
                   },
                   BytecodeInterpreterOptions().rollover_hook(
-                      [&](const Span& s) { source_spans.push_back(s); }),
-                  &import_data));
+                      [&](const Span& s) { source_spans.push_back(s); })));
     VLOG(1) << "flat: " << std::hex << flat << " x: " << x << " y: " << y
             << " result: " << result.ToString();
 
@@ -2429,7 +2448,7 @@ fn main(x: u2, y: u2) -> u2 {
   }
 }
 
-TEST_F(BytecodeInterpreterTest, RolloverHookTestForSub) {
+TEST(BytecodeInterpreterTestCustomImportData, RolloverHookTestForSub) {
   constexpr std::string_view kProgram = R"(
 fn main(x: u2, y: u2) -> u2 {
   x - y
@@ -2444,14 +2463,13 @@ fn main(x: u2, y: u2) -> u2 {
     std::vector<Span> source_spans;
     XLS_ASSERT_OK_AND_ASSIGN(
         InterpValue result,
-        Interpret(kProgram, "main",
+        InterpretForTest(import_data, kProgram, "main",
                   {
                       InterpValue::MakeUBits(2, x),
                       InterpValue::MakeUBits(2, y),
                   },
                   BytecodeInterpreterOptions().rollover_hook(
-                      [&](const Span& s) { source_spans.push_back(s); }),
-                  &import_data));
+                      [&](const Span& s) { source_spans.push_back(s); })));
     VLOG(1) << "flat: " << std::hex << flat << " x: " << x << " y: " << y
             << " result: " << result.ToString();
 
@@ -2469,7 +2487,7 @@ fn main(x: u2, y: u2) -> u2 {
   }
 }
 
-TEST_F(BytecodeInterpreterTest, RolloverHookTestForUMul) {
+TEST(BytecodeInterpreterTestCustomImportData, RolloverHookTestForUMul) {
   constexpr std::string_view kProgram = R"(
 fn main(x: u2, y: u2) -> u2 {
   x * y
@@ -2484,14 +2502,13 @@ fn main(x: u2, y: u2) -> u2 {
     std::vector<Span> source_spans;
     XLS_ASSERT_OK_AND_ASSIGN(
         InterpValue result,
-        Interpret(kProgram, "main",
+        InterpretForTest(import_data, kProgram, "main",
                   {
                       InterpValue::MakeUBits(2, x),
                       InterpValue::MakeUBits(2, y),
                   },
                   BytecodeInterpreterOptions().rollover_hook(
-                      [&](const Span& s) { source_spans.push_back(s); }),
-                  &import_data));
+                      [&](const Span& s) { source_spans.push_back(s); })));
     VLOG(1) << "flat: " << std::hex << flat << " x: " << x << " y: " << y
             << " result: " << result.ToString();
 
@@ -2508,7 +2525,7 @@ fn main(x: u2, y: u2) -> u2 {
   }
 }
 
-TEST_F(BytecodeInterpreterTest, RolloverHookTestForSMul) {
+TEST(BytecodeInterpreterTestCustomImportData, RolloverHookTestForSMul) {
   constexpr std::string_view kProgram = R"(
 fn main(x: s2, y: s2) -> s2 {
   x * y
@@ -2522,14 +2539,13 @@ fn main(x: s2, y: s2) -> s2 {
       std::vector<Span> source_spans;
       XLS_ASSERT_OK_AND_ASSIGN(
           InterpValue result,
-          Interpret(kProgram, "main",
+          InterpretForTest(import_data, kProgram, "main",
                     {
                         InterpValue::MakeSBits(2, x),
                         InterpValue::MakeSBits(2, y),
                     },
                     BytecodeInterpreterOptions().rollover_hook(
-                        [&](const Span& s) { source_spans.push_back(s); }),
-                    &import_data));
+                        [&](const Span& s) { source_spans.push_back(s); })));
 
       XLS_ASSERT_OK_AND_ASSIGN(int64_t got, result.GetBitValueViaSign());
       bool rollover = x * y != got;
@@ -2592,6 +2608,35 @@ fn g() -> u32[3] {
   XLS_ASSERT_OK_AND_ASSIGN(element, result.Index(InterpValue::MakeU32(2)));
   XLS_ASSERT_OK_AND_ASSIGN(bit_value, element.GetBitValueViaSign());
   EXPECT_EQ(bit_value, 8);
+}
+
+TEST_F(BytecodeInterpreterTest, GithubIssue1870) {
+  constexpr std::string_view kProgram = R"(
+fn get_max<N: u32>() -> uN[N] {
+    // Note: there is a temporary grammar limitation that prevents us from
+    // directly doing `uN[N]::MAX` so we must use a type alias.
+    type OutputType = uN[N];
+    OutputType::MAX
+}
+
+fn main() -> (u4, u5) {
+    (get_max<u32:4>(), get_max<u32:5>())
+}
+)";
+
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main"));
+  VLOG(1) << "result: " << result;
+
+  ASSERT_TRUE(result.IsTuple());
+  // Element 0 is u4:0xf
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue element, result.Index(InterpValue::MakeU32(0)));
+  XLS_ASSERT_OK_AND_ASSIGN(int64_t bit_value, element.GetBitValueViaSign());
+  EXPECT_EQ(bit_value, 0xf);
+
+  // Element 1 is u5:0x1f
+  XLS_ASSERT_OK_AND_ASSIGN(element, result.Index(InterpValue::MakeU32(1)));
+  XLS_ASSERT_OK_AND_ASSIGN(bit_value, element.GetBitValueViaSign());
+  EXPECT_EQ(bit_value, 0x1f);
 }
 
 }  // namespace

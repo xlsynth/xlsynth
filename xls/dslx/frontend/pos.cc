@@ -25,6 +25,7 @@
 #include "absl/strings/match.h"
 #include "absl/strings/str_format.h"
 #include "re2/re2.h"
+#include "absl/container/btree_set.h"
 
 namespace xls::dslx {
 
@@ -42,6 +43,28 @@ Fileno FileTable::GetOrCreate(std::string_view path) {
   }
   VLOG(5) << "Already in filetable";
   return it->second;
+}
+
+void FileTable::CheckInvariants() const {
+  CHECK_EQ(number_to_path_.size(), path_to_number_.size());
+  CHECK_GE(number_to_path_.size(), 1);
+}
+
+std::string FileTable::ToString() const {
+  CheckInvariants();
+  std::string res = absl::StrFormat("FileTable (%d non-null entries):\n", number_to_path_.size()-1);
+
+  // Collect all the filenos.
+  absl::btree_set<Fileno> filenos;
+  for (const auto& [n, _] : number_to_path_) {
+    filenos.insert(n);
+  }
+  for (Fileno n : filenos) {
+    DCHECK(number_to_path_.contains(n));
+    absl::StrAppendFormat(&res, "  %d : %s\n", n.value(),
+                          number_to_path_.at(n));
+  }
+  return res;
 }
 
 /* static */ absl::StatusOr<Span> Span::FromString(std::string_view s,

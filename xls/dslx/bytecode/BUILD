@@ -61,6 +61,7 @@ cc_library(
     srcs = ["bytecode_cache.cc"],
     hdrs = ["bytecode_cache.h"],
     deps = [
+        "@com_google_absl//absl/log",
         ":bytecode",
         ":bytecode_cache_interface",
         ":bytecode_emitter",

@@ -108,6 +108,15 @@ absl::Status MakeModuleTopCollisionError(const FileTable& file_table,
       file_table);
 }
 
+// Curries the file table into the `MakeModuleTopCollisionError` function.
+auto BindMakeModuleTopCollisionError(const FileTable& file_table) {
+  const auto* file_table_ptr = &file_table;
+  return [file_table_ptr](std::string_view module_name, std::string_view member_name, const Span& existing_span, const AstNode* existing_node, const Span& new_span, const AstNode* new_node) {
+    return MakeModuleTopCollisionError(*file_table_ptr, module_name, member_name, existing_span, existing_node, new_span, new_node);
+  };
+}
+
+
 ColonRef::Subject CloneSubject(Module* module,
                                const ColonRef::Subject subject) {
   if (std::holds_alternative<NameRef*>(subject)) {
@@ -299,8 +308,8 @@ absl::StatusOr<std::unique_ptr<Module>> Parser::ParseModule(
 
   absl::flat_hash_map<std::string, Function*> name_to_fn;
 
-  auto make_collision_error =
-      absl::bind_front(&MakeModuleTopCollisionError, file_table());
+  // Curry the file table into the `MakeModuleTopCollisionError` function.
+  auto make_collision_error = BindMakeModuleTopCollisionError(file_table());
 
   while (!AtEof()) {
     XLS_ASSIGN_OR_RETURN(bool peek_is_eof, PeekTokenIs(TokenKind::kEof));
@@ -2681,8 +2690,8 @@ absl::StatusOr<ModuleMember> Parser::ParseProcLike(const Pos& start_pos,
     return absl::OkStatus();
   };
 
-  auto make_collision_error =
-      absl::bind_front(&MakeModuleTopCollisionError, file_table());
+  // Curry the file table into the `MakeModuleTopCollisionError` function.
+  auto make_collision_error = BindMakeModuleTopCollisionError(file_table());
 
   ProcLikeBody proc_like_body = {
       .config = nullptr,

@@ -1864,6 +1864,7 @@ std::string StatementBlock::ToInlineString() const {
 }
 
 std::string StatementBlock::ToStringInternal() const {
+  VLOG(10) << absl::StreamFormat("StatementBlock::ToStringInternal; statements: %d", statements_.size());
   // A formatting special case: if there are no statements (and implicitly a
   // trailing semi since an empty block gives unit type) we just give back
   // braces without any semicolon inside.
@@ -1872,7 +1873,10 @@ std::string StatementBlock::ToStringInternal() const {
     return "{}";
   }
 
+  // We convert the statements to strings and consider whether to put a semicolon afterwards.
   std::vector<std::string> stmts;
+  stmts.reserve(statements_.size());
+
   for (size_t i = 0; i < statements_.size(); ++i) {
     Statement* stmt = statements_[i];
     if (std::holds_alternative<Expr*>(stmt->wrapped())) {

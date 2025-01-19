@@ -191,6 +191,7 @@ BytecodeEmitter::EmitInternal(
     const std::vector<NameDef*>& proc_members,
     std::optional<absl::FunctionRef<int64_t()>> channel_instance_allocator,
     const BytecodeEmitterOptions& options) {
+  VLOG(10) << absl::StreamFormat("BytecodeEmitter::EmitInternal: f: `%s` type_info: %p, caller_bindings: %s", f.identifier(), type_info, caller_bindings.has_value() ? caller_bindings->ToString() : "null");
   XLS_RET_CHECK(type_info != nullptr);
 
   BytecodeEmitter emitter(import_data, type_info, caller_bindings,
@@ -199,8 +200,9 @@ BytecodeEmitter::EmitInternal(
     emitter.namedef_to_slot_[name_def] = emitter.next_slotno_++;
   }
   XLS_RETURN_IF_ERROR(emitter.Init(f));
+  VLOG(10) << absl::StreamFormat("BytecodeEmitter::EmitInternal: visiting body of f: `%s`", f.identifier());
   XLS_RETURN_IF_ERROR(f.body()->AcceptExpr(&emitter));
-
+  VLOG(10) << absl::StreamFormat("BytecodeEmitter::EmitInternal: creating BytecodeFunction for f: `%s` bytecodes: %d", f.identifier(), emitter.bytecode_.size());
   return BytecodeFunction::Create(f.owner(), &f, type_info,
                                   std::move(emitter.bytecode_));
 }
@@ -398,9 +400,10 @@ absl::Status BytecodeEmitter::HandleBinop(const Binop* node) {
 }
 
 absl::Status BytecodeEmitter::HandleStatementBlock(const StatementBlock* node) {
-  VLOG(5) << "BytecodeEmitter::HandleStatementBlock @ "
-          << node->span().ToString(file_table()) << " trailing semi? "
-          << node->trailing_semi();
+  VLOG(10) << absl::StreamFormat("BytecodeEmitter::HandleStatementBlock; node: %p", node);
+  file_table().CheckInvariants();
+  VLOG(10) << absl::StreamFormat("BytecodeEmitter::HandleStatementBlock; node string: `%s`", node->ToString());
+  VLOG(10) << absl::StreamFormat("BytecodeEmitter::HandleStatementBlock @ %s, trailing semi? %d", node->span().ToString(file_table()), node->trailing_semi());
   const Expr* last_expression = nullptr;
   for (const Statement* s : node->statements()) {
     // Do not permit expression-statements to have a result on the stack for any
@@ -771,6 +774,7 @@ absl::StatusOr<InterpValue> BytecodeEmitter::HandleColonRefToValue(
 }
 
 absl::Status BytecodeEmitter::HandleColonRef(const ColonRef* node) {
+  VLOG(10) << absl::StreamFormat("BytecodeEmitter::HandleColonRef: node: `%s`", node->ToString());
   XLS_ASSIGN_OR_RETURN(InterpValue value, HandleColonRefInternal(node));
 
   Add(Bytecode::MakeLiteral(node->span(), value));
@@ -782,6 +786,9 @@ absl::StatusOr<InterpValue> BytecodeEmitter::HandleColonRefInternal(
   XLS_ASSIGN_OR_RETURN(
       auto resolved_subject,
       ResolveColonRefSubjectAfterTypeChecking(import_data_, type_info_, node));
+  VLOG(10) << absl::StreamFormat(
+      "BytecodeEmitter::HandleColonRefInternal; node: `%s` resolved_subject: `%s`",
+      node->ToString(), ToAstNode(resolved_subject)->ToString());
 
   return absl::visit(
       Visitor{

@@ -35,8 +35,13 @@ class BytecodeCacheInterface {
   virtual ~BytecodeCacheInterface() = default;
 
   // Returns the BytecodeFunction for the given function, whose types and
-  // constants are held inside the given TypeInfo - different instances of a
-  // parametric function will have different TypeInfos associated with them.
+  // constants are held inside the given `TypeInfo` - different instances of a
+  // parametric function will have different `TypeInfo`s associated with them.
+  //
+  // Args:
+  //   f: The function to get or create the BytecodeFunction for.
+  //   type_info: The TypeInfo for the function.
+  //   parametric_env: The parametric environment for the function invocation, i.e. the parametric bindings used for this invocation in the callee `f`.
   virtual absl::StatusOr<BytecodeFunction*> GetOrCreateBytecodeFunction(
       ImportData& import_data, const Function& f, const TypeInfo* type_info,
       const std::optional<ParametricEnv>& caller_bindings) = 0;

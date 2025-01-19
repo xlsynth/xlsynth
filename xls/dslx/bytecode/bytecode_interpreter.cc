@@ -143,9 +143,11 @@ constexpr int64_t kChannelTraceIndentation = 2;
 
 /* static */ absl::StatusOr<InterpValue> BytecodeInterpreter::Interpret(
     ImportData* import_data, BytecodeFunction* bf,
-    const std::vector<InterpValue>& args,
+    absl::Span<const InterpValue> args,
     std::optional<InterpValueChannelManager*> channel_manager,
     const BytecodeInterpreterOptions& options) {
+  XLS_RET_CHECK(import_data != nullptr);
+  import_data->file_table().CheckInvariants();
   BytecodeInterpreter interpreter(import_data,
                                   /*proc_id=*/std::nullopt, channel_manager,
                                   options);
@@ -165,7 +167,9 @@ BytecodeInterpreter::BytecodeInterpreter(
       proc_id_(proc_id),
       stack_(import_data_->file_table()),
       channel_manager_(channel_manager),
-      options_(options) {}
+      options_(options) {
+  import_data_->file_table().CheckInvariants();
+}
 
 absl::Status BytecodeInterpreter::InitFrame(BytecodeFunction* bf,
                                             absl::Span<const InterpValue> args,
@@ -186,7 +190,7 @@ absl::Status BytecodeInterpreter::InitFrame(BytecodeFunction* bf,
 /* static */ absl::StatusOr<std::unique_ptr<BytecodeInterpreter>>
 BytecodeInterpreter::CreateUnique(
     ImportData* import_data, const std::optional<ProcId>& proc_id,
-    BytecodeFunction* bf, const std::vector<InterpValue>& args,
+    BytecodeFunction* bf, absl::Span<const InterpValue> args,
     std::optional<InterpValueChannelManager*> channel_manager,
     const BytecodeInterpreterOptions& options) {
   auto interp = absl::WrapUnique(
@@ -540,6 +544,7 @@ absl::Status BytecodeInterpreter::EvalAnd(const Bytecode& bytecode) {
 absl::StatusOr<BytecodeFunction*> BytecodeInterpreter::GetBytecodeFn(
     Function& f, const Invocation* invocation,
     const ParametricEnv& caller_bindings) {
+  VLOG(10) << absl::StreamFormat("BytecodeInterpreter::GetBytecodeFn: f: `%s` caller_bindings: `%s`", f.identifier(), caller_bindings.ToString());
   const Frame& frame = frames_.back();
   const TypeInfo* caller_type_info = frame.type_info();
 
@@ -571,6 +576,7 @@ absl::StatusOr<BytecodeFunction*> BytecodeInterpreter::GetBytecodeFn(
 
     const InvocationCalleeData& callee_data =
         invocation_data.env_to_callee_data().at(caller_bindings);
+    VLOG(10) << absl::StreamFormat("BytecodeInterpreter::GetBytecodeFn: callee_data.callee_bindings: %s", callee_data.callee_bindings.ToString());
     callee_type_info = callee_data.derived_type_info;
     callee_bindings = callee_data.callee_bindings;
   } else {
@@ -585,49 +591,67 @@ absl::StatusOr<BytecodeFunction*> BytecodeInterpreter::GetBytecodeFn(
 }
 
 absl::Status BytecodeInterpreter::EvalCall(const Bytecode& bytecode) {
-  VLOG(3) << "BytecodeInterpreter::EvalCall: "
-          << bytecode.ToString(file_table());
+  file_table().CheckInvariants();
+  VLOG(3) << absl::StreamFormat("BytecodeInterpreter::EvalCall: `%s`", bytecode.ToString(file_table()));
+
+  // Callee value is at top of stack.
   XLS_ASSIGN_OR_RETURN(InterpValue callee, Pop());
+
+  // If it's a builtin function we run it via interpreter internals.
   if (callee.IsBuiltinFunction()) {
     frames_.back().IncrementPc();
     return RunBuiltinFn(bytecode, std::get<Builtin>(callee.GetFunctionOrDie()));
   }
 
+  // Otherwise we extract the user function data.
   XLS_ASSIGN_OR_RETURN(const InterpValue::FnData* fn_data,
                        callee.GetFunction());
   InterpValue::UserFnData user_fn_data =
       std::get<InterpValue::UserFnData>(*fn_data);
-  XLS_ASSIGN_OR_RETURN(Bytecode::InvocationData data,
+
+  // The invocation data tells us if there are any parametric bindings supplied by the caller.
+  XLS_ASSIGN_OR_RETURN(Bytecode::InvocationData invocation_data,
                        bytecode.invocation_data());
 
-  const ParametricEnv& caller_bindings = data.caller_bindings().has_value()
-                                             ? data.caller_bindings().value()
+  const ParametricEnv caller_bindings = invocation_data.caller_bindings().has_value()
+                                             ? invocation_data.caller_bindings().value()
                                              : ParametricEnv();
+  VLOG(10) << absl::StreamFormat("BytecodeInterpreter::EvalCall: caller_bindings: %s", caller_bindings.ToString());
+
+  Function* user_function = user_fn_data.function;
+  const Invocation* invocation_node = invocation_data.invocation();
   XLS_ASSIGN_OR_RETURN(BytecodeFunction * bf,
-                       GetBytecodeFn(*user_fn_data.function, data.invocation(),
+                       GetBytecodeFn(*user_function, invocation_node,
                                      caller_bindings));
+  
+  VLOG(10) << absl::StreamFormat("BytecodeInterpreter::EvalCall: bf: %p", bf);
 
   // Store the _return_ PC.
+  DCHECK(!frames_.empty());
   frames_.back().IncrementPc();
 
   // If `user_fn` is a method (first arg is `self`), then the first arg will be
   // the most recent value pushed. Handle that case first.
   std::optional<InterpValue> first_arg;
-  int remaining_args = user_fn_data.function->params().size();
+  int64_t remaining_args = user_fn_data.function->params().size();
   if (user_fn_data.function->IsMethod()) {
     XLS_ASSIGN_OR_RETURN(first_arg, Pop());
     remaining_args--;
   }
+
   XLS_ASSIGN_OR_RETURN(std::vector<InterpValue> args,
                        PopArgsRightToLeft(remaining_args));
+  VLOG(10) << absl::StreamFormat("BytecodeInterpreter::EvalCall: args: %s", absl::StrJoin(args, ", "));
+
   if (first_arg.has_value()) {
     args.insert(args.begin(), *first_arg);
   }
 
   std::vector<InterpValue> args_copy = args;
   frames_.push_back(Frame(bf, std::move(args), bf->type_info(),
-                          data.callee_bindings(), std::move(args_copy)));
+                          invocation_data.callee_bindings(), std::move(args_copy)));
 
+  VLOG(10) << absl::StreamFormat("BytecodeInterpreter::EvalCall: new frame: %s", frames_.back().ToString(file_table()));
   return absl::OkStatus();
 }
 

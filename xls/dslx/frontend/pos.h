@@ -15,13 +15,11 @@
 #ifndef XLS_DSLX_FRONTEND_POS_H_
 #define XLS_DSLX_FRONTEND_POS_H_
 
-#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <ostream>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
@@ -45,6 +43,15 @@ class FileTable {
     path_to_number_.emplace("<no-file>", Fileno(0));
   }
 
+  // Non-copyable.
+  FileTable(const FileTable&) = delete;
+  FileTable& operator=(const FileTable&) = delete;
+  // Move-only.
+  FileTable(FileTable&&) = default;
+  FileTable& operator=(FileTable&&) = default;
+
+  void CheckInvariants() const;
+
   // Gets-or-creates the resolution of the given `path` to a file number.
   // Note that paths are not canonicalized here; e.g. if you give two filesystem
   // paths that happen to alias, or are somehow non-canonicalized, like having
@@ -59,23 +66,11 @@ class FileTable {
 
   std::string_view Get(Fileno fileno) const {
     DCHECK(number_to_path_.contains(fileno))
-        << "fileno " << fileno.value() << " not found in FileTable";
+        << "fileno " << fileno.value() << " not found in FileTable: " << ToString();
     return number_to_path_.at(fileno);
   }
 
-  std::string ToString() const {
-    std::string res = "FileTable:\n";
-    std::vector<Fileno> filenos;
-    for (const auto& [n, _] : number_to_path_) {
-      filenos.push_back(n);
-    }
-    std::sort(filenos.begin(), filenos.end());
-    for (Fileno n : filenos) {
-      absl::StrAppendFormat(&res, "  %d : %s\n", n.value(),
-                            number_to_path_.at(n));
-    }
-    return res;
-  }
+  std::string ToString() const;
 
  private:
   Fileno next_fileno_ = Fileno(1);

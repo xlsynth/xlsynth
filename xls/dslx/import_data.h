@@ -117,6 +117,12 @@ class ImportData {
   // Use the routines in `create_import_data.h` to instantiate an object.
   ImportData() = delete;
 
+  // Move-only type.
+  ImportData(const ImportData&) = delete;
+  ImportData& operator=(const ImportData&) = delete;
+  ImportData(ImportData&&) = default;
+  ImportData& operator=(ImportData&&) = default;
+
   bool Contains(const ImportTokens& target) const {
     return modules_.find(target) != modules_.end();
   }
@@ -261,7 +267,7 @@ class ImportData {
   absl::flat_hash_set<Module*> top_level_bindings_done_;
   absl::flat_hash_map<Module*, AstNode*> typecheck_wip_;
   TypeInfoOwner type_info_owner_;
-  const std::filesystem::path stdlib_path_;
+  std::filesystem::path stdlib_path_;
   std::vector<std::filesystem::path> additional_search_paths_;
   WarningKindSet enabled_warnings_;
   std::unique_ptr<BytecodeCacheInterface> bytecode_cache_;

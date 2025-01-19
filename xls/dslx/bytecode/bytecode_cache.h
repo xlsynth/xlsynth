@@ -33,9 +33,18 @@ class BytecodeCache : public BytecodeCacheInterface {
  public:
   BytecodeCache() = default;
 
+  // Args:
+  //   f: The function to get or create the BytecodeFunction for.
+  //   type_info: The TypeInfo for the function.
+  //   parametric_env: The parametric environment for the function invocation, i.e. the parametric bindings used for this invocation in the callee `f`.
   absl::StatusOr<BytecodeFunction*> GetOrCreateBytecodeFunction(
+<<<<<<< HEAD
       ImportData& import_data, const Function& f, const TypeInfo* type_info,
       const std::optional<ParametricEnv>& caller_bindings) override;
+=======
+      const Function& f, const TypeInfo* type_info,
+      const std::optional<ParametricEnv>& parametric_env) override;
+>>>>>>> 5afa157c3 (Found one issue at least.)
 
  private:
   using Key = std::tuple<const Function*, const TypeInfo*,

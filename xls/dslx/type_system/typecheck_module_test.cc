@@ -4153,6 +4153,24 @@ fn main() { x36() }
   XLS_EXPECT_OK(Typecheck(kProgram));
 }
 
+TEST(TypecheckTest, UnTypeAliasInFunctionFromParametric) {
+  constexpr std::string_view kProgram = R"(
+fn get_max<N: u32>() -> uN[N] {
+    // Note: there is a temporary grammar limitation that prevents us from
+    // directly doing `uN[N]::MAX` so we must use a type alias.
+    type OutputType = uN[N];
+    OutputType::MAX
+}
+
+#[test]
+fn show_numeric_limits() {
+    assert_eq(get_max<u32:4>(), u4:0xf);
+    assert_eq(get_max<u32:5>(), u5:0x1f);
+}
+)";
+  XLS_EXPECT_OK(Typecheck(kProgram));
+}
+
 // Table-oriented test that lets us validate that *types on parameters* are
 // compatible with *particular values* that should be type-compatible.
 TEST(PassValueToIdentityFnTest, ParameterVsValue) {

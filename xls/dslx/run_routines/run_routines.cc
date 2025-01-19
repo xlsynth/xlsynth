@@ -793,8 +793,12 @@ absl::StatusOr<TestResultData> AbstractTestRunner::ParseAndTest(
     std::cerr << "[ RUN UNITTEST  ] " << test_name << '\n';
     RunResult out;
     BytecodeInterpreterOptions interpreter_options;
+    auto* file_table_ptr = &file_table;
+    auto trace_hook = [file_table_ptr](const Span& source_location, std::string_view message) {
+      return InfoLoggingTraceHook(*file_table_ptr, source_location, message);
+    };
     interpreter_options.post_fn_eval_hook(post_fn_eval_hook)
-        .trace_hook(absl::bind_front(InfoLoggingTraceHook, file_table))
+        .trace_hook(trace_hook)
         .trace_channels(options.trace_channels)
         .max_ticks(options.max_ticks)
         .format_preference(options.format_preference);

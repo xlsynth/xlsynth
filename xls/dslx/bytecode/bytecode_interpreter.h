@@ -107,7 +107,7 @@ class BytecodeInterpreter {
  public:
   static absl::StatusOr<InterpValue> Interpret(
       ImportData* import_data, BytecodeFunction* bf,
-      const std::vector<InterpValue>& args,
+      absl::Span<const InterpValue> args,
       std::optional<InterpValueChannelManager*> channel_manager = std::nullopt,
       const BytecodeInterpreterOptions& options = BytecodeInterpreterOptions());
 
@@ -139,7 +139,7 @@ class BytecodeInterpreter {
   // Creates a new interpreter object with an initialized entry frame.
   static absl::StatusOr<std::unique_ptr<BytecodeInterpreter>> CreateUnique(
       ImportData* import_data, const std::optional<ProcId>& proc_id,
-      BytecodeFunction* bf, const std::vector<InterpValue>& args,
+      BytecodeFunction* bf, absl::Span<const InterpValue> args,
       std::optional<InterpValueChannelManager*> channel_manager,
       const BytecodeInterpreterOptions& options);
 

@@ -57,6 +57,8 @@ class Frame {
 
   void StoreSlot(Bytecode::SlotIndex slot_index, InterpValue value);
 
+  std::string ToString(const FileTable& file_table) const;
+
  private:
   int64_t pc_;
   std::vector<InterpValue> slots_;
