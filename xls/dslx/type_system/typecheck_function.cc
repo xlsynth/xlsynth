@@ -136,7 +136,7 @@ absl::Status TypecheckStructParametrics(
 }  // namespace
 
 absl::Status TypecheckFunction(Function& f, DeduceCtx* ctx) {
-  VLOG(2) << "Typechecking fn: " << f.identifier();
+  VLOG(0) << absl::StreamFormat("TypecheckFunction; f: `%s` type_info: %p current_parametric_env: %s", f.identifier(), ctx->type_info(), ctx->GetCurrentParametricEnv().ToString());
   VLOG(2) << absl::StreamFormat("Fn stack (%d entries):",
                                 ctx->fn_stack().size());
   XLS_VLOG_LINES(2, ctx->GetFnStackDebugString());

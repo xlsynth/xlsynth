@@ -215,9 +215,9 @@ absl::StatusOr<TypeInfo*> TypeInfoOwner::GetRootTypeInfo(const Module* module) {
 // -- class TypeInfo
 
 void TypeInfo::NoteConstExpr(const AstNode* const_expr, InterpValue value) {
-  VLOG(0) << absl::StreamFormat(
-      "TypeInfo::NoteConstExpr; type_info: %p noting node: `%s` (%p) has constexpr value: `%s`",
-      this, const_expr->ToString(), const_expr, value.ToString());
+  VLOG(100) << absl::StreamFormat(
+      "TypeInfo::NoteConstExpr; type_info: %p noting node: `%s` (%p) @ %s has constexpr value: `%s`",
+      this, const_expr->ToString(), const_expr, const_expr->GetSpan()->ToString(file_table()), value.ToString());
 
   // Note: this assertion will generally hold as of 2024-08-23, except in the
   // case of `UnrollFor` nodes, which https://github.com/richmckeever is

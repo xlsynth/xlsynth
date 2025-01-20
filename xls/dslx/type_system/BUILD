@@ -352,6 +352,7 @@ cc_library(
     srcs = ["typecheck_module.cc"],
     hdrs = ["typecheck_module.h"],
     deps = [
+        "//xls/common/logging:log_lines",
         ":deduce",
         ":deduce_ctx",
         ":scoped_fn_stack_entry",

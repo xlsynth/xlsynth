@@ -90,9 +90,9 @@ absl::StatusOr<TypeAndParametricEnv> InstantiateFunction(
         parametric_bindings) {
   const FileTable& file_table = ctx->file_table();
   VLOG(0) << absl::StreamFormat("InstantiateFunction; type_info: %p @ %s type: %s", ctx->type_info(), span.ToString(file_table), function_type.ToString());
-  VLOG(0) << " typed-parametrics: " << ToString(typed_parametrics);
-  VLOG(0) << " arg types:              " << ToTypesString(args);
-  VLOG(0) << " explicit bindings:   " << ToString(explicit_bindings);
+  VLOG(100) << " typed-parametrics: " << ToString(typed_parametrics);
+  VLOG(100) << " arg types:              " << ToTypesString(args);
+  VLOG(100) << " explicit bindings:   " << ToString(explicit_bindings);
   XLS_ASSIGN_OR_RETURN(
       auto instantiator,
       internal::FunctionInstantiator::Make(

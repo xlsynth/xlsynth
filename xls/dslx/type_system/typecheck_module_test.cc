@@ -4168,7 +4168,44 @@ fn show_numeric_limits() {
     assert_eq(get_max<u32:5>(), u5:0x1f);
 }
 )";
-  XLS_EXPECT_OK(Typecheck(kProgram));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, Typecheck(kProgram));
+  // We want to validate the type info tree.
+  // for the invocation of `get_max<u32:4>()` we should have a constexpr for the value N in the type alias `uN[N]`
+  const TypeInfo& root = *result.tm.type_info;
+  const auto& invocation_data = root.GetRootInvocations();
+  // There should be four invocations:
+  // - `get_max<u32:4>()` and `get_max<u32:5>()`
+  // - the `assert_eq` calls that wrap those
+  ASSERT_EQ(invocation_data.size(), 4);
+  // Filter down to the get_max invocations.
+  std::vector<const InvocationCalleeData*> max_invocations;
+  for (const auto& [invocation, data] : invocation_data) {
+    for (const auto& [env, callee_data] : data.env_to_callee_data()) {
+      if (callee_data.derived_type_info != nullptr) {
+        max_invocations.push_back(&callee_data);
+      }
+    }
+  }
+  ASSERT_EQ(max_invocations.size(), 2);
+  auto max_invocation_a = max_invocations[0];
+  auto max_invocation_b = max_invocations[1];
+  ASSERT_EQ(max_invocation_a->callee_bindings.size(), 1);
+  ASSERT_EQ(max_invocation_b->callee_bindings.size(), 1);
+  const TypeInfo* type_info_4 = nullptr;
+  const TypeInfo* type_info_5 = nullptr;
+  if (max_invocation_a->callee_bindings.ToMap().at("N") == InterpValue::MakeU32(4)) {
+    ASSERT_EQ(max_invocation_b->callee_bindings.ToMap().at("N"), InterpValue::MakeU32(5));
+    type_info_4 = max_invocation_a->derived_type_info;
+    type_info_5 = max_invocation_b->derived_type_info;
+  } else {
+    ASSERT_EQ(max_invocation_a->callee_bindings.ToMap().at("N"), InterpValue::MakeU32(5));
+    type_info_4 = max_invocation_b->derived_type_info;
+    type_info_5 = max_invocation_a->derived_type_info;
+  }
+
+  // Each of the derived type infos should have two constexprs -- one for the N in the parametric signature and one for the N in the type alias.
+  ASSERT_EQ(type_info_4->const_exprs().size(), 2);
+  ASSERT_EQ(type_info_5->const_exprs().size(), 2);
 }
 
 // Table-oriented test that lets us validate that *types on parameters* are

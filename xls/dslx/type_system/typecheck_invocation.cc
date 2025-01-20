@@ -356,7 +356,7 @@ static std::optional<std::variant<UseTreeEntry*, Import*>> IsExternRef(
 absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
     DeduceCtx* ctx, const Invocation* invocation, const AstEnv& constexpr_env) {
   VLOG(0) << absl::StreamFormat("TypecheckInvocation; type_info: %p invocation: `%s` @ %s current parametric env: %s constexpr_env: %s", ctx->type_info(), invocation->ToString(), invocation->span().ToString(ctx->file_table()), ctx->GetCurrentParametricEnv().ToString(), constexpr_env.ToString());
-  XLS_VLOG_LINES(5, ctx->GetFnStackDebugString());
+  XLS_VLOG_LINES(100, ctx->GetFnStackDebugString());
 
   Expr* callee = invocation->callee();
 
@@ -453,7 +453,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
       *callee_fn, callee_tab.parametric_env, invocation,
       callee_fn->proc().has_value() ? WithinProc::kYes : WithinProc::kNo));
   TypeInfo* const derived_type_info = ctx->AddDerivedTypeInfo();
-  VLOG(0) << absl::StreamFormat("TypecheckInvocation; added derived type info: %p", derived_type_info);
+  VLOG(100) << absl::StreamFormat("TypecheckInvocation; added derived type info: %p", derived_type_info);
 
   // We execute this function if we're parametric or a proc. In either case, we
   // want to create a new TypeInfo. The reason for the former is obvious. The
@@ -506,8 +506,10 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
     ctx->type_info()->SetItem(param->name_def(), *resolved_type);
   }
 
+  VLOG(0) << absl::StreamFormat("TypecheckInvocation; callee_fn: `%s` calling deduce on body: `%s` type_info: %p", callee_fn->identifier(), callee_fn->body()->ToString(), ctx->type_info());
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> body_type,
                        ctx->Deduce(callee_fn->body()));
+  VLOG(0) << absl::StreamFormat("TypecheckInvocation; callee_fn: `%s` body_type: `%s`", callee_fn->identifier(), body_type->ToString());
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> resolved_body_type,
                        ctx->Resolve(*body_type));
   XLS_RET_CHECK(!resolved_body_type->IsMeta());
@@ -544,7 +546,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
   XLS_RETURN_IF_ERROR(ctx->PopDerivedTypeInfo(derived_type_info));
   ctx->PopFnStackEntry();
 
-  VLOG(0) << absl::StreamFormat("TypecheckInvocation; popped derived type info: %p type_info is now: %p", derived_type_info, ctx->type_info());
+  VLOG(100) << absl::StreamFormat("TypecheckInvocation; popped derived type info: %p type_info is now: %p", derived_type_info, ctx->type_info());
 
   // Implementation note: though we could have all functions have
   // NoteRequiresImplicitToken() be false unless otherwise noted, this helps

@@ -191,7 +191,7 @@ BytecodeEmitter::EmitInternal(
     const std::vector<NameDef*>& proc_members,
     std::optional<absl::FunctionRef<int64_t()>> channel_instance_allocator,
     const BytecodeEmitterOptions& options) {
-  VLOG(0) << absl::StreamFormat("BytecodeEmitter::EmitInternal: f: `%s` type_info: %p, caller_bindings: %s", f.identifier(), type_info, caller_bindings.has_value() ? caller_bindings->ToString() : "null");
+  VLOG(100) << absl::StreamFormat("BytecodeEmitter::EmitInternal: f: `%s` type_info: %p, caller_bindings: %s", f.identifier(), type_info, caller_bindings.has_value() ? caller_bindings->ToString() : "null");
   XLS_RET_CHECK(type_info != nullptr);
 
   BytecodeEmitter emitter(import_data, type_info, caller_bindings,
@@ -750,7 +750,7 @@ absl::StatusOr<InterpValue> BytecodeEmitter::HandleColonRefToEnum(
 
 absl::StatusOr<InterpValue> BytecodeEmitter::HandleColonRefToValue(
     Module* module, const ColonRef* colon_ref) {
-  VLOG(0) << absl::StreamFormat("BytecodeEmitter::HandleColonRefToValue; colon_ref: `%s`", colon_ref->ToString());
+  VLOG(100) << absl::StreamFormat("BytecodeEmitter::HandleColonRefToValue; colon_ref: `%s`", colon_ref->ToString());
   // TODO(rspringer): We'll need subject resolution to return the appropriate
   // TypeInfo for parametrics.
   XLS_ASSIGN_OR_RETURN(TypeInfo * type_info,
@@ -809,7 +809,7 @@ absl::StatusOr<InterpValue> BytecodeEmitter::HandleColonRefInternal(
             if (array_type->owner() != type_info_->module()) {
               XLS_ASSIGN_OR_RETURN(type_info, import_data_->GetRootTypeInfoForNode(array_type));
             }
-            VLOG(0) << absl::StreamFormat("BytecodeEmitter::HandleColonRefInternal; array_type dim: `%s` type_info: %p", array_type->dim()->ToString(), type_info);
+            VLOG(100) << absl::StreamFormat("BytecodeEmitter::HandleColonRefInternal; array_type dim: `%s` type_info: %p", array_type->dim()->ToString(), type_info);
             std::optional<InterpValue> constexpr_value =
                                  type_info->GetConstExprOption(array_type->dim());
             CHECK(constexpr_value.has_value())

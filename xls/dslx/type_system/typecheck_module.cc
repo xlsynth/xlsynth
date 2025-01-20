@@ -47,6 +47,7 @@
 #include "xls/dslx/type_system/typecheck_invocation.h"
 #include "xls/dslx/type_system/unwrap_meta_type.h"
 #include "xls/dslx/warning_collector.h"
+#include "xls/common/logging/log_lines.h"
 
 namespace xls::dslx {
 namespace {
@@ -433,6 +434,9 @@ absl::StatusOr<TypeInfo*> TypecheckModule(Module* module,
     XLS_RET_CHECK_EQ(ctx.fn_stack().size(), 1);
     XLS_RET_CHECK_EQ(ctx.fn_stack().back().f(), nullptr);
   }
+
+  VLOG(100) << absl::StreamFormat("TypecheckModule; type_info: %p", type_info);
+  XLS_VLOG_LINES(0, TypeInfoTreeToString(*type_info, import_data->file_table()));
 
   return type_info;
 }

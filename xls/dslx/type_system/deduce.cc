@@ -1677,14 +1677,14 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceTupleTypeAnnotation(
 
 absl::StatusOr<std::unique_ptr<Type>> DeduceArrayTypeAnnotation(
     const ArrayTypeAnnotation* node, DeduceCtx* ctx) {
-  VLOG(0) << "DeduceArrayTypeAnnotation: " << node->ToString()
+  VLOG(100) << "DeduceArrayTypeAnnotation: " << node->ToString()
           << " current parametric env: " << ctx->GetCurrentParametricEnv();
 
   std::unique_ptr<Type> t;
   if (auto* element_type =
           dynamic_cast<BuiltinTypeAnnotation*>(node->element_type());
       element_type != nullptr && element_type->GetBitCount() == 0) {
-    VLOG(0) << "DeduceArrayTypeAnnotation; has zero bit element type: "
+    VLOG(100) << "DeduceArrayTypeAnnotation; has zero bit element type: "
             << node->ToString();
 
     if (element_type->builtin_type() == BuiltinType::kXN) {
@@ -1698,14 +1698,14 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceArrayTypeAnnotation(
       auto element_type = std::make_unique<TokenType>();
       t = std::make_unique<ArrayType>(std::move(element_type), std::move(dim));
     } else {
-      VLOG(0) << "DeduceArrayTypeAnnotation; dim: `" << node->dim()->ToString() << "`";
+      VLOG(100) << "DeduceArrayTypeAnnotation; dim: `" << node->dim()->ToString() << "`";
       XLS_ASSIGN_OR_RETURN(TypeDim dim, DimToConcreteUsize(node->dim(), ctx));
       // We know we can determine signedness as the `xN` case is handled above.
       bool is_signed = element_type->GetSignedness().value();
       t = std::make_unique<BitsType>(is_signed, std::move(dim));
     }
   } else {
-    VLOG(0) << "DeduceArrayTypeAnnotation; element_type: "
+    VLOG(100) << "DeduceArrayTypeAnnotation; element_type: "
             << node->element_type()->ToString();
     XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> e,
                          ctx->Deduce(node->element_type()));
@@ -1719,7 +1719,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceArrayTypeAnnotation(
   }
 
   auto result = std::make_unique<MetaType>(std::move(t));
-  VLOG(0) << "DeduceArrayTypeAnnotation; result: " << result->ToString();
+  VLOG(100) << "DeduceArrayTypeAnnotation; result: " << result->ToString();
   return result;
 }
 
@@ -2229,24 +2229,37 @@ absl::StatusOr<std::unique_ptr<Type>> Deduce(const AstNode* node,
                                              DeduceCtx* ctx) {
   VLOG(5) << "Deduce: " << node->ToString();
 
+  TypeInfo& type_info = *ctx->type_info();
+
   XLS_RET_CHECK(node != nullptr);
-  if (std::optional<Type*> type = ctx->type_info()->GetItem(node)) {
-    return (*type)->CloneToUnique();
+  if (std::optional<Type*> type = type_info.GetItem(node); type.has_value()) {
+    bool unusable = type.value()->HasParametricDims() && type_info.parent() != nullptr;
+    VLOG(0) << absl::StreamFormat("Deduce; type_info: %p using cached type for `%s` @ %s: `%s`",
+    &type_info, node->ToString(), SpanToString(node->GetSpan(), ctx->file_table()), (*type)->ToString());
+    if (!unusable) {
+      return (*type)->CloneToUnique();
+    }
   }
+  VLOG(0) << absl::StreamFormat("Deduce; type_info: %p calling DeduceInternal for `%s` @ %s",
+  ctx->type_info(), node->ToString(), SpanToString(node->GetSpan(), ctx->file_table()));
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> type, DeduceInternal(node, ctx));
+  CHECK_EQ(&type_info, ctx->type_info());
+
+  VLOG(0) << absl::StreamFormat("Deduce; type_info: %p DeduceInternal returned type: `%s` for `%s` @ %s",
+  &type_info, type->ToString(), node->ToString(), SpanToString(node->GetSpan(), ctx->file_table()));
   XLS_RET_CHECK(type != nullptr);
-  ctx->type_info()->SetItem(node, *type);
+  type_info.SetItem(node, *type);
 
   VLOG(5) << absl::StreamFormat(
       "Deduced type of `%s` @ %p (kind: %s) => %s in %p", node->ToString(),
-      node, node->GetNodeTypeName(), type->ToString(), ctx->type_info());
+      node, node->GetNodeTypeName(), type->ToString(), &type_info);
 
   return type;
 }
 
 absl::StatusOr<TypeDim> DimToConcreteUsize(const Expr* dim_expr,
                                            DeduceCtx* ctx) {
-  VLOG(0) << absl::StreamFormat("DimToConcreteUsize; type_info: %p dim_expr: `%s` current parametric env: %s", ctx->type_info(), dim_expr->ToString(), ctx->GetCurrentParametricEnv().ToString());
+  VLOG(100) << absl::StreamFormat("DimToConcreteUsize; type_info: %p dim_expr: `%s` current parametric env: %s", ctx->type_info(), dim_expr->ToString(), ctx->GetCurrentParametricEnv().ToString());
   std::unique_ptr<BitsType> u32 = BitsType::MakeU32();
   auto validate_high_bit = [ctx, &u32](const Span& span, uint32_t value) {
     if ((value >> 31) == 0) {
@@ -2305,11 +2318,11 @@ absl::StatusOr<TypeDim> DimToConcreteUsize(const Expr* dim_expr,
             dim_expr->ToString()));
   }
 
-  VLOG(0) << "DeduceDimToConcreteUsize; deduced dim_type: " << dim_type->ToString();
+  VLOG(100) << "DeduceDimToConcreteUsize; deduced dim_type: " << dim_type->ToString();
 
   // Now we try to constexpr evaluate it.
   const ParametricEnv parametric_env = ctx->GetCurrentParametricEnv();
-  VLOG(0) << "DeduceDimToConcreteUsize; attempting to evaluate dimension expression: `"
+  VLOG(100) << "DeduceDimToConcreteUsize; attempting to evaluate dimension expression: `"
           << dim_expr->ToString() << "` via parametric env: " << parametric_env;
   XLS_RETURN_IF_ERROR(ConstexprEvaluator::Evaluate(
       ctx->import_data(), ctx->type_info(), ctx->warnings(), parametric_env,

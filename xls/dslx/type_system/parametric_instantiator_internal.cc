@@ -332,7 +332,7 @@ ParametricInstantiator::ParametricInstantiator(
   //  The underlined portion wants a concrete type definition so it can
   //  interpret the expression to an InterpValue.
   derived_type_info_ = ctx_->AddDerivedTypeInfo();
-  VLOG(0) << absl::StreamFormat("ParametricInstantiator::ParametricInstantiator; added derived type info: %p", derived_type_info_);
+  VLOG(100) << absl::StreamFormat("ParametricInstantiator::ParametricInstantiator; added derived type info: %p", derived_type_info_);
 
   // Note: the first N explicit parametrics (given by the map) must be the first
   // N parametrics for the thing we're instantiating; i.e. we can only
@@ -425,12 +425,12 @@ FunctionInstantiator::Make(
 absl::StatusOr<TypeAndParametricEnv> FunctionInstantiator::Instantiate() {
   ScopedFnStackEntry parametric_env_expr_scope(callee_fn_, &ctx(),
                                                WithinProc::kNo);
-  VLOG(5) << absl::StreamFormat(
+  VLOG(0) << absl::StreamFormat(
       "Entering parametric env scope; callee fn: `%s`",
       callee_fn_.identifier());
 
   // Phase 1: instantiate actuals against parametrics in left-to-right order.
-  VLOG(10) << "Phase 1: instantiate actuals";
+  VLOG(0) << "Phase 1: instantiate actuals";
   for (int64_t i = 0; i < args().size(); ++i) {
     const Type& param_type = *param_types_[i];
     const Type& arg_type = *args()[i].type();
@@ -442,7 +442,7 @@ absl::StatusOr<TypeAndParametricEnv> FunctionInstantiator::Instantiate() {
       parametrics_span(), span(), this, &ctx()));
 
   // Phase 2: resolve and check.
-  VLOG(10) << "Phase 2: resolve-and-check";
+  VLOG(0) << "Phase 2: resolve-and-check";
   for (int64_t i = 0; i < args().size(); ++i) {
     const Type& param_type = *param_types_[i];
     const Type& arg_type = *args()[i].type();
@@ -464,7 +464,7 @@ absl::StatusOr<TypeAndParametricEnv> FunctionInstantiator::Instantiate() {
   const Type& orig = function_type_->return_type();
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> resolved,
                        ResolveInternal(orig, parametric_env_map()));
-  VLOG(5) << "FunctionInstantiator::Instantiate; resolved return type from `" << orig.ToString() << "` to `" << resolved->ToString() << "`";
+  VLOG(0) << "FunctionInstantiator::Instantiate; resolved return type from `" << orig.ToString() << "` to `" << resolved->ToString() << "`";
 
   if (resolved->HasParametricDims()) {
     absl::btree_set<std::string> dim_exprs;

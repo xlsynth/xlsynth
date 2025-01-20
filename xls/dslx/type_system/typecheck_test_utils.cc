@@ -24,7 +24,6 @@
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/type_system/type_info_to_proto.h"
 #include "xls/dslx/virtualizable_file_system.h"
-#include "xls/common/logging/log_lines.h"
 
 namespace xls::dslx {
 
@@ -36,11 +35,6 @@ absl::StatusOr<TypecheckResult> Typecheck(std::string_view text) {
     UniformContentFilesystem vfs(text);
     TryPrintError(tm.status(), import_data->file_table(), vfs);
     return tm.status();
-  }
-
-  if (VLOG_IS_ON(0)) {
-    std::string type_info_string = TypeInfoTreeToString(*tm->type_info, *tm->module->file_table());
-    XLS_VLOG_LINES(0, type_info_string);
   }
 
   // Ensure that we can convert all the type information in the unit tests into

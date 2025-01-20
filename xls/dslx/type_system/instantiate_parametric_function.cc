@@ -175,7 +175,7 @@ absl::StatusOr<TypeAndParametricEnv> InstantiateParametricFunction(
                        EvaluateExplicitParametrics(
                            ctx, parent_ctx, invocation->explicit_parametrics(),
                            parametric_bindings, invocation->callee()->span()));
-  VLOG(0) << "InstantiateParametricFunction; callee_parametric_env: " << ParametricEnvMapToString(callee_parametric_env);
+  VLOG(100) << "InstantiateParametricFunction; callee_parametric_env: " << ParametricEnvMapToString(callee_parametric_env);
 
   // The bindings that were not explicitly filled by the caller are taken from
   // the callee directly; e.g. if caller invokes as `parametric()` it supplies
