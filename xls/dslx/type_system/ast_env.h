@@ -49,6 +49,8 @@ class AstEnv {
   MapT::const_iterator begin() const { return map_.begin(); }
   MapT::const_iterator end() const { return map_.end(); }
 
+  std::string ToString() const;
+
  private:
   MapT map_;
 };

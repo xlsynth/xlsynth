@@ -354,8 +354,10 @@ static std::optional<std::variant<UseTreeEntry*, Import*>> IsExternRef(
 
 absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
     DeduceCtx* ctx, const Invocation* invocation, const AstEnv& constexpr_env) {
-  VLOG(5) << "Typechecking invocation: `" << invocation->ToString() << "` @ "
-          << invocation->span().ToString(ctx->file_table());
+  VLOG(0) << "TypecheckInvocation; invocation: `" << invocation->ToString() << "` @ "
+          << invocation->span().ToString(ctx->file_table())
+          << " current parametric env: " << ctx->GetCurrentParametricEnv()
+          << " constexpr_env: " << constexpr_env.ToString();
   XLS_VLOG_LINES(5, ctx->GetFnStackDebugString());
 
   Expr* callee = invocation->callee();

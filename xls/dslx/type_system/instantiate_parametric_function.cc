@@ -123,12 +123,22 @@ EvaluateExplicitParametrics(
   return callee_parametric_env;
 }
 
+static std::string ParametricEnvMapToString(
+    const absl::flat_hash_map<std::string, InterpValue>& parametric_env_map) {
+  return absl::StrFormat(
+      "{%s}", absl::StrJoin(parametric_env_map, ", ",
+                            [](std::string* out, const auto& pair) {
+                              absl::StrAppend(out, pair.first, ": ",
+                                              pair.second.ToString());
+                            }));
+}
+
 absl::StatusOr<TypeAndParametricEnv> InstantiateParametricFunction(
     DeduceCtx* ctx, DeduceCtx* parent_ctx, const Invocation* invocation,
     Function& callee_fn, const FunctionType& fn_type,
     const std::vector<InstantiateArg>& instantiate_args) {
   const FileTable& file_table = ctx->file_table();
-  VLOG(5) << "InstantiateParametricFunction; callee_fn: "
+  VLOG(0) << "InstantiateParametricFunction; callee_fn: "
           << callee_fn.identifier() << " invocation: `"
           << invocation->ToString() << "` @ "
           << invocation->span().ToString(file_table);
@@ -168,6 +178,7 @@ absl::StatusOr<TypeAndParametricEnv> InstantiateParametricFunction(
                        EvaluateExplicitParametrics(
                            ctx, parent_ctx, invocation->explicit_parametrics(),
                            parametric_bindings, invocation->callee()->span()));
+  VLOG(0) << "InstantiateParametricFunction; callee_parametric_env: " << ParametricEnvMapToString(callee_parametric_env);
 
   // The bindings that were not explicitly filled by the caller are taken from
   // the callee directly; e.g. if caller invokes as `parametric()` it supplies

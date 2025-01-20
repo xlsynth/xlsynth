@@ -345,6 +345,10 @@ class TypeInfo {
   const FileTable& file_table() const;
   FileTable& file_table();
 
+  const absl::flat_hash_map<const AstNode*, std::optional<InterpValue>>& const_exprs() const {
+    return const_exprs_;
+  }
+
  private:
   friend class TypeInfoOwner;
 

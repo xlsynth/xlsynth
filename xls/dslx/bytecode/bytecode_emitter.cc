@@ -787,8 +787,8 @@ absl::StatusOr<InterpValue> BytecodeEmitter::HandleColonRefInternal(
       auto resolved_subject,
       ResolveColonRefSubjectAfterTypeChecking(import_data_, type_info_, node));
   VLOG(10) << absl::StreamFormat(
-      "BytecodeEmitter::HandleColonRefInternal; node: `%s` resolved_subject: `%s`",
-      node->ToString(), ToAstNode(resolved_subject)->ToString());
+      "BytecodeEmitter::HandleColonRefInternal; node: `%s` resolved_subject: `%s` type %s",
+      node->ToString(), ToAstNode(resolved_subject)->ToString(), ToAstNode(resolved_subject)->GetNodeTypeName());
 
   return absl::visit(
       Visitor{

@@ -4153,7 +4153,7 @@ fn main() { x36() }
   XLS_EXPECT_OK(Typecheck(kProgram));
 }
 
-TEST(TypecheckTest, UnTypeAliasInFunctionFromParametric) {
+TEST(TypecheckTest, UnTypeAliasInFunctionFromParametricGithubIssue1870) {
   constexpr std::string_view kProgram = R"(
 fn get_max<N: u32>() -> uN[N] {
     // Note: there is a temporary grammar limitation that prevents us from

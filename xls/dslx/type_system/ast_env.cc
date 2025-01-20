@@ -18,13 +18,20 @@
 #include "xls/common/visitor.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/proc.h"
-
+#include "absl/strings/str_join.h"
 namespace xls::dslx {
 
 /* static */ NameDef* AstEnv::GetNameDefForKey(KeyT key) {
   return absl::visit(Visitor{[](const Param* n) { return n->name_def(); },
                              [](const ProcMember* n) { return n->name_def(); }},
                      key);
+}
+
+std::string AstEnv::ToString() const {
+  return absl::StrJoin(map_, ", ",
+      [](std::string* out, const std::pair<KeyT, InterpValue>& p) {
+        absl::StrAppend(out, ToAstNode(p.first)->ToString(), ": ", p.second.ToString());
+      });
 }
 
 }  // namespace xls::dslx

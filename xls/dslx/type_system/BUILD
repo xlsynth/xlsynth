@@ -387,6 +387,9 @@ cc_library(
     srcs = ["typecheck_test_utils.cc"],
     hdrs = ["typecheck_test_utils.h"],
     deps = [
+        "//xls/common:indent",
+        "//xls/common/logging:log_lines",
+        "//xls/dslx/type_system_v2:type_system_test_utils",
         ":type_info_to_proto",
         "//xls/common/status:status_macros",
         "//xls/dslx:command_line_utils",
@@ -523,6 +526,7 @@ cc_library(
     srcs = ["ast_env.cc"],
     hdrs = ["ast_env.h"],
     deps = [
+        "@com_google_absl//absl/strings",
         "//xls/common:visitor",
         "//xls/dslx:interp_value",
         "//xls/dslx/frontend:ast",

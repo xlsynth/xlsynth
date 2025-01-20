@@ -254,17 +254,21 @@ absl::StatusOr<TypeAndParametricEnv> DeduceInstantiation(
     const std::function<absl::StatusOr<Function*>(const Instantiation*,
                                                   DeduceCtx*)>& resolve_fn,
     const AstEnv& constexpr_env) {
+  VLOG(0) << "DeduceInstantiation; deducing type for invocation: `" << invocation->ToString() << "` current parametric env: " << ctx->GetCurrentParametricEnv()
+          << " constexpr_env: " << constexpr_env.ToString();
   bool is_parametric_fn = false;
   // We can't resolve builtins as AST Functions, hence this check.
   if (!IsBuiltinFn(invocation->callee())) {
     XLS_ASSIGN_OR_RETURN(Function * f, resolve_fn(invocation, ctx));
     is_parametric_fn = f->IsParametric() || f->proc().has_value();
+    VLOG(0) << "DeduceInstantiation; resolved function: `" << f->ToString() << "` is_parametric_fn: " << is_parametric_fn;
   }
 
   // If this is a parametric function invocation, then we need to typecheck
   // the resulting [function] instantiation before we can deduce its return
   // type (or else we won't find it in our TypeInfo).
   if (IsBuiltinFn(invocation->callee()) || is_parametric_fn) {
+    VLOG(0) << "DeduceInstantiation; calling typecheck_invocation; invocation: `" << invocation->ToString() << "` current parametric env: " << ctx->GetCurrentParametricEnv();
     return ctx->typecheck_invocation()(ctx, invocation, constexpr_env);
   }
 
@@ -337,7 +341,8 @@ absl::Status AppendArgsForInstantiation(
 
 absl::StatusOr<std::unique_ptr<Type>> DeduceInvocation(const Invocation* node,
                                                        DeduceCtx* ctx) {
-  VLOG(5) << "Deducing type for invocation: " << node->ToString();
+  VLOG(0) << "DeduceInvocation; deducing type for invocation: " << node->ToString()
+          << " current parametric env: " << ctx->GetCurrentParametricEnv();
 
   // Detect direct recursion. Indirect recursion is currently not syntactically
   // possible (as of 2023-08-22) since you cannot refer to a name that has not

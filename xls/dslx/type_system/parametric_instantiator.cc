@@ -63,7 +63,7 @@ std::string ToString(const absl::flat_hash_map<std::string, InterpValue>& map) {
       absl::StrJoin(
           map, ", ",
           [](std::string* out, const std::pair<std::string, InterpValue>& p) {
-            out->append(absl::StrCat(p.first, ":", p.second.ToString()));
+            out->append(absl::StrCat(p.first, ": ", p.second.ToString()));
           }),
       "}");
 }
@@ -89,11 +89,11 @@ absl::StatusOr<TypeAndParametricEnv> InstantiateFunction(
     absl::Span<absl::Nonnull<const ParametricBinding*> const>
         parametric_bindings) {
   const FileTable& file_table = ctx->file_table();
-  VLOG(5) << "Function instantiation @ " << span.ToString(file_table)
+  VLOG(0) << "Function instantiation @ " << span.ToString(file_table)
           << " type: " << function_type;
-  VLOG(5) << " typed-parametrics: " << ToString(typed_parametrics);
-  VLOG(5) << " arg types:              " << ToTypesString(args);
-  VLOG(5) << " explicit bindings:   " << ToString(explicit_bindings);
+  VLOG(0) << " typed-parametrics: " << ToString(typed_parametrics);
+  VLOG(0) << " arg types:              " << ToTypesString(args);
+  VLOG(0) << " explicit bindings:   " << ToString(explicit_bindings);
   XLS_ASSIGN_OR_RETURN(
       auto instantiator,
       internal::FunctionInstantiator::Make(

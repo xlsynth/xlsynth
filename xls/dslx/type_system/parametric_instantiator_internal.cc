@@ -104,8 +104,7 @@ absl::StatusOr<std::unique_ptr<Type>> ResolveInternal(
     resolved =
         resolved->ResolveNominalTypeDims(TypeDimMap(parametric_env_map).env());
   }
-  VLOG(5) << "Resolved " << annotated.ToString() << " to "
-          << resolved->ToString();
+  VLOG(5) << absl::StreamFormat("ResolveInternal; resolved `%s` to `%s`", annotated.ToString(), resolved->ToString());
   return resolved;
 }
 
@@ -406,7 +405,7 @@ FunctionInstantiator::Make(
     const absl::flat_hash_map<std::string, InterpValue>& explicit_parametrics,
     absl::Span<absl::Nonnull<const ParametricBinding*> const>
         parametric_bindings) {
-  VLOG(5) << "Making FunctionInstantiator for " << function_type.ToString()
+  VLOG(0) << "FunctionInstantiator::Make; function_type: " << function_type.ToString()
           << " with " << typed_parametrics.size() << " typed-parametrics and "
           << explicit_parametrics.size() << " explicit parametrics";
   if (args.size() != function_type.params().size()) {
@@ -464,8 +463,7 @@ absl::StatusOr<TypeAndParametricEnv> FunctionInstantiator::Instantiate() {
   const Type& orig = function_type_->return_type();
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> resolved,
                        ResolveInternal(orig, parametric_env_map()));
-  VLOG(5) << "Resolved return type from " << orig.ToString() << " to "
-          << resolved->ToString();
+  VLOG(5) << "FunctionInstantiator::Instantiate; resolved return type from `" << orig.ToString() << "` to `" << resolved->ToString() << "`";
 
   if (resolved->HasParametricDims()) {
     absl::btree_set<std::string> dim_exprs;
