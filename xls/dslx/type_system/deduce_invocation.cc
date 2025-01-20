@@ -273,7 +273,8 @@ absl::StatusOr<TypeAndParametricEnv> DeduceInstantiation(
     XLS_ASSIGN_OR_RETURN(TypeAndParametricEnv tab, ctx->typecheck_invocation()(ctx, invocation, constexpr_env));
     XLS_RETURN_IF_ERROR(ctx->PopDerivedTypeInfo(derived_type_info));
     // Propagate the function type from the derived type info to our current type info.
-    ctx->type_info()->SetItem(invocation->callee(), *tab.type);
+    ctx->type_info()->SetItem(invocation->callee(), *derived_type_info->GetItem(invocation->callee()).value());
+    ctx->type_info()->SetItem(invocation, *tab.type);
     return tab;
   }
 
@@ -424,6 +425,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceInvocation(const Invocation* node,
 
   Type* ct = ctx->type_info()->GetItem(node->callee()).value();
   FunctionType* ft = dynamic_cast<FunctionType*>(ct);
+  CHECK(ft != nullptr) << absl::StreamFormat("DeduceInvocation; callee type %p is not a function type: %s", ct, ct == nullptr ? "nullptr" : ct->ToString());
   VLOG(0) << absl::StreamFormat("DeduceInvocation; invoked type deduced as: `%s`", ft->ToString());
   if (args.size() != ft->params().size()) {
     return ArgCountMismatchErrorStatus(

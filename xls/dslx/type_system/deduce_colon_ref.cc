@@ -281,9 +281,27 @@ static absl::StatusOr<std::unique_ptr<Type>> DeduceColonRefToStructType(
   return colon_ref_type;
 }
 
+absl::StatusOr<std::unique_ptr<Type>> DeduceColonRefOutOfScope(AstNode* subject, ImportData* import_data, DeduceCtx* ctx, std::function<absl::StatusOr<std::unique_ptr<Type>>(DeduceCtx*)> deducer) {
+  // We get the root type information for the referred-to entity's module (the
+  // subject of the colon-ref) and create a fresh deduce context for its top
+  // level.
+  Module* subject_module = ToAstNode(subject)->owner();
+  XLS_ASSIGN_OR_RETURN(TypeInfo * subject_type_info,
+                       import_data->GetRootTypeInfo(subject_module));
+  auto subject_ctx = ctx->MakeCtx(subject_type_info, subject_module);
+
+  ScopedFnStackEntry top =
+      ScopedFnStackEntry::MakeForTop(subject_ctx.get(), subject_module);
+
+  absl::StatusOr<std::unique_ptr<Type>> result = deducer(subject_ctx.get());
+  
+  top.Finish();
+  return result;
+}
+
 absl::StatusOr<std::unique_ptr<Type>> DeduceColonRef(const ColonRef* node,
                                                      DeduceCtx* ctx) {
-  VLOG(5) << "DeduceColonRef: " << node->ToString() << " @ "
+  VLOG(0) << "DeduceColonRef: " << node->ToString() << " @ "
           << node->span().ToString(ctx->file_table());
 
   XLS_VLOG_LINES(5, ctx->GetFnStackDebugString());
@@ -293,44 +311,43 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceColonRef(const ColonRef* node,
                        ResolveColonRefSubjectForTypeChecking(
                            import_data, ctx->type_info(), node));
 
-  // We get the root type information for the referred-to entity's module (the
-  // subject of the colon-ref) and create a fresh deduce context for its top
-  // level.
   using ReturnT = absl::StatusOr<std::unique_ptr<Type>>;
-  Module* subject_module = ToAstNode(subject)->owner();
-  XLS_ASSIGN_OR_RETURN(TypeInfo * subject_type_info,
-                       import_data->GetRootTypeInfo(subject_module));
-  auto subject_ctx = ctx->MakeCtx(subject_type_info, subject_module);
-
-  ScopedFnStackEntry top =
-      ScopedFnStackEntry::MakeForTop(subject_ctx.get(), subject_module);
-
   XLS_ASSIGN_OR_RETURN(
       std::unique_ptr<Type> result,
       absl::visit(
           Visitor{
               [&](Module* module) -> ReturnT {
-                return DeduceColonRefToModule(node, module, subject_ctx.get());
+                return DeduceColonRefOutOfScope(module, import_data, ctx, [node, module](DeduceCtx* subject_ctx) -> ReturnT {
+                  return DeduceColonRefToModule(node, module, subject_ctx);
+                });
               },
               [&](EnumDef* enum_def) -> ReturnT {
-                if (!enum_def->HasValue(node->attr())) {
-                  return TypeInferenceErrorStatus(
-                      node->span(), nullptr,
-                      absl::StrFormat(
-                          "Name '%s' is not defined by the enum %s.",
-                          node->attr(), enum_def->identifier()),
-                      ctx->file_table());
-                }
-                XLS_ASSIGN_OR_RETURN(
-                    auto enum_type, DeduceEnumDef(enum_def, subject_ctx.get()));
-                return UnwrapMetaType(std::move(enum_type), node->span(),
-                                      "enum type", ctx->file_table());
+                return DeduceColonRefOutOfScope(enum_def, import_data, ctx, [node, enum_def](DeduceCtx* subject_ctx) -> ReturnT {
+                  if (!enum_def->HasValue(node->attr())) {
+                    return TypeInferenceErrorStatus(
+                        node->span(), nullptr,
+                        absl::StrFormat(
+                            "Name '%s' is not defined by the enum %s.",
+                            node->attr(), enum_def->identifier()),
+                        subject_ctx->file_table());
+                  }
+                  XLS_ASSIGN_OR_RETURN(
+                      auto enum_type, DeduceEnumDef(enum_def, subject_ctx));
+                  return UnwrapMetaType(std::move(enum_type), node->span(),
+                                        "enum type", subject_ctx->file_table());
+                });
               },
               [&](BuiltinNameDef* builtin_name_def) -> ReturnT {
                 return DeduceColonRefToBuiltinNameDef(builtin_name_def, node);
               },
               [&](ArrayTypeAnnotation* type) -> ReturnT {
-                return DeduceColonRefToArrayType(type, node, subject_ctx.get());
+                // We need to check if this is a type definition within the same context that we're currently in, e.g. for a parametric.
+                if (ctx->type_info()->GetItem(type).has_value()) {
+                  return DeduceColonRefToArrayType(type, node, ctx);
+                }
+                return DeduceColonRefOutOfScope(type, import_data, ctx, [node, type](DeduceCtx* subject_ctx) -> ReturnT {
+                  return DeduceColonRefToArrayType(type, node, subject_ctx);
+                });
               },
 
               // Possible subjects for impl colon ref. In these cases, use the
@@ -341,14 +358,16 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceColonRef(const ColonRef* node,
                                                   node, ctx);
               },
               [&](TypeRefTypeAnnotation* struct_ref) -> ReturnT {
-                XLS_ASSIGN_OR_RETURN(
-                    StructDef * struct_def,
-                    DerefToStruct(node->span(), struct_ref->ToString(),
-                                  *struct_ref, subject_type_info));
+                return DeduceColonRefOutOfScope(struct_ref, import_data, ctx, [node, struct_ref](DeduceCtx* subject_ctx) -> ReturnT {
+                  XLS_ASSIGN_OR_RETURN(
+                      StructDef * struct_def,
+                      DerefToStruct(node->span(), struct_ref->ToString(),
+                                  *struct_ref, subject_ctx->type_info()));
 
-                return DeduceColonRefToStructType(
-                    struct_def, subject_type_info->GetItem(struct_ref), node,
-                    ctx);
+                  return DeduceColonRefToStructType(
+                      struct_def, subject_ctx->type_info()->GetItem(struct_ref), node,
+                      subject_ctx);
+                });
               },
               [&](ColonRef* colon_ref) -> ReturnT {
                 // Note: this should be unreachable, as it's a colon-reference
@@ -359,7 +378,6 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceColonRef(const ColonRef* node,
               },
           },
           subject));
-  top.Finish();
 
   VLOG(5) << "DeduceColonRef result: " << result->ToString();
   return result;

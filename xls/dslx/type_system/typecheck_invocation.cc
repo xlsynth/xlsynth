@@ -378,7 +378,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
       }));
   XLS_RET_CHECK(callee_fn != nullptr);
 
-  VLOG(0) << absl::StreamFormat("TypecheckInvocation; deducing arg exprs; callee_fn: `%s`", callee_fn->identifier());
+  VLOG(0) << absl::StreamFormat("- TypecheckInvocation; deducing arg exprs; callee_fn: `%s`", callee_fn->identifier());
   const absl::Span<Expr* const> args = invocation->args();
   std::vector<InstantiateArg> instantiate_args;
   std::vector<std::unique_ptr<Type>> arg_types;
@@ -408,7 +408,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
     ctx = imported_ctx_holder.get();
   }
 
-  VLOG(0) << absl::StreamFormat("TypecheckInvocation; typechecking function params; callee_fn: `%s`", callee_fn->identifier());
+  VLOG(0) << absl::StreamFormat("- TypecheckInvocation; typechecking function params; callee_fn: `%s`", callee_fn->identifier());
   XLS_ASSIGN_OR_RETURN(std::vector<std::unique_ptr<Type>> param_types,
                        TypecheckFunctionParams(*callee_fn, ctx));
 
@@ -447,7 +447,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
   FunctionType instantiated_ft{std::move(arg_types),
                                callee_tab.type->CloneToUnique()};
   parent_ctx->type_info()->SetItem(invocation->callee(), instantiated_ft);
-  VLOG(0) << absl::StreamFormat("TypecheckInvocation; invocation callee `%s` to instantiated_ft: `%s`", callee_fn->identifier(), instantiated_ft.ToString());
+  VLOG(0) << absl::StreamFormat("- TypecheckInvocation; invocation callee `%s` to instantiated_ft: `%s`", callee_fn->identifier(), instantiated_ft.ToString());
 
   // We need to deduce fn body, so we're going to call Deduce, which means we'll
   // need a new stack entry w/the new symbolic bindings.
@@ -456,7 +456,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
       *callee_fn, callee_tab.parametric_env, invocation,
       callee_fn->proc().has_value() ? WithinProc::kYes : WithinProc::kNo));
   TypeInfo* const derived_type_info = ctx->AddDerivedTypeInfo();
-  VLOG(100) << absl::StreamFormat("TypecheckInvocation; added derived type info: %p", derived_type_info);
+  VLOG(100) << absl::StreamFormat("- TypecheckInvocation; added derived type info: %p", derived_type_info);
 
   // We execute this function if we're parametric or a proc. In either case, we
   // want to create a new TypeInfo. The reason for the former is obvious. The
@@ -509,10 +509,10 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
     ctx->type_info()->SetItem(param->name_def(), *resolved_type);
   }
 
-  VLOG(0) << absl::StreamFormat("TypecheckInvocation; callee_fn: `%s` calling deduce on body: `%s` type_info: %p", callee_fn->identifier(), callee_fn->body()->ToString(), ctx->type_info());
+  VLOG(0) << absl::StreamFormat("- TypecheckInvocation; callee_fn: `%s` type_info: %p calling deduce on body: `%s`", callee_fn->identifier(), ctx->type_info(), callee_fn->body()->ToString());
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> body_type,
                        ctx->Deduce(callee_fn->body()));
-  VLOG(0) << absl::StreamFormat("TypecheckInvocation; callee_fn: `%s` body_type: `%s`", callee_fn->identifier(), body_type->ToString());
+  VLOG(0) << absl::StreamFormat("- TypecheckInvocation; callee_fn: `%s` type_info: %p body_type: `%s`", callee_fn->identifier(), ctx->type_info(), body_type->ToString());
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> resolved_body_type,
                        ctx->Resolve(*body_type));
   XLS_RET_CHECK(!resolved_body_type->IsMeta());
@@ -549,7 +549,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
   XLS_RETURN_IF_ERROR(ctx->PopDerivedTypeInfo(derived_type_info));
   ctx->PopFnStackEntry();
 
-  VLOG(100) << absl::StreamFormat("TypecheckInvocation; popped derived type info: %p type_info is now: %p", derived_type_info, ctx->type_info());
+  VLOG(0) << absl::StreamFormat("- TypecheckInvocation; popped derived type info: %p type_info is now: %p", derived_type_info, ctx->type_info());
 
   // Implementation note: though we could have all functions have
   // NoteRequiresImplicitToken() be false unless otherwise noted, this helps
