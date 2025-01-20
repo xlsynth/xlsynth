@@ -42,8 +42,60 @@
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
+#include "xls/common/indent.h"
 
 namespace xls::dslx {
+namespace {
+
+absl::StatusOr<std::string> TypeInfoToString(const TypeInfo& ti,
+                                             const FileTable& file_table) {
+  if (ti.dict().empty()) {
+    return "";
+  }
+  std::vector<std::string> strings;
+  for (const auto& [node, type] : ti.dict()) {
+    Span span = node->GetSpan().has_value() ? *node->GetSpan() : Span::Fake();
+    strings.push_back(absl::StrFormat("span: %s, node: `%s`, type: %s",
+                                       span.ToString(file_table),
+                                       node->ToString(), type->ToString()));
+  }
+  absl::c_sort(strings);
+  return strings.size() == 1
+             ? strings[0]
+             : absl::StrCat("\n", absl::StrJoin(strings, "\n"));
+}
+
+std::string TypeInfoConstexprToString(const TypeInfo& ti, const FileTable& file_table) {
+  std::vector<std::string> items;
+  for (const auto& [node, maybe_value] : ti.const_exprs()) {
+    if (!maybe_value.has_value()) {
+      continue;
+    }
+    items.push_back(absl::StrFormat("span: %s, node: `%s`, value: `%s`", node->GetSpan()->ToString(file_table), node->ToString(), maybe_value->ToString()));
+  }
+  return absl::StrJoin(items, "\n");
+}
+
+}  // namespace
+
+std::string TypeInfoTreeToString(const TypeInfo& ti, const FileTable& file_table) {
+  std::string result = absl::StrFormat("Root %p:\nParent: %p\n%s\nConstexpr:\n%s", &ti, ti.parent(), Indent(TypeInfoToString(ti, file_table).value()), Indent(TypeInfoConstexprToString(ti, file_table)));
+  for (const auto& [invocation, invocation_data] : ti.GetRootInvocations()) {
+    absl::StrAppend(&result, "\n-- Invocation: `", invocation->ToString(), "`");
+    for (const auto& [env, callee_data] : invocation_data.env_to_callee_data()) {
+      absl::StrAppend(&result, "\nCaller Env: ", env.ToString());
+      absl::StrAppend(&result, "\nCallee Env: ", callee_data.callee_bindings.ToString());
+      if (callee_data.derived_type_info == nullptr) {
+        absl::StrAppend(&result, "\nType Info: <null>");
+        continue;
+      }
+      const TypeInfo* derived_type_info = callee_data.derived_type_info;
+      absl::StrAppendFormat(&result, "\nType Info %p:\nParent: %p\n%s", derived_type_info, derived_type_info->parent(), Indent(TypeInfoToString(*derived_type_info, file_table).value()));
+      absl::StrAppend(&result, "\nConstexpr:\n", Indent(TypeInfoConstexprToString(*derived_type_info, file_table)));
+    }
+  }
+  return result;
+}
 
 InvocationData::InvocationData(
     const Invocation* node, const Function* caller,
@@ -163,9 +215,9 @@ absl::StatusOr<TypeInfo*> TypeInfoOwner::GetRootTypeInfo(const Module* module) {
 // -- class TypeInfo
 
 void TypeInfo::NoteConstExpr(const AstNode* const_expr, InterpValue value) {
-  VLOG(5) << absl::StreamFormat(
-      "noting node: `%s` (%p) has constexpr value: `%s`",
-      const_expr->ToString(), const_expr, value.ToString());
+  VLOG(0) << absl::StreamFormat(
+      "TypeInfo::NoteConstExpr; type_info: %p noting node: `%s` (%p) has constexpr value: `%s`",
+      this, const_expr->ToString(), const_expr, value.ToString());
 
   // Note: this assertion will generally hold as of 2024-08-23, except in the
   // case of `UnrollFor` nodes, which https://github.com/richmckeever is

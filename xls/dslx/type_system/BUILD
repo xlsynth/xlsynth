@@ -306,6 +306,7 @@ cc_library(
     srcs = ["typecheck_invocation.cc"],
     hdrs = ["typecheck_invocation.h"],
     deps = [
+        "@com_google_absl//absl/cleanup",
         ":ast_env",
         ":deduce_ctx",
         ":deduce_utils",
@@ -609,6 +610,7 @@ cc_library(
     srcs = ["type_info.cc"],
     hdrs = ["type_info.h"],
     deps = [
+        "//xls/common:indent",
         ":parametric_env",
         ":type",
         "//xls/common:symbolized_stacktrace",

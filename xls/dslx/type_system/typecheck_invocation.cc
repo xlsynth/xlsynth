@@ -59,6 +59,7 @@
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/type_system/unwrap_meta_type.h"
 #include "re2/re2.h"
+#include "absl/cleanup/cleanup.h"
 
 namespace xls::dslx {
 
@@ -354,10 +355,7 @@ static std::optional<std::variant<UseTreeEntry*, Import*>> IsExternRef(
 
 absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
     DeduceCtx* ctx, const Invocation* invocation, const AstEnv& constexpr_env) {
-  VLOG(0) << "TypecheckInvocation; invocation: `" << invocation->ToString() << "` @ "
-          << invocation->span().ToString(ctx->file_table())
-          << " current parametric env: " << ctx->GetCurrentParametricEnv()
-          << " constexpr_env: " << constexpr_env.ToString();
+  VLOG(0) << absl::StreamFormat("TypecheckInvocation; type_info: %p invocation: `%s` @ %s current parametric env: %s constexpr_env: %s", ctx->type_info(), invocation->ToString(), invocation->span().ToString(ctx->file_table()), ctx->GetCurrentParametricEnv().ToString(), constexpr_env.ToString());
   XLS_VLOG_LINES(5, ctx->GetFnStackDebugString());
 
   Expr* callee = invocation->callee();
@@ -455,6 +453,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
       *callee_fn, callee_tab.parametric_env, invocation,
       callee_fn->proc().has_value() ? WithinProc::kYes : WithinProc::kNo));
   TypeInfo* const derived_type_info = ctx->AddDerivedTypeInfo();
+  VLOG(0) << absl::StreamFormat("TypecheckInvocation; added derived type info: %p", derived_type_info);
 
   // We execute this function if we're parametric or a proc. In either case, we
   // want to create a new TypeInfo. The reason for the former is obvious. The
@@ -545,6 +544,8 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
   XLS_RETURN_IF_ERROR(ctx->PopDerivedTypeInfo(derived_type_info));
   ctx->PopFnStackEntry();
 
+  VLOG(0) << absl::StreamFormat("TypecheckInvocation; popped derived type info: %p type_info is now: %p", derived_type_info, ctx->type_info());
+
   // Implementation note: though we could have all functions have
   // NoteRequiresImplicitToken() be false unless otherwise noted, this helps
   // guarantee we did consider and make a note for every function -- the code
@@ -552,7 +553,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
   if (std::optional<bool> requires_token =
           ctx->type_info()->GetRequiresImplicitToken(*callee_fn);
       !requires_token.has_value()) {
-    ctx->type_info()->NoteRequiresImplicitToken(*callee_fn, false);
+    original_ti->NoteRequiresImplicitToken(*callee_fn, false);
   }
 
   return callee_tab;

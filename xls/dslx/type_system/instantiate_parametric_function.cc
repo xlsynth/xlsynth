@@ -138,10 +138,7 @@ absl::StatusOr<TypeAndParametricEnv> InstantiateParametricFunction(
     Function& callee_fn, const FunctionType& fn_type,
     const std::vector<InstantiateArg>& instantiate_args) {
   const FileTable& file_table = ctx->file_table();
-  VLOG(0) << "InstantiateParametricFunction; callee_fn: "
-          << callee_fn.identifier() << " invocation: `"
-          << invocation->ToString() << "` @ "
-          << invocation->span().ToString(file_table);
+  VLOG(0) << absl::StreamFormat("InstantiateParametricFunction; type_info: %p parent ctx type info: %p callee_fn: `%s` invocation: `%s` @ %s", ctx->type_info(), parent_ctx->type_info(), callee_fn.identifier(), invocation->ToString(), invocation->span().ToString(file_table));
 
   {
     // As a special case, flag recursion (that otherwise shows up as unresolved

@@ -25,42 +25,8 @@
 #include "xls/dslx/type_system/type_info_to_proto.h"
 #include "xls/dslx/virtualizable_file_system.h"
 #include "xls/common/logging/log_lines.h"
-#include "xls/dslx/type_system_v2/type_system_test_utils.h"
-#include "xls/common/indent.h"
 
 namespace xls::dslx {
-namespace {
-
-std::string TypeInfoConstexprToString(const TypeInfo& ti, const FileTable& file_table) {
-  std::vector<std::string> items;
-  for (const auto& [node, maybe_value] : ti.const_exprs()) {
-    if (!maybe_value.has_value()) {
-      continue;
-    }
-    items.push_back(absl::StrFormat("span: %s, node: `%s`, value: `%s`", node->GetSpan()->ToString(file_table), node->ToString(), maybe_value->ToString()));
-  }
-  return absl::StrJoin(items, "\n");
-}
-
-std::string TypeInfoTreeToString(const TypeInfo& ti, const FileTable& file_table) {
-  std::string result = "Root:\n" + Indent(TypeInfoToString(ti, file_table).value());
-  for (const auto& [invocation, invocation_data] : ti.GetRootInvocations()) {
-    absl::StrAppend(&result, "\n-- Invocation: `", invocation->ToString(), "`");
-    for (const auto& [env, callee_data] : invocation_data.env_to_callee_data()) {
-      absl::StrAppend(&result, "\nCaller Env: ", env.ToString());
-      absl::StrAppend(&result, "\nCallee Env: ", callee_data.callee_bindings.ToString());
-      if (callee_data.derived_type_info == nullptr) {
-        absl::StrAppend(&result, "\nType Info: <null>");
-        continue;
-      }
-      absl::StrAppend(&result, "\nType Info:\n", Indent(TypeInfoToString(*callee_data.derived_type_info, file_table).value()));
-      absl::StrAppend(&result, "\nConstexpr:\n", Indent(TypeInfoConstexprToString(*callee_data.derived_type_info, file_table)));
-    }
-  }
-  return result;
-}
-
-}  // namespace
 
 absl::StatusOr<TypecheckResult> Typecheck(std::string_view text) {
   auto import_data = CreateImportDataPtrForTest();

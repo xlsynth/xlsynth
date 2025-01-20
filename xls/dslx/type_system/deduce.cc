@@ -2246,7 +2246,7 @@ absl::StatusOr<std::unique_ptr<Type>> Deduce(const AstNode* node,
 
 absl::StatusOr<TypeDim> DimToConcreteUsize(const Expr* dim_expr,
                                            DeduceCtx* ctx) {
-  VLOG(0) << "DimToConcreteUsize; dim_expr: `" << dim_expr->ToString() << "` current parametric env: " << ctx->GetCurrentParametricEnv();
+  VLOG(0) << absl::StreamFormat("DimToConcreteUsize; type_info: %p dim_expr: `%s` current parametric env: %s", ctx->type_info(), dim_expr->ToString(), ctx->GetCurrentParametricEnv().ToString());
   std::unique_ptr<BitsType> u32 = BitsType::MakeU32();
   auto validate_high_bit = [ctx, &u32](const Span& span, uint32_t value) {
     if ((value >> 31) == 0) {

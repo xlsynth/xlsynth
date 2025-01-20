@@ -165,10 +165,10 @@ absl::Status DeduceCtx::PushTypeInfo(TypeInfo* ti) {
 }
 
 absl::Status DeduceCtx::PopDerivedTypeInfo(TypeInfo* expect_popped) {
-  XLS_RET_CHECK(type_info_->parent() != nullptr);
-
   // Check that the type info we're popping is the one we expected to pop.
   XLS_RET_CHECK_EQ(type_info_, expect_popped);
+  // Check that it has a parent to pop to.
+  XLS_RET_CHECK(type_info_->parent() != nullptr);
 
   type_info_ = type_info_->parent();
   return absl::OkStatus();

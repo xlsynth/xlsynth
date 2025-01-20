@@ -341,8 +341,7 @@ absl::Status AppendArgsForInstantiation(
 
 absl::StatusOr<std::unique_ptr<Type>> DeduceInvocation(const Invocation* node,
                                                        DeduceCtx* ctx) {
-  VLOG(0) << "DeduceInvocation; deducing type for invocation: " << node->ToString()
-          << " current parametric env: " << ctx->GetCurrentParametricEnv();
+  VLOG(0) << absl::StreamFormat("DeduceInvocation; type_info: %p deducing type for invocation: `%s` current parametric env: %s", ctx->type_info(), node->ToString(), ctx->GetCurrentParametricEnv().ToString());
 
   // Detect direct recursion. Indirect recursion is currently not syntactically
   // possible (as of 2023-08-22) since you cannot refer to a name that has not

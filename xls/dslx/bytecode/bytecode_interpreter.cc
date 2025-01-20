@@ -174,6 +174,7 @@ BytecodeInterpreter::BytecodeInterpreter(
 absl::Status BytecodeInterpreter::InitFrame(BytecodeFunction* bf,
                                             absl::Span<const InterpValue> args,
                                             const TypeInfo* type_info) {
+  VLOG(0) << absl::StreamFormat("BytecodeInterpreter::InitFrame: type_info: %p", type_info);
   XLS_RET_CHECK(frames_.empty());
 
   // In "mission mode" we expect type_info to be non-null in the frame, but for
@@ -651,7 +652,7 @@ absl::Status BytecodeInterpreter::EvalCall(const Bytecode& bytecode) {
   frames_.push_back(Frame(bf, std::move(args), bf->type_info(),
                           invocation_data.callee_bindings(), std::move(args_copy)));
 
-  VLOG(10) << absl::StreamFormat("BytecodeInterpreter::EvalCall: new frame: %s", frames_.back().ToString(file_table()));
+  VLOG(0) << absl::StreamFormat("BytecodeInterpreter::EvalCall: new frame: %s", frames_.back().ToString(file_table()));
   return absl::OkStatus();
 }
 

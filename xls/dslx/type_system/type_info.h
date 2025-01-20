@@ -443,6 +443,8 @@ inline absl::StatusOr<T*> TypeInfo::GetItemAs(const AstNode* key) const {
   return target;
 }
 
+std::string TypeInfoTreeToString(const TypeInfo& ti, const FileTable& file_table);
+
 }  // namespace xls::dslx
 
 #endif  // XLS_DSLX_TYPE_SYSTEM_TYPE_INFO_H_
