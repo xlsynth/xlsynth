@@ -191,7 +191,7 @@ BytecodeEmitter::EmitInternal(
     const std::vector<NameDef*>& proc_members,
     std::optional<absl::FunctionRef<int64_t()>> channel_instance_allocator,
     const BytecodeEmitterOptions& options) {
-  VLOG(100) << absl::StreamFormat("BytecodeEmitter::EmitInternal: f: `%s` type_info: %p, caller_bindings: %s", f.identifier(), type_info, caller_bindings.has_value() ? caller_bindings->ToString() : "null");
+  VLOG(0) << absl::StreamFormat("BytecodeEmitter::EmitInternal: f: `%s` type_info: %p, caller_bindings: %s", f.identifier(), type_info, caller_bindings.has_value() ? caller_bindings->ToString() : "null");
   XLS_RET_CHECK(type_info != nullptr);
 
   BytecodeEmitter emitter(import_data, type_info, caller_bindings,

@@ -332,7 +332,7 @@ ParametricInstantiator::ParametricInstantiator(
   //  The underlined portion wants a concrete type definition so it can
   //  interpret the expression to an InterpValue.
   derived_type_info_ = ctx_->AddDerivedTypeInfo();
-  VLOG(100) << absl::StreamFormat("ParametricInstantiator::ParametricInstantiator; added derived type info: %p", derived_type_info_);
+  VLOG(0) << absl::StreamFormat("ParametricInstantiator::ParametricInstantiator; added derived type info: %p", derived_type_info_);
 
   // Note: the first N explicit parametrics (given by the map) must be the first
   // N parametrics for the thing we're instantiating; i.e. we can only
@@ -368,6 +368,8 @@ ParametricInstantiator::ParametricInstantiator(
 }
 
 ParametricInstantiator::~ParametricInstantiator() {
+  VLOG(0) << absl::StreamFormat("~ParametricInstantiator; popping derived type info: %p\nderived type info: %s", 
+  derived_type_info_, TypeInfoTreeToString(*derived_type_info_, ctx_->file_table()));
   CHECK_OK(ctx_->PopDerivedTypeInfo(derived_type_info_));
 }
 

@@ -254,7 +254,7 @@ absl::StatusOr<TypeAndParametricEnv> DeduceInstantiation(
     const std::function<absl::StatusOr<Function*>(const Instantiation*,
                                                   DeduceCtx*)>& resolve_fn,
     const AstEnv& constexpr_env) {
-  VLOG(100) << "DeduceInstantiation; deducing type for invocation: `" << invocation->ToString() << "` current parametric env: " << ctx->GetCurrentParametricEnv()
+  VLOG(0) << "DeduceInstantiation; deducing type for invocation: `" << invocation->ToString() << "` current parametric env: " << ctx->GetCurrentParametricEnv()
           << " constexpr_env: " << constexpr_env.ToString();
   bool is_parametric_fn = false;
   // We can't resolve builtins as AST Functions, hence this check.
@@ -269,7 +269,12 @@ absl::StatusOr<TypeAndParametricEnv> DeduceInstantiation(
   // type (or else we won't find it in our TypeInfo).
   if (IsBuiltinFn(invocation->callee()) || is_parametric_fn) {
     VLOG(100) << "DeduceInstantiation; calling typecheck_invocation; invocation: `" << invocation->ToString() << "` current parametric env: " << ctx->GetCurrentParametricEnv();
-    return ctx->typecheck_invocation()(ctx, invocation, constexpr_env);
+    TypeInfo* derived_type_info = ctx->AddDerivedTypeInfo();
+    XLS_ASSIGN_OR_RETURN(TypeAndParametricEnv tab, ctx->typecheck_invocation()(ctx, invocation, constexpr_env));
+    XLS_RETURN_IF_ERROR(ctx->PopDerivedTypeInfo(derived_type_info));
+    // Propagate the function type from the derived type info to our current type info.
+    ctx->type_info()->SetItem(invocation->callee(), *tab.type);
+    return tab;
   }
 
   // If it's non-parametric, then we assume it's been already checked at module
@@ -341,7 +346,7 @@ absl::Status AppendArgsForInstantiation(
 
 absl::StatusOr<std::unique_ptr<Type>> DeduceInvocation(const Invocation* node,
                                                        DeduceCtx* ctx) {
-  VLOG(100) << absl::StreamFormat("DeduceInvocation; type_info: %p deducing type for invocation: `%s` current parametric env: %s", ctx->type_info(), node->ToString(), ctx->GetCurrentParametricEnv().ToString());
+  VLOG(0) << absl::StreamFormat("DeduceInvocation; type_info: %p deducing type for invocation: `%s` current parametric env: %s", ctx->type_info(), node->ToString(), ctx->GetCurrentParametricEnv().ToString());
 
   // Detect direct recursion. Indirect recursion is currently not syntactically
   // possible (as of 2023-08-22) since you cannot refer to a name that has not
@@ -419,6 +424,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceInvocation(const Invocation* node,
 
   Type* ct = ctx->type_info()->GetItem(node->callee()).value();
   FunctionType* ft = dynamic_cast<FunctionType*>(ct);
+  VLOG(0) << absl::StreamFormat("DeduceInvocation; invoked type deduced as: `%s`", ft->ToString());
   if (args.size() != ft->params().size()) {
     return ArgCountMismatchErrorStatus(
         node->span(),

@@ -355,7 +355,8 @@ static std::optional<std::variant<UseTreeEntry*, Import*>> IsExternRef(
 
 absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
     DeduceCtx* ctx, const Invocation* invocation, const AstEnv& constexpr_env) {
-  VLOG(0) << absl::StreamFormat("TypecheckInvocation; type_info: %p invocation: `%s` @ %s current parametric env: %s constexpr_env: %s", ctx->type_info(), invocation->ToString(), invocation->span().ToString(ctx->file_table()), ctx->GetCurrentParametricEnv().ToString(), constexpr_env.ToString());
+  VLOG(0) << absl::StreamFormat("TypecheckInvocation; type_info: %p invocation: `%s` @ %s current parametric env: %s constexpr_env: %s",
+  ctx->type_info(), invocation->ToString(), invocation->span().ToString(ctx->file_table()), ctx->GetCurrentParametricEnv().ToString(), constexpr_env.ToString());
   XLS_VLOG_LINES(100, ctx->GetFnStackDebugString());
 
   Expr* callee = invocation->callee();
@@ -377,6 +378,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
       }));
   XLS_RET_CHECK(callee_fn != nullptr);
 
+  VLOG(0) << absl::StreamFormat("TypecheckInvocation; deducing arg exprs; callee_fn: `%s`", callee_fn->identifier());
   const absl::Span<Expr* const> args = invocation->args();
   std::vector<InstantiateArg> instantiate_args;
   std::vector<std::unique_ptr<Type>> arg_types;
@@ -406,6 +408,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
     ctx = imported_ctx_holder.get();
   }
 
+  VLOG(0) << absl::StreamFormat("TypecheckInvocation; typechecking function params; callee_fn: `%s`", callee_fn->identifier());
   XLS_ASSIGN_OR_RETURN(std::vector<std::unique_ptr<Type>> param_types,
                        TypecheckFunctionParams(*callee_fn, ctx));
 
@@ -444,7 +447,7 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
   FunctionType instantiated_ft{std::move(arg_types),
                                callee_tab.type->CloneToUnique()};
   parent_ctx->type_info()->SetItem(invocation->callee(), instantiated_ft);
-  ctx->type_info()->SetItem(callee_fn->name_def(), instantiated_ft);
+  VLOG(0) << absl::StreamFormat("TypecheckInvocation; invocation callee `%s` to instantiated_ft: `%s`", callee_fn->identifier(), instantiated_ft.ToString());
 
   // We need to deduce fn body, so we're going to call Deduce, which means we'll
   // need a new stack entry w/the new symbolic bindings.

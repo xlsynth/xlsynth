@@ -233,7 +233,7 @@ bool IsTypeMismatchStatus(const absl::Status& status) {
 
 absl::Status TypecheckModuleMember(const ModuleMember& member, Module* module,
                                    ImportData* import_data, DeduceCtx* ctx) {
-  VLOG(5) << "TypecheckModuleMember; member: `" << ToAstNode(member)->ToString()
+  VLOG(0) << "TypecheckModuleMember; member: `" << ToAstNode(member)->ToString()
           << "`";
   XLS_RET_CHECK_EQ(ctx->fn_stack().size(), 1);
   XLS_RET_CHECK_EQ(ctx->fn_stack().back().f(), nullptr);

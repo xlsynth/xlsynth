@@ -2020,7 +2020,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceNameRef(const NameRef* node,
         ctx->file_table());
   }
 
-  return TypeMissingErrorStatus(/*node=*/*name_def, /*user=*/node,
+  LOG(FATAL) << TypeMissingErrorStatus(/*node=*/*name_def, /*user=*/node,
                                 ctx->file_table());
 }
 
