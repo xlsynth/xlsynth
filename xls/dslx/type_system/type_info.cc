@@ -499,15 +499,19 @@ std::optional<bool> TypeInfo::GetRequiresImplicitToken(
     return std::nullopt;
   }
   bool result = it->second;
-  VLOG(6) << absl::StreamFormat("GetRequiresImplicitToken %p %s::%s => %s",
+  VLOG(0) << absl::StreamFormat("GetRequiresImplicitToken %p %s::%s => %s",
                                 root, f.owner()->name(), f.identifier(),
                                 (result ? "true" : "false"));
   return result;
 }
 
 void TypeInfo::NoteRequiresImplicitToken(const Function& f, bool is_required) {
+  CHECK_EQ(f.owner(), module_) << absl::StreamFormat(
+      "function owner: `%s` vs module: `%s`", f.owner()->name(),
+      module_->name());
+
   TypeInfo* root = GetRoot();
-  VLOG(6) << absl::StreamFormat("NoteRequiresImplicitToken %p: %s::%s => %s",
+  VLOG(0) << absl::StreamFormat("NoteRequiresImplicitToken %p: %s::%s => %s",
                                 root, f.owner()->name(), f.identifier(),
                                 is_required ? "true" : "false");
   root->requires_implicit_token_.emplace(&f, is_required);

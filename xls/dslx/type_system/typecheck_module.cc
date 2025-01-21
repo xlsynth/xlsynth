@@ -436,7 +436,7 @@ absl::StatusOr<TypeInfo*> TypecheckModule(Module* module,
   }
 
   VLOG(100) << absl::StreamFormat("TypecheckModule; type_info: %p", type_info);
-  XLS_VLOG_LINES(0, TypeInfoTreeToString(*type_info, import_data->file_table()));
+  XLS_VLOG_LINES(100, TypeInfoTreeToString(*type_info, import_data->file_table()));
 
   return type_info;
 }

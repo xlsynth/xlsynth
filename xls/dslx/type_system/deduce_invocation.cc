@@ -347,7 +347,8 @@ absl::Status AppendArgsForInstantiation(
 
 absl::StatusOr<std::unique_ptr<Type>> DeduceInvocation(const Invocation* node,
                                                        DeduceCtx* ctx) {
-  VLOG(0) << absl::StreamFormat("DeduceInvocation; type_info: %p deducing type for invocation: `%s` current parametric env: %s", ctx->type_info(), node->ToString(), ctx->GetCurrentParametricEnv().ToString());
+  VLOG(0) << absl::StreamFormat("DeduceInvocation; type_info: %p deducing type for invocation: `%s` current parametric env: %s",
+  ctx->type_info(), node->ToString(), ctx->GetCurrentParametricEnv().ToString());
 
   // Detect direct recursion. Indirect recursion is currently not syntactically
   // possible (as of 2023-08-22) since you cannot refer to a name that has not
@@ -454,9 +455,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceInvocation(const Invocation* node,
     std::optional<bool> callee_opt =
         root_type_info->GetRequiresImplicitToken(*fn);
     XLS_RET_CHECK(callee_opt.has_value())
-        << "user-defined function should have an annotation for whether it "
-           "requires an implicit token: "
-        << fn->identifier();
+        << absl::StreamFormat("user-defined function should have an annotation for whether it requires an implicit token: `%s` @ %s type_info: %p for module `%s`", fn->identifier(), fn->span().ToString(ctx->file_table()), root_type_info, root_type_info->module()->name());
     bool callee_needs_implicit_token = callee_opt.value();
 
     // If the callee function needs an implicit token type (e.g. because it has

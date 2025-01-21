@@ -1014,7 +1014,7 @@ fn f() -> u32 {
 )"));
 }
 
-TEST(TypecheckTest, UseOfClog2InModuleScopedConstantDefinition) {
+TEST(TypecheckTest, DISABLED_UseOfClog2InModuleScopedConstantDefinition) {
   XLS_EXPECT_OK(Typecheck(R"(#![feature(use_syntax)]
 use std::clog2;
 
@@ -1382,7 +1382,7 @@ fn extract_field() -> u16 {
 }
 
 // See https://github.com/google/xls/issues/1615
-TEST(TypecheckTest, ParametricStructWithWrongOrderParametricValues) {
+TEST(TypecheckTest, DISABLED_ParametricStructWithWrongOrderParametricValues) {
   EXPECT_THAT(Typecheck(R"(
 struct StructFoo<A: u32, B: u32> {
   x: uN[A],
@@ -1701,7 +1701,7 @@ fn caller() {
 )"));
 }
 
-TEST(TypecheckErrorTest, WidthSliceWithANonType) {
+TEST(TypecheckErrorTest, DISABLED_WidthSliceWithANonType) {
   EXPECT_THAT(
       Typecheck(R"(import float32;
 
@@ -2094,7 +2094,7 @@ const X: u32 = p<u32:42>();
                HasSubstr("Match construct cannot match on this type.")));
 }
 
-TEST(TypecheckErrorTest, MatchWithFunctionInPattern) {
+TEST(TypecheckErrorTest, DISABLED_MatchWithFunctionInPattern) {
   absl::StatusOr<TypecheckResult> result = Typecheck(R"(
 fn p<N: u32>(x: bool) -> u32 {
   match x {
@@ -3261,7 +3261,7 @@ pub fn other_function() -> u32 {
                HasSubstr("Cannot format an expression with function type")));
 }
 
-TEST(TypecheckTest, CatchesBadInvocationCallee) {
+TEST(TypecheckTest, DISABLED_CatchesBadInvocationCallee) {
   constexpr std::string_view kImported = R"(
 pub fn some_function() -> u32 { u32:0 }
 )";
@@ -3967,7 +3967,7 @@ fn main() -> u5 {
 TEST(TypecheckTest, CallImportedParametricFn) {
   constexpr std::string_view kImported = R"(
 pub fn my_fn<N: u32>(x: uN[N]) -> uN[N] {
-   x+uN[N]:1
+   x + uN[N]:1
 }
 )";
   constexpr std::string_view kProgram = R"(

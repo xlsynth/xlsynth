@@ -519,12 +519,18 @@ absl::StatusOr<Proc*> ResolveProc(Expr* callee, const TypeInfo* type_info) {
 absl::StatusOr<std::unique_ptr<Type>> ParametricBindingToType(
     const ParametricBinding& binding, DeduceCtx* ctx) {
   Module* binding_module = binding.owner();
-  ImportData* import_data = ctx->import_data();
-  XLS_ASSIGN_OR_RETURN(TypeInfo * binding_type_info,
-                       import_data->GetRootTypeInfo(binding_module));
 
-  auto binding_ctx =
-      ctx->MakeCtxWithSameFnStack(binding_type_info, binding_module);
+  std::unique_ptr<DeduceCtx> binding_ctx_owned;
+
+  DeduceCtx* binding_ctx = ctx;
+  TypeInfo* type_info = ctx->type_info();
+  if (binding_module != type_info->module()) {
+    XLS_ASSIGN_OR_RETURN(type_info,
+                         ctx->import_data()->GetRootTypeInfo(binding_module));
+    binding_ctx_owned = ctx->MakeCtxWithSameFnStack(type_info, binding_module);
+    binding_ctx = binding_ctx_owned.get();
+  }
+
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> metatype,
                        binding_ctx->Deduce(binding.type_annotation()));
   return UnwrapMetaType(std::move(metatype), binding.type_annotation()->span(),

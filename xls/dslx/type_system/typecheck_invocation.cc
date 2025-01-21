@@ -546,11 +546,6 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
                         callee_fn->identifier()));
   }
 
-  XLS_RETURN_IF_ERROR(ctx->PopDerivedTypeInfo(derived_type_info));
-  ctx->PopFnStackEntry();
-
-  VLOG(0) << absl::StreamFormat("- TypecheckInvocation; popped derived type info: %p type_info is now: %p", derived_type_info, ctx->type_info());
-
   // Implementation note: though we could have all functions have
   // NoteRequiresImplicitToken() be false unless otherwise noted, this helps
   // guarantee we did consider and make a note for every function -- the code
@@ -558,8 +553,13 @@ absl::StatusOr<TypeAndParametricEnv> TypecheckInvocation(
   if (std::optional<bool> requires_token =
           ctx->type_info()->GetRequiresImplicitToken(*callee_fn);
       !requires_token.has_value()) {
-    original_ti->NoteRequiresImplicitToken(*callee_fn, false);
+    ctx->type_info()->NoteRequiresImplicitToken(*callee_fn, false);
   }
+
+  XLS_RETURN_IF_ERROR(ctx->PopDerivedTypeInfo(derived_type_info));
+  ctx->PopFnStackEntry();
+
+  VLOG(0) << absl::StreamFormat("- TypecheckInvocation; popped derived type info: %p type_info is now: %p", derived_type_info, ctx->type_info());
 
   return callee_tab;
 }

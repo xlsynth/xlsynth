@@ -1677,8 +1677,10 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceTupleTypeAnnotation(
 
 absl::StatusOr<std::unique_ptr<Type>> DeduceArrayTypeAnnotation(
     const ArrayTypeAnnotation* node, DeduceCtx* ctx) {
-  VLOG(100) << "DeduceArrayTypeAnnotation: " << node->ToString()
-          << " current parametric env: " << ctx->GetCurrentParametricEnv();
+  VLOG(0) << absl::StreamFormat("DeduceArrayTypeAnnotation: `%s` @ %s"
+                               " type_info: %p"
+                               " current parametric env: %s",
+                               node->ToString(), node->span().ToString(ctx->file_table()), ctx->type_info(), ctx->GetCurrentParametricEnv().ToString());
 
   std::unique_ptr<Type> t;
   if (auto* element_type =

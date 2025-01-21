@@ -389,6 +389,7 @@ cc_library(
     srcs = ["typecheck_test_utils.cc"],
     hdrs = ["typecheck_test_utils.h"],
     deps = [
+        "@com_google_absl//absl/log",
         "//xls/common:indent",
         "//xls/common/logging:log_lines",
         "//xls/dslx/type_system_v2:type_system_test_utils",

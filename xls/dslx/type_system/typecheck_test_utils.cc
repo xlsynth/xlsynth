@@ -24,6 +24,7 @@
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/type_system/type_info_to_proto.h"
 #include "xls/dslx/virtualizable_file_system.h"
+#include "absl/log/log.h"
 
 namespace xls::dslx {
 
@@ -32,6 +33,7 @@ absl::StatusOr<TypecheckResult> Typecheck(std::string_view text) {
   absl::StatusOr<TypecheckedModule> tm =
       ParseAndTypecheck(text, "fake.x", "fake", import_data.get());
   if (!tm.ok()) {
+    LOG(ERROR) << "typecheck status: " << tm.status();
     UniformContentFilesystem vfs(text);
     TryPrintError(tm.status(), import_data->file_table(), vfs);
     return tm.status();

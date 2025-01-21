@@ -368,7 +368,7 @@ ParametricInstantiator::ParametricInstantiator(
 }
 
 ParametricInstantiator::~ParametricInstantiator() {
-  VLOG(0) << absl::StreamFormat("~ParametricInstantiator; popping derived type info: %p\nderived type info: %s", 
+  VLOG(100) << absl::StreamFormat("~ParametricInstantiator; popping derived type info: %p\nderived type info: %s", 
   derived_type_info_, TypeInfoTreeToString(*derived_type_info_, ctx_->file_table()));
   CHECK_OK(ctx_->PopDerivedTypeInfo(derived_type_info_));
 }
@@ -376,6 +376,7 @@ ParametricInstantiator::~ParametricInstantiator() {
 absl::Status ParametricInstantiator::InstantiateOneArg(int64_t i,
                                                        const Type& param_type,
                                                        const Type& arg_type) {
+  VLOG(0) << absl::StreamFormat("ParametricInstantiator::InstantiateOneArg; i: %d, param_type: `%s`, arg_type: `%s`", i, param_type.ToString(), arg_type.ToString());
   if (IsBitsLike(param_type) && IsBitsLike(arg_type)) {
     // We can bind a bits type to an array of some bits constructor; i.e. these
     // are kind-compatible.

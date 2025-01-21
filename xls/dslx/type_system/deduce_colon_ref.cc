@@ -301,8 +301,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceColonRefOutOfScope(AstNode* subject,
 
 absl::StatusOr<std::unique_ptr<Type>> DeduceColonRef(const ColonRef* node,
                                                      DeduceCtx* ctx) {
-  VLOG(0) << "DeduceColonRef: " << node->ToString() << " @ "
-          << node->span().ToString(ctx->file_table());
+  VLOG(0) << absl::StreamFormat("DeduceColonRef: `%s` @ %s", node->ToString(), node->span().ToString(ctx->file_table()));
 
   XLS_VLOG_LINES(5, ctx->GetFnStackDebugString());
 
@@ -342,7 +341,7 @@ absl::StatusOr<std::unique_ptr<Type>> DeduceColonRef(const ColonRef* node,
               },
               [&](ArrayTypeAnnotation* type) -> ReturnT {
                 // We need to check if this is a type definition within the same context that we're currently in, e.g. for a parametric.
-                if (ctx->type_info()->GetItem(type).has_value()) {
+                if (type->owner() == ctx->type_info()->module()) {
                   return DeduceColonRefToArrayType(type, node, ctx);
                 }
                 return DeduceColonRefOutOfScope(type, import_data, ctx, [node, type](DeduceCtx* subject_ctx) -> ReturnT {
