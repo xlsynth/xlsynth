@@ -46,15 +46,34 @@ jobs:
     - name: Collect arm64 artifacts
       run: |
         cp bazel-bin/xls/public/libxls.dylib                osx-artifacts-arm64/libxls-arm64.dylib
+        shasum -a 256 osx-artifacts-arm64/libxls-arm64.dylib > osx-artifacts-arm64/libxls-arm64.dylib.sha256
+
         cp bazel-bin/xls/dslx/interpreter_main              osx-artifacts-arm64/dslx_interpreter_main-arm64
+        shasum -a 256 osx-artifacts-arm64/dslx_interpreter_main-arm64 > osx-artifacts-arm64/dslx_interpreter_main-arm64.sha256
+
         cp bazel-bin/xls/dslx/lsp/dslx_ls                   osx-artifacts-arm64/dslx_ls-arm64
+        shasum -a 256 osx-artifacts-arm64/dslx_ls-arm64 > osx-artifacts-arm64/dslx_ls-arm64.sha256
+
         cp bazel-bin/xls/tools/opt_main                     osx-artifacts-arm64/opt_main-arm64
+        shasum -a 256 osx-artifacts-arm64/opt_main-arm64 > osx-artifacts-arm64/opt_main-arm64.sha256
+
         cp bazel-bin/xls/tools/delay_info_main              osx-artifacts-arm64/delay_info_main-arm64
+        shasum -a 256 osx-artifacts-arm64/delay_info_main-arm64 > osx-artifacts-arm64/delay_info_main-arm64.sha256
+
         cp bazel-bin/xls/dslx/dslx_fmt                      osx-artifacts-arm64/dslx_fmt-arm64
+        shasum -a 256 osx-artifacts-arm64/dslx_fmt-arm64 > osx-artifacts-arm64/dslx_fmt-arm64.sha256
+
         cp bazel-bin/xls/dslx/prove_quickcheck_main         osx-artifacts-arm64/prove_quickcheck_main-arm64
+        shasum -a 256 osx-artifacts-arm64/prove_quickcheck_main-arm64 > osx-artifacts-arm64/prove_quickcheck_main-arm64.sha256
+
         cp bazel-bin/xls/tools/codegen_main                 osx-artifacts-arm64/codegen_main-arm64
+        shasum -a 256 osx-artifacts-arm64/codegen_main-arm64 > osx-artifacts-arm64/codegen_main-arm64.sha256
+
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main  osx-artifacts-arm64/ir_converter_main-arm64
+        shasum -a 256 osx-artifacts-arm64/ir_converter_main-arm64 > osx-artifacts-arm64/ir_converter_main-arm64.sha256
+
         cp bazel-bin/xls/dslx/type_system/typecheck_main    osx-artifacts-arm64/typecheck_main-arm64
+        shasum -a 256 osx-artifacts-arm64/typecheck_main-arm64 > osx-artifacts-arm64/typecheck_main-arm64.sha256
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -99,15 +118,34 @@ jobs:
     - name: Collect x86_64 artifacts
       run: |
         cp bazel-bin/xls/public/libxls.dylib                osx-artifacts-x64/libxls-x64.dylib
+        shasum -a 256 osx-artifacts-x64/libxls-x64.dylib > osx-artifacts-x64/libxls-x64.dylib.sha256
+
         cp bazel-bin/xls/dslx/interpreter_main              osx-artifacts-x64/dslx_interpreter_main-x64
+        shasum -a 256 osx-artifacts-x64/dslx_interpreter_main-x64 > osx-artifacts-x64/dslx_interpreter_main-x64.sha256
+
         cp bazel-bin/xls/dslx/lsp/dslx_ls                   osx-artifacts-x64/dslx_ls-x64
+        shasum -a 256 osx-artifacts-x64/dslx_ls-x64 > osx-artifacts-x64/dslx_ls-x64.sha256
+
         cp bazel-bin/xls/tools/opt_main                     osx-artifacts-x64/opt_main-x64
+        shasum -a 256 osx-artifacts-x64/opt_main-x64 > osx-artifacts-x64/opt_main-x64.sha256
+
         cp bazel-bin/xls/tools/delay_info_main              osx-artifacts-x64/delay_info_main-x64
+        shasum -a 256 osx-artifacts-x64/delay_info_main-x64 > osx-artifacts-x64/delay_info_main-x64.sha256
+
         cp bazel-bin/xls/dslx/dslx_fmt                      osx-artifacts-x64/dslx_fmt-x64
+        shasum -a 256 osx-artifacts-x64/dslx_fmt-x64 > osx-artifacts-x64/dslx_fmt-x64.sha256
+
         cp bazel-bin/xls/dslx/prove_quickcheck_main         osx-artifacts-x64/prove_quickcheck_main-x64
+        shasum -a 256 osx-artifacts-x64/prove_quickcheck_main-x64 > osx-artifacts-x64/prove_quickcheck_main-x64.sha256
+
         cp bazel-bin/xls/tools/codegen_main                 osx-artifacts-x64/codegen_main-x64
+        shasum -a 256 osx-artifacts-x64/codegen_main-x64 > osx-artifacts-x64/codegen_main-x64.sha256
+
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main  osx-artifacts-x64/ir_converter_main-x64
+        shasum -a 256 osx-artifacts-x64/ir_converter_main-x64 > osx-artifacts-x64/ir_converter_main-x64.sha256
+
         cp bazel-bin/xls/dslx/type_system/typecheck_main    osx-artifacts-x64/typecheck_main-x64
+        shasum -a 256 osx-artifacts-x64/typecheck_main-x64 > osx-artifacts-x64/typecheck_main-x64.sha256
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -165,15 +203,34 @@ jobs:
     - name: Copy Bazel target to rocky8-artifacts
       run: |
         cp bazel-bin/xls/public/libxls.so                   rocky8-artifacts/libxls-rocky8.so
+        sha256sum rocky8-artifacts/libxls-rocky8.so > rocky8-artifacts/libxls-rocky8.so.sha256
+
         cp bazel-bin/xls/dslx/interpreter_main              rocky8-artifacts/dslx_interpreter_main-rocky8
+        sha256sum rocky8-artifacts/dslx_interpreter_main-rocky8 > rocky8-artifacts/dslx_interpreter_main-rocky8.sha256
+
         cp bazel-bin/xls/dslx/lsp/dslx_ls                   rocky8-artifacts/dslx_ls-rocky8
+        sha256sum rocky8-artifacts/dslx_ls-rocky8 > rocky8-artifacts/dslx_ls-rocky8.sha256
+
         cp bazel-bin/xls/tools/opt_main                     rocky8-artifacts/opt_main-rocky8
+        sha256sum rocky8-artifacts/opt_main-rocky8 > rocky8-artifacts/opt_main-rocky8.sha256
+
         cp bazel-bin/xls/tools/delay_info_main              rocky8-artifacts/delay_info_main-rocky8
+        sha256sum rocky8-artifacts/delay_info_main-rocky8 > rocky8-artifacts/delay_info_main-rocky8.sha256
+
         cp bazel-bin/xls/dslx/dslx_fmt                      rocky8-artifacts/dslx_fmt-rocky8
+        sha256sum rocky8-artifacts/dslx_fmt-rocky8 > rocky8-artifacts/dslx_fmt-rocky8.sha256
+
         cp bazel-bin/xls/dslx/prove_quickcheck_main         rocky8-artifacts/prove_quickcheck_main-rocky8
+        sha256sum rocky8-artifacts/prove_quickcheck_main-rocky8 > rocky8-artifacts/prove_quickcheck_main-rocky8.sha256
+
         cp bazel-bin/xls/tools/codegen_main                 rocky8-artifacts/codegen_main-rocky8
+        sha256sum rocky8-artifacts/codegen_main-rocky8 > rocky8-artifacts/codegen_main-rocky8.sha256
+
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main  rocky8-artifacts/ir_converter_main-rocky8
+        sha256sum rocky8-artifacts/ir_converter_main-rocky8 > rocky8-artifacts/ir_converter_main-rocky8.sha256
+
         cp bazel-bin/xls/dslx/type_system/typecheck_main    rocky8-artifacts/typecheck_main-rocky8
+        sha256sum rocky8-artifacts/typecheck_main-rocky8 > rocky8-artifacts/typecheck_main-rocky8.sha256
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -221,18 +278,39 @@ jobs:
     - name: Copy Bazel target to ubuntu2004-artifacts
       run: |
         cp bazel-bin/xls/public/libxls.so                  ubuntu2004-artifacts/libxls-ubuntu2004.so
+        sha256sum ubuntu2004-artifacts/libxls-ubuntu2004.so > ubuntu2004-artifacts/libxls-ubuntu2004.so.sha256
+
         cp bazel-bin/xls/dslx/interpreter_main             ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004 > ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004.sha256
+
         cp bazel-bin/xls/dslx/lsp/dslx_ls                  ubuntu2004-artifacts/dslx_ls-ubuntu2004
+        sha256sum ubuntu2004-artifacts/dslx_ls-ubuntu2004 > ubuntu2004-artifacts/dslx_ls-ubuntu2004.sha256
+
         cp bazel-bin/xls/tools/opt_main                    ubuntu2004-artifacts/opt_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/opt_main-ubuntu2004 > ubuntu2004-artifacts/opt_main-ubuntu2004.sha256
+
         cp bazel-bin/xls/tools/delay_info_main             ubuntu2004-artifacts/delay_info_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/delay_info_main-ubuntu2004 > ubuntu2004-artifacts/delay_info_main-ubuntu2004.sha256
+
         cp bazel-bin/xls/dslx/dslx_fmt                     ubuntu2004-artifacts/dslx_fmt-ubuntu2004
+        sha256sum ubuntu2004-artifacts/dslx_fmt-ubuntu2004 > ubuntu2004-artifacts/dslx_fmt-ubuntu2004.sha256
+
         cp bazel-bin/xls/dslx/prove_quickcheck_main        ubuntu2004-artifacts/prove_quickcheck_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/prove_quickcheck_main-ubuntu2004 > ubuntu2004-artifacts/prove_quickcheck_main-ubuntu2004.sha256
+
         cp bazel-bin/xls/tools/codegen_main                ubuntu2004-artifacts/codegen_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/codegen_main-ubuntu2004 > ubuntu2004-artifacts/codegen_main-ubuntu2004.sha256
+
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main ubuntu2004-artifacts/ir_converter_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/ir_converter_main-ubuntu2004 > ubuntu2004-artifacts/ir_converter_main-ubuntu2004.sha256
+
         cp bazel-bin/xls/dslx/type_system/typecheck_main   ubuntu2004-artifacts/typecheck_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/typecheck_main-ubuntu2004 > ubuntu2004-artifacts/typecheck_main-ubuntu2004.sha256
 
     - name: Tarball stdlib files to ubuntu2004-artifacts
-      run: tar -czvvf ubuntu2004-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
+      run: |
+        tar -czvvf ubuntu2004-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
+        sha256sum ubuntu2004-artifacts/dslx_stdlib.tar.gz > ubuntu2004-artifacts/dslx_stdlib.tar.gz.sha256
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -290,18 +368,39 @@ jobs:
     - name: Copy Bazel target to ubuntu2204-artifacts
       run: |
         cp bazel-bin/xls/public/libxls.so                  ubuntu2204-artifacts/libxls-ubuntu2204.so
+        sha256sum ubuntu2204-artifacts/libxls-ubuntu2204.so > ubuntu2204-artifacts/libxls-ubuntu2204.so.sha256
+
         cp bazel-bin/xls/dslx/interpreter_main             ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204
+        sha256sum ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204 > ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204.sha256
+
         cp bazel-bin/xls/dslx/lsp/dslx_ls                  ubuntu2204-artifacts/dslx_ls-ubuntu2204
+        sha256sum ubuntu2204-artifacts/dslx_ls-ubuntu2204 > ubuntu2204-artifacts/dslx_ls-ubuntu2204.sha256
+
         cp bazel-bin/xls/tools/opt_main                    ubuntu2204-artifacts/opt_main-ubuntu2204
+        sha256sum ubuntu2204-artifacts/opt_main-ubuntu2204 > ubuntu2204-artifacts/opt_main-ubuntu2204.sha256
+
         cp bazel-bin/xls/tools/delay_info_main             ubuntu2204-artifacts/delay_info_main-ubuntu2204
+        sha256sum ubuntu2204-artifacts/delay_info_main-ubuntu2204 > ubuntu2204-artifacts/delay_info_main-ubuntu2204.sha256
+
         cp bazel-bin/xls/dslx/dslx_fmt                     ubuntu2204-artifacts/dslx_fmt-ubuntu2204
+        sha256sum ubuntu2204-artifacts/dslx_fmt-ubuntu2204 > ubuntu2204-artifacts/dslx_fmt-ubuntu2204.sha256
+
         cp bazel-bin/xls/dslx/prove_quickcheck_main        ubuntu2204-artifacts/prove_quickcheck_main-ubuntu2204
+        sha256sum ubuntu2204-artifacts/prove_quickcheck_main-ubuntu2204 > ubuntu2204-artifacts/prove_quickcheck_main-ubuntu2204.sha256
+
         cp bazel-bin/xls/tools/codegen_main                ubuntu2204-artifacts/codegen_main-ubuntu2204
+        sha256sum ubuntu2204-artifacts/codegen_main-ubuntu2204 > ubuntu2204-artifacts/codegen_main-ubuntu2204.sha256
+
         cp bazel-bin/xls/dslx/ir_convert/ir_converter_main ubuntu2204-artifacts/ir_converter_main-ubuntu2204
+        sha256sum ubuntu2204-artifacts/ir_converter_main-ubuntu2204 > ubuntu2204-artifacts/ir_converter_main-ubuntu2204.sha256
+
         cp bazel-bin/xls/dslx/type_system/typecheck_main   ubuntu2204-artifacts/typecheck_main-ubuntu2204
+        sha256sum ubuntu2204-artifacts/typecheck_main-ubuntu2204 > ubuntu2204-artifacts/typecheck_main-ubuntu2204.sha256
 
     - name: Tarball stdlib files to ubuntu2204-artifacts
-      run: tar -czvvf ubuntu2204-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
+      run: |
+        tar -czvvf ubuntu2204-artifacts/dslx_stdlib.tar.gz xls/dslx/stdlib/*.x
+        sha256sum ubuntu2204-artifacts/dslx_stdlib.tar.gz > ubuntu2204-artifacts/dslx_stdlib.tar.gz.sha256
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -372,60 +471,111 @@ jobs:
         export GH_TOKEN=${{ secrets.GITHUB_TOKEN }}
         gh release create "$TAG_NAME" \
           osx-artifacts-arm64/libxls-arm64.dylib            \
+          osx-artifacts-arm64/libxls-arm64.dylib.sha256     \
           osx-artifacts-arm64/dslx_interpreter_main-arm64   \
+          osx-artifacts-arm64/dslx_interpreter_main-arm64.sha256 \
           osx-artifacts-arm64/dslx_ls-arm64                 \
+          osx-artifacts-arm64/dslx_ls-arm64.sha256          \
           osx-artifacts-arm64/opt_main-arm64                \
+          osx-artifacts-arm64/opt_main-arm64.sha256         \
           osx-artifacts-arm64/delay_info_main-arm64         \
+          osx-artifacts-arm64/delay_info_main-arm64.sha256  \
           osx-artifacts-arm64/dslx_fmt-arm64                \
+          osx-artifacts-arm64/dslx_fmt-arm64.sha256         \
           osx-artifacts-arm64/prove_quickcheck_main-arm64   \
+          osx-artifacts-arm64/prove_quickcheck_main-arm64.sha256 \
           osx-artifacts-arm64/codegen_main-arm64            \
+          osx-artifacts-arm64/codegen_main-arm64.sha256     \
           osx-artifacts-arm64/ir_converter_main-arm64       \
+          osx-artifacts-arm64/ir_converter_main-arm64.sha256 \
           osx-artifacts-arm64/typecheck_main-arm64          \
+          osx-artifacts-arm64/typecheck_main-arm64.sha256   \
           \
           osx-artifacts-x64/libxls-x64.dylib                \
+          osx-artifacts-x64/libxls-x64.dylib.sha256        \
           osx-artifacts-x64/dslx_interpreter_main-x64       \
+          osx-artifacts-x64/dslx_interpreter_main-x64.sha256 \
           osx-artifacts-x64/dslx_ls-x64                     \
+          osx-artifacts-x64/dslx_ls-x64.sha256              \
           osx-artifacts-x64/opt_main-x64                    \
+          osx-artifacts-x64/opt_main-x64.sha256             \
           osx-artifacts-x64/delay_info_main-x64             \
+          osx-artifacts-x64/delay_info_main-x64.sha256      \
           osx-artifacts-x64/dslx_fmt-x64                    \
+          osx-artifacts-x64/dslx_fmt-x64.sha256                \
           osx-artifacts-x64/prove_quickcheck_main-x64       \
+          osx-artifacts-x64/prove_quickcheck_main-x64.sha256 \
           osx-artifacts-x64/codegen_main-x64                \
+          osx-artifacts-x64/codegen_main-x64.sha256          \
           osx-artifacts-x64/ir_converter_main-x64           \
+          osx-artifacts-x64/ir_converter_main-x64.sha256       \
           osx-artifacts-x64/typecheck_main-x64              \
+          osx-artifacts-x64/typecheck_main-x64.sha256         \
           \
           ubuntu2004-artifacts/dslx_stdlib.tar.gz                 \
+          ubuntu2004-artifacts/dslx_stdlib.tar.gz.sha256       \
           ubuntu2004-artifacts/libxls-ubuntu2004.so               \
+          ubuntu2004-artifacts/libxls-ubuntu2004.so.sha256       \
           ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004   \
+          ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004.sha256 \
           ubuntu2004-artifacts/dslx_ls-ubuntu2004                 \
+          ubuntu2004-artifacts/dslx_ls-ubuntu2004.sha256          \
           ubuntu2004-artifacts/opt_main-ubuntu2004                \
+          ubuntu2004-artifacts/opt_main-ubuntu2004.sha256         \
           ubuntu2004-artifacts/delay_info_main-ubuntu2004         \
+          ubuntu2004-artifacts/delay_info_main-ubuntu2004.sha256  \
           ubuntu2004-artifacts/dslx_fmt-ubuntu2004                \
+          ubuntu2004-artifacts/dslx_fmt-ubuntu2004.sha256         \
           ubuntu2004-artifacts/prove_quickcheck_main-ubuntu2004   \
+          ubuntu2004-artifacts/prove_quickcheck_main-ubuntu2004.sha256 \
           ubuntu2004-artifacts/codegen_main-ubuntu2004            \
+          ubuntu2004-artifacts/codegen_main-ubuntu2004.sha256     \
           ubuntu2004-artifacts/ir_converter_main-ubuntu2004       \
+          ubuntu2004-artifacts/ir_converter_main-ubuntu2004.sha256 \
           ubuntu2004-artifacts/typecheck_main-ubuntu2004          \
+          ubuntu2004-artifacts/typecheck_main-ubuntu2004.sha256   \
           \
           ubuntu2204-artifacts/libxls-ubuntu2204.so               \
+          ubuntu2204-artifacts/libxls-ubuntu2204.so.sha256        \
           ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204   \
+          ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204.sha256 \
           ubuntu2204-artifacts/dslx_ls-ubuntu2204                 \
+          ubuntu2204-artifacts/dslx_ls-ubuntu2204.sha256          \
           ubuntu2204-artifacts/opt_main-ubuntu2204                \
+          ubuntu2204-artifacts/opt_main-ubuntu2204.sha256         \
           ubuntu2204-artifacts/delay_info_main-ubuntu2204         \
+          ubuntu2204-artifacts/delay_info_main-ubuntu2204.sha256  \
           ubuntu2204-artifacts/dslx_fmt-ubuntu2204                \
+          ubuntu2204-artifacts/dslx_fmt-ubuntu2204.sha256         \
           ubuntu2204-artifacts/prove_quickcheck_main-ubuntu2204   \
+          ubuntu2204-artifacts/prove_quickcheck_main-ubuntu2204.sha256 \
           ubuntu2204-artifacts/codegen_main-ubuntu2204            \
+          ubuntu2204-artifacts/codegen_main-ubuntu2204.sha256     \
           ubuntu2204-artifacts/ir_converter_main-ubuntu2204       \
+          ubuntu2204-artifacts/ir_converter_main-ubuntu2204.sha256 \
           ubuntu2204-artifacts/typecheck_main-ubuntu2204          \
+          ubuntu2204-artifacts/typecheck_main-ubuntu2204.sha256   \
           \
           rocky8-artifacts/libxls-rocky8.so             \
+          rocky8-artifacts/libxls-rocky8.so.sha256             \
           rocky8-artifacts/dslx_interpreter_main-rocky8 \
+          rocky8-artifacts/dslx_interpreter_main-rocky8.sha256 \
           rocky8-artifacts/dslx_ls-rocky8               \
+          rocky8-artifacts/dslx_ls-rocky8.sha256               \
           rocky8-artifacts/opt_main-rocky8              \
+          rocky8-artifacts/opt_main-rocky8.sha256              \
           rocky8-artifacts/delay_info_main-rocky8       \
+          rocky8-artifacts/delay_info_main-rocky8.sha256       \
           rocky8-artifacts/dslx_fmt-rocky8              \
+          rocky8-artifacts/dslx_fmt-rocky8.sha256              \
           rocky8-artifacts/prove_quickcheck_main-rocky8 \
+          rocky8-artifacts/prove_quickcheck_main-rocky8.sha256 \
           rocky8-artifacts/codegen_main-rocky8          \
+          rocky8-artifacts/codegen_main-rocky8.sha256          \
           rocky8-artifacts/ir_converter_main-rocky8     \
+          rocky8-artifacts/ir_converter_main-rocky8.sha256     \
           rocky8-artifacts/typecheck_main-rocky8        \
+          rocky8-artifacts/typecheck_main-rocky8.sha256        \
           \
           --title "Release $TAG_NAME" \
           --notes "Automated release of $TAG_NAME"
