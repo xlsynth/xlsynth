@@ -52,6 +52,7 @@ jobs:
         dnf groupinstall -y "Development Tools"
         dnf install -y libstdc++-devel
         dnf install -y python3
+        dnf install -y sudo
 
     - name: Create non-root user to build as
       run: |
