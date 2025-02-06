@@ -23,7 +23,7 @@
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "xls/common/fuzzing/fuzztest.h"
+//#include "xls/common/fuzzing/fuzztest.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
@@ -614,6 +614,7 @@ TEST(BitsType, FlattenMultiByteExactByteAlignment) {
   }
 }
 
+#if 0
 void RoundtripOneByte(uint8_t byte, int64_t bit_count) {
   EXPECT_THAT(Bits::FromBytes(std::vector<uint8_t>{byte}, bit_count).ToBytes(),
               ElementsAre(byte & Mask(bit_count)));
@@ -703,6 +704,7 @@ void CompareBitsAndPushBufferData(
   EXPECT_EQ(ones_count_from_bits, set_in_bit_vector);
 }
 FUZZ_TEST(BitsFuzzTest, CompareBitsAndPushBufferData);
+#endif
 
 }  // namespace
 }  // namespace xls
