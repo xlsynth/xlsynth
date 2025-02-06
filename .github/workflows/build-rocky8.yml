@@ -53,6 +53,11 @@ jobs:
         dnf install -y libstdc++-devel
         dnf install -y python3
 
+    - name: Create non-root user to build as
+      run: |
+        useradd -m build-user
+        usermod -aG wheel build-user
+
     - name: Build Bazel target
       run: |
-        CC=clang CXX=clang++ bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/visualization/ir_viz:app --build_python_zip
+        sudo -u build-user CC=clang CXX=clang++ bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/visualization/ir_viz:app --build_python_zip
