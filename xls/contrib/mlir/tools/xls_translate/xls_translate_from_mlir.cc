@@ -1006,9 +1006,12 @@ FailureOr<PackageInfo> importDslxInstantiation(
 
   // Note: using a different pathname here else XLS considers this a circular
   // import.
-  package_string_or =
-      ::xls::ConvertDslxToIr(dslx, "<instantiated module>", module_name,
-                             stdlib_path, additional_search_paths);
+  ::xls::ConvertDslxToIrOptions options = {
+      .dslx_stdlib_path = stdlib_path,
+      .additional_search_paths = additional_search_paths,
+  };
+  package_string_or = ::xls::ConvertDslxToIr(dslx, "<instantiated module>",
+                                             module_name, options);
   if (!package_string_or.ok()) {
     llvm::errs() << "Failed to convert DSLX to IR: "
                  << package_string_or.status().message() << "\n";
@@ -1770,7 +1773,9 @@ absl::StatusOr<std::shared_ptr<const Package>> DslxPackageCache::import(
     return it->second;
   }
   absl::StatusOr<std::string> package_string_or = ::xls::ConvertDslxPathToIr(
-      fileName, ::xls::GetDefaultDslxStdlibPath(), {});
+      fileName, ::xls::ConvertDslxToIrOptions{
+                    .dslx_stdlib_path = ::xls::GetDefaultDslxStdlibPath(),
+                });
   if (!package_string_or.ok()) {
     return package_string_or.status();
   }
