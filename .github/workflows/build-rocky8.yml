@@ -59,10 +59,15 @@ jobs:
         useradd -m build-user
         usermod -aG wheel build-user
 
+    - name: Fix workspace permissions
+      run: |
+        chown -R build-user:wheel $GITHUB_WORKSPACE
+
     - name: Build Bazel target (preserving PATH)
       run: |
         #sudo -u build-user env PATH=$PATH CC=clang CXX=clang++ bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/visualization/ir_viz:app --build_python_zip
         sudo -u build-user env PATH=$PATH CC=clang CXX=clang++ bazelisk build -c opt //xls/dslx:dslx_fmt
+
     - name: Make artifact directory
       run: |
         mkdir -p rocky8-artifacts
