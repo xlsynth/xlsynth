@@ -14,10 +14,10 @@
 
 #include "xls/dslx/ir_convert/ir_converter_options_flags.h"
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/flags/flag.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/warning_kind.h"
 
