@@ -31,6 +31,15 @@ targets = [
     "//xls/dslx/type_system:typecheck_main"
 ]
 
+stdlib_files = [
+  'xls/dslx/stdlib/acm_random.x',
+  'xls/dslx/stdlib/apfloat.x',
+  'xls/dslx/stdlib/bfloat16.x',
+  'xls/dslx/stdlib/float32.x',
+  'xls/dslx/stdlib/float64.x',
+  'xls/dslx/stdlib/std.x',
+]
+
 # Function to get the current git hash and cleanliness status
 def get_git_info():
     try:
@@ -88,6 +97,11 @@ def make_local_release(output_dir):
             print(f"Permission denied while copying {binary_path}: {e}")
             sys.exit(1)
 
+    # Copy the standard library files to the output directory in the same relpath locations they
+    # were at in the source tree.
+    for stdlib_relpath in stdlib_files:
+        shutil.copy2(stdlib_relpath, os.path.join(output_dir, stdlib_relpath))
+
     # Write git information to a file
     git_hash, clean_status = get_git_info()
     git_info_path = os.path.join(output_dir, "git_info.txt")
@@ -103,4 +117,3 @@ if __name__ == "__main__":
 
     output_directory = sys.argv[1]
     make_local_release(output_directory)
-
