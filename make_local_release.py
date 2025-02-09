@@ -99,6 +99,7 @@ def make_local_release(output_dir):
 
     # Copy the standard library files to the output directory in the same relpath locations they
     # were at in the source tree.
+    os.makedirs(os.path.join(output_dir, 'xls/dslx/stdlib'), exist_ok=True)
     for stdlib_relpath in stdlib_files:
         shutil.copy2(stdlib_relpath, os.path.join(output_dir, stdlib_relpath))
 
