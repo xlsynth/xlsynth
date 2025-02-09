@@ -414,9 +414,15 @@ MatchExhaustivenessChecker::SampleSimplestUncoveredValue() const {
       const EnumType& enum_type = type.AsEnum();
       const EnumDef& enum_def = enum_type.nominal_type();
 
+<<<<<<< HEAD
       absl::StatusOr<const TypeInfo*> enum_def_type_info =
           import_data_.GetRootTypeInfoForNode(&enum_def);
       CHECK_OK(enum_def_type_info.status())
+=======
+      absl::StatusOr<const TypeInfo*> enum_type_info =
+          import_data_.GetRootTypeInfoForNode(&enum_def);
+      CHECK_OK(enum_type_info.status())
+>>>>>>> f73612a94 ([DSLX:TS] Fix bug with exhaustiveness sampling enum from another module.)
           << "Enum type info not found for enum: " << enum_type.ToString();
 
       int64_t member_index = min.GetBitValueUnsigned().value();
@@ -425,7 +431,11 @@ MatchExhaustivenessChecker::SampleSimplestUncoveredValue() const {
           << " for enum: " << enum_type.ToString();
       const EnumMember& member = enum_def.values()[member_index];
       InterpValue member_value =
+<<<<<<< HEAD
           enum_def_type_info.value()->GetConstExpr(member.name_def).value();
+=======
+          enum_type_info.value()->GetConstExpr(member.name_def).value();
+>>>>>>> f73612a94 ([DSLX:TS] Fix bug with exhaustiveness sampling enum from another module.)
       VLOG(5) << "SampleSimplestUncoveredValue; enum_type: "
               << enum_type.ToString() << " member_index: " << member_index
               << " member: " << member.name_def->ToString()
