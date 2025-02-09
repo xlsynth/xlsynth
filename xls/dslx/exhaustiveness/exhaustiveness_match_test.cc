@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "gtest/gtest.h"
 #include "absl/log/log.h"
 #include "absl/status/status_matchers.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/visitor.h"
 #include "xls/dslx/create_import_data.h"
