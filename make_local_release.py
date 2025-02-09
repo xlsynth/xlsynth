@@ -78,6 +78,9 @@ def make_local_release(output_dir):
 
         # Copy the binary, overwriting if it exists
         destination_path = os.path.join(output_dir, os.path.basename(binary_path))
+        if destination_path.endswith('/interpreter_main'):
+            destination_path = destination_path.replace('/interpreter_main', '/dslx_interpreter_main')
+
         try:
             shutil.copy2(binary_path, destination_path)
             print(f"Copied {binary_path} to {destination_path}")
