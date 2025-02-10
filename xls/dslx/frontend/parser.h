@@ -372,6 +372,12 @@ class Parser : public TokenParser {
   absl::StatusOr<Expr*> ParseCast(Bindings& bindings,
                                   TypeAnnotation* type = nullptr);
 
+  absl::StatusOr<Expr*> ParseTermLeadingIdentifier(Bindings& bindings,
+                                                   ExprRestrictions restrictions);
+
+  absl::StatusOr<Expr*> ParseTermLeadingType(Bindings& bindings,
+                                            ExprRestrictions restrictions);
+
   // Parses a term as a component of an expression and returns it.
   //
   // Terms are more atomic than arithmetic expressions.

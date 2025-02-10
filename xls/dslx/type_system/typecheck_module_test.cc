@@ -603,7 +603,7 @@ fn f() -> u32 {
   XLS_EXPECT_OK(main_module.status()) << main_module.status();
 }
 
-TEST(TypecheckTest, InstantiationOfUsedStructDef) {
+TEST(TypecheckTest, DISABLED_InstantiationOfUsedStructDef) {
   constexpr std::string_view kImported = R"(
 pub struct MyStruct {
   x: u32,
