@@ -3367,6 +3367,20 @@ fn main(x: u2) -> u32 {
   ExpectIr(converted, TestName());
 }
 
+TEST(IrConverterTest, UseTreeEntryCallInParametric) {
+  constexpr std::string_view program = R"(
+  #![feature(use_syntax)]
+  use std::is_pow2;
+  fn f<N: u32>(x: bits[N]) -> bool { is_pow2(x) }
+  fn main() -> bool { f(u2:3) }
+)";
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string converted,
+      ConvertModuleForTest(program, ConvertOptions{.emit_positions = false}));
+  ExpectIr(converted, TestName());
+}
+
 TEST(IrConverterTest, MatchExhaustiveOneRangeAndValueInSingleArm) {
   constexpr std::string_view program = R"(
   fn main(x: u2) -> u32 {
