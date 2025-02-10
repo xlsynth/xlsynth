@@ -603,6 +603,30 @@ fn f() -> u32 {
   XLS_EXPECT_OK(main_module.status()) << main_module.status();
 }
 
+TEST(TypecheckTest, InstantiationOfUsedStructDef) {
+  constexpr std::string_view kImported = R"(
+pub struct MyStruct {
+  x: u32,
+}
+)";
+  constexpr std::string_view kProgram = R"(#![feature(use_syntax)]
+use imported::MyStruct;
+
+fn main() -> MyStruct {
+  MyStruct { x: u32:42 }
+})";
+  absl::flat_hash_map<std::filesystem::path, std::string> files = {
+      {std::filesystem::path("/imported.x"), std::string(kImported)},
+      {std::filesystem::path("/fake_main_path.x"), std::string(kProgram)},
+  };
+  auto vfs = std::make_unique<FakeFilesystem>(
+      files, /*cwd=*/std::filesystem::path("/"));
+  ImportData import_data = CreateImportDataForTest(std::move(vfs));
+  absl::StatusOr<TypecheckedModule> main_module =
+      ParseAndTypecheck(kProgram, "fake_main_path.x", "main", &import_data);
+  XLS_EXPECT_OK(main_module.status()) << main_module.status();
+}
+
 TEST(TypecheckTest, FailsOnProcWithImplAsImportedStructMember) {
   constexpr std::string_view kImported = R"(
 pub proc Foo {
