@@ -51,8 +51,9 @@ def get_git_info():
         print(f"Failed to retrieve git information: {e}")
         return "unknown", "unknown"
 
-# Main function to handle the release process
-def make_local_release(output_dir):
+# Main function to handle the release process.
+# Now accepts an optional `mode` argument to change the Bazel command.
+def make_local_release(output_dir, mode="opt"):
     # Ensure the output directory exists and is writable
     if os.path.exists(output_dir):
         try:
@@ -62,10 +63,22 @@ def make_local_release(output_dir):
             sys.exit(1)
     os.makedirs(output_dir, exist_ok=True)
 
-    # Build the targets using Bazel
-    build_command = [
-        "CC=clang", "CXX=clang++", "bazel", "build", "-c", "opt"
-    ] + targets
+    # Build the targets using Bazel; adjust flags based on the mode.
+    if mode == "dbg-asan":
+        build_command = [
+            "CC=clang", "CXX=clang++", "bazel", "run", "-c", "dbg", "--config=asan"
+        ] + targets
+    elif mode == "dbg":
+        build_command = [
+            "CC=clang", "CXX=clang++", "bazel", "build", "-c", "dbg"
+        ] + targets
+    elif mode == "opt":
+        build_command = [
+            "CC=clang", "CXX=clang++", "bazel", "build", "-c", "opt"
+        ] + targets
+    else:
+        print(f"Unsupported mode: {mode}")
+        sys.exit(1)
 
     try:
         subprocess.run(" ".join(build_command), shell=True, check=True)
@@ -97,11 +110,15 @@ def make_local_release(output_dir):
             print(f"Permission denied while copying {binary_path}: {e}")
             sys.exit(1)
 
-    # Copy the standard library files to the output directory in the same relpath locations they
-    # were at in the source tree.
+    # Copy the standard library files to the output directory in the same relpath locations
+    # they were at in the source tree.
     os.makedirs(os.path.join(output_dir, 'xls/dslx/stdlib'), exist_ok=True)
     for stdlib_relpath in stdlib_files:
-        shutil.copy2(stdlib_relpath, os.path.join(output_dir, stdlib_relpath))
+        try:
+            shutil.copy2(stdlib_relpath, os.path.join(output_dir, stdlib_relpath))
+        except FileNotFoundError as e:
+            print(f"Standard library file not found {stdlib_relpath}: {e}")
+            sys.exit(1)
 
     # Write git information to a file
     git_hash, clean_status = get_git_info()
@@ -111,10 +128,21 @@ def make_local_release(output_dir):
         f.write(f"Repository Status: {clean_status}\n")
     print(f"Git information saved to {git_info_path}")
 
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python3 make_local_release.py <output_directory>")
-        sys.exit(1)
+# New main() function using optparse
+def main():
+    from optparse import OptionParser
 
-    output_directory = sys.argv[1]
-    make_local_release(output_directory)
+    usage = "usage: %prog [options] output_directory"
+    parser = OptionParser(usage=usage)
+    parser.add_option("-m", "--mode", dest="mode", default="opt", choices=["opt", "dbg-asan", "dbg"],
+                      help="Build mode: opt (default) or dbg-asan")
+    options, args = parser.parse_args()
+
+    if len(args) != 1:
+        parser.error("You must specify exactly one output directory")
+    output_dir = args[0]
+
+    make_local_release(output_dir, mode=options.mode)
+
+if __name__ == "__main__":
+    main()
