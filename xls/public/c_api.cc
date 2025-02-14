@@ -689,7 +689,7 @@ void xls_bits_free(xls_bits* b) { delete reinterpret_cast<xls::Bits*>(b); }
 
 void xls_value_free(xls_value* v) { delete reinterpret_cast<xls::Value*>(v); }
 
-struct xls_value* xls_value_from_bits(const struct xls_bits* bits) {
+struct xls_value* xls_value_from_bits(struct xls_bits* bits) {
   CHECK(bits != nullptr);
   const auto* cpp_bits = reinterpret_cast<const xls::Bits*>(bits);
   return reinterpret_cast<xls_value*>(new xls::Value(*cpp_bits));
