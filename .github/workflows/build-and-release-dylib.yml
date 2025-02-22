@@ -292,6 +292,24 @@ jobs:
   build-ubuntu2004:
     runs-on: ubuntu-20.04
     steps:
+    - name: Verify non-root user
+      run: |
+        if [ "$(id -u)" -eq 0 ]; then
+          echo "Script is running as root, which is not allowed."
+          exit 1
+        else
+          echo "Running as non-root user: $(whoami)"
+        fi
+
+    - name: Verify sudoers for current user
+      run: |
+        if sudo -l &> /dev/null; then
+          echo "User has sudo privileges."
+        else
+          echo "User does not have sudo privileges."
+          exit 1
+        fi
+
     - name: Checkout repository
       uses: actions/checkout@v2
 
@@ -327,20 +345,12 @@ jobs:
     - name: Note Clang version
       run: clang-18 --version
 
-    - name: Create non-root user
-      run: |
-        sudo useradd -m build-user
-
-    - name: Fix workspace permissions
-      run: |
-        chown -R build-user:build-user $GITHUB_WORKSPACE
-
     - name: Build Bazel target
       run: |
-        sudo -u build-user env PATH=$PATH bazelisk test -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+        bazelisk test -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
           --cxxopt="-stdlib=libc++" --linkopt="-stdlib=libc++" \
           //xls/public:test_c_api_symbols
-        sudo -u build-user env PATH=$PATH bazelisk build -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+        bazelisk build -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
           --cxxopt="-stdlib=libc++" --linkopt="-stdlib=libc++" \
           //xls/public:libxls.so \
           //xls/public:c_api \
@@ -404,6 +414,24 @@ jobs:
   build-ubuntu2204:
     runs-on: ubuntu-latest
     steps:
+    - name: Verify non-root user
+      run: |
+        if [ "$(id -u)" -eq 0 ]; then
+          echo "Script is running as root, which is not allowed."
+          exit 1
+        else
+          echo "Running as non-root user: $(whoami)"
+        fi
+
+    - name: Verify sudoers for current user
+      run: |
+        if sudo -l &> /dev/null; then
+          echo "User has sudo privileges."
+        else
+          echo "User does not have sudo privileges."
+          exit 1
+        fi
+
     - name: Checkout repository
       uses: actions/checkout@v2
 
@@ -439,20 +467,12 @@ jobs:
     - name: Note Clang version
       run: clang-18 --version
 
-    - name: Create non-root user
-      run: |
-        sudo useradd -m build-user
-
-    - name: Fix workspace permissions
-      run: |
-        chown -R build-user:build-user $GITHUB_WORKSPACE
-
     - name: Build Bazel target
       run: |
-        sudo -u build-user env PATH=$PATH bazelisk test -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+        bazelisk test -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
           --cxxopt="-stdlib=libc++" --linkopt="-stdlib=libc++" \
           //xls/public:test_c_api_symbols
-        sudo -u build-user env PATH=$PATH bazelisk build -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+        bazelisk build -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
           --cxxopt="-stdlib=libc++" --linkopt="-stdlib=libc++" \
           //xls/public:libxls.so \
           //xls/public:c_api \
