@@ -38,8 +38,8 @@ jobs:
         mv bazel-7.3.1rc2-darwin-arm64 bazel-arm64
         chmod +x bazel-arm64
         ./bazel-arm64 info
-        ./bazel-arm64 test -c opt --host_cpu=darwin_arm64 //xls/public:test_c_api_symbols
-        ./bazel-arm64 build -c opt --host_cpu=darwin_arm64 //xls/public:libxls.dylib //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main //xls/dslx:dslx_fmt //xls/dslx:prove_quickcheck_main //xls/dslx/type_system:typecheck_main
+        ./bazel-arm64 test -c opt --host_cpu=darwin_arm64 --action_env=MACOSX_DEPLOYMENT_TARGET --macos_minimum_os=11.0 //xls/public:test_c_api_symbols
+        ./bazel-arm64 build -c opt --host_cpu=darwin_arm64 --action_env=MACOSX_DEPLOYMENT_TARGET --macos_minimum_os=11.0 //xls/public:libxls.dylib //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main //xls/dslx/dslx_fmt //xls/dslx:prove_quickcheck_main //xls/dslx/type_system:typecheck_main
 
     - name: Verify arm64 binaries
       run: |
@@ -112,8 +112,8 @@ jobs:
         mv bazel-7.3.1rc2-darwin-x86_64 bazel-x86_64
         chmod +x bazel-x86_64
         ./bazel-x86_64 info
-        ./bazel-x86_64 test -c opt //xls/public:test_c_api_symbols
-        ./bazel-x86_64 build -c opt //xls/public:libxls.dylib //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main //xls/dslx:dslx_fmt //xls/dslx:prove_quickcheck_main //xls/dslx/type_system:typecheck_main
+        ./bazel-x86_64 test -c opt --action_env=MACOSX_DEPLOYMENT_TARGET --macos_minimum_os=11.0 //xls/public:test_c_api_symbols
+        ./bazel-x86_64 build -c opt --action_env=MACOSX_DEPLOYMENT_TARGET --macos_minimum_os=11.0 //xls/public:libxls.dylib //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main //xls/dslx/dslx_fmt //xls/dslx:prove_quickcheck_main //xls/dslx:type_system:typecheck_main
 
     - name: Verify x86_64 binaries
       run: |
