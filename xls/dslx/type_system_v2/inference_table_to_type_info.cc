@@ -1087,11 +1087,11 @@ class InferenceTableConverter {
       CHECK(bits_like.has_value());
       XLS_ASSIGN_OR_RETURN(array_size, bits_like->size.GetAsInt64());
     }
-    concrete_start_and_width.start =
-        std::max(0L, std::min(concrete_start_and_width.start, array_size));
-    concrete_start_and_width.width =
-        std::max(0L, std::min(concrete_start_and_width.width,
-                              array_size - concrete_start_and_width.start));
+    concrete_start_and_width.start = std::max(
+        int64_t{0}, std::min(concrete_start_and_width.start, array_size));
+    concrete_start_and_width.width = std::max(
+        int64_t{0}, std::min(concrete_start_and_width.width,
+                             array_size - concrete_start_and_width.start));
     ti->AddSliceStartAndWidth(
         std::get<Slice*>(index->rhs()),
         parametric_context.has_value()
