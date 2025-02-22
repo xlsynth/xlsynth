@@ -306,6 +306,15 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-bazel-
 
+    - name: Install bazelisk
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y curl
+        curl -Lo bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
+        chmod +x bazelisk
+        mv bazelisk /usr/local/bin/
+        bazelisk version
+
     - name: Install Clang-18
       run: |
         sudo apt-get update
@@ -313,15 +322,26 @@ jobs:
         wget https://apt.llvm.org/llvm.sh
         chmod +x llvm.sh
         sudo ./llvm.sh 18
-        sudo apt-get install -y clang-18
+        sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev
 
     - name: Note Clang version
       run: clang-18 --version
 
+    - name: Create non-root user
+      run: |
+        sudo useradd -m build-user
+
+    - name: Fix workspace permissions
+      run: |
+        chown -R build-user:build-user $GITHUB_WORKSPACE
+
     - name: Build Bazel target
       run: |
-        bazelisk test -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 //xls/public:test_c_api_symbols
-        bazelisk build -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+        sudo -u build-user env PATH=$PATH bazelisk test -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+          --cxxopt="-stdlib=libc++" --linkopt="-stdlib=libc++" \
+          //xls/public:test_c_api_symbols
+        sudo -u build-user env PATH=$PATH bazelisk build -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+          --cxxopt="-stdlib=libc++" --linkopt="-stdlib=libc++" \
           //xls/public:libxls.so \
           //xls/public:c_api \
           //xls/dslx:interpreter_main \
@@ -414,15 +434,26 @@ jobs:
         wget https://apt.llvm.org/llvm.sh
         chmod +x llvm.sh
         sudo ./llvm.sh 18
-        sudo apt-get install -y clang-18
+        sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev
 
     - name: Note Clang version
       run: clang-18 --version
 
+    - name: Create non-root user
+      run: |
+        sudo useradd -m build-user
+
+    - name: Fix workspace permissions
+      run: |
+        chown -R build-user:build-user $GITHUB_WORKSPACE
+
     - name: Build Bazel target
       run: |
-        bazelisk test -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 //xls/public:test_c_api_symbols
-        bazelisk build -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+        sudo -u build-user env PATH=$PATH bazelisk test -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+          --cxxopt="-stdlib=libc++" --linkopt="-stdlib=libc++" \
+          //xls/public:test_c_api_symbols
+        sudo -u build-user env PATH=$PATH bazelisk build -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+          --cxxopt="-stdlib=libc++" --linkopt="-stdlib=libc++" \
           //xls/public:libxls.so \
           //xls/public:c_api \
           //xls/dslx:interpreter_main \
