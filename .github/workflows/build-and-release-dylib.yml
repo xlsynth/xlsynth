@@ -116,6 +116,10 @@ jobs:
     - name: Create artifact directory
       run: mkdir -p osx-artifacts-x64
 
+    - name: Note Clang version
+      run: |
+        clang --version
+
     - name: Build for x86_64
       run: |
         wget -q https://github.com/bazelbuild/bazel/releases/download/7.3.1rc2/bazel-7.3.1rc2-darwin-x86_64
@@ -208,7 +212,9 @@ jobs:
         dnf install -y llvm-toolset
 
     - name: Note Clang version
-      run: clang --version
+      run: |
+        clang --version
+        clang-18 --version
 
     - name: Install build essentials
       run: |
@@ -228,8 +234,19 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        sudo -u build-user env PATH=$PATH CC=clang CXX=clang++ bazelisk test -c opt //xls/public:test_c_api_symbols
-        sudo -u build-user env PATH=$PATH CC=clang CXX=clang++ bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main //xls/dslx:dslx_fmt //xls/dslx:prove_quickcheck_main //xls/dslx/type_system:typecheck_main
+        sudo -u build-user env PATH=$PATH bazelisk test -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 //xls/public:test_c_api_symbols
+        sudo -u build-user env PATH=$PATH bazelisk build -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+          //xls/public:libxls.so \
+          //xls/public:c_api \
+          //xls/dslx:interpreter_main \
+          //xls/dslx/lsp:dslx_ls \
+          //xls/tools:opt_main \
+          //xls/tools:codegen_main \
+          //xls/dslx/ir_convert:ir_converter_main \
+          //xls/tools:delay_info_main \
+          //xls/dslx:dslx_fmt \
+          //xls/dslx:prove_quickcheck_main \
+          //xls/dslx/type_system:typecheck_main
 
     - name: Create artifact directory
       run: mkdir -p rocky8-artifacts
@@ -303,8 +320,19 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        CC=clang-17 CXX=clang++-17 bazelisk test -c opt //xls/public:test_c_api_symbols
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main //xls/dslx:dslx_fmt //xls/dslx:prove_quickcheck_main //xls/dslx/type_system:typecheck_main
+        bazelisk test -c opt --action_env=CC=clang-17 --action_env=CXX=clang++-17 //xls/public:test_c_api_symbols
+        bazelisk build -c opt --action_env=CC=clang-17 --action_env=CXX=clang++-17 \
+          //xls/public:libxls.so \
+          //xls/public:c_api \
+          //xls/dslx:interpreter_main \
+          //xls/dslx/lsp:dslx_ls \
+          //xls/tools:opt_main \
+          //xls/tools:codegen_main \
+          //xls/dslx/ir_convert:ir_converter_main \
+          //xls/tools:delay_info_main \
+          //xls/dslx:dslx_fmt \
+          //xls/dslx:prove_quickcheck_main \
+          //xls/dslx/type_system:typecheck_main
 
     - name: Create artifact directory
       run: mkdir -p ubuntu2004-artifacts
@@ -393,8 +421,19 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        CC=clang-17 CXX=clang++-17 bazelisk test -c opt //xls/public:test_c_api_symbols
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main //xls/dslx:dslx_fmt //xls/dslx:prove_quickcheck_main //xls/dslx/type_system:typecheck_main
+        bazelisk test -c opt --action_env=CC=clang-17 --action_env=CXX=clang++-17 //xls/public:test_c_api_symbols
+        bazelisk build -c opt --action_env=CC=clang-17 --action_env=CXX=clang++-17 \
+          //xls/public:libxls.so \
+          //xls/public:c_api \
+          //xls/dslx:interpreter_main \
+          //xls/dslx/lsp:dslx_ls \
+          //xls/tools:opt_main \
+          //xls/tools:codegen_main \
+          //xls/dslx/ir_convert:ir_converter_main \
+          //xls/tools:delay_info_main \
+          //xls/dslx:dslx_fmt \
+          //xls/dslx:prove_quickcheck_main \
+          //xls/dslx/type_system:typecheck_main
 
     - name: Create artifact directory
       run: mkdir -p ubuntu2204-artifacts
