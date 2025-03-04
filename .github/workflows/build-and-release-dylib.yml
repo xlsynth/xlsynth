@@ -49,7 +49,8 @@ jobs:
           //xls/tools:delay_info_main \
           //xls/dslx:dslx_fmt \
           //xls/dslx:prove_quickcheck_main \
-          //xls/dslx/type_system:typecheck_main
+          //xls/dslx/type_system:typecheck_main \
+          //xls/dev_tools:check_ir_equivalence_main
 
     - name: Verify arm64 binaries
       run: |
@@ -86,6 +87,9 @@ jobs:
 
         cp bazel-bin/xls/dslx/type_system/typecheck_main    osx-artifacts-arm64/typecheck_main-arm64
         shasum -a 256 osx-artifacts-arm64/typecheck_main-arm64 > osx-artifacts-arm64/typecheck_main-arm64.sha256
+
+        cp bazel-bin/xls/dev_tools/check_ir_equivalence_main osx-artifacts-arm64/check_ir_equivalence_main-arm64
+        shasum -a 256 osx-artifacts-arm64/check_ir_equivalence_main-arm64 > osx-artifacts-arm64/check_ir_equivalence_main-arm64.sha256
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -137,7 +141,8 @@ jobs:
           //xls/tools:delay_info_main \
           //xls/dslx:dslx_fmt \
           //xls/dslx:prove_quickcheck_main \
-          //xls/dslx/type_system:typecheck_main
+          //xls/dslx/type_system:typecheck_main \
+          //xls/dev_tools:check_ir_equivalence_main
 
     - name: Verify x86_64 binaries
       run: |
@@ -174,6 +179,9 @@ jobs:
 
         cp bazel-bin/xls/dslx/type_system/typecheck_main    osx-artifacts-x64/typecheck_main-x64
         shasum -a 256 osx-artifacts-x64/typecheck_main-x64 > osx-artifacts-x64/typecheck_main-x64.sha256
+
+        cp bazel-bin/xls/dev_tools/check_ir_equivalence_main osx-artifacts-x64/check_ir_equivalence_main-x64
+        shasum -a 256 osx-artifacts-x64/check_ir_equivalence_main-x64 > osx-artifacts-x64/check_ir_equivalence_main-x64.sha256
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -246,7 +254,8 @@ jobs:
           //xls/tools:delay_info_main \
           //xls/dslx:dslx_fmt \
           //xls/dslx:prove_quickcheck_main \
-          //xls/dslx/type_system:typecheck_main
+          //xls/dslx/type_system:typecheck_main \
+          //xls/dev_tools:check_ir_equivalence_main
 
     - name: Create artifact directory
       run: mkdir -p rocky8-artifacts
@@ -282,6 +291,9 @@ jobs:
 
         cp bazel-bin/xls/dslx/type_system/typecheck_main    rocky8-artifacts/typecheck_main-rocky8
         sha256sum rocky8-artifacts/typecheck_main-rocky8 > rocky8-artifacts/typecheck_main-rocky8.sha256
+
+        cp bazel-bin/xls/dev_tools/check_ir_equivalence_main rocky8-artifacts/check_ir_equivalence_main-rocky8
+        sha256sum rocky8-artifacts/check_ir_equivalence_main-rocky8 > rocky8-artifacts/check_ir_equivalence_main-rocky8.sha256
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -362,7 +374,8 @@ jobs:
           //xls/tools:delay_info_main \
           //xls/dslx:dslx_fmt \
           //xls/dslx:prove_quickcheck_main \
-          //xls/dslx/type_system:typecheck_main
+          //xls/dslx/type_system:typecheck_main \
+          //xls/dev_tools:check_ir_equivalence_main
 
     - name: Create artifact directory
       run: mkdir -p ubuntu2004-artifacts
@@ -398,6 +411,9 @@ jobs:
 
         cp bazel-bin/xls/dslx/type_system/typecheck_main   ubuntu2004-artifacts/typecheck_main-ubuntu2004
         sha256sum ubuntu2004-artifacts/typecheck_main-ubuntu2004 > ubuntu2004-artifacts/typecheck_main-ubuntu2004.sha256
+
+        cp bazel-bin/xls/dev_tools/check_ir_equivalence_main ubuntu2004-artifacts/check_ir_equivalence_main-ubuntu2004
+        sha256sum ubuntu2004-artifacts/check_ir_equivalence_main-ubuntu2004 > ubuntu2004-artifacts/check_ir_equivalence_main-ubuntu2004.sha256
 
     - name: Tarball stdlib files to ubuntu2004-artifacts
       run: |
@@ -484,7 +500,8 @@ jobs:
           //xls/tools:delay_info_main \
           //xls/dslx:dslx_fmt \
           //xls/dslx:prove_quickcheck_main \
-          //xls/dslx/type_system:typecheck_main
+          //xls/dslx/type_system:typecheck_main \
+          //xls/dev_tools:check_ir_equivalence_main
 
     - name: Create artifact directory
       run: mkdir -p ubuntu2204-artifacts
@@ -520,6 +537,9 @@ jobs:
 
         cp bazel-bin/xls/dslx/type_system/typecheck_main   ubuntu2204-artifacts/typecheck_main-ubuntu2204
         sha256sum ubuntu2204-artifacts/typecheck_main-ubuntu2204 > ubuntu2204-artifacts/typecheck_main-ubuntu2204.sha256
+
+        cp bazel-bin/xls/dev_tools/check_ir_equivalence_main ubuntu2204-artifacts/check_ir_equivalence_main-ubuntu2204
+        sha256sum ubuntu2204-artifacts/check_ir_equivalence_main-ubuntu2204 > ubuntu2204-artifacts/check_ir_equivalence_main-ubuntu2204.sha256
 
     - name: Tarball stdlib files to ubuntu2204-artifacts
       run: |
@@ -614,6 +634,8 @@ jobs:
           osx-artifacts-arm64/ir_converter_main-arm64.sha256 \
           osx-artifacts-arm64/typecheck_main-arm64          \
           osx-artifacts-arm64/typecheck_main-arm64.sha256   \
+          osx-artifacts-arm64/check_ir_equivalence_main-arm64 \
+          osx-artifacts-arm64/check_ir_equivalence_main-arm64.sha256 \
           \
           osx-artifacts-x64/libxls-x64.dylib                \
           osx-artifacts-x64/libxls-x64.dylib.sha256        \
@@ -635,6 +657,8 @@ jobs:
           osx-artifacts-x64/ir_converter_main-x64.sha256       \
           osx-artifacts-x64/typecheck_main-x64              \
           osx-artifacts-x64/typecheck_main-x64.sha256         \
+          osx-artifacts-x64/check_ir_equivalence_main-x64 \
+          osx-artifacts-x64/check_ir_equivalence_main-x64.sha256 \
           \
           ubuntu2004-artifacts/dslx_stdlib.tar.gz                 \
           ubuntu2004-artifacts/dslx_stdlib.tar.gz.sha256       \
@@ -658,6 +682,8 @@ jobs:
           ubuntu2004-artifacts/ir_converter_main-ubuntu2004.sha256 \
           ubuntu2004-artifacts/typecheck_main-ubuntu2004          \
           ubuntu2004-artifacts/typecheck_main-ubuntu2004.sha256   \
+          ubuntu2004-artifacts/check_ir_equivalence_main-ubuntu2004 \
+          ubuntu2004-artifacts/check_ir_equivalence_main-ubuntu2004.sha256 \
           \
           ubuntu2204-artifacts/libxls-ubuntu2204.so               \
           ubuntu2204-artifacts/libxls-ubuntu2204.so.sha256        \
@@ -679,6 +705,8 @@ jobs:
           ubuntu2204-artifacts/ir_converter_main-ubuntu2204.sha256 \
           ubuntu2204-artifacts/typecheck_main-ubuntu2204          \
           ubuntu2204-artifacts/typecheck_main-ubuntu2204.sha256   \
+          ubuntu2204-artifacts/check_ir_equivalence_main-ubuntu2204 \
+          ubuntu2204-artifacts/check_ir_equivalence_main-ubuntu2204.sha256 \
           \
           rocky8-artifacts/libxls-rocky8.so             \
           rocky8-artifacts/libxls-rocky8.so.sha256             \
@@ -700,6 +728,8 @@ jobs:
           rocky8-artifacts/ir_converter_main-rocky8.sha256     \
           rocky8-artifacts/typecheck_main-rocky8        \
           rocky8-artifacts/typecheck_main-rocky8.sha256        \
+          rocky8-artifacts/check_ir_equivalence_main-rocky8 \
+          rocky8-artifacts/check_ir_equivalence_main-rocky8.sha256 \
           \
           --title "Release $TAG_NAME" \
           --notes "Automated release of $TAG_NAME"
