@@ -19,7 +19,7 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Cache Bazel output
-      uses: actions/cache@v2
+      uses: actions/cache@v3
       id: cache-bazel
       with:
         path: |
@@ -107,7 +107,7 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Cache Bazel output
-      uses: actions/cache@v2
+      uses: actions/cache@v3
       id: cache-bazel
       with:
         path: |
@@ -197,7 +197,7 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Cache Bazel output
-      uses: actions/cache@v2
+      uses: actions/cache@v3
       id: cache-bazel
       with:
         path: |
@@ -326,7 +326,7 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Cache Bazel output
-      uses: actions/cache@v2
+      uses: actions/cache@v3
       id: cache-bazel
       with:
         path: |
@@ -452,7 +452,7 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Cache Bazel output
-      uses: actions/cache@v2
+      uses: actions/cache@v3
       id: cache-bazel
       with:
         path: |
