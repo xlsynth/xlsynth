@@ -479,6 +479,7 @@ jobs:
         TAG_NAME: ${{ env.TAG_NAME }}
       run: |
         export GH_TOKEN=${{ secrets.GITHUB_TOKEN }}
+        TAG_NAME=dank-experiment
         gh release create "$TAG_NAME" \
           osx-artifacts-arm64/libxls-arm64.dylib            \
           osx-artifacts-arm64/libxls-arm64.dylib.sha256     \
