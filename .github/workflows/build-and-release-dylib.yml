@@ -279,8 +279,8 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        CC=clang-17 CXX=clang++-17 bazelisk test -c opt //xls/public:test_c_api_symbols
-        CC=clang-17 CXX=clang++-17 bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main //xls/dslx:dslx_fmt //xls/dslx:prove_quickcheck_main //xls/dslx/type_system:typecheck_main
+        CC=clang-17 CXX=clang++-17 bazelisk test -c opt --cxxopt='-stdlib=libstdc++' //xls/public:test_c_api_symbols
+        CC=clang-17 CXX=clang++-17 bazelisk build -c opt --cxxopt='-stdlib=libstdc++' //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/tools:delay_info_main //xls/dslx:dslx_fmt //xls/dslx:prove_quickcheck_main //xls/dslx/type_system:typecheck_main
 
     - name: Create artifact directory
       run: mkdir -p ubuntu2004-artifacts
