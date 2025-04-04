@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - '*'
-  workflow_dispatch:
 
 permissions:
   contents: write  # Ensure the token has write permission for contents
