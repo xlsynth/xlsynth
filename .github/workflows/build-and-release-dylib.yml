@@ -420,45 +420,17 @@ jobs:
 
   release:
     needs:
-      - build-osx-arm64
-      - build-osx-x64
       - build-ubuntu2004
-      - build-ubuntu2204
-      - build-rocky8
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
-
-    - name: Download osx-artifacts-arm64
-      uses: actions/download-artifact@v4
-      with:
-        name: osx-artifacts-arm64
-        path: osx-artifacts-arm64
-
-    - name: Download osx-artifacts-x64
-      uses: actions/download-artifact@v4
-      with:
-        name: osx-artifacts-x64
-        path: osx-artifacts-x64
 
     - name: Download ubuntu2004-artifacts
       uses: actions/download-artifact@v4
       with:
         name: ubuntu2004-artifacts
         path: ubuntu2004-artifacts
-
-    - name: Download ubuntu2204-artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: ubuntu2204-artifacts
-        path: ubuntu2204-artifacts
-
-    - name: Download rocky8-artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: rocky8-artifacts
-        path: rocky8-artifacts
 
     - name: Extract tag name
       id: extract_tag
@@ -481,48 +453,6 @@ jobs:
         export GH_TOKEN=${{ secrets.GITHUB_TOKEN }}
         TAG_NAME=dank-experiment
         gh release create "$TAG_NAME" \
-          osx-artifacts-arm64/libxls-arm64.dylib            \
-          osx-artifacts-arm64/libxls-arm64.dylib.sha256     \
-          osx-artifacts-arm64/dslx_interpreter_main-arm64   \
-          osx-artifacts-arm64/dslx_interpreter_main-arm64.sha256 \
-          osx-artifacts-arm64/dslx_ls-arm64                 \
-          osx-artifacts-arm64/dslx_ls-arm64.sha256          \
-          osx-artifacts-arm64/opt_main-arm64                \
-          osx-artifacts-arm64/opt_main-arm64.sha256         \
-          osx-artifacts-arm64/delay_info_main-arm64         \
-          osx-artifacts-arm64/delay_info_main-arm64.sha256  \
-          osx-artifacts-arm64/dslx_fmt-arm64                \
-          osx-artifacts-arm64/dslx_fmt-arm64.sha256         \
-          osx-artifacts-arm64/prove_quickcheck_main-arm64   \
-          osx-artifacts-arm64/prove_quickcheck_main-arm64.sha256 \
-          osx-artifacts-arm64/codegen_main-arm64            \
-          osx-artifacts-arm64/codegen_main-arm64.sha256     \
-          osx-artifacts-arm64/ir_converter_main-arm64       \
-          osx-artifacts-arm64/ir_converter_main-arm64.sha256 \
-          osx-artifacts-arm64/typecheck_main-arm64          \
-          osx-artifacts-arm64/typecheck_main-arm64.sha256   \
-          \
-          osx-artifacts-x64/libxls-x64.dylib                \
-          osx-artifacts-x64/libxls-x64.dylib.sha256        \
-          osx-artifacts-x64/dslx_interpreter_main-x64       \
-          osx-artifacts-x64/dslx_interpreter_main-x64.sha256 \
-          osx-artifacts-x64/dslx_ls-x64                     \
-          osx-artifacts-x64/dslx_ls-x64.sha256              \
-          osx-artifacts-x64/opt_main-x64                    \
-          osx-artifacts-x64/opt_main-x64.sha256             \
-          osx-artifacts-x64/delay_info_main-x64             \
-          osx-artifacts-x64/delay_info_main-x64.sha256      \
-          osx-artifacts-x64/dslx_fmt-x64                    \
-          osx-artifacts-x64/dslx_fmt-x64.sha256                \
-          osx-artifacts-x64/prove_quickcheck_main-x64       \
-          osx-artifacts-x64/prove_quickcheck_main-x64.sha256 \
-          osx-artifacts-x64/codegen_main-x64                \
-          osx-artifacts-x64/codegen_main-x64.sha256          \
-          osx-artifacts-x64/ir_converter_main-x64           \
-          osx-artifacts-x64/ir_converter_main-x64.sha256       \
-          osx-artifacts-x64/typecheck_main-x64              \
-          osx-artifacts-x64/typecheck_main-x64.sha256         \
-          \
           ubuntu2004-artifacts/dslx_stdlib.tar.gz                 \
           ubuntu2004-artifacts/dslx_stdlib.tar.gz.sha256       \
           ubuntu2004-artifacts/libxls-ubuntu2004.so               \
@@ -545,48 +475,5 @@ jobs:
           ubuntu2004-artifacts/ir_converter_main-ubuntu2004.sha256 \
           ubuntu2004-artifacts/typecheck_main-ubuntu2004          \
           ubuntu2004-artifacts/typecheck_main-ubuntu2004.sha256   \
-          \
-          ubuntu2204-artifacts/libxls-ubuntu2204.so               \
-          ubuntu2204-artifacts/libxls-ubuntu2204.so.sha256        \
-          ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204   \
-          ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204.sha256 \
-          ubuntu2204-artifacts/dslx_ls-ubuntu2204                 \
-          ubuntu2204-artifacts/dslx_ls-ubuntu2204.sha256          \
-          ubuntu2204-artifacts/opt_main-ubuntu2204                \
-          ubuntu2204-artifacts/opt_main-ubuntu2204.sha256         \
-          ubuntu2204-artifacts/delay_info_main-ubuntu2204         \
-          ubuntu2204-artifacts/delay_info_main-ubuntu2204.sha256  \
-          ubuntu2204-artifacts/dslx_fmt-ubuntu2204                \
-          ubuntu2204-artifacts/dslx_fmt-ubuntu2204.sha256         \
-          ubuntu2204-artifacts/prove_quickcheck_main-ubuntu2204   \
-          ubuntu2204-artifacts/prove_quickcheck_main-ubuntu2204.sha256 \
-          ubuntu2204-artifacts/codegen_main-ubuntu2204            \
-          ubuntu2204-artifacts/codegen_main-ubuntu2204.sha256     \
-          ubuntu2204-artifacts/ir_converter_main-ubuntu2204       \
-          ubuntu2204-artifacts/ir_converter_main-ubuntu2204.sha256 \
-          ubuntu2204-artifacts/typecheck_main-ubuntu2204          \
-          ubuntu2204-artifacts/typecheck_main-ubuntu2204.sha256   \
-          \
-          rocky8-artifacts/libxls-rocky8.so             \
-          rocky8-artifacts/libxls-rocky8.so.sha256             \
-          rocky8-artifacts/dslx_interpreter_main-rocky8 \
-          rocky8-artifacts/dslx_interpreter_main-rocky8.sha256 \
-          rocky8-artifacts/dslx_ls-rocky8               \
-          rocky8-artifacts/dslx_ls-rocky8.sha256               \
-          rocky8-artifacts/opt_main-rocky8              \
-          rocky8-artifacts/opt_main-rocky8.sha256              \
-          rocky8-artifacts/delay_info_main-rocky8       \
-          rocky8-artifacts/delay_info_main-rocky8.sha256       \
-          rocky8-artifacts/dslx_fmt-rocky8              \
-          rocky8-artifacts/dslx_fmt-rocky8.sha256              \
-          rocky8-artifacts/prove_quickcheck_main-rocky8 \
-          rocky8-artifacts/prove_quickcheck_main-rocky8.sha256 \
-          rocky8-artifacts/codegen_main-rocky8          \
-          rocky8-artifacts/codegen_main-rocky8.sha256          \
-          rocky8-artifacts/ir_converter_main-rocky8     \
-          rocky8-artifacts/ir_converter_main-rocky8.sha256     \
-          rocky8-artifacts/typecheck_main-rocky8        \
-          rocky8-artifacts/typecheck_main-rocky8.sha256        \
-          \
           --title "Release $TAG_NAME" \
           --notes "Automated release of $TAG_NAME"
