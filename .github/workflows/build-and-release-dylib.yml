@@ -3,7 +3,7 @@ name: Build and Release Bazel Target
 on:
   push:
     tags:
-      - '*'
+      - '**'
 
 permissions:
   contents: write  # Ensure the token has write permission for contents
