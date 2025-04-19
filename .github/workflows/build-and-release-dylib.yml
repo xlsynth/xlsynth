@@ -309,7 +309,7 @@ jobs:
       run: |
         export DEBIAN_FRONTEND=noninteractive
         apt-get update
-        apt-get install -y --no-install-recommends sudo build-essential python3 git curl wget gnupg ca-certificates lsb-release software-properties-common
+        apt-get install -y --no-install-recommends zlib1g-dev sudo build-essential python3 git curl wget gnupg ca-certificates lsb-release software-properties-common
 
     - name: Create non-root user to build as
       run: |
