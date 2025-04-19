@@ -302,25 +302,13 @@ jobs:
         path: rocky8-artifacts/
 
   build-ubuntu2004:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
     steps:
-    - name: Verify non-root user
+    - name: Install dependencies
       run: |
-        if [ "$(id -u)" -eq 0 ]; then
-          echo "Script is running as root, which is not allowed."
-          exit 1
-        else
-          echo "Running as non-root user: $(whoami)"
-        fi
-
-    - name: Verify sudoers for current user
-      run: |
-        if sudo -l &> /dev/null; then
-          echo "User has sudo privileges."
-        else
-          echo "User does not have sudo privileges."
-          exit 1
-        fi
+        apt-get update
+        apt-get install -y --no-install-recommends build-essential python3 git curl wget gnupg ca-certificates
 
     - name: Checkout repository
       uses: actions/checkout@v2
@@ -332,14 +320,12 @@ jobs:
         path: |
           ~/.cache/bazel
           bazel-out
-        key: ${{ runner.os }}-bazel-${{ hashFiles('**/BUILD') }}
+        key: ubuntu2004-bazel-${{ hashFiles('**/BUILD') }}
         restore-keys: |
-          ${{ runner.os }}-bazel-
+          ubuntu2004-bazel-
 
     - name: Install bazelisk
       run: |
-        sudo apt-get update
-        sudo apt-get install -y curl
         curl -Lo bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
         chmod +x bazelisk
         mv bazelisk /usr/local/bin/
@@ -347,12 +333,17 @@ jobs:
 
     - name: Install Clang-18
       run: |
-        sudo apt-get update
-        sudo apt-get install -y wget gnupg
+        export DEBIAN_FRONTEND=noninteractive
+        # Run update before installing prerequisites
+        apt-get update
+        # Install prerequisites for llvm.sh (wget, gnupg already installed in first step)
+        apt-get install -y --no-install-recommends lsb-release software-properties-common
+        cd /tmp/
         wget https://apt.llvm.org/llvm.sh
         chmod +x llvm.sh
-        sudo ./llvm.sh 18
-        sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev
+        ./llvm.sh 18
+        # Install clang and libc++
+        apt-get install -y --no-install-recommends clang-18 libc++-18-dev libc++abi-18-dev
 
     - name: Note Clang version
       run: clang-18 --version
