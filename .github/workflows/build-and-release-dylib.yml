@@ -29,6 +29,9 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-bazel-
 
+    - name: Note Xcode version
+      run: xcodebuild -version
+
     - name: Create artifact directory
       run: mkdir -p osx-artifacts-arm64
 
@@ -116,6 +119,9 @@ jobs:
         key: ${{ runner.os }}-bazel-${{ hashFiles('**/BUILD') }}
         restore-keys: |
           ${{ runner.os }}-bazel-
+
+    - name: Note Xcode version
+      run: xcodebuild -version
 
     - name: Create artifact directory
       run: mkdir -p osx-artifacts-x64
