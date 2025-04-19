@@ -308,7 +308,15 @@ jobs:
     - name: Install dependencies
       run: |
         apt-get update
-        apt-get install -y --no-install-recommends build-essential python3 git curl wget gnupg ca-certificates
+        apt-get install -y --no-install-recommends sudo build-essential python3 git curl wget gnupg ca-certificates lsb-release software-properties-common
+
+    - name: Create non-root user to build as
+      run: |
+          useradd -m build-user
+
+    - name: Fix workspace permissions
+      run: |
+          chown -R build-user:build-user $GITHUB_WORKSPACE
 
     - name: Checkout repository
       uses: actions/checkout@v2
@@ -350,10 +358,10 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        bazelisk test -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+        sudo -u build-user env PATH=$PATH bazelisk test -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
           --cxxopt="-stdlib=libc++" --linkopt="-stdlib=libc++" \
           //xls/public:test_c_api_symbols
-        bazelisk build -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+        sudo -u build-user env PATH=$PATH bazelisk build -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
           --cxxopt="-stdlib=libc++" --linkopt="-stdlib=libc++" \
           //xls/public:libxls.so \
           //xls/public:c_api \
