@@ -307,6 +307,7 @@ jobs:
     steps:
     - name: Install dependencies
       run: |
+        export DEBIAN_FRONTEND=noninteractive
         apt-get update
         apt-get install -y --no-install-recommends sudo build-essential python3 git curl wget gnupg ca-certificates lsb-release software-properties-common
 
