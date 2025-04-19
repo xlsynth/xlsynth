@@ -29,7 +29,7 @@ bazel_dep(name = "grpc", version = "1.71.0")
 bazel_dep(name = "nlohmann_json", version = "3.11.3.bcr.1")
 bazel_dep(name = "or-tools", version = "9.12", repo_name = "com_google_ortools")
 bazel_dep(name = "platforms", version = "0.0.11")
-bazel_dep(name = "protobuf", version = "30.1", repo_name = "com_google_protobuf")
+bazel_dep(name = "protobuf", version = "30.2", repo_name = "com_google_protobuf")
 bazel_dep(name = "re2", version = "2024-07-02.bcr.1")
 
 #bazel_dep(name = "riegeli", version = "0.0.0-20241218-3385e3c")
