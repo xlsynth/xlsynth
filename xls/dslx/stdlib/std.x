@@ -617,8 +617,8 @@ pub enum Ordering : s2 {
 
 fn compare_unsigned<N: u32>(lhs: uN[N], rhs: uN[N]) -> Ordering {
     // Zero-extend both to N+1 bits so that subtraction underflow sets the MSB to '1'
-    let lhs_ext: uN[N + u32:1] = u1:0 ++ lhs;
-    let rhs_ext: uN[N + u32:1] = u1:0 ++ rhs;
+    let lhs_ext = lhs as uN[N + u32:1];
+    let rhs_ext = rhs as uN[N + u32:1];
 
     // Subtract in N+1 bits; the top bit is 1 exactly when lhs<rhs
     let diff_ext: uN[N + u32:1] = lhs_ext - rhs_ext;
