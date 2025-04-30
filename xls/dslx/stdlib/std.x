@@ -664,6 +664,15 @@ fn prop_compare_unsigned_matches_corresponding_comparison(lhs: u4, rhs: u4) -> b
     }
 }
 
+#[quickcheck(exhaustive)]
+fn prop_compare_signed_matches_corresponding_comparison(lhs: s4, rhs: s4) -> bool {
+    match compare_signed(lhs, rhs) {
+        Ordering::Less => lhs < rhs,
+        Ordering::Equal => lhs == rhs,
+        Ordering::Greater => lhs > rhs,
+    }
+}
+
 // Compares two integers of the same sign and width.
 //
 // The reason to use this over a comparison operator such as `<` is that this exhaustively
