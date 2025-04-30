@@ -615,6 +615,33 @@ pub enum Ordering : s2 {
     Greater = 1,
 }
 
+fn compare_unsigned<N: u32>(lhs: uN[N], rhs: uN[N]) -> Ordering {
+    // Zero-extend both to N+1 bits so that subtraction underflow sets the MSB to '1'
+    let lhs_ext: uN[N + u32:1] = u1:0 ++ lhs;
+    let rhs_ext: uN[N + u32:1] = u1:0 ++ rhs;
+    let diff_ext: uN[N + u32:1] = lhs_ext - rhs_ext;
+
+    let underflow = msb(diff_ext);
+    let not_equal: u1 = lhs != rhs;
+
+    //    Mapping:
+    //      lhs<rhs  ⟹ underflow=1, not_equal=1 ⟹ bits = 11₂ ⟹ -1
+    //      lhs=rhs  ⟹ underflow=0, not_equal=0 ⟹ bits = 00₂ ⟹  0
+    //      lhs>rhs  ⟹ underflow=0, not_equal=1 ⟹ bits = 01₂ ⟹ +1
+
+    let packed: u2 = underflow ++ not_equal;
+    packed as Ordering
+}
+
+#[quickcheck(exhaustive)]
+fn prop_compare_unsigned_matches_corresponding_comparison(lhs: u4, rhs: u4) -> bool {
+    match compare_unsigned(lhs, rhs) {
+        Ordering::Less => lhs < rhs,
+        Ordering::Equal => lhs == rhs,
+        Ordering::Greater => lhs > rhs,
+    }
+}
+
 // Compares two integers of the same sign and width.
 //
 // The reason to use this over a comparison operator such as `<` is that this exhaustively
