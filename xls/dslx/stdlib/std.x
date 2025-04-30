@@ -619,17 +619,20 @@ fn compare_unsigned<N: u32>(lhs: uN[N], rhs: uN[N]) -> Ordering {
     // Zero-extend both to N+1 bits so that subtraction underflow sets the MSB to '1'
     let lhs_ext: uN[N + u32:1] = u1:0 ++ lhs;
     let rhs_ext: uN[N + u32:1] = u1:0 ++ rhs;
-    let diff_ext: uN[N + u32:1] = lhs_ext - rhs_ext;
 
-    let underflow = msb(diff_ext);
+    // Subtract in N+1 bits; the top bit is 1 exactly when lhs<rhs
+    let diff_ext: uN[N + u32:1] = lhs_ext - rhs_ext;
+    let less = msb(diff_ext);
+
     let not_equal: u1 = lhs != rhs;
 
     //    Mapping:
-    //      lhs<rhs  ⟹ underflow=1, not_equal=1 ⟹ bits = 11₂ ⟹ -1
-    //      lhs=rhs  ⟹ underflow=0, not_equal=0 ⟹ bits = 00₂ ⟹  0
-    //      lhs>rhs  ⟹ underflow=0, not_equal=1 ⟹ bits = 01₂ ⟹ +1
+    //      lhs<rhs  ⟹ less=1, not_equal=1 ⟹ bits = 11₂ ⟹ -1
+    //      lhs=rhs  ⟹ less=0, not_equal=0 ⟹ bits = 00₂ ⟹  0
+    //      lhs>rhs  ⟹ less=0, not_equal=1 ⟹ bits = 01₂ ⟹ +1
 
-    let packed: u2 = underflow ++ not_equal;
+    let packed: u2 = less ++ not_equal;
+    packed as Ordering
 }
 
 fn compare_signed<N: u32>(lhs: sN[N], rhs: sN[N]) -> Ordering {
