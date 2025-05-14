@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import glob
 import os
 import shutil
 import subprocess
@@ -32,13 +33,8 @@ targets = [
     "//xls/dev_tools:check_ir_equivalence_main",
 ]
 
-stdlib_files = [
-  'xls/dslx/stdlib/acm_random.x',
-  'xls/dslx/stdlib/apfloat.x',
-  'xls/dslx/stdlib/bfloat16.x',
-  'xls/dslx/stdlib/float32.x',
-  'xls/dslx/stdlib/float64.x',
-  'xls/dslx/stdlib/std.x',
+stdlib_globs = [
+  'xls/dslx/stdlib/*.x',
 ]
 
 # Function to get the current git hash and cleanliness status
@@ -114,12 +110,14 @@ def make_local_release(output_dir, mode="opt"):
     # Copy the standard library files to the output directory in the same relpath locations
     # they were at in the source tree.
     os.makedirs(os.path.join(output_dir, 'xls/dslx/stdlib'), exist_ok=True)
-    for stdlib_relpath in stdlib_files:
-        try:
-            shutil.copy2(stdlib_relpath, os.path.join(output_dir, stdlib_relpath))
-        except FileNotFoundError as e:
-            print(f"Standard library file not found {stdlib_relpath}: {e}")
-            sys.exit(1)
+    for stdlib_glob in stdlib_globs:
+        stdlib_files = glob.glob(stdlib_glob)
+        for stdlib_file in stdlib_files:
+            try:
+                shutil.copy2(stdlib_file, os.path.join(output_dir, stdlib_file))
+            except FileNotFoundError as e:
+                print(f"Standard library file not found {stdlib_relpath}: {e}")
+                sys.exit(1)
 
     # Write git information to a file
     git_hash, clean_status = get_git_info()
