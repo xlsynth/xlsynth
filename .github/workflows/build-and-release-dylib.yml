@@ -222,7 +222,6 @@ jobs:
     - name: Note Clang version
       run: |
         clang --version
-        clang-18 --version
 
     - name: Install build essentials
       run: |
@@ -242,8 +241,8 @@ jobs:
 
     - name: Build Bazel target
       run: |
-        sudo -u build-user env PATH=$PATH bazelisk test -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 //xls/public:test_c_api_symbols
-        sudo -u build-user env PATH=$PATH bazelisk build -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+        sudo -u build-user env PATH=$PATH bazelisk test -c opt --action_env=CC=clang --action_env=CXX=clang++ //xls/public:test_c_api_symbols
+        sudo -u build-user env PATH=$PATH bazelisk build -c opt --action_env=CC=clang --action_env=CXX=clang++ \
           //xls/public:libxls.so \
           //xls/public:c_api \
           //xls/dslx:interpreter_main \
