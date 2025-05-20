@@ -16,10 +16,10 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
 
     - name: Cache Bazel output
-      uses: actions/cache@v2
+      uses: actions/cache@v4
       id: cache-bazel
       with:
         path: |
@@ -104,10 +104,10 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
 
     - name: Cache Bazel output
-      uses: actions/cache@v2
+      uses: actions/cache@v4
       id: cache-bazel
       with:
         path: |
@@ -194,10 +194,10 @@ jobs:
     container: rockylinux:8.9 # Specify the Docker container
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
 
     - name: Cache Bazel output
-      uses: actions/cache@v2
+      uses: actions/cache@v4
       id: cache-bazel
       with:
         path: |
@@ -323,10 +323,10 @@ jobs:
         fi
 
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
 
     - name: Cache Bazel output
-      uses: actions/cache@v2
+      uses: actions/cache@v4
       id: cache-bazel
       with:
         path: |
@@ -449,10 +449,10 @@ jobs:
         fi
 
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
 
     - name: Cache Bazel output
-      uses: actions/cache@v2
+      uses: actions/cache@v4
       id: cache-bazel
       with:
         path: |
@@ -562,7 +562,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
 
     - name: Download osx-artifacts-arm64
       uses: actions/download-artifact@v4
