@@ -1410,6 +1410,23 @@ fn clear_msbs_test() {
     assert_eq(u8:0x00, clear_msbs(u8:0xa8, u4:12));
 }
 
+// Returns a bits that is at least `AtLeast` bits wide, by concatenating least significant zeros.
+//
+// Example:
+// zero_pad_lsbs_to_width<u32:32>(u1:1) = 0x8000_0000
+// zero_pad_lsbs_to_width<u32:16>(u32:1) = 0x0000_0001
+pub fn zero_pad_lsbs_to_width
+    <AtLeast: u32, N: u32, R: u32 = {max(AtLeast, N)}, NumBitsAppended: u32 = {sat_sub(R, N)}>
+    (x: uN[N]) -> uN[R] {
+    x ++ uN[NumBitsAppended]:0
+}
+
+#[test]
+fn zero_pad_lsbs_to_width_test() {
+    assert_eq(zero_pad_lsbs_to_width<u32:32>(u1:1), u32:0x8000_0000);
+    assert_eq(zero_pad_lsbs_to_width<u32:16>(u32:1), u32:0x0000_0001);
+}
+
 // Implementation of or_reduce_lsb() with choice of implementation.
 // The "do_mask_impl" template parameter chooses the implementation and is
 // subject to change while tested in different contexts.

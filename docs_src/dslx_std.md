@@ -969,6 +969,19 @@ pub fn clear_msbs<WIDTH: u32, N_WIDTH: u32>(x: uN[WIDTH], n: uN[N_WIDTH]) -> uN[
 Returns a copy of `x` with the `n` most-significant bits set to 0. If `n >=
 WIDTH`, returns `zero!<uN[WIDTH]>`.
 
+#### `std::zero_pad_lsbs_to_width`
+
+```dslx-snippet
+pub fn zero_pad_lsbs_to_width
+    <AtLeast: u32, N: u32, R: u32 = {max(AtLeast, N)}, NumBitsAppended: u32 = {sat_sub(R, N)}>
+    (x: uN[N]) -> uN[R]
+```
+
+Returns a bits that is at least `AtLeast` bits wide, by concatenating least significant zeros.
+Example:
+`zero_pad_lsbs_to_width<u32:32>(u1:1) = 0x8000_0000`
+`zero_pad_lsbs_to_width<u32:16>(u32:1) = 0x0000_0001`
+
 #### `std::or_reduce_lsb`
 
 ```dslx-snippet
