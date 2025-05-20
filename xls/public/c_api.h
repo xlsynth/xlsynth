@@ -62,7 +62,6 @@ struct xls_package;
 struct xls_schedule_and_codegen_result;
 struct xls_type;
 struct xls_value;
-struct xls_function_jit;
 
 void xls_init_xls(const char* usage, int argc, char* argv[]);
 

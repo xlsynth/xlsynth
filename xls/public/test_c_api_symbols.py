@@ -79,9 +79,6 @@ class TestCApiSymbols(unittest.TestCase):
     with open(C_API_SYMBOLS_PATH, 'r') as f:
       lines = f.readlines()
     target_lines = sorted(list(set(lines)))
-    if lines != target_lines:
-      print('want:')
-      print(''.join(target_lines))
     self.assertEqual(lines, target_lines)
 
 
