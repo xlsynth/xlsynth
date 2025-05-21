@@ -301,25 +301,32 @@ jobs:
         path: rocky8-artifacts/
 
   build-ubuntu2004:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
     steps:
-    - name: Verify non-root user
+    - name: Set timezone to UTC (non-interactive)
       run: |
-        if [ "$(id -u)" -eq 0 ]; then
-          echo "Script is running as root, which is not allowed."
-          exit 1
-        else
-          echo "Running as non-root user: $(whoami)"
+        echo 'Etc/UTC' > /etc/timezone
+        ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime
+        if dpkg -s tzdata >/dev/null 2>&1; then
+          dpkg-reconfigure -f noninteractive tzdata
         fi
 
-    - name: Verify sudoers for current user
+    - name: Install sudo
       run: |
-        if sudo -l &> /dev/null; then
-          echo "User has sudo privileges."
-        else
-          echo "User does not have sudo privileges."
-          exit 1
-        fi
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y sudo
+
+    - name: Install node
+      run: |
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y curl
+        curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+        apt-get install -y nodejs
 
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -347,21 +354,35 @@ jobs:
     - name: Install Clang-18
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget gnupg
+        sudo apt-get install -y wget gnupg lsb-release software-properties-common
         wget https://apt.llvm.org/llvm.sh
         chmod +x llvm.sh
         sudo ./llvm.sh 18
         sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev
 
+    - name: Install zlib development headers
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y zlib1g-dev
+
     - name: Note Clang version
       run: clang-18 --version
 
+    - name: Create non-root user to build as
+      run: |
+          useradd -m build-user
+          usermod -aG sudo build-user
+
+    - name: Fix workspace permissions
+      run: |
+          chown -R build-user:sudo $GITHUB_WORKSPACE
+
     - name: Build Bazel target
       run: |
-        bazelisk test -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+        sudo -u build-user env PATH=$PATH bazelisk test -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
           --cxxopt="-stdlib=libc++" --linkopt="-stdlib=libc++" \
           //xls/public:test_c_api_symbols
-        bazelisk build -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
+        sudo -u build-user env PATH=$PATH bazelisk build -c opt --action_env=CC=clang-18 --action_env=CXX=clang++-18 \
           --cxxopt="-stdlib=libc++" --linkopt="-stdlib=libc++" \
           //xls/public:libxls.so \
           //xls/public:c_api \
