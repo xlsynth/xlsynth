@@ -128,6 +128,28 @@ def make_local_release(output_dir, mode="opt"):
         f.write(f"Repository Status: {clean_status}\n")
     print(f"Git information saved to {git_info_path}")
 
+    # Produce a diff against the main branch, excluding MODULE.bazel.lock, and
+    # write it to the release directory so that users can quickly see local
+    # changes relative to upstream.
+    diff_path = os.path.join(output_dir, "diff_vs_main.patch")
+    try:
+        diff_bytes = subprocess.check_output(
+            [
+                "git",
+                "diff",
+                "main",
+                "--",
+                ":(exclude)MODULE.bazel.lock",
+                ":(exclude)make_local_release.py",
+                ":(exclude).github/workflows/build-and-release-dylib.yml",
+            ]
+        )
+        with open(diff_path, "wb") as f:
+            f.write(diff_bytes)
+        print(f"Diff against main written to {diff_path}")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to generate diff against main: {e}")
+
 # New main() function using optparse
 def main():
     from optparse import OptionParser
