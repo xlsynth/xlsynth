@@ -41,6 +41,8 @@
 #include "xls/public/c_api_format_preference.h"
 #include "xls/public/c_api_ir_builder.h"
 #include "openssl/sha.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/strings/escaping.h"
 
 namespace {
 
@@ -2362,8 +2364,8 @@ std::string Sha256Digest(std::string_view data) {
 
 TEST(XlsCDslxApiTest, ResolveImportDagContents) {
   // Create temporary directory with modules.
-  std::filesystem::path tmp_dir = xls::GetTempDir() / "c_api_dag";
-  ASSERT_TRUE(std::filesystem::create_directories(tmp_dir));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::TempDirectory temp_root, xls::TempDirectory::Create());
+  std::filesystem::path tmp_dir = temp_root.path();
 
   std::filesystem::path stdlib_dir = tmp_dir / "stdlib";
   ASSERT_TRUE(std::filesystem::create_directories(stdlib_dir));
@@ -2389,10 +2391,12 @@ fn main() -> u32 { bar::f() }
   ASSERT_TRUE(xls::SetFileContents(bar_path, kBarContents).ok());
   ASSERT_TRUE(xls::SetFileContents(foo_path, kFooContents).ok());
 
-  // Create import data (no additional search paths).
-  const char* add_paths[] = {};
+  // Create import data; provide the directory containing user modules so
+  // that the importer can resolve "bar" when it is referenced in foo.x.
+  std::string tmp_dir_str = tmp_dir.string();
+  const char* add_paths[] = {tmp_dir_str.c_str()};
   struct xls_dslx_import_data* import_data = xls_dslx_import_data_create(
-      stdlib_dir.c_str(), add_paths, 0);
+      stdlib_dir.c_str(), add_paths, 1);
   ASSERT_NE(import_data, nullptr);
   absl::Cleanup free_import_data([&] { xls_dslx_import_data_free(import_data); });
 
