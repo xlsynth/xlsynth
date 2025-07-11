@@ -41,6 +41,7 @@
 #include "xls/dslx/warning_kind.h"
 #include "xls/ir/value.h"
 #include "xls/public/c_api_impl_helpers.h"
+#include "xls/dslx/resolve_import_dag_contents.h"
 
 namespace {
 const struct xls_dslx_type* GetMetaTypeHelper(
@@ -59,6 +60,10 @@ const struct xls_dslx_type* GetMetaTypeHelper(
   return reinterpret_cast<const struct xls_dslx_type*>(*unwrapped);
 }
 }  // namespace
+
+struct xls_dslx_string_map {
+  std::vector<std::pair<std::string, std::string>> entries;
+};
 
 extern "C" {
 
@@ -743,6 +748,55 @@ bool xls_dslx_type_dim_get_as_int64(struct xls_dslx_type_dim* td,
 void xls_dslx_type_dim_free(struct xls_dslx_type_dim* td) {
   auto* cpp_type_dim = reinterpret_cast<xls::dslx::TypeDim*>(td);
   delete cpp_type_dim;
+}
+
+bool xls_dslx_resolve_import_dag_contents(
+    struct xls_dslx_typechecked_module* tm, struct xls_dslx_import_data* import_data,
+    struct xls_dslx_string_map** result_out, char** error_out) {
+  if (tm == nullptr || import_data == nullptr || result_out == nullptr || error_out == nullptr) {
+    return false;
+  }
+  *result_out = nullptr;
+  *error_out = nullptr;
+  auto* cpp_tm = reinterpret_cast<xls::dslx::TypecheckedModule*>(tm);
+  auto* cpp_import_data = reinterpret_cast<xls::dslx::ImportData*>(import_data);
+  absl::StatusOr<absl::flat_hash_map<std::string, std::string>> contents =
+      xls::dslx::ResolveImportDagContents(*cpp_tm, *cpp_import_data);
+  if (!contents.ok()) {
+    *error_out = xls::ToOwnedCString(contents.status().ToString());
+    return false;
+  }
+  auto* map = new xls_dslx_string_map();
+  map->entries.reserve(contents->size());
+  for (const auto& [k, v] : *contents) {
+    map->entries.emplace_back(k, v);
+  }
+  *result_out = map;
+  return true;
+}
+
+int64_t xls_dslx_string_map_get_size(struct xls_dslx_string_map* map) {
+  return map == nullptr ? 0 : static_cast<int64_t>(map->entries.size());
+}
+
+const char* xls_dslx_string_map_get_key(struct xls_dslx_string_map* map,
+                                        int64_t index) {
+  if (map == nullptr || index < 0 || index >= static_cast<int64_t>(map->entries.size())) {
+    return nullptr;
+  }
+  return map->entries[index].first.c_str();
+}
+
+const char* xls_dslx_string_map_get_value(struct xls_dslx_string_map* map,
+                                          int64_t index) {
+  if (map == nullptr || index < 0 || index >= static_cast<int64_t>(map->entries.size())) {
+    return nullptr;
+  }
+  return map->entries[index].second.c_str();
+}
+
+void xls_dslx_string_map_free(struct xls_dslx_string_map* map) {
+  delete map;
 }
 
 }  // extern "C"

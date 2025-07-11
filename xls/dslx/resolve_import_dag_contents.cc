@@ -28,13 +28,13 @@ absl::StatusOr<std::string> ReadFileContents(const std::filesystem::path& path,
 // Computes a sha256 digest for the given data and returns it in the
 // "sha256:<hex>" canonical format.
 std::string Sha256Digest(std::string_view data) {
-  unsigned char digest[SHA256_DIGEST_LENGTH];
+  std::array<unsigned char, SHA256_DIGEST_LENGTH> digest;
   SHA256(reinterpret_cast<const unsigned char*>(data.data()), data.size(),
-         digest);
+         digest.data());
   return absl::StrCat(
       "sha256:",
-      absl::BytesToHexString({reinterpret_cast<const char*>(digest),
-                              SHA256_DIGEST_LENGTH}));
+      absl::BytesToHexString({reinterpret_cast<const char*>(digest.data()),
+                              digest.size()}));
 }
 
 // Determines whether the given filesystem path is considered part of the

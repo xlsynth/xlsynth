@@ -319,6 +319,41 @@ struct xls_dslx_type* xls_dslx_type_array_get_element_type(
 struct xls_dslx_type_dim* xls_dslx_type_array_get_size(
     struct xls_dslx_type* type);
 
+// Opaque map returned by resolve_import_dag_contents.
+struct xls_dslx_string_map;
+
+// Resolves all import DAG contents starting at the given already-parsed-and-typechecked
+// module (`tm`) using the provided `import_data` cache.
+//
+// On success returns true and sets result_out to a newly allocated map that
+// must later be freed with `xls_dslx_string_map_free()`. The map entries are not
+// guaranteed to have any stable ordering between invocations.
+//
+// On failure returns false and sets `error_out` to a newly allocated C string
+// describing the error (caller must free via `xls_c_str_free`). In this case
+// `result_out` will be set to nullptr.
+bool xls_dslx_resolve_import_dag_contents(
+    struct xls_dslx_typechecked_module* tm,
+    struct xls_dslx_import_data* import_data,
+    struct xls_dslx_string_map** result_out,
+    char** error_out);
+
+// Returns the number of (key,value) entries in `map`.
+int64_t xls_dslx_string_map_get_size(struct xls_dslx_string_map* map);
+
+// Returns the key at `index` within `map`. Returned pointer is owned by the
+// map and remains valid until `xls_dslx_string_map_free` is called.
+const char* xls_dslx_string_map_get_key(struct xls_dslx_string_map* map,
+                                        int64_t index);
+
+// Returns the value string at `index` within `map`.
+const char* xls_dslx_string_map_get_value(struct xls_dslx_string_map* map,
+                                          int64_t index);
+
+// Frees the map and its owned key/value strings.
+void xls_dslx_string_map_free(struct xls_dslx_string_map* map);
+
+
 }  // extern "C"
 
 #endif  // XLS_PUBLIC_C_API_DSLX_H_

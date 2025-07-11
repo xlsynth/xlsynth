@@ -40,6 +40,7 @@
 #include "xls/public/c_api_dslx.h"
 #include "xls/public/c_api_format_preference.h"
 #include "xls/public/c_api_ir_builder.h"
+#include "openssl/sha.h"
 
 namespace {
 
@@ -2349,6 +2350,84 @@ top fn add(x: bits[32], y: bits[32]) -> bits[32] {
 
   EXPECT_EQ(std::string_view{smtlib},
             "(lambda ((x (_ BitVec 32)) (y (_ BitVec 32))) (bvadd x y))");
+}
+
+std::string Sha256Digest(std::string_view data) {
+  unsigned char digest[SHA256_DIGEST_LENGTH];
+  SHA256(reinterpret_cast<const unsigned char*>(data.data()), data.size(), digest);
+  return absl::StrCat("sha256:",
+                      absl::BytesToHexString({reinterpret_cast<const char*>(digest),
+                                              SHA256_DIGEST_LENGTH}));
+}
+
+TEST(XlsCDslxApiTest, ResolveImportDagContents) {
+  // Create temporary directory with modules.
+  std::filesystem::path tmp_dir = xls::GetTempDir() / "c_api_dag";
+  ASSERT_TRUE(std::filesystem::create_directories(tmp_dir));
+
+  std::filesystem::path stdlib_dir = tmp_dir / "stdlib";
+  ASSERT_TRUE(std::filesystem::create_directories(stdlib_dir));
+
+  const std::string kStdContents = R"(
+pub fn add(a: u32, b: u32) -> u32 { a + b }
+)";
+  const std::string kBarContents = R"(
+import std;
+pub fn f() -> u32 { std::add(u32:1, u32:41) }
+)";
+  const std::string kFooContents = R"(
+import bar;
+import std;
+fn main() -> u32 { bar::f() }
+)";
+
+  std::filesystem::path std_path = stdlib_dir / "std.x";
+  std::filesystem::path bar_path = tmp_dir / "bar.x";
+  std::filesystem::path foo_path = tmp_dir / "foo.x";
+
+  ASSERT_TRUE(xls::SetFileContents(std_path, kStdContents).ok());
+  ASSERT_TRUE(xls::SetFileContents(bar_path, kBarContents).ok());
+  ASSERT_TRUE(xls::SetFileContents(foo_path, kFooContents).ok());
+
+  // Create import data (no additional search paths).
+  const char* add_paths[] = {};
+  struct xls_dslx_import_data* import_data = xls_dslx_import_data_create(
+      stdlib_dir.c_str(), add_paths, 0);
+  ASSERT_NE(import_data, nullptr);
+  absl::Cleanup free_import_data([&] { xls_dslx_import_data_free(import_data); });
+
+  // Parse+typecheck root.
+  const char* text = kFooContents.c_str();
+  const char* path_c = foo_path.c_str();
+  struct xls_dslx_typechecked_module* tm = nullptr;
+  char* error = nullptr;
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(text, path_c, "foo", import_data,
+                                           &error, &tm))
+      << error;
+  absl::Cleanup free_tm([&] { xls_dslx_typechecked_module_free(tm); });
+
+  // Resolve DAG.
+  struct xls_dslx_string_map* map = nullptr;
+  ASSERT_TRUE(xls_dslx_resolve_import_dag_contents(tm, import_data, &map, &error))
+      << error;
+  absl::Cleanup free_map([&] { xls_dslx_string_map_free(map); });
+
+  int64_t size = xls_dslx_string_map_get_size(map);
+  EXPECT_EQ(size, 3);
+
+  // Build map in C++ for easier comparison.
+  absl::flat_hash_map<std::string, std::string> got;
+  for (int64_t i = 0; i < size; ++i) {
+    got[xls_dslx_string_map_get_key(map, i)] =
+        xls_dslx_string_map_get_value(map, i);
+  }
+
+  absl::flat_hash_map<std::string, std::string> expected = {
+      {foo_path.string(), kFooContents},
+      {bar_path.string(), kBarContents},
+      {"std.x", Sha256Digest(kStdContents)},
+  };
+  EXPECT_EQ(got, expected);
 }
 
 }  // namespace
