@@ -930,3 +930,48 @@ genrule(
     cmd = "$(location :generate_stdlib_builtins_main) $(location stdlib_builtins.inc) $(SRCS)",
     tools = [":generate_stdlib_builtins_main"],
 )
+
+cc_library(
+    name = "resolve_import_dag_contents",
+    srcs = ["resolve_import_dag_contents.cc"],
+    hdrs = ["resolve_import_dag_contents.h"],
+    deps = [
+        ":import_data",
+        "//xls/dslx:parse_and_typecheck",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
+        "//xls/dslx/frontend:pos",
+        "//xls/dslx/type_system:type_info",
+        "@boringssl//:crypto",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "resolve_import_dag_contents_test",
+    srcs = ["resolve_import_dag_contents_test.cc"],
+    deps = [
+        ":create_import_data",
+        ":default_dslx_stdlib_path",
+        ":parse_and_typecheck",
+        ":resolve_import_dag_contents",
+        ":virtualizable_file_system",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/common/status:status_macros",
+        "@boringssl//:crypto",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@googletest//:gtest",
+    ],
+)
