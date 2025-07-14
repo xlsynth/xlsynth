@@ -2677,9 +2677,8 @@ fn parametric_fn<N: u32>(x: bits[N]) -> bits[N] { x }
 
   xls_dslx_typechecked_module* tm = nullptr;
   char* error = nullptr;
-  bool ok =
-      xls_dslx_parse_and_typecheck(kProgram.data(), "test_module.x",
-                                   "test_module", import_data, &error, &tm);
+  bool ok = xls_dslx_parse_and_typecheck(kProgram.data(), "test_module.x",
+                                         "test_module", import_data, &error, &tm);
   absl::Cleanup free_tm([=] { xls_dslx_typechecked_module_free(tm); });
   ASSERT_TRUE(ok) << "parse-and-typecheck error: " << error;
   ASSERT_EQ(error, nullptr);
@@ -2797,7 +2796,8 @@ fn no_token(x: u32) -> u32 {
 
   // Function that does not require implicit token.
   xls_dslx_module_member* member1 = xls_dslx_module_get_member(module, 1);
-  xls_dslx_function* no_token_fn = xls_dslx_module_member_get_function(member1);
+  xls_dslx_function* no_token_fn =
+      xls_dslx_module_member_get_function(member1);
   ASSERT_NE(no_token_fn, nullptr);
   requires_implicit_token = false;
   ASSERT_TRUE(xls_dslx_type_info_get_requires_implicit_token(
