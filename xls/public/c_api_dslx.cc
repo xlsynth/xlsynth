@@ -23,7 +23,7 @@
 #include <utility>
 #include <vector>
 
-#include "absl/log/check.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/variant.h"
 #include "xls/common/visitor.h"
@@ -41,6 +41,7 @@
 #include "xls/dslx/warning_kind.h"
 #include "xls/ir/value.h"
 #include "xls/public/c_api_impl_helpers.h"
+#include "absl/log/check.h"
 
 namespace {
 const struct xls_dslx_type* GetMetaTypeHelper(
@@ -217,8 +218,11 @@ struct xls_dslx_type_alias* xls_dslx_module_member_get_type_alias(
 struct xls_dslx_function* xls_dslx_module_member_get_function(
     struct xls_dslx_module_member* member) {
   auto* cpp_member = reinterpret_cast<xls::dslx::ModuleMember*>(member);
-  auto* cpp_function = std::get<xls::dslx::Function*>(*cpp_member);
-  return reinterpret_cast<xls_dslx_function*>(cpp_function);
+  if (std::holds_alternative<xls::dslx::Function*>(*cpp_member)) {
+    auto* cpp_function = std::get<xls::dslx::Function*>(*cpp_member);
+    return reinterpret_cast<xls_dslx_function*>(cpp_function);
+  }
+  return nullptr;
 }
 
 bool xls_dslx_function_is_parametric(struct xls_dslx_function* fn) {
@@ -230,6 +234,29 @@ char* xls_dslx_function_get_identifier(struct xls_dslx_function* fn) {
   auto* cpp_function = reinterpret_cast<xls::dslx::Function*>(fn);
   const std::string& result = cpp_function->identifier();
   return xls::ToOwnedCString(result);
+}
+
+bool xls_dslx_type_info_get_requires_implicit_token(
+    struct xls_dslx_type_info* type_info, struct xls_dslx_function* function,
+    char** error_out, bool* result_out) {
+  auto* cpp_type_info = reinterpret_cast<xls::dslx::TypeInfo*>(type_info);
+  CHECK(cpp_type_info != nullptr);
+  auto* cpp_function = reinterpret_cast<xls::dslx::Function*>(function);
+  CHECK(cpp_function != nullptr);
+  std::optional<bool> requires_implicit_token =
+      cpp_type_info->GetRequiresImplicitToken(*cpp_function);
+  if (!requires_implicit_token.has_value()) {
+    *result_out = false;
+    *error_out = xls::ToOwnedCString(
+        absl::NotFoundError(
+            "No implicit-token calling convention information for function")
+            .ToString());
+    return false;
+  }
+
+  *result_out = *requires_implicit_token;
+  *error_out = nullptr;
+  return true;
 }
 
 int64_t xls_dslx_module_get_type_definition_count(
