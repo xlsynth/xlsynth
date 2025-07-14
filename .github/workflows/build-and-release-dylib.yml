@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-osx-arm64:
-    runs-on: macos-latest
+    runs-on: warp-macos-latest-arm64-6x
     env:
       MACOSX_DEPLOYMENT_TARGET: 11.0
 
@@ -102,7 +102,7 @@ jobs:
         path: osx-artifacts-arm64/
 
   build-osx-x64:
-    runs-on: macos-latest
+    runs-on: warp-macos-latest-arm64-6x
     env:
       MACOSX_DEPLOYMENT_TARGET: 11.0
 
@@ -198,7 +198,7 @@ jobs:
         path: osx-artifacts-x64/
 
   build-rocky8:
-    runs-on: ubuntu-latest  # Use a GitHub-hosted runner
+    runs-on: warp-ubuntu-latest-x64-32x
     container: rockylinux:8.9 # Specify the Docker container
     steps:
     - name: Checkout repository
@@ -313,7 +313,7 @@ jobs:
         path: rocky8-artifacts/
 
   build-ubuntu2004:
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-32x
     container: ubuntu:20.04
     env:
       DEBIAN_FRONTEND: noninteractive
@@ -464,7 +464,7 @@ jobs:
 
 
   build-ubuntu2204:
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-32x
     steps:
     - name: Verify non-root user
       run: |
@@ -599,7 +599,7 @@ jobs:
       - build-ubuntu2004
       - build-ubuntu2204
       - build-rocky8
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-32x
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
