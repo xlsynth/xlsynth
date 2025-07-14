@@ -76,6 +76,9 @@ struct xls_dslx_function;
 struct xls_dslx_quickcheck;
 struct xls_dslx_function;
 
+// Added: forward declaration for DSLX function.
+struct xls_dslx_function;
+
 struct xls_dslx_import_data* xls_dslx_import_data_create(
     const char* dslx_stdlib_path, const char* additional_search_paths[],
     size_t additional_search_paths_count);
@@ -114,7 +117,7 @@ struct xls_dslx_type_alias* xls_dslx_module_member_get_type_alias(
 // Returns the function AST node from the given module member if it is a
 // function; otherwise returns nullptr.
 struct xls_dslx_function* xls_dslx_module_member_get_function(
-    struct xls_dslx_module_member*);
+  struct xls_dslx_module_member*);
 
 // Returns whether the given DSLX function is parametric.
 bool xls_dslx_function_is_parametric(struct xls_dslx_function*);

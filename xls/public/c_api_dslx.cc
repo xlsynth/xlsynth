@@ -43,6 +43,7 @@
 #include "xls/dslx/warning_kind.h"
 #include "xls/ir/value.h"
 #include "xls/public/c_api_impl_helpers.h"
+#include "absl/log/check.h"
 
 namespace {
 const struct xls_dslx_type* GetMetaTypeHelper(
