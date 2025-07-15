@@ -77,9 +77,6 @@ struct xls_dslx_quickcheck;
 struct xls_dslx_function;
 struct xls_dslx_param;
 
-// Added: forward declaration for DSLX function.
-struct xls_dslx_function;
-
 struct xls_dslx_import_data* xls_dslx_import_data_create(
     const char* dslx_stdlib_path, const char* additional_search_paths[],
     size_t additional_search_paths_count);
