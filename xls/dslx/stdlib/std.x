@@ -492,6 +492,24 @@ fn test_zero_pad_lsbs() {
     assert_eq(zero_pad_lsbs<u32:16>(u32:1), u32:1);
 }
 
+// Returns a bits that is at least AtLeast bits wide, by inserting the minimum required number
+// of most significant zeros.
+//
+// Example:
+// zero_pad_msbs<u32:4>(u1:1) = u4:1
+// zero_pad_msbs<u32:16>(u32:1) = u32:1
+pub fn zero_pad_msbs
+    <AtLeast: u32, S: bool, N: u32, R: u32 = {max(AtLeast, N)},
+     NumBitsAppended: u32 = {usub_or_zero(R, N)}>(x: xN[S][N]) -> bits[R] {
+    (x as bits[N]) ++ bits[NumBitsAppended]:0
+}
+
+#[test]
+fn test_zero_pad_msbs() {
+    assert_eq(zero_pad_msbs<u32:4>(u1:1), u4:1);
+    assert_eq(zero_pad_msbs<u32:16>(u32:1), u32:1);
+}
+
 // Returns the absolute value of x as a signed number.
 pub fn abs<BITS: u32>(x: sN[BITS]) -> sN[BITS] { if x < sN[BITS]:0 { -x } else { x } }
 
