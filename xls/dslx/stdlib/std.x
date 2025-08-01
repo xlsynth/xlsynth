@@ -475,7 +475,8 @@ fn prop_split_msbs(n: uN[4], o: uN[3]) -> bool {
 }
 
 // Returns a bits that is at least AtLeast bits wide, by inserting the minimum required number
-// of least significant zeros.
+// of least significant zeros. The result will be wider than AtLeast when the input is wider
+// than AtLeast.
 //
 // Example:
 // zero_pad_lsbs<u32:4>(u1:1) = u4:0b1000
@@ -493,7 +494,8 @@ fn test_zero_pad_lsbs() {
 }
 
 // Returns a bits that is at least AtLeast bits wide, by inserting the minimum required number
-// of most significant zeros.
+// of most significant zeros. The result will be wider than AtLeast when the input is wider than
+// AtLeast.
 //
 // Example:
 // zero_pad_msbs<u32:4>(u1:1) = u4:1
