@@ -503,7 +503,7 @@ fn test_zero_pad_lsbs() {
 pub fn zero_pad_msbs
     <AtLeast: u32, S: bool, N: u32, R: u32 = {max(AtLeast, N)},
      NumBitsAppended: u32 = {usub_or_zero(R, N)}>(x: xN[S][N]) -> bits[R] {
-    (x as bits[N]) ++ bits[NumBitsAppended]:0
+    bits[NumBitsAppended]:0 ++ (x as bits[N])
 }
 
 #[test]
