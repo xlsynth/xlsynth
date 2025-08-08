@@ -59,8 +59,8 @@ jobs:
 
     - name: Collect arm64 artifacts
       run: |
-        cp bazel-bin/xls/public/libxls.dylib                osx-artifacts-arm64/libxls-arm64.dylib
-        shasum -a 256 osx-artifacts-arm64/libxls-arm64.dylib > osx-artifacts-arm64/libxls-arm64.dylib.sha256
+        gzip -c bazel-bin/xls/public/libxls.dylib > osx-artifacts-arm64/libxls-arm64.dylib.gz
+        shasum -a 256 osx-artifacts-arm64/libxls-arm64.dylib.gz > osx-artifacts-arm64/libxls-arm64.dylib.gz.sha256
 
         cp bazel-bin/xls/dslx/interpreter_main              osx-artifacts-arm64/dslx_interpreter_main-arm64
         shasum -a 256 osx-artifacts-arm64/dslx_interpreter_main-arm64 > osx-artifacts-arm64/dslx_interpreter_main-arm64.sha256
@@ -155,8 +155,8 @@ jobs:
 
     - name: Collect x86_64 artifacts
       run: |
-        cp bazel-bin/xls/public/libxls.dylib                osx-artifacts-x64/libxls-x64.dylib
-        shasum -a 256 osx-artifacts-x64/libxls-x64.dylib > osx-artifacts-x64/libxls-x64.dylib.sha256
+        gzip -c bazel-bin/xls/public/libxls.dylib > osx-artifacts-x64/libxls-x64.dylib.gz
+        shasum -a 256 osx-artifacts-x64/libxls-x64.dylib.gz > osx-artifacts-x64/libxls-x64.dylib.gz.sha256
 
         cp bazel-bin/xls/dslx/interpreter_main              osx-artifacts-x64/dslx_interpreter_main-x64
         shasum -a 256 osx-artifacts-x64/dslx_interpreter_main-x64 > osx-artifacts-x64/dslx_interpreter_main-x64.sha256
@@ -270,8 +270,8 @@ jobs:
 
     - name: Copy Bazel target to rocky8-artifacts
       run: |
-        cp bazel-bin/xls/public/libxls.so                   rocky8-artifacts/libxls-rocky8.so
-        sha256sum rocky8-artifacts/libxls-rocky8.so > rocky8-artifacts/libxls-rocky8.so.sha256
+        gzip -c bazel-bin/xls/public/libxls.so > rocky8-artifacts/libxls-rocky8.so.gz
+        sha256sum rocky8-artifacts/libxls-rocky8.so.gz > rocky8-artifacts/libxls-rocky8.so.gz.sha256
 
         cp bazel-bin/xls/dslx/interpreter_main              rocky8-artifacts/dslx_interpreter_main-rocky8
         sha256sum rocky8-artifacts/dslx_interpreter_main-rocky8 > rocky8-artifacts/dslx_interpreter_main-rocky8.sha256
@@ -415,8 +415,8 @@ jobs:
 
     - name: Copy Bazel target to ubuntu2004-artifacts
       run: |
-        cp bazel-bin/xls/public/libxls.so                  ubuntu2004-artifacts/libxls-ubuntu2004.so
-        sha256sum ubuntu2004-artifacts/libxls-ubuntu2004.so > ubuntu2004-artifacts/libxls-ubuntu2004.so.sha256
+        gzip -c bazel-bin/xls/public/libxls.so > ubuntu2004-artifacts/libxls-ubuntu2004.so.gz
+        sha256sum ubuntu2004-artifacts/libxls-ubuntu2004.so.gz > ubuntu2004-artifacts/libxls-ubuntu2004.so.gz.sha256
 
         cp bazel-bin/xls/dslx/interpreter_main             ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004
         sha256sum ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004 > ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004.sha256
@@ -545,8 +545,8 @@ jobs:
 
     - name: Copy Bazel target to ubuntu2204-artifacts
       run: |
-        cp bazel-bin/xls/public/libxls.so                  ubuntu2204-artifacts/libxls-ubuntu2204.so
-        sha256sum ubuntu2204-artifacts/libxls-ubuntu2204.so > ubuntu2204-artifacts/libxls-ubuntu2204.so.sha256
+        gzip -c bazel-bin/xls/public/libxls.so > ubuntu2204-artifacts/libxls-ubuntu2204.so.gz
+        sha256sum ubuntu2204-artifacts/libxls-ubuntu2204.so.gz > ubuntu2204-artifacts/libxls-ubuntu2204.so.gz.sha256
 
         cp bazel-bin/xls/dslx/interpreter_main             ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204
         sha256sum ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204 > ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204.sha256
@@ -654,8 +654,8 @@ jobs:
       run: |
         export GH_TOKEN=${{ secrets.GITHUB_TOKEN }}
         gh release create "$TAG_NAME" \
-          osx-artifacts-arm64/libxls-arm64.dylib \
-          osx-artifacts-arm64/libxls-arm64.dylib.sha256 \
+          osx-artifacts-arm64/libxls-arm64.dylib.gz \
+          osx-artifacts-arm64/libxls-arm64.dylib.gz.sha256 \
           osx-artifacts-arm64/dslx_interpreter_main-arm64 \
           osx-artifacts-arm64/dslx_interpreter_main-arm64.sha256 \
           osx-artifacts-arm64/dslx_ls-arm64 \
@@ -678,8 +678,8 @@ jobs:
           osx-artifacts-arm64/highlight_main-arm64.sha256 \
           osx-artifacts-arm64/check_ir_equivalence_main-arm64 \
           osx-artifacts-arm64/check_ir_equivalence_main-arm64.sha256 \
-          osx-artifacts-x64/libxls-x64.dylib \
-          osx-artifacts-x64/libxls-x64.dylib.sha256 \
+          osx-artifacts-x64/libxls-x64.dylib.gz \
+          osx-artifacts-x64/libxls-x64.dylib.gz.sha256 \
           osx-artifacts-x64/dslx_interpreter_main-x64 \
           osx-artifacts-x64/dslx_interpreter_main-x64.sha256 \
           osx-artifacts-x64/dslx_ls-x64 \
@@ -704,8 +704,8 @@ jobs:
           osx-artifacts-x64/check_ir_equivalence_main-x64.sha256 \
           ubuntu2004-artifacts/dslx_stdlib.tar.gz \
           ubuntu2004-artifacts/dslx_stdlib.tar.gz.sha256 \
-          ubuntu2004-artifacts/libxls-ubuntu2004.so \
-          ubuntu2004-artifacts/libxls-ubuntu2004.so.sha256 \
+          ubuntu2004-artifacts/libxls-ubuntu2004.so.gz \
+          ubuntu2004-artifacts/libxls-ubuntu2004.so.gz.sha256 \
           ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004 \
           ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004.sha256 \
           ubuntu2004-artifacts/dslx_ls-ubuntu2004 \
@@ -728,8 +728,8 @@ jobs:
           ubuntu2004-artifacts/highlight_main-ubuntu2004.sha256 \
           ubuntu2004-artifacts/check_ir_equivalence_main-ubuntu2004 \
           ubuntu2004-artifacts/check_ir_equivalence_main-ubuntu2004.sha256 \
-          ubuntu2204-artifacts/libxls-ubuntu2204.so \
-          ubuntu2204-artifacts/libxls-ubuntu2204.so.sha256 \
+          ubuntu2204-artifacts/libxls-ubuntu2204.so.gz \
+          ubuntu2204-artifacts/libxls-ubuntu2204.so.gz.sha256 \
           ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204 \
           ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204.sha256 \
           ubuntu2204-artifacts/dslx_ls-ubuntu2204 \
@@ -752,8 +752,8 @@ jobs:
           ubuntu2204-artifacts/highlight_main-ubuntu2204.sha256 \
           ubuntu2204-artifacts/check_ir_equivalence_main-ubuntu2204 \
           ubuntu2204-artifacts/check_ir_equivalence_main-ubuntu2204.sha256 \
-          rocky8-artifacts/libxls-rocky8.so \
-          rocky8-artifacts/libxls-rocky8.so.sha256 \
+          rocky8-artifacts/libxls-rocky8.so.gz \
+          rocky8-artifacts/libxls-rocky8.so.gz.sha256 \
           rocky8-artifacts/dslx_interpreter_main-rocky8 \
           rocky8-artifacts/dslx_interpreter_main-rocky8.sha256 \
           rocky8-artifacts/dslx_ls-rocky8 \
