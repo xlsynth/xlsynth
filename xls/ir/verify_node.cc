@@ -589,6 +589,13 @@ class NodeChecker : public DfsVisitor {
     XLS_RETURN_IF_ERROR(VerifyMultidimensionalArrayIndex(
         index->indices(), index->array()->GetType(), index));
     XLS_RETURN_IF_ERROR(ExpectDoesNotContainToken(index));
+    if (!index->indices().empty()) {
+      XLS_RETURN_IF_ERROR(ExpectOperandHasArrayType(index, 0));
+      if (index->array()->GetType()->AsArrayOrDie()->empty()) {
+        return absl::InvalidArgumentError(
+            "Array index cannot be applied to an empty array");
+      }
+    }
     XLS_ASSIGN_OR_RETURN(Type * indexed_type,
                          GetIndexedElementType(index->array()->GetType(),
                                                index->indices().size()));
