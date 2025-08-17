@@ -746,6 +746,7 @@ cc_binary(
         ":scheduling_options_flags",
         ":scheduling_options_flags_cc_proto",
         "//xls/codegen:codegen_result",
+        "//xls/codegen:codegen_residual_cc_proto",
         "//xls/codegen:module_signature",
         "//xls/common:exit_status",
         "//xls/common:init_xls",

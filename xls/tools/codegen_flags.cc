@@ -201,6 +201,8 @@ ABSL_FLAG(std::string, output_codegen_pass_metrics_path, "",
 ABSL_FLAG(std::string, block_metrics_path, "",
           "The filename to write the metrics, including the bill of "
           "materials, for the generated Verilog file");
+ABSL_FLAG(std::string, output_codegen_residual_path, "",
+          "Output path for residual codegen data (mapping and topo order).");
 
 struct SeedSeq {
   std::vector<int32_t> elements;

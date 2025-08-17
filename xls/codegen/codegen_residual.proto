@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package xls.verilog;
+
+// Residual information produced during codegen to aid ECO and diff stability
+// workflows.
+message CodegenResidualData {
+  message BlockResidual {
+    string block_name = 1;
+
+    message Mapping {
+      int64 ir_node_id = 1;     // IR node id in the block IR.
+      string signal_name = 2;   // Final RTL signal/port name.
+    }
+
+    // Named signals associated with IR nodes for this block.
+    repeated Mapping mappings = 2;
+
+    // The topological order of IR node ids used for emission in this block.
+    repeated int64 topo_ir_node_order = 3;
+  }
+
+  // Residual data per emitted block/module (includes instantiated blocks).
+  repeated BlockResidual blocks = 1;
+}

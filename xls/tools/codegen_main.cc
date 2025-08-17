@@ -27,6 +27,7 @@
 #include "absl/strings/str_format.h"
 #include "xls/codegen/codegen_result.h"
 #include "xls/codegen/module_signature.h"
+#include "xls/codegen/codegen_residual.pb.h"
 #include "xls/common/exit_status.h"
 #include "xls/common/file/filesystem.h"
 #include "xls/common/init_xls.h"
@@ -158,6 +159,22 @@ absl::Status RealMain(std::string_view ir_path) {
   if (!verilog_line_map_path.empty()) {
     XLS_RETURN_IF_ERROR(SetTextProtoFile(verilog_line_map_path,
                                          codegen_result.verilog_line_map));
+  }
+
+  const std::string& residual_path =
+      absl::GetFlag(FLAGS_output_codegen_residual_path);
+  if (!residual_path.empty()) {
+    // Heuristic: text if extension is one of common textproto suffixes.
+    auto is_text = [](std::string_view path) {
+      return path.ends_with(".textproto") || path.ends_with(".txtpb") ||
+             path.ends_with(".pb.txt");
+    };
+    if (is_text(residual_path)) {
+      XLS_RETURN_IF_ERROR(
+          SetTextProtoFile(residual_path, codegen_result.residual));
+    } else {
+      XLS_RETURN_IF_ERROR(SetProtobinFile(residual_path, codegen_result.residual));
+    }
   }
 
   if (verilog_path.empty()) {

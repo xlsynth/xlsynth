@@ -20,6 +20,7 @@
 #include "absl/status/statusor.h"
 #include "xls/codegen/codegen_options.h"
 #include "xls/codegen/verilog_line_map.pb.h"
+#include "xls/codegen/codegen_residual.pb.h"
 #include "xls/ir/block.h"
 
 namespace xls {
@@ -30,7 +31,8 @@ namespace verilog {
 // block as well as module definitions for any instantiated blocks.
 absl::StatusOr<std::string> GenerateVerilog(
     Block* top, const CodegenOptions& options,
-    VerilogLineMap* verilog_line_map = nullptr);
+    VerilogLineMap* verilog_line_map = nullptr,
+    CodegenResidualData* residual = nullptr);
 
 }  // namespace verilog
 }  // namespace xls

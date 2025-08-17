@@ -19,6 +19,7 @@
 
 #include "xls/codegen/module_signature.h"
 #include "xls/codegen/verilog_line_map.pb.h"
+#include "xls/codegen/codegen_residual.pb.h"
 #include "xls/codegen/xls_metrics.pb.h"
 #include "xls/passes/pass_metrics.pb.h"
 
@@ -31,6 +32,7 @@ struct CodegenResult {
   ModuleSignature signature;
   XlsMetricsProto block_metrics;
   PassPipelineMetricsProto pass_pipeline_metrics;
+  CodegenResidualData residual;
 };
 
 }  // namespace xls::verilog

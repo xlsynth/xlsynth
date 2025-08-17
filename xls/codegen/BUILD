@@ -60,6 +60,7 @@ cc_library(
     srcs = ["combinational_generator.cc"],
     hdrs = ["combinational_generator.h"],
     deps = [
+        ":codegen_residual_cc_proto",
         ":block_conversion",
         ":block_generator",
         ":block_metrics",
@@ -110,6 +111,22 @@ cc_test(
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "residual_name_map_test",
+    srcs = ["residual_name_map_test.cc"],
+    deps = [
+        ":combinational_generator",
+        ":codegen_options",
+        ":codegen_result",
+        ":codegen_residual_cc_proto",
+        "//xls/common:xls_gunit_main",
+        "//xls/ir",
+        "//xls/ir:ir_test_base",
+        "//xls/ir:function_builder",
         "@googletest//:gtest",
     ],
 )
@@ -186,6 +203,7 @@ cc_library(
     srcs = ["pipeline_generator.cc"],
     hdrs = ["pipeline_generator.h"],
     deps = [
+        ":codegen_residual_cc_proto",
         ":block_conversion",
         ":block_generator",
         ":block_metrics",
@@ -286,6 +304,7 @@ cc_library(
     srcs = ["unified_generator.cc"],
     hdrs = ["unified_generator.h"],
     deps = [
+        ":codegen_residual_cc_proto",
         ":block_conversion_pass_pipeline",
         ":block_generator",
         ":block_metrics",
@@ -765,6 +784,7 @@ cc_library(
     srcs = ["block_generator.cc"],
     hdrs = ["block_generator.h"],
     deps = [
+        ":codegen_residual_cc_proto",
         ":codegen_options",
         ":conversion_utils",
         ":expression_flattening",
@@ -2086,8 +2106,29 @@ cc_library(
         ":module_signature",
         ":verilog_line_map_cc_proto",
         ":xls_metrics_cc_proto",
+        ":codegen_residual_cc_proto",
         "//xls/passes:pass_metrics_cc_proto",
     ],
+)
+
+proto_library(
+    name = "ir_to_rtl_name_map_proto",
+    srcs = ["ir_to_rtl_name_map.proto"],
+)
+
+cc_proto_library(
+    name = "ir_to_rtl_name_map_cc_proto",
+    deps = [":ir_to_rtl_name_map_proto"],
+)
+
+proto_library(
+    name = "codegen_residual_proto",
+    srcs = ["codegen_residual.proto"],
+)
+
+cc_proto_library(
+    name = "codegen_residual_cc_proto",
+    deps = [":codegen_residual_proto"],
 )
 
 # Test that codegen args work correctly in our rules.
