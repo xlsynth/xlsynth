@@ -255,6 +255,11 @@ class ModuleBuilder {
 
   VerilogFile* file() const { return file_; }
 
+  // Reserve a name in the internal name uniquer to stabilize suffixing.
+  // This should be called in the same order as prior emission so that
+  // subsequent uniquifications reproduce previous suffix sequences.
+  void ReserveName(std::string_view name);
+
  private:
   // Assigns 'rhs' to 'lhs'. Depending upon the type this may require multiple
   // assignment statements (e.g., for array assignments in Verilog). The

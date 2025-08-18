@@ -17,6 +17,7 @@ syntax = "proto3";
 package xls;
 
 import "xls/ir/xls_ir_interface.proto";
+import "xls/codegen/codegen_residual.proto";
 
 enum GeneratorKind {
   GENERATOR_KIND_INVALID = 0;
@@ -99,4 +100,10 @@ message CodegenFlagsProto {
   // If false, runtime invariant assertions (e.g. one-hot selector checks)
   // are omitted from generated RTL.  Default is true.
   optional bool add_invariant_assertions = 42;
+
+  // Residual-guided stabilization knobs and data.
+  optional bool enable_residual_topo_guidance = 43;
+  optional bool enable_residual_name_guidance = 44;
+  // If provided, prior residual data for guidance.
+  optional xls.verilog.CodegenResidualData previous_codegen_residual = 45;
 }

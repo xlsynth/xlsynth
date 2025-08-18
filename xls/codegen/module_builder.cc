@@ -834,6 +834,13 @@ bool ModuleBuilder::CanEmitAsserts() const {
          options_.GetOpOverride(Op::kAssert).has_value();
 }
 
+void ModuleBuilder::ReserveName(std::string_view name) {
+  // Names from prior RTL are already sanitized; reserving them as-is ensures
+  // subsequent uniquifications (e.g., foo, foo__1, foo__2, ...) follow the
+  // previous sequence.
+  (void)name_uniquer_.GetSanitizedUniqueName(name);
+}
+
 std::string ModuleBuilder::SanitizeAndUniquifyName(std::string_view name) {
   std::string n =
       SanitizeVerilogIdentifier(name_uniquer_.GetSanitizedUniqueName(name),

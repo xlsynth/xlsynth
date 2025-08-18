@@ -47,6 +47,7 @@ cc_library(
     deps = [
         "//xls/common/fuzzing:fuzztest",
         "//xls/ir",
+        "//xls/ir:function_builder",
         "//xls/ir:bits",
         "//xls/ir:channel",
         "//xls/ir:value",
@@ -127,6 +128,83 @@ cc_test(
         "//xls/ir",
         "//xls/ir:ir_test_base",
         "//xls/ir:function_builder",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "residual_guidance_test",
+    srcs = ["residual_guidance_test.cc"],
+    deps = [
+        ":block_generator",
+        ":combinational_generator",
+        ":codegen_options",
+        ":codegen_result",
+        ":verilog_line_map_cc_proto",
+        "//xls/common:xls_gunit_main",
+        "//xls/ir",
+        "//xls/ir:function_builder",
+        "//xls/ir:ir_test_base",
+        "@googletest//:gtest",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "residual_guidance_churn_test",
+    srcs = ["residual_guidance_churn_test.cc"],
+    data = [
+        "testdata/residual_guidance_churn_small_edit_noguided.txt",
+        "testdata/residual_guidance_churn_small_edit_guided.txt",
+        "testdata/residual_guidance_name_fallback_idchurn_noguided.txt",
+        "testdata/residual_guidance_name_fallback_idchurn_guided.txt",
+        "testdata/residual_guidance_churn_high_fanout_pivot_noguided.txt",
+        "testdata/residual_guidance_churn_high_fanout_pivot_guided.txt",
+        "testdata/residual_guidance_churn_deep_fanout_insert_noguided.txt",
+        "testdata/residual_guidance_churn_deep_fanout_insert_guided.txt",
+    ],
+    deps = [
+        ":block_generator",
+        ":codegen_options",
+        ":verilog_line_map_cc_proto",
+        "//xls/common:golden_files",
+        "//xls/common/file:temp_file",
+        "//xls/common:subprocess",
+        "//xls/common:xls_gunit_main",
+        "//xls/ir",
+        "//xls/ir:function_builder",
+        "//xls/ir:ir_test_base",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@googletest//:gtest",
+        "@com_google_absl//absl/container:flat_hash_map",
+    ],
+)
+
+cc_test(
+    name = "residual_guidance_golden_diff_test",
+    srcs = ["residual_guidance_golden_diff_test.cc"],
+    data = [
+        "testdata/residual_guidance_golden_diff_small_edit.txt",
+        "testdata/residual_guidance_golden_diff_commutative.txt",
+        "testdata/residual_guidance_golden_diff_name_collision.txt",
+        # Reference RTL goldens for clarity (not asserted yet):
+        "testdata/residual_guidance_small_edit_base.sv",
+        "testdata/residual_guidance_small_edit_guided.sv",
+    ],
+    deps = [
+        ":block_generator",
+        ":codegen_options",
+        ":verilog_line_map_cc_proto",
+        "//xls/common/file:temp_file",
+        "//xls/common:subprocess",
+        "//xls/common:golden_files",
+        "//xls/common:xls_gunit_main",
+        "//xls/ir",
+        "//xls/ir:function_builder",
+        "//xls/ir:ir_test_base",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
         "@googletest//:gtest",
     ],
 )
@@ -611,6 +689,7 @@ cc_library(
     srcs = ["codegen_options.cc"],
     hdrs = ["codegen_options.h"],
     deps = [
+        ":codegen_residual_cc_proto",
         ":module_signature_cc_proto",
         ":op_override",
         ":ram_configuration",
@@ -2111,15 +2190,7 @@ cc_library(
     ],
 )
 
-proto_library(
-    name = "ir_to_rtl_name_map_proto",
-    srcs = ["ir_to_rtl_name_map.proto"],
-)
 
-cc_proto_library(
-    name = "ir_to_rtl_name_map_cc_proto",
-    deps = [":ir_to_rtl_name_map_proto"],
-)
 
 proto_library(
     name = "codegen_residual_proto",

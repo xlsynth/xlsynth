@@ -36,6 +36,10 @@ ABSL_DECLARE_FLAG(std::optional<std::string>,
                   codegen_options_used_textproto_file);
 ABSL_DECLARE_FLAG(std::string, block_metrics_path);
 ABSL_DECLARE_FLAG(int64_t, max_trace_verbosity);
+ABSL_DECLARE_FLAG(std::string, output_codegen_residual_path);
+ABSL_DECLARE_FLAG(std::string, previous_codegen_residual_path);
+ABSL_DECLARE_FLAG(bool, enable_residual_topo_guidance);
+ABSL_DECLARE_FLAG(bool, enable_residual_name_guidance);
 
 // Enables or disables insertion of runtime invariant assertions during
 // codegen (e.g., one-hot selector checks).  Enabled by default.

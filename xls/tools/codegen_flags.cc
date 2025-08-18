@@ -203,6 +203,13 @@ ABSL_FLAG(std::string, block_metrics_path, "",
           "materials, for the generated Verilog file");
 ABSL_FLAG(std::string, output_codegen_residual_path, "",
           "Output path for residual codegen data (mapping and topo order).");
+ABSL_FLAG(std::string, previous_codegen_residual_path, "",
+          "Path to a prior residual codegen data proto to guide topo order and "
+          "naming. Textproto or binary is auto-detected by extension.");
+ABSL_FLAG(bool, enable_residual_topo_guidance, false,
+          "Enable using prior residual data to guide topo order tiebreaks.");
+ABSL_FLAG(bool, enable_residual_name_guidance, false,
+          "Enable using prior residual data to guide name assignment.");
 
 struct SeedSeq {
   std::vector<int32_t> elements;
@@ -395,6 +402,25 @@ static absl::StatusOr<bool> SetOptionsFromFlags(CodegenFlagsProto& proto) {
         proto.mutable_package_interface()->ParseFromString(interface_bytes));
     any_flags_set = true;
     CHECK(proto.has_package_interface());
+  }
+  // Residual guidance
+  POPULATE_FLAG(enable_residual_topo_guidance);
+  POPULATE_FLAG(enable_residual_name_guidance);
+  if (FLAGS_previous_codegen_residual_path.IsSpecifiedOnCommandLine()) {
+    any_flags_set = true;
+    const std::string path = absl::GetFlag(FLAGS_previous_codegen_residual_path);
+    XLS_ASSIGN_OR_RETURN(std::string contents, GetFileContents(path));
+    auto is_text = [](std::string_view p) {
+      return p.ends_with(".textproto") || p.ends_with(".txtpb") ||
+             p.ends_with(".pb.txt");
+    };
+    if (is_text(path)) {
+      XLS_RETURN_IF_ERROR(
+          xls::ParseTextProto(contents, /*file_name=*/path,
+                               proto.mutable_previous_codegen_residual()));
+    } else {
+      proto.mutable_previous_codegen_residual()->ParseFromString(contents);
+    }
   }
 #undef POPULATE_FLAG
 #undef POPULATE_REPEATED_FLAG

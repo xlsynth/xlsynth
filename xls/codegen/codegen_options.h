@@ -27,6 +27,7 @@
 #include "absl/types/span.h"
 #include "xls/codegen/module_signature.pb.h"
 #include "xls/codegen/op_override.h"
+#include "xls/codegen/codegen_residual.pb.h"
 #include "xls/codegen/ram_configuration.h"
 #include "xls/ir/channel.h"
 #include "xls/ir/op.h"
@@ -356,6 +357,27 @@ class CodegenOptions {
   CodegenOptions& add_invariant_assertions(bool value);
   bool add_invariant_assertions() const { return add_invariant_assertions_; }
 
+  // Residual-guided stabilization knobs.
+  CodegenOptions& enable_residual_topo_guidance(bool v) {
+    residual_topo_guidance_ = v;
+    return *this;
+  }
+  bool residual_topo_guidance() const { return residual_topo_guidance_; }
+
+  CodegenOptions& enable_residual_name_guidance(bool v) {
+    residual_name_guidance_ = v;
+    return *this;
+  }
+  bool residual_name_guidance() const { return residual_name_guidance_; }
+
+  CodegenOptions& set_previous_residual(CodegenResidualData residual) {
+    previous_residual_ = std::move(residual);
+    return *this;
+  }
+  const std::optional<CodegenResidualData>& previous_residual() const {
+    return previous_residual_;
+  }
+
  private:
   std::optional<std::string> entry_;
   std::optional<std::string> module_name_;
@@ -395,6 +417,11 @@ class CodegenOptions {
   std::string fifo_module_ = "xls_fifo_wrapper";
   std::string nodata_fifo_module_ = "";
   std::vector<int32_t> randomize_order_seed_;
+
+  // Residual guidance state.
+  bool residual_topo_guidance_ = false;
+  bool residual_name_guidance_ = false;
+  std::optional<CodegenResidualData> previous_residual_;
 };
 
 template <typename Sink>

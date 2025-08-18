@@ -12,6 +12,8 @@ TARGETS=(
 "//xls/codegen:finite_state_machine_test"
 "//xls/codegen:module_builder_test"
 "//xls/codegen:pipeline_generator_test"
+"//xls/codegen:residual_guidance_golden_diff_test"
+"//xls/codegen:residual_guidance_churn_test"
 "//xls/contrib/xlscc/unit_tests:translator_verilog_test"
 "//xls/dev_tools:extract_state_element_test"
 "//xls/dslx/cpp_transpiler:cpp_transpiler_test"

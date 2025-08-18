@@ -1,0 +1,59 @@
+--- base
++++ other
+@@ -1,13 +1,14 @@
+ module B(
+   input wire [7:0] x,
+   input wire [7:0] y,
+   output wire [7:0] out
+ );
++  wire [7:0] add_26;
+   wire [7:0] add_3;
+   wire [7:0] add_14;
+   wire [7:0] add_4;
+   wire [7:0] add_15;
+   wire [7:0] add_5;
+   wire [7:0] add_16;
+   wire [7:0] add_6;
+   wire [7:0] add_17;
+@@ -18,30 +19,31 @@
+   wire [7:0] add_9;
+   wire [7:0] add_20;
+   wire [7:0] add_10;
+   wire [7:0] add_21;
+   wire [7:0] add_11;
+   wire [7:0] add_22;
+   wire [7:0] add_12;
+   wire [7:0] add_23;
+-  assign add_3 = x + x;
++  assign add_26 = x + 8'h01;
++  assign add_3 = add_26 + add_26;
+   assign add_14 = 8'h00 + add_3;
+-  assign add_4 = x + y;
++  assign add_4 = add_26 + y;
+   assign add_15 = add_14 + add_4;
+-  assign add_5 = x + x;
++  assign add_5 = add_26 + add_26;
+   assign add_16 = add_15 + add_5;
+-  assign add_6 = x + y;
++  assign add_6 = add_26 + y;
+   assign add_17 = add_16 + add_6;
+-  assign add_7 = x + x;
++  assign add_7 = add_26 + add_26;
+   assign add_18 = add_17 + add_7;
+-  assign add_8 = x + y;
++  assign add_8 = add_26 + y;
+   assign add_19 = add_18 + add_8;
+-  assign add_9 = x + x;
++  assign add_9 = add_26 + add_26;
+   assign add_20 = add_19 + add_9;
+-  assign add_10 = x + y;
++  assign add_10 = add_26 + y;
+   assign add_21 = add_20 + add_10;
+-  assign add_11 = x + x;
++  assign add_11 = add_26 + add_26;
+   assign add_22 = add_21 + add_11;
+-  assign add_12 = x + y;
++  assign add_12 = add_26 + y;
+   assign add_23 = add_22 + add_12;
+   assign out = add_23;
+ endmodule

@@ -33,6 +33,7 @@
 #include "xls/codegen/pipeline_generator.h"
 #include "xls/codegen/ram_configuration.h"
 #include "xls/codegen/unified_generator.h"
+#include "xls/codegen/codegen_residual.pb.h"
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/estimators/delay_model/delay_estimator.h"
@@ -413,6 +414,17 @@ absl::StatusOr<verilog::CodegenOptions> CodegenOptionsFromProto(
 
   if (p.has_codegen_version()) {
     options.codegen_version(p.codegen_version());
+  }
+
+  // Residual-guided stabilization
+  if (p.has_enable_residual_topo_guidance()) {
+    options.enable_residual_topo_guidance(p.enable_residual_topo_guidance());
+  }
+  if (p.has_enable_residual_name_guidance()) {
+    options.enable_residual_name_guidance(p.enable_residual_name_guidance());
+  }
+  if (p.has_previous_codegen_residual()) {
+    options.set_previous_residual(p.previous_codegen_residual());
   }
 
   return options;

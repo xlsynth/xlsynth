@@ -660,7 +660,10 @@ proto_library(
     name = "codegen_flags_proto",
     srcs = ["codegen_flags.proto"],
     visibility = ["//xls:xls_users"],
-    deps = ["//xls/ir:xls_ir_interface_proto"],
+    deps = [
+        "//xls/codegen:codegen_residual_proto",
+        "//xls/ir:xls_ir_interface_proto",
+    ],
 )
 
 py_proto_library(
@@ -703,6 +706,7 @@ cc_library(
     deps = [
         ":codegen_flags_cc_proto",
         ":scheduling_options_flags_cc_proto",
+        "//xls/codegen:codegen_residual_cc_proto",
         "//xls/codegen:codegen_options",
         "//xls/codegen:codegen_result",
         "//xls/codegen:combinational_generator",

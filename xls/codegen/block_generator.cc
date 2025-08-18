@@ -20,6 +20,8 @@
 #include <deque>
 #include <optional>
 #include <random>
+#include <queue>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -347,11 +349,89 @@ class BlockGenerator {
         file_(file),
         mb_(block->name(), file_, options, clock_name, reset_proto),
         residual_(residual),
-        block_residual_(nullptr) {
+        block_residual_(nullptr),
+        emission_seq_(0),
+        total_prior_rank_matched_nodes_(0),
+        total_preferred_name_sites_(0),
+        total_forced_assignments_(0) {
     if (!options.randomize_order_seed().empty()) {
       std::seed_seq seed_seq(options.randomize_order_seed().begin(),
                              options.randomize_order_seed().end());
       rng_.emplace(seed_seq);
+    }
+    if (options_.previous_residual().has_value()) {
+      for (const CodegenResidualData::BlockResidual& b :
+           options_.previous_residual()->blocks()) {
+        if (b.block_name() == block_->name()) {
+          int64_t rank = 0;
+          for (int64_t id : b.topo_ir_node_order()) {
+            prior_rank_by_node_id_[id] = rank++;
+          }
+          for (const auto& m : b.mappings()) {
+            preferred_name_by_node_id_[m.ir_node_id()] = m.signal_name();
+            if (!m.ir_node_name().empty()) {
+              preferred_name_by_node_name_[std::string(m.ir_node_name())] =
+                  m.signal_name();
+            }
+          }
+          // Capture prior emission sequence and kind per node if present.
+          for (const auto& ev : b.emission_events()) {
+            prior_seq_by_node_id_[ev.ir_node_id()] = ev.seq();
+            prior_kind_by_node_id_[ev.ir_node_id()] = ev.kind();
+            if (!ev.ir_node_name().empty()) {
+              prior_seq_by_node_name_[std::string(ev.ir_node_name())] = ev.seq();
+              prior_kind_by_node_name_[std::string(ev.ir_node_name())] = ev.kind();
+            }
+            // Also treat emission event signal names as preferred names.
+            if (!ev.signal_name().empty()) {
+              preferred_name_by_node_id_[ev.ir_node_id()] = ev.signal_name();
+              if (!ev.ir_node_name().empty()) {
+                preferred_name_by_node_name_[std::string(ev.ir_node_name())] =
+                    ev.signal_name();
+              }
+            }
+          }
+          // Seed the name uniquer in prior emission order to stabilize suffixes.
+          std::vector<const CodegenResidualData::BlockResidual::EmissionEvent*> prior_events;
+          prior_events.reserve(b.emission_events().size());
+          for (const auto& ev : b.emission_events()) prior_events.push_back(&ev);
+          std::stable_sort(prior_events.begin(), prior_events.end(),
+                           [](const auto* a, const auto* b) { return a->seq() < b->seq(); });
+          for (const auto* ev : prior_events) {
+            if (ev->kind() == CodegenResidualData::ASSIGNMENT ||
+                ev->kind() == CodegenResidualData::DECLARATION_ONLY ||
+                ev->kind() == CodegenResidualData::CONSTANT_DECLARE) {
+              if (!ev->signal_name().empty()) {
+                // Do not reserve names we plan to reuse exactly for the same
+                // node id to avoid forcing a suffix (e.g., foo__1).
+                bool will_reuse = false;
+                {
+                  auto itpn = preferred_name_by_node_id_.find(ev->ir_node_id());
+                  if (itpn != preferred_name_by_node_id_.end() && itpn->second == ev->signal_name()) {
+                    will_reuse = true;
+                  }
+                }
+                if (!will_reuse && !std::string(ev->ir_node_name()).empty()) {
+                  auto itpnm = preferred_name_by_node_name_.find(std::string(ev->ir_node_name()));
+                  if (itpnm != preferred_name_by_node_name_.end() && itpnm->second == ev->signal_name()) {
+                    will_reuse = true;
+                  }
+                }
+                if (will_reuse) continue;
+                mb_.ReserveName(ev->signal_name());
+              }
+            }
+          }
+          break;
+        }
+      }
+      int64_t idx = 0;
+      for (Node* n : block_->nodes()) {
+        original_index_by_id_[n->id()] = idx++;
+        if (prior_rank_by_node_id_.contains(n->id())) {
+          ++total_prior_rank_matched_nodes_;
+        }
+      }
     }
   }
 
@@ -397,16 +477,22 @@ class BlockGenerator {
           MaybeShuffle(block_->GetRegisters(), shuffled_storage, rng_);
 
       XLS_RETURN_IF_ERROR(DeclareRegisters(registers));
+      std::vector<Node*> order;
+      if (options_.residual_topo_guidance() && !prior_rank_by_node_id_.empty()) {
+        order = GuidedTopo();
+      } else {
+        order = TopoSort(block_, rng_);
+      }
       if (residual_ != nullptr) {
         if (block_residual_ == nullptr) {
           block_residual_ = residual_->add_blocks();
           block_residual_->set_block_name(block_->name());
         }
-        for (Node* n : TopoSort(block_, rng_)) {
+        for (Node* n : order) {
           block_residual_->add_topo_ir_node_order(n->id());
         }
       }
-      XLS_RETURN_IF_ERROR(EmitLogic(TopoSort(block_, rng_)));
+      XLS_RETURN_IF_ERROR(EmitLogic(order));
       XLS_RETURN_IF_ERROR(AssignRegisters(registers));
     }
 
@@ -414,6 +500,17 @@ class BlockGenerator {
     XLS_RETURN_IF_ERROR(EmitInstantiations());
 
     XLS_RETURN_IF_ERROR(EmitOutputPorts());
+
+    if (residual_ != nullptr) {
+      if (block_residual_ == nullptr) {
+        block_residual_ = residual_->add_blocks();
+        block_residual_->set_block_name(block_->name());
+      }
+      block_residual_->set_total_prior_rank_matched_nodes(total_prior_rank_matched_nodes_);
+      block_residual_->set_total_preferred_name_sites(total_preferred_name_sites_);
+      block_residual_->set_total_forced_assignments(total_forced_assignments_);
+      block_residual_->set_total_assignments_due_to_prior_kind(total_assignments_due_to_prior_kind_);
+    }
 
     return absl::OkStatus();
   }
@@ -443,6 +540,17 @@ class BlockGenerator {
               auto* m = block_residual_->add_mappings();
               m->set_ir_node_id(input_port->id());
               m->set_signal_name(logic->GetName());
+              m->set_emission_kind(CodegenResidualData::PORT);
+              m->set_emission_seq(emission_seq_);
+              m->set_ir_node_name(input_port->GetName());
+              auto* ev = block_residual_->add_emission_events();
+              ev->set_ir_node_id(input_port->id());
+              ev->set_signal_name(logic->GetName());
+              ev->set_site(CodegenResidualData::INPUT_PORT);
+              ev->set_kind(CodegenResidualData::PORT);
+              ev->set_seq(emission_seq_++);
+              ev->set_forced_assignment_by_residual(false);
+              ev->set_ir_node_name(input_port->GetName());
             }
           }
         }
@@ -454,12 +562,36 @@ class BlockGenerator {
   // If the node has an assigned name then don't emit as an inline expression.
   // This ensures the name appears in the generated Verilog.
   bool ShouldEmitAsAssignment(Node* const n, int64_t inline_depth) {
+    // If we have a preferred name from residual guidance, emit as assignment to
+    // ensure the name appears in the RTL and stabilizes output text.
+    if (options_.residual_name_guidance() &&
+        (preferred_name_by_node_id_.contains(n->id()) ||
+         preferred_name_by_node_name_.contains(std::string(n->GetName())))) {
+      return true;
+    }
     if (n->HasAssignedName() ||
         (n->users().size() > 1 && !ShouldInlineExpressionIntoMultipleUses(n)) ||
         n->function_base()->HasImplicitUse(n) ||
         !mb_.CanEmitAsInlineExpression(n) || options_.separate_lines() ||
         inline_depth > options_.max_inline_depth()) {
       return true;
+    }
+    // Prefer assignment if previous residual emitted this node as an assignment
+    // and name guidance is enabled (to stabilize textual form).
+    if (options_.residual_name_guidance()) {
+      auto it = prior_kind_by_node_id_.find(n->id());
+      if (it != prior_kind_by_node_id_.end() &&
+          it->second == CodegenResidualData::ASSIGNMENT) {
+        forced_by_prior_kind_last_check_ = true;
+        return true;
+      }
+      auto itn = prior_kind_by_node_name_.find(std::string(n->GetName()));
+      if (itn != prior_kind_by_node_name_.end() &&
+          itn->second == CodegenResidualData::ASSIGNMENT) {
+        forced_by_prior_kind_last_check_ = true;
+        return true;
+      }
+      forced_by_prior_kind_last_check_ = false;
     }
     // Emit operands of RegisterWrite's as assignments rather than inline
     // to avoid having logic in the always_ff blocks.
@@ -474,6 +606,16 @@ class BlockGenerator {
   // Name of the node if it gets emitted as a separate assignment.
   std::string NodeAssignmentName(Node* const node,
                                  std::optional<int64_t> stage) {
+    if (!stage.has_value() && options_.residual_name_guidance()) {
+      auto it = preferred_name_by_node_id_.find(node->id());
+      if (it != preferred_name_by_node_id_.end()) {
+        return it->second;
+      }
+      auto itn = preferred_name_by_node_name_.find(std::string(node->GetName()));
+      if (itn != preferred_name_by_node_name_.end()) {
+        return itn->second;
+      }
+    }
     return stage.has_value() ? absl::StrCat(PipelineSignalName(node->GetName(),
                                                                stage.value()),
                                             "_comb")
@@ -593,8 +735,21 @@ class BlockGenerator {
             CHECK_EQ(node->operands().size(), 0);
             XLS_ASSIGN_OR_RETURN(
                 node_exprs_[node],
-                mb_.DeclareModuleConstant(node->GetName(),
+                mb_.DeclareModuleConstant(NodeAssignmentName(node, stage),
                                           node->As<xls::Literal>()->value()));
+            if (residual_ != nullptr) {
+              if (block_residual_ == nullptr) {
+                block_residual_ = residual_->add_blocks();
+                block_residual_->set_block_name(block_->name());
+              }
+              auto* ev = block_residual_->add_emission_events();
+              ev->set_ir_node_id(node->id());
+              ev->set_signal_name(NodeAssignmentName(node, stage));
+              ev->set_site(CodegenResidualData::MODULE_CONSTANT);
+              ev->set_kind(CodegenResidualData::CONSTANT_DECLARE);
+              ev->set_seq(emission_seq_++);
+              ev->set_forced_assignment_by_residual(false);
+            }
             continue;
           }
           break;
@@ -665,8 +820,23 @@ class BlockGenerator {
       if (node->Is<xls::Literal>() && !node->GetType()->IsBits()) {
         XLS_ASSIGN_OR_RETURN(
             node_exprs_[node],
-            mb_.DeclareModuleConstant(node->GetName(),
+            mb_.DeclareModuleConstant(NodeAssignmentName(node, stage),
                                       node->As<xls::Literal>()->value()));
+        if (residual_ != nullptr) {
+          if (block_residual_ == nullptr) {
+            block_residual_ = residual_->add_blocks();
+            block_residual_->set_block_name(block_->name());
+          }
+          auto* ev = block_residual_->add_emission_events();
+          ev->set_ir_node_id(node->id());
+          ev->set_signal_name(NodeAssignmentName(node, stage));
+          ev->set_site(CodegenResidualData::MODULE_CONSTANT);
+          ev->set_kind(CodegenResidualData::CONSTANT_DECLARE);
+          ev->set_seq(emission_seq_++);
+          ev->set_forced_assignment_by_residual(false);
+          ev->set_ir_node_name(node->GetName());
+          ev->set_ir_node_name(node->GetName());
+        }
         continue;
       }
 
@@ -698,12 +868,48 @@ class BlockGenerator {
             auto* m = block_residual_->add_mappings();
             m->set_ir_node_id(node->id());
             m->set_signal_name(logic->GetName());
+            m->set_emission_kind(CodegenResidualData::ASSIGNMENT);
+            m->set_emission_seq(emission_seq_);
+            if (preferred_name_by_node_id_.contains(node->id()) ||
+                preferred_name_by_node_name_.contains(std::string(node->GetName()))) {
+              ++total_preferred_name_sites_;
+            }
+            m->set_ir_node_name(node->GetName());
           }
+          auto* ev = block_residual_->add_emission_events();
+          ev->set_ir_node_id(node->id());
+          ev->set_signal_name(dynamic_cast<LogicRef*>(assigned) ? dynamic_cast<LogicRef*>(assigned)->GetName() : std::string());
+          ev->set_site(CodegenResidualData::COMBINATIONAL_SECTION);
+          ev->set_kind(CodegenResidualData::ASSIGNMENT);
+          bool forced = options_.residual_name_guidance() &&
+                        (preferred_name_by_node_id_.contains(node->id()) ||
+                         preferred_name_by_node_name_.contains(std::string(node->GetName())));
+          ev->set_forced_assignment_by_residual(forced);
+          if (forced) ++total_forced_assignments_;
+          if (!forced && forced_by_prior_kind_last_check_) {
+            ++total_assignments_due_to_prior_kind_;
+          }
+          ev->set_seq(emission_seq_++);
+          ev->set_ir_node_name(node->GetName());
         }
       } else {
         XLS_ASSIGN_OR_RETURN(node_exprs_[node],
                              mb_.EmitAsInlineExpression(node, inputs));
         node_depth[node] = inline_depth;
+        if (residual_ != nullptr) {
+          if (block_residual_ == nullptr) {
+            block_residual_ = residual_->add_blocks();
+            block_residual_->set_block_name(block_->name());
+          }
+          auto* ev = block_residual_->add_emission_events();
+          ev->set_ir_node_id(node->id());
+          ev->set_signal_name("");
+          ev->set_site(CodegenResidualData::COMBINATIONAL_SECTION);
+          ev->set_kind(CodegenResidualData::INLINE_EXPRESSION);
+          ev->set_seq(emission_seq_++);
+          ev->set_forced_assignment_by_residual(false);
+          ev->set_ir_node_name(node->GetName());
+        }
       }
     }
     return absl::OkStatus();
@@ -733,6 +939,20 @@ class BlockGenerator {
           mb_registers_[reg],
           mb_.DeclareRegister(absl::StrCat(reg->name()), reg->type(),
                               /*next=*/nullptr, reset_expr));
+      if (residual_ != nullptr) {
+        if (block_residual_ == nullptr) {
+          block_residual_ = residual_->add_blocks();
+          block_residual_->set_block_name(block_->name());
+        }
+        auto* ev = block_residual_->add_emission_events();
+        ev->set_ir_node_id(0);
+        ev->set_signal_name(reg->name());
+        ev->set_site(CodegenResidualData::REGISTER_DECLARE);
+        ev->set_kind(CodegenResidualData::REGISTER_OP);
+        ev->set_seq(emission_seq_++);
+        ev->set_forced_assignment_by_residual(false);
+        ev->set_ir_node_name(reg->name());
+      }
     }
     return absl::OkStatus();
   }
@@ -788,6 +1008,17 @@ class BlockGenerator {
           auto* m = block_residual_->add_mappings();
           m->set_ir_node_id(output_port->id());
           m->set_signal_name(output_port->GetName());
+          m->set_emission_kind(CodegenResidualData::PORT);
+          m->set_emission_seq(emission_seq_);
+          m->set_ir_node_name(output_port->GetName());
+          auto* ev = block_residual_->add_emission_events();
+          ev->set_ir_node_id(output_port->id());
+          ev->set_signal_name(output_port->GetName());
+          ev->set_site(CodegenResidualData::OUTPUT_PORT);
+          ev->set_kind(CodegenResidualData::PORT);
+          ev->set_seq(emission_seq_++);
+          ev->set_forced_assignment_by_residual(false);
+          ev->set_ir_node_name(output_port->GetName());
         }
       }
     }
@@ -805,9 +1036,20 @@ class BlockGenerator {
       for (InstantiationOutput* output :
            MaybeShuffle(block_->GetInstantiationOutputs(instantiation),
                         shuffled_outputs, rng_)) {
-        XLS_ASSIGN_OR_RETURN(
-            Expression * declared,
-            mb_.DeclareVariable(output->GetName(), output->GetType()));
+        std::string var_name = output->GetName();
+        if (options_.residual_name_guidance()) {
+          auto it = preferred_name_by_node_id_.find(output->id());
+          if (it != preferred_name_by_node_id_.end()) {
+            var_name = it->second;
+          } else {
+            auto itn = preferred_name_by_node_name_.find(output->GetName());
+            if (itn != preferred_name_by_node_name_.end()) {
+              var_name = itn->second;
+            }
+          }
+        }
+        XLS_ASSIGN_OR_RETURN(Expression * declared,
+                             mb_.DeclareVariable(var_name, output->GetType()));
         node_exprs_[output] = declared;
         if (residual_ != nullptr) {
           if (block_residual_ == nullptr) {
@@ -818,7 +1060,22 @@ class BlockGenerator {
             auto* m = block_residual_->add_mappings();
             m->set_ir_node_id(output->id());
             m->set_signal_name(logic->GetName());
+            m->set_emission_kind(CodegenResidualData::DECLARATION_ONLY);
+            m->set_emission_seq(emission_seq_);
+            m->set_ir_node_name(output->GetName());
+            if (preferred_name_by_node_id_.contains(output->id()) ||
+                preferred_name_by_node_name_.contains(output->GetName())) {
+              ++total_preferred_name_sites_;
+            }
           }
+          auto* ev = block_residual_->add_emission_events();
+          ev->set_ir_node_id(output->id());
+          ev->set_signal_name(dynamic_cast<LogicRef*>(declared) ? dynamic_cast<LogicRef*>(declared)->GetName() : std::string());
+          ev->set_site(CodegenResidualData::INSTANTIATION_OUTPUT);
+          ev->set_kind(CodegenResidualData::DECLARATION_ONLY);
+          ev->set_seq(emission_seq_++);
+          ev->set_forced_assignment_by_residual(false);
+          ev->set_ir_node_name(output->GetName());
         }
       }
     }
@@ -898,6 +1155,19 @@ class BlockGenerator {
             SourceInfo(), block_instantiation->instantiated_block()->name(),
             block_instantiation->name(),
             /*parameters=*/std::vector<Connection>(), connections);
+        if (residual_ != nullptr) {
+          if (block_residual_ == nullptr) {
+            block_residual_ = residual_->add_blocks();
+            block_residual_->set_block_name(block_->name());
+          }
+          auto* ev = block_residual_->add_emission_events();
+          ev->set_ir_node_id(0);
+          ev->set_signal_name(block_instantiation->name());
+          ev->set_site(CodegenResidualData::INSTANTIATION_SECTION);
+          ev->set_kind(CodegenResidualData::DECLARATION_ONLY);
+          ev->set_seq(emission_seq_++);
+          ev->set_forced_assignment_by_residual(false);
+        }
       } else if (xls::ExternInstantiation* ffi_instantiation =
                      dynamic_cast<ExternInstantiation*>(instantiation)) {
         mb_.instantiation_section()->Add<TemplateInstantiation>(
@@ -906,6 +1176,19 @@ class BlockGenerator {
                 ->ForeignFunctionData()
                 ->code_template(),
             connections);
+        if (residual_ != nullptr) {
+          if (block_residual_ == nullptr) {
+            block_residual_ = residual_->add_blocks();
+            block_residual_->set_block_name(block_->name());
+          }
+          auto* ev = block_residual_->add_emission_events();
+          ev->set_ir_node_id(0);
+          ev->set_signal_name(ffi_instantiation->name());
+          ev->set_site(CodegenResidualData::INSTANTIATION_SECTION);
+          ev->set_kind(CodegenResidualData::DECLARATION_ONLY);
+          ev->set_seq(emission_seq_++);
+          ev->set_forced_assignment_by_residual(false);
+        }
       } else if (xls::FifoInstantiation* fifo_instantiation =
                      dynamic_cast<FifoInstantiation*>(instantiation)) {
         std::vector<Connection> parameters;
@@ -1000,6 +1283,19 @@ class BlockGenerator {
         mb_.instantiation_section()->Add<Instantiation>(
             SourceInfo(), wrapper_name, fifo_instantiation->name(),
             /*parameters=*/parameters, connections);
+        if (residual_ != nullptr) {
+          if (block_residual_ == nullptr) {
+            block_residual_ = residual_->add_blocks();
+            block_residual_->set_block_name(block_->name());
+          }
+          auto* ev = block_residual_->add_emission_events();
+          ev->set_ir_node_id(0);
+          ev->set_signal_name(fifo_instantiation->name());
+          ev->set_site(CodegenResidualData::INSTANTIATION_SECTION);
+          ev->set_kind(CodegenResidualData::DECLARATION_ONLY);
+          ev->set_seq(emission_seq_++);
+          ev->set_forced_assignment_by_residual(false);
+        }
       } else {
         return absl::UnimplementedError(absl::StrFormat(
             "Instantiations of kind `%s` are not supported in code generation",
@@ -1026,6 +1322,106 @@ class BlockGenerator {
   absl::flat_hash_map<xls::Register*, ModuleBuilder::Register> mb_registers_;
   CodegenResidualData* residual_;
   CodegenResidualData::BlockResidual* block_residual_;
+  absl::flat_hash_map<int64_t, int64_t> prior_rank_by_node_id_;
+  absl::flat_hash_map<int64_t, std::string> preferred_name_by_node_id_;
+  absl::flat_hash_map<std::string, std::string> preferred_name_by_node_name_;
+  absl::flat_hash_map<int64_t, int64_t> original_index_by_id_;
+  int64_t emission_seq_;
+  int64_t total_prior_rank_matched_nodes_;
+  int64_t total_preferred_name_sites_;
+  int64_t total_forced_assignments_;
+  int64_t total_assignments_due_to_prior_kind_ = 0;
+  absl::flat_hash_map<int64_t, int64_t> prior_seq_by_node_id_;
+  absl::flat_hash_map<int64_t, int> prior_kind_by_node_id_;
+  absl::flat_hash_map<std::string, int64_t> prior_seq_by_node_name_;
+  absl::flat_hash_map<std::string, int> prior_kind_by_node_name_;
+  bool forced_by_prior_kind_last_check_ = false;
+
+  std::vector<Node*> GuidedTopo() {
+    // Absolute-prior ordering: keep all nodes that had prior rank in EXACT
+    // relative order. Insert new/unranked nodes only when their deps are ready
+    // to unlock subsequent prior nodes. Fallback to generic TopoSort on error.
+
+    // Compute indegree for current graph.
+    absl::flat_hash_map<Node*, int64_t> indegree;
+    std::vector<Node*> all_nodes;
+    all_nodes.reserve(block_->node_count());
+    for (Node* n : block_->nodes()) {
+      all_nodes.push_back(n);
+      indegree[n] = static_cast<int64_t>(n->operands().size());
+    }
+
+    // Build the prior-ordered list filtered to nodes present now.
+    std::vector<Node*> prior_nodes;
+    prior_nodes.reserve(all_nodes.size());
+    for (Node* n : all_nodes) {
+      if (prior_rank_by_node_id_.contains(n->id())) {
+        prior_nodes.push_back(n);
+      }
+    }
+    std::stable_sort(
+        prior_nodes.begin(), prior_nodes.end(),
+        [&](Node* a, Node* b) {
+          return prior_rank_by_node_id_.at(a->id()) <
+                 prior_rank_by_node_id_.at(b->id());
+        });
+
+    // Track placed nodes and result order.
+    absl::flat_hash_set<Node*> placed;
+    placed.reserve(all_nodes.size());
+    std::vector<Node*> order;
+    order.reserve(all_nodes.size());
+
+    auto place_node = [&](Node* n) {
+      order.push_back(n);
+      placed.insert(n);
+      for (Node* u : n->users()) {
+        auto it = indegree.find(u);
+        if (it != indegree.end()) {
+          --(it->second);
+        }
+      };
+    };
+
+    // Helper to test readiness.
+    auto is_ready = [&](Node* n) {
+      auto it = indegree.find(n);
+      return it != indegree.end() && it->second == 0 && !placed.contains(n);
+    };
+
+    // While there are nodes left to place...
+    size_t total = all_nodes.size();
+    while (order.size() < total) {
+      bool placed_something = false;
+
+      // 1) Prefer the earliest ready node in prior order, preserving exact
+      //    relative order among prior-ranked nodes.
+      for (Node* n : prior_nodes) {
+        if (is_ready(n)) {
+          place_node(n);
+          placed_something = true;
+          break;
+        }
+      }
+      if (placed_something) continue;
+
+      // 2) Otherwise, place any ready node that did not have a prior rank
+      //    (i.e., new/inserted nodes) to unlock dependencies.
+      for (Node* n : all_nodes) {
+        if (!prior_rank_by_node_id_.contains(n->id()) && is_ready(n)) {
+          place_node(n);
+          placed_something = true;
+          break;
+        }
+      }
+      if (placed_something) continue;
+
+      // 3) Nothing ready (cycle or unexpected situation). Fallback.
+      return TopoSort(block_, rng_);
+    }
+
+    return order;
+  }
 };
 
 // Recursive visitor of blocks in a DFS order. Edges are block instantiations.

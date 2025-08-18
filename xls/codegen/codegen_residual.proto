@@ -11,6 +11,12 @@ message CodegenResidualData {
     message Mapping {
       int64 ir_node_id = 1;     // IR node id in the block IR.
       string signal_name = 2;   // Final RTL signal/port name.
+      // Optional: kind of emission for this mapping if known.
+      EmissionKind emission_kind = 3;
+      // Optional: sequence number in which this mapping was emitted.
+      int64 emission_seq = 4;
+      // Optional: IR node name (GetName()) to allow name-based matching.
+      string ir_node_name = 5;
     }
 
     // Named signals associated with IR nodes for this block.
@@ -18,8 +24,51 @@ message CodegenResidualData {
 
     // The topological order of IR node ids used for emission in this block.
     repeated int64 topo_ir_node_order = 3;
+
+    // Detailed emission events for debugging declaration/assignment churn.
+    message EmissionEvent {
+      int64 ir_node_id = 1;         // IR node id.
+      string signal_name = 2;       // May be empty for inlined expressions.
+      EmissionSite site = 3;        // Where in the module the emission occurred.
+      EmissionKind kind = 4;        // How it was emitted.
+      int64 seq = 5;                // Monotonic sequence within this block.
+      bool forced_assignment_by_residual = 6;  // True if assignment forced by preferred name.
+      string ir_node_name = 7;      // IR node name (GetName()).
+    }
+    repeated EmissionEvent emission_events = 4;
+
+    // Summary counters to aid debugging.
+    int64 total_prior_rank_matched_nodes = 5;
+    int64 total_preferred_name_sites = 6;
+    int64 total_forced_assignments = 7;
+    int64 total_assignments_due_to_prior_kind = 8;
   }
 
   // Residual data per emitted block/module (includes instantiated blocks).
   repeated BlockResidual blocks = 1;
+
+  // Emission location within the generated module.
+  enum EmissionSite {
+    EMISSION_SITE_UNSPECIFIED = 0;
+    INPUT_PORT = 1;
+    INSTANTIATION_OUTPUT = 2;
+    DECLARATION_SECTION = 3;   // Variable declarations (e.g., DeclareVariable).
+    COMBINATIONAL_SECTION = 4; // Combinational assignments / inline expressions.
+    MODULE_CONSTANT = 5;        // Module-level constants.
+    OUTPUT_PORT = 6;
+    REGISTER_DECLARE = 7;
+    REGISTER_ASSIGN = 8;
+    INSTANTIATION_SECTION = 9;
+  }
+
+  // How a node was emitted.
+  enum EmissionKind {
+    EMISSION_KIND_UNSPECIFIED = 0;
+    INLINE_EXPRESSION = 1;
+    ASSIGNMENT = 2;
+    DECLARATION_ONLY = 3;  // e.g., declared for instantiation output.
+    PORT = 4;              // Input/output port.
+    REGISTER_OP = 5;       // Register read/write bookkeeping.
+    CONSTANT_DECLARE = 6;  // Module-level constant.
+  }
 }

@@ -2,10 +2,10 @@ module ReturnArrayLiteral(
   input wire clk,
   output wire [1:0] out
 );
-  wire literal_2[0:1];
-  assign literal_2[0] = 1'h0;
-  assign literal_2[1] = 1'h1;
+  wire p0_literal_2_comb[0:1];
+  assign p0_literal_2_comb[0] = 1'h0;
+  assign p0_literal_2_comb[1] = 1'h1;
 
   // ===== Pipe stage 0:
-  assign out = {literal_2[1], literal_2[0]};
+  assign out = {p0_literal_2_comb[1], p0_literal_2_comb[0]};
 endmodule

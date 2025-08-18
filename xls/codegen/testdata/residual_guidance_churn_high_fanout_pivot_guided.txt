@@ -1,0 +1,54 @@
+--- base
++++ other
+@@ -1,14 +1,15 @@
+ module B(
+   input wire [7:0] x,
+   input wire [7:0] y,
+   output wire [7:0] out
+ );
+   wire [7:0] and_3;
++  wire [7:0] or_23;
+   wire [7:0] add_4;
+   wire [7:0] add_13;
+   wire [7:0] add_5;
+   wire [7:0] add_14;
+   wire [7:0] add_6;
+   wire [7:0] add_15;
+   wire [7:0] add_7;
+   wire [7:0] add_16;
+@@ -16,26 +17,27 @@
+   wire [7:0] add_17;
+   wire [7:0] add_9;
+   wire [7:0] add_18;
+   wire [7:0] add_10;
+   wire [7:0] add_19;
+   wire [7:0] add_11;
+   wire [7:0] add_20;
+   assign and_3 = x & y;
+-  assign add_4 = and_3 + y;
++  assign or_23 = and_3 | x ^ y;
++  assign add_4 = or_23 + y;
+   assign add_13 = 8'h00 + add_4;
+-  assign add_5 = and_3 + x;
++  assign add_5 = or_23 + x;
+   assign add_14 = add_13 + add_5;
+-  assign add_6 = and_3 + y;
++  assign add_6 = or_23 + y;
+   assign add_15 = add_14 + add_6;
+-  assign add_7 = and_3 + x;
++  assign add_7 = or_23 + x;
+   assign add_16 = add_15 + add_7;
+-  assign add_8 = and_3 + y;
++  assign add_8 = or_23 + y;
+   assign add_17 = add_16 + add_8;
+-  assign add_9 = and_3 + x;
++  assign add_9 = or_23 + x;
+   assign add_18 = add_17 + add_9;
+-  assign add_10 = and_3 + y;
++  assign add_10 = or_23 + y;
+   assign add_19 = add_18 + add_10;
+-  assign add_11 = and_3 + x;
++  assign add_11 = or_23 + x;
+   assign add_20 = add_19 + add_11;
+   assign out = add_20;
+ endmodule

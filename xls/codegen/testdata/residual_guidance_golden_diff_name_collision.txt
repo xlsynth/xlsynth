@@ -1,0 +1,13 @@
+--- base
++++ guided
+@@ -1,9 +1,9 @@
+ module B(
+   input wire [7:0] x,
+   input wire [7:0] y,
+   output wire [7:0] out
+ );
+   wire [7:0] add_5;
+-  assign add_5 = (x & x) + (y | y);
++  assign add_5 = (x & x) + (x & x);
+   assign out = add_5;
+ endmodule
