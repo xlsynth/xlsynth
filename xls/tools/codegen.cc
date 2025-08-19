@@ -30,6 +30,7 @@
 #include "xls/codegen/block_generator.h"
 #include "xls/codegen/block_metrics.h"
 #include "xls/codegen/codegen_options.h"
+#include "xls/codegen/codegen_residual_data.pb.h"
 #include "xls/codegen/codegen_result.h"
 #include "xls/codegen/combinational_generator.h"
 #include "xls/codegen/op_override.h"
@@ -330,6 +331,10 @@ absl::StatusOr<verilog::CodegenOptions> CodegenOptionsFromProto(
     options.package_interface(p.package_interface());
   }
 
+  if (p.has_reference_residual_data()) {
+    options.set_residual_data(p.reference_residual_data());
+  }
+
   if (!p.module_name().empty()) {
     options.module_name(p.module_name());
   }
@@ -507,15 +512,23 @@ absl::StatusOr<verilog::CodegenResult> BlockToVerilog(
   Block* top_block = top_fb->AsBlockOrDie();
 
   verilog::VerilogLineMap verilog_line_map;
+<<<<<<< HEAD
   XLS_ASSIGN_OR_RETURN(
       std::string verilog,
       verilog::GenerateVerilog(top_block, options, &verilog_line_map));
-
-  XLS_RET_CHECK(top_block->GetSignature().has_value())
-      << "Top block is missing a ModuleSignature.";
+=======
+  verilog::CodegenResidualData residual_data;
   XLS_ASSIGN_OR_RETURN(
-      verilog::ModuleSignature signature,
-      verilog::ModuleSignature::FromProto(*top_block->GetSignature()));
+      std::string verilog,
+      verilog::GenerateVerilog(top_block, options, &verilog_line_map,
+                               &residual_data));
+>>>>>>> 24657da42 (Add residual data to codegen.)
+
+  verilog::ModuleSignature signature;
+  if (top_block->GetSignature().has_value()) {
+    XLS_ASSIGN_OR_RETURN(signature, verilog::ModuleSignature::FromProto(
+                                        *top_block->GetSignature()));
+  }
 
   verilog::XlsMetricsProto metrics;
   XLS_ASSIGN_OR_RETURN(
@@ -525,7 +538,8 @@ absl::StatusOr<verilog::CodegenResult> BlockToVerilog(
   return verilog::CodegenResult{.verilog_text = std::move(verilog),
                                 .verilog_line_map = std::move(verilog_line_map),
                                 .signature = std::move(signature),
-                                .block_metrics = std::move(metrics)};
+                                .block_metrics = std::move(metrics),
+                                .residual_data = std::move(residual_data)};
 }
 
 }  // namespace xls
