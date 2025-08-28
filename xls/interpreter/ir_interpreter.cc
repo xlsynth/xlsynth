@@ -905,6 +905,10 @@ absl::Status IrInterpreter::SetValueResult(Node* node, Value result) {
   if (observer_) {
     (*observer_)->NodeEvaluated(node, result);
   }
+  if (options_.trace_node_values()) {
+    GetInterpreterEvents().AddTraceNodeMessage(
+        node->GetName(), node->id(), result, options_.format_preference());
+  }
   NodeValuesMap()[node] = std::move(result);
   return absl::OkStatus();
 }

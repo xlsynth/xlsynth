@@ -1286,6 +1286,10 @@ absl::StatusOr<JittedFunctionBase> JittedFunctionBase::BuildInternal(
     return absl::UnimplementedError(
         "Tracing calls is not supported in the JIT");
   }
+  if (options.trace_node_values()) {
+    return absl::UnimplementedError(
+        "Tracing node values is not supported in the JIT");
+  }
   std::vector<FunctionBase*> functions = GetDependentFunctions(xls_function);
   BufferAllocator allocator(&jit_context.type_converter());
   llvm::Function* top_function = nullptr;

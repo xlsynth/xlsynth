@@ -187,9 +187,10 @@ class IrEvaluatorTestBase
         GetParam().kwargs_evaluator(function, kwargs, options, std::nullopt));
     XLS_RET_CHECK(result.events.GetTraceMessages().empty());
     XLS_RET_CHECK(result.events.GetAssertMessages().empty());
+
     return result.value;
   }
-};
+};  // namespace xls
 
 }  // namespace xls
 

@@ -224,6 +224,23 @@ TEST(FunctionJitTest, TraceCallsUnsupported) {
                        HasSubstr("Tracing calls is not supported")));
 }
 
+TEST(FunctionJitTest, TraceNodeValuesUnsupported) {
+  Package p("TraceNodeValuesUnsupported");
+  FunctionBuilder b("f", &p);
+  auto x = b.Param("x", p.GetBitsType(8));
+  auto y = b.Param("y", p.GetBitsType(8));
+  b.Add(x, y);
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, b.Build());
+
+  EvaluatorOptions eval_opts;
+  eval_opts.set_trace_node_values(true);
+
+  auto st = FunctionJit::Create(f, eval_opts, JitEvaluatorOptions());
+  EXPECT_THAT(st.status(),
+              StatusIs(absl::StatusCode::kUnimplemented,
+                       HasSubstr("Tracing node values is not supported")));
+}
+
 TEST(FunctionJitTest, TraceFmtNoArgsTest) {
   Package package("my_package");
   std::string ir_text = R"(

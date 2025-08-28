@@ -49,11 +49,20 @@ class EvaluatorOptions {
   }
   bool trace_calls() const { return trace_calls_; }
 
+  // Whether to emit a trace message containing the value of each evaluated IR
+  // node.
+  EvaluatorOptions& set_trace_node_values(bool value) {
+    trace_node_values_ = value;
+    return *this;
+  }
+  bool trace_node_values() const { return trace_node_values_; }
+
  private:
   bool trace_channels_ = false;
   FormatPreference format_preference_ = FormatPreference::kDefault;
   bool support_observers_ = false;
   bool trace_calls_ = false;
+  bool trace_node_values_ = false;
 };
 
 }  // namespace xls
