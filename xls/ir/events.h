@@ -33,7 +33,8 @@ namespace xls {
 
 // Common structure capturing events that can be produced by any XLS interpreter
 // (DSLX, IR, JIT, etc.)
-class InterpreterEvents {
+template <typename ValueT>
+class InterpreterEventsBase {
  public:
   void AddTraceStatementMessage(int64_t verbosity, std::string msg) {
     TraceMessageProto* tm = proto_.add_trace_msgs();
@@ -42,31 +43,23 @@ class InterpreterEvents {
   }
 
   void AddTraceCallMessage(std::string_view function_name,
-                           absl::Span<const Value> args, int64_t call_depth,
+
+                           absl::Span<const ValueT> args, int64_t call_depth,
                            FormatPreference format_preference) {
     TraceMessageProto* tm = proto_.add_trace_msgs();
     // Build an indented message like: "  foo(1, 2, 3)".
     tm->set_message(absl::StrFormat(
         "%*s%s(%s)", call_depth * 2, "", function_name,
         absl::StrJoin(args, ", ",
-                      [format_preference](std::string* out, const Value& v) {
+
+                      [format_preference](std::string* out, const ValueT& v) {
                         out->append(v.ToHumanString(format_preference));
                       })));
     tm->mutable_call()->set_function_name(std::string{function_name});
     tm->mutable_call()->set_call_depth(call_depth);
-    for (const Value& v : args) {
+    for (const ValueT& v : args) {
       *tm->mutable_call()->add_args() = v.AsProto().value();
     }
-  }
-  void AddTraceNodeMessage(std::string_view node_name, int64_t node_id,
-                           const Value& value,
-                           FormatPreference format_preference) {
-    TraceMessageProto* tm = proto_.add_trace_msgs();
-    tm->set_message(absl::StrFormat("%s(id=%d) = %s", node_name, node_id,
-                                    value.ToHumanString(format_preference)));
-    tm->mutable_node()->set_node_name(std::string{node_name});
-    tm->mutable_node()->set_node_id(node_id);
-    *tm->mutable_node()->mutable_value_changes() = value.AsProto().value();
   }
   void AddAssertMessage(const std::string& msg) {
     proto_.add_assert_msgs()->set_message(msg);
@@ -95,14 +88,14 @@ class InterpreterEvents {
 
   void Clear() { proto_.Clear(); }
 
-  bool operator==(const InterpreterEvents& other) const {
+  bool operator==(const InterpreterEventsBase& other) const {
     return proto_.SerializeAsString() == other.proto_.SerializeAsString();
   }
-  bool operator!=(const InterpreterEvents& other) const {
+  bool operator!=(const InterpreterEventsBase& other) const {
     return !(*this == other);
   }
 
-  void AppendFrom(const InterpreterEvents& other) {
+  void AppendFrom(const InterpreterEventsBase& other) {
     for (const TraceMessageProto& t : other.proto_.trace_msgs()) {
       *proto_.add_trace_msgs() = t;
     }
@@ -116,6 +109,10 @@ class InterpreterEvents {
  private:
   EvaluatorEventsProto proto_;
 };
+
+// Specialization used by IR evaluation.
+using InterpreterEvents = InterpreterEventsBase<Value>;
+
 // Convert an InterpreterEvents structure into a result status, returning
 // a failure when an assertion has been raised.
 absl::Status InterpreterEventsToStatus(const InterpreterEvents& events);

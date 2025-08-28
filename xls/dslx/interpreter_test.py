@@ -361,6 +361,35 @@ class InterpreterTest(test_base.TestCase):
     self.assertRegex(stderr, r'MyEnum::ONE\s+// u2:1')
     self.assertRegex(stderr, r'MyEnum::TWO\s+// u2:2')
 
+  def test_output_results_proto(self):
+    """Tests that --output_results_proto writes a textproto."""
+    program = textwrap.dedent("""
+    fn main() {
+      trace_fmt!("hello");
+    }
+
+    #[test]
+    fn hello_test() { main() }
+    """)
+    with tempfile.TemporaryDirectory() as tmpdir:
+      out_path = os.path.join(tmpdir, 'results.textproto')
+      # Use compare=none to avoid IR/JIT overhead; ensure deterministic logging.
+      self._parse_and_test(
+          program,
+          want_error=False,
+          compare='none',
+          extra_flags=(
+              f'--output_results_proto={out_path}',
+              '--log_prefix=false',
+          ),
+      )
+      # Read the emitted textproto and perform simple content checks.
+      with open(out_path, encoding='utf-8') as f:
+        text = f.read()
+      self.assertIn('results {', text)
+      self.assertIn('trace_msgs {', text)
+      self.assertIn('message: "hello"', text)
+
   def test_trace_fmt_array_of_ints(self):
     """Tests we can trace-format an array of u8 values."""
     program = """
