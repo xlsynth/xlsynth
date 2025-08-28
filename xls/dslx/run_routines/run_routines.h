@@ -46,6 +46,7 @@
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/virtualizable_file_system.h"
+#include "xls/ir/evaluator_result.pb.h"
 #include "xls/ir/events.h"
 #include "xls/ir/format_preference.h"
 #include "xls/ir/function.h"
@@ -110,6 +111,9 @@ struct ParseAndTestOptions {
   std::optional<int64_t> max_ticks;
   std::function<std::unique_ptr<VirtualizableFilesystem>()> vfs_factory =
       nullptr;
+
+  // If non-null, adds a EvaluatorResultProto for each test.
+  xls::EvaluatorResultsProto* results_out = nullptr;
 };
 
 // As above, but a subset of the options required for the ParseAndProve()

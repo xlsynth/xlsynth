@@ -1011,8 +1011,25 @@ absl::StatusOr<TestResultData> AbstractTestRunner::ParseAndTest(
     std::cerr << "[ RUN UNITTEST  ] " << test_name << '\n';
     RunResult out;
     BytecodeInterpreterOptions interpreter_options;
+
+    // If requested, create a result entry and capture trace messages.
+    xls::EvaluatorResultProto* result_proto = nullptr;
+    if (options.results_out != nullptr) {
+      result_proto = options.results_out->add_results();
+    }
+
+    auto trace_cb = [result_proto, &file_table](const Span& span,
+                                                std::string_view message) {
+      if (result_proto != nullptr) {
+        xls::TraceMessageProto* tm =
+            result_proto->mutable_events()->add_trace_msgs();
+        tm->set_message(std::string(message));
+      }
+      InfoLoggingTraceHook(file_table, span, message);
+    };
+    interpreter_options.trace_hook(trace_cb);
+
     interpreter_options.post_fn_eval_hook(post_fn_eval_hook)
-        .trace_hook(absl::bind_front(InfoLoggingTraceHook, file_table))
         .trace_channels(options.trace_channels)
         .trace_calls(options.trace_calls)
         .max_ticks(options.max_ticks)
@@ -1038,6 +1055,11 @@ absl::StatusOr<TestResultData> AbstractTestRunner::ParseAndTest(
           .timestamp = test_case_start});
       std::cerr << "[            OK ]" << '\n';
     } else {
+      if (result_proto != nullptr) {
+        xls::AssertMessageProto* am =
+            result_proto->mutable_events()->add_assert_msgs();
+        am->set_message(std::string(out.result.message()));
+      }
       HandleError(result, out.result, test_name, start_pos, test_case_start,
                   test_case_end - test_case_start,
                   /*is_quickcheck=*/false, file_table, import_data.vfs());
