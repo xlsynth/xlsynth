@@ -914,6 +914,55 @@ py_test(
     ],
 )
 
+# Library: replace_invocations
+
+cc_library(
+    name = "replace_invocations",
+    srcs = ["replace_invocations.cc"],
+    hdrs = ["replace_invocations.h"],
+    deps = [
+        "//xls/common/status:ret_check",
+        "//xls/ir:bits",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:ast_cloner",
+        "//xls/dslx/frontend:ast_utils",
+        "//xls/dslx/frontend:module",
+        ":import_data",
+        ":parse_and_typecheck",
+        ":warning_collector",
+        "//xls/dslx/type_system:typecheck_module",
+        "//xls/dslx/type_system:parametric_env",
+        "//xls/dslx/type_system:type_info",
+        "@com_google_absl//absl/types:span",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_test(
+    name = "replace_invocations_test",
+    srcs = ["replace_invocations_test.cc"],
+    deps = [
+        ":replace_invocations",
+        ":create_import_data",
+        ":default_dslx_stdlib_path",
+        ":parse_and_typecheck",
+        "@com_google_absl//absl/types:span",
+        "//xls/ir:bits",
+        "//xls/common/status:matchers",
+        "//xls/common:xls_gunit_main",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:ast_utils",
+        "//xls/dslx/frontend:module",
+        ":virtualizable_file_system",
+        "//xls/dslx/type_system:parametric_env",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@googletest//:gtest",
+    ],
+)
+
 # -- Generated stdlib built-ins
 
 cc_binary(

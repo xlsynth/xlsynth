@@ -79,6 +79,17 @@ struct xls_dslx_param;
 struct xls_dslx_expr;
 struct xls_dslx_module_member;
 struct xls_dslx_type_dim;
+// Forward-declared opaque parametric env; construction not yet exposed.
+struct xls_dslx_parametric_env;
+
+// Rule describing a single invocation rewrite.
+struct xls_dslx_invocation_rewrite_rule {
+  struct xls_dslx_function* from_callee;  // required
+  struct xls_dslx_function* to_callee;    // required
+  // Optional parametric-env filters (nullptr means unset).
+  const struct xls_dslx_parametric_env* match_callee_env;  // optional
+  const struct xls_dslx_parametric_env* to_callee_env;     // optional
+};
 
 struct xls_dslx_import_data* xls_dslx_import_data_create(
     const char* dslx_stdlib_path, const char* additional_search_paths[],
@@ -409,6 +420,20 @@ struct xls_dslx_type* xls_dslx_type_array_get_element_type(
 
 struct xls_dslx_type_dim* xls_dslx_type_array_get_size(
     struct xls_dslx_type* type);
+
+// Rewrites invocations in the given typechecked module according to the
+// provided callers and rules. On success returns true and sets
+// `*result_out` to a new typechecked module owned by `import_data` that
+// contains the transformed module. On failure returns false and sets
+// `*error_out`.
+// Note: parametric envs in rules must be nullptr at present (unsupported).
+bool xls_dslx_replace_invocations_in_module(
+    struct xls_dslx_typechecked_module* tm,
+    struct xls_dslx_import_data* import_data,
+    const char* install_subject,
+    struct xls_dslx_function* const* callers, size_t callers_count,
+    const struct xls_dslx_invocation_rewrite_rule* rules, size_t rules_count,
+    char** error_out, struct xls_dslx_typechecked_module** result_out);
 
 }  // extern "C"
 

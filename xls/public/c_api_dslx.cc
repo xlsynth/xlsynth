@@ -36,6 +36,7 @@
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/parse_and_typecheck.h"
+#include "xls/dslx/replace_invocations.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/type_system/unwrap_meta_type.h"
@@ -338,6 +339,56 @@ bool xls_dslx_type_info_get_requires_implicit_token(
   }
 
   *result_out = *requires_implicit_token;
+  *error_out = nullptr;
+  return true;
+}
+
+bool xls_dslx_replace_invocations_in_module(
+    struct xls_dslx_typechecked_module* tm,
+    struct xls_dslx_import_data* import_data,
+    const char* install_subject,
+    struct xls_dslx_function* const* callers, size_t callers_count,
+    const struct xls_dslx_invocation_rewrite_rule* rules, size_t rules_count,
+    char** error_out, struct xls_dslx_typechecked_module** result_out) {
+  auto* cpp_tm = reinterpret_cast<xls::dslx::TypecheckedModule*>(tm);
+  auto* cpp_import_data = reinterpret_cast<xls::dslx::ImportData*>(import_data);
+  std::vector<const xls::dslx::Function*> cpp_callers;
+  cpp_callers.reserve(callers_count);
+  for (size_t i = 0; i < callers_count; ++i) {
+    cpp_callers.push_back(
+        reinterpret_cast<xls::dslx::Function*>(callers[i]));
+  }
+  std::vector<xls::dslx::InvocationRewriteRule> cpp_rules;
+  cpp_rules.reserve(rules_count);
+  for (size_t i = 0; i < rules_count; ++i) {
+    const xls_dslx_invocation_rewrite_rule& r = rules[i];
+    if (r.match_callee_env != nullptr || r.to_callee_env != nullptr) {
+      *error_out = xls::ToOwnedCString(
+          absl::UnimplementedError(
+              "Passing parametric envs via C API is not supported yet")
+              .ToString());
+      *result_out = nullptr;
+      return false;
+    }
+    xls::dslx::InvocationRewriteRule rr;
+    rr.from_callee = reinterpret_cast<xls::dslx::Function*>(r.from_callee);
+    rr.to_callee = reinterpret_cast<xls::dslx::Function*>(r.to_callee);
+    // match_callee_env and to_callee_env left unset.
+    cpp_rules.push_back(rr);
+  }
+
+  absl::StatusOr<xls::dslx::TypecheckedModule> transformed =
+      xls::dslx::ReplaceInvocationsInModule(
+          *cpp_tm, absl::MakeSpan(cpp_callers), absl::MakeSpan(cpp_rules),
+          *cpp_import_data, install_subject == nullptr ? "" : install_subject);
+  if (!transformed.ok()) {
+    *error_out = xls::ToOwnedCString(transformed.status().ToString());
+    *result_out = nullptr;
+    return false;
+  }
+  auto* tm_on_heap =
+      new xls::dslx::TypecheckedModule{*std::move(transformed)};
+  *result_out = reinterpret_cast<xls_dslx_typechecked_module*>(tm_on_heap);
   *error_out = nullptr;
   return true;
 }
