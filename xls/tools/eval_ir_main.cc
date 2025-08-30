@@ -199,6 +199,9 @@ ABSL_FLAG(std::string, output_results_proto, "",
           "argset) to the given file path.");
 ABSL_FLAG(bool, trace_to_stderr, false,
           "If true, write trace messages to stderr.");
+ABSL_FLAG(bool, trace_node_values, false,
+          "If true, record a trace for each IR node evaluated containing the "
+          " node name and the evaluated value.");
 ABSL_FLAG(std::string, input_validator_expr, "",
           "DSLX expression to validate randomly-generated inputs. "
           "The expression can reference entry function input arguments "
@@ -397,11 +400,13 @@ absl::StatusOr<std::vector<Value>> Eval(
     EvaluatorResultsProto* results_out = nullptr) {
   EvalIrJitObserver observer(absl::GetFlag(FLAGS_use_llvm_jit_interpreter));
   std::unique_ptr<FunctionJit> jit;
+  EvaluatorOptions eval_opts;
+  eval_opts.set_trace_node_values(absl::GetFlag(FLAGS_trace_node_values));
   if (use_jit) {
     // No support for procs yet.
     XLS_ASSIGN_OR_RETURN(
         jit, FunctionJit::Create(
-                 f, EvaluatorOptions(),
+                 f, eval_opts,
                  JitEvaluatorOptions()
                      .set_opt_level(absl::GetFlag(FLAGS_llvm_opt_level))
                      .set_include_observer_callbacks(eval_observer.has_value())
@@ -441,8 +446,8 @@ absl::StatusOr<std::vector<Value>> Eval(
       }
     } else {
       XLS_ASSIGN_OR_RETURN(
-          run_res, InterpretFunction(f, arg_set.args, EvaluatorOptions(),
-                                     eval_observer));
+          run_res,
+          InterpretFunction(f, arg_set.args, eval_opts, eval_observer));
     }
     if (absl::GetFlag(FLAGS_trace_to_stderr)) {
       for (const std::string& msg : run_res.events.GetTraceMessageStrings()) {

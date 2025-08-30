@@ -58,6 +58,16 @@ class InterpreterEvents {
       *tm->mutable_call()->add_args() = v.AsProto().value();
     }
   }
+  void AddTraceNodeMessage(std::string_view node_name, int64_t node_id,
+                           const Value& value,
+                           FormatPreference format_preference) {
+    TraceMessageProto* tm = proto_.add_trace_msgs();
+    tm->set_message(absl::StrFormat("%s(id=%d) = %s", node_name, node_id,
+                                    value.ToHumanString(format_preference)));
+    tm->mutable_node()->set_node_name(std::string{node_name});
+    tm->mutable_node()->set_node_id(node_id);
+    *tm->mutable_node()->mutable_value_changes() = value.AsProto().value();
+  }
   void AddAssertMessage(const std::string& msg) {
     proto_.add_assert_msgs()->set_message(msg);
   }
