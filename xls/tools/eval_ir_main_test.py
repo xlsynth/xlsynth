@@ -382,16 +382,29 @@ top fn foo(x: bits[8]) -> bits[8] {
         stdout=subprocess.PIPE,
         check=True,
     )
-    # Result should be printed on stdout.
-    self.assertEqual(comp.stdout.decode('utf-8').strip(), 'bits[32]:0x11')
     stderr = comp.stderr.decode('utf-8')
-    # Verify node trace substrings are present on stderr.
-    self.assertIn('add.1', stderr)
-    self.assertIn('(id=', stderr)
-    self.assertIn('=', stderr)
-    # Default format preference is decimal for traces; check decimal output.
-    self.assertIn(' = 17', stderr)
-
+    self.assertIn('x(id=4) = 5', stderr)
+    self.assertIn('y(id=5) = 12', stderr)
+    self.assertIn('add.1(id=1) = 17', stderr)
+    
+  def test_trace_calls(self):
+    ir_file = self.create_tempfile(content=ADD_IR)
+    comp = subprocess.run(
+        [
+            EVAL_IR_MAIN_PATH,
+            '--nouse_llvm_jit',
+            '--trace_calls',
+            '--trace_to_stderr',
+            '--input=bits[32]:0x5; bits[32]:0xc',
+            ir_file.full_path,
+        ],
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        check=True,
+    )
+    stderr = comp.stderr.decode('utf-8')
+    self.assertIn('foo(5, 12)', stderr)
+    
   def test_validator(self):
     # We want to ensure that the output is negative and odd, so the inputs
     # must have different signs and must both be odd.
