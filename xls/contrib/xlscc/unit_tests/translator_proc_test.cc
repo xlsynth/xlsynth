@@ -19,17 +19,17 @@
 #include <string>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_format.h"
+#include "gmock/gmock.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/text_format.h"
 #include "google/protobuf/util/message_differencer.h"
+#include "gtest/gtest.h"
 #include "xls/common/casts.h"
 #include "xls/common/status/matchers.h"
 #include "xls/contrib/xlscc/hls_block.pb.h"
@@ -4815,7 +4815,8 @@ TEST_P(TranslatorProcTest, IOProcClass) {
   )";
 
   xlscc::HLSBlock ref_meta;
-  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(ref_meta_str, &ref_meta));
+  ASSERT_TRUE(
+      google::protobuf::TextFormat::ParseFromString(ref_meta_str, &ref_meta));
 
   std::string diff;
   google::protobuf::util::MessageDifferencer differencer;
@@ -5254,7 +5255,8 @@ TEST_P(TranslatorProcTest_OldFSMOnly, IOProcClassSubClass) {
   )";
 
   xlscc::HLSBlock ref_meta;
-  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(ref_meta_str, &ref_meta));
+  ASSERT_TRUE(
+      google::protobuf::TextFormat::ParseFromString(ref_meta_str, &ref_meta));
 
   std::string diff;
   google::protobuf::util::MessageDifferencer differencer;
@@ -5699,7 +5701,8 @@ TEST_P(TranslatorProcTest, IOProcClassEnumMember) {
   )";
 
   xlscc::HLSBlock ref_meta;
-  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(ref_meta_str, &ref_meta));
+  ASSERT_TRUE(
+      google::protobuf::TextFormat::ParseFromString(ref_meta_str, &ref_meta));
 
   std::string diff;
   google::protobuf::util::MessageDifferencer differencer;
@@ -5759,7 +5762,8 @@ TEST_P(TranslatorProcTest, IOProcClassMemberSetConstruct) {
   )";
 
   xlscc::HLSBlock ref_meta;
-  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(ref_meta_str, &ref_meta));
+  ASSERT_TRUE(
+      google::protobuf::TextFormat::ParseFromString(ref_meta_str, &ref_meta));
 
   std::string diff;
   google::protobuf::util::MessageDifferencer differencer;
@@ -5866,7 +5870,8 @@ TEST_P(TranslatorProcTest, IOProcClassLValueInit) {
   )";
 
   xlscc::HLSBlock ref_meta;
-  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(ref_meta_str, &ref_meta));
+  ASSERT_TRUE(
+      google::protobuf::TextFormat::ParseFromString(ref_meta_str, &ref_meta));
 
   std::string diff;
   google::protobuf::util::MessageDifferencer differencer;
@@ -5931,7 +5936,8 @@ TEST_P(TranslatorProcTest_OldFSMOnly, IOProcClassHierarchicalLValue) {
   )";
 
   xlscc::HLSBlock ref_meta;
-  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(ref_meta_str, &ref_meta));
+  ASSERT_TRUE(
+      google::protobuf::TextFormat::ParseFromString(ref_meta_str, &ref_meta));
 
   std::string diff;
   google::protobuf::util::MessageDifferencer differencer;
@@ -6424,8 +6430,7 @@ TEST_P(TranslatorProcTest, DebugTrace) {
   }
   {
     xls::InterpreterEvents expected_events;
-    expected_events.trace_msgs.push_back(
-        xls::TraceMessage{.message = "Value is 9", .verbosity = 0});
+    expected_events.AddTraceStatementMessage(/*verbosity=*/0, "Value is 9");
 
     absl::flat_hash_map<std::string, std::list<xls::Value>> inputs;
     inputs["in"] = {xls::Value(xls::SBits(9, 32))};
@@ -6465,14 +6470,10 @@ TEST_P(TranslatorProcTest, DebugTraceInPipelinedLoop) {
 
   {
     xls::InterpreterEvents expected_events;
-    expected_events.trace_msgs.push_back(
-        xls::TraceMessage{.message = "Value is 0", .verbosity = 0});
-    expected_events.trace_msgs.push_back(
-        xls::TraceMessage{.message = "Value is 1", .verbosity = 0});
-    expected_events.trace_msgs.push_back(
-        xls::TraceMessage{.message = "Value is 2", .verbosity = 0});
-    expected_events.trace_msgs.push_back(
-        xls::TraceMessage{.message = "Value is 4", .verbosity = 0});
+    expected_events.AddTraceStatementMessage(/*verbosity=*/0, "Value is 0");
+    expected_events.AddTraceStatementMessage(/*verbosity=*/0, "Value is 1");
+    expected_events.AddTraceStatementMessage(/*verbosity=*/0, "Value is 2");
+    expected_events.AddTraceStatementMessage(/*verbosity=*/0, "Value is 4");
 
     absl::flat_hash_map<std::string, std::list<xls::Value>> inputs;
     inputs["in"] = {xls::Value(xls::SBits(4, 32))};
