@@ -380,6 +380,9 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y zlib1g-dev
 
+    - name: Install git
+      run: sudo apt-get install -y git
+
     - name: Note Clang version
       run: clang-18 --version
 
