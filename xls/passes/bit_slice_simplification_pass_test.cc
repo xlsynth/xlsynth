@@ -19,12 +19,12 @@
 #include <string>
 #include <utility>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
-#include "xls/common/fuzzing/fuzztest.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/substitute.h"
 #include "absl/time/time.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+#include "xls/common/fuzzing/fuzztest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/fuzzer/ir_fuzzer/ir_fuzz_domain.h"
@@ -144,7 +144,7 @@ top fn main(x: bits[4], y: bits[1], z: bits[4]) -> bits[$1] {
       XLS_ASSERT_OK_AND_ASSIGN(Function * entry, p->GetTopAsFunction());
       XLS_ASSERT_OK_AND_ASSIGN(
           Value expected,
-          DropInterpreterEvents(InterpretFunction(entry, {x, y, z})));
+          DropEvaluatorEvents(InterpretFunction(entry, {x, y, z})));
 
       EXPECT_TRUE(entry->return_value()->Is<BitSlice>());
       EXPECT_THAT(Run(entry), IsOkAndHolds(true));
@@ -152,7 +152,7 @@ top fn main(x: bits[4], y: bits[1], z: bits[4]) -> bits[$1] {
 
       XLS_ASSERT_OK_AND_ASSIGN(
           Value actual,
-          DropInterpreterEvents(InterpretFunction(entry, {x, y, z})));
+          DropEvaluatorEvents(InterpretFunction(entry, {x, y, z})));
       EXPECT_EQ(expected, actual);
     }
   }

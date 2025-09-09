@@ -97,7 +97,7 @@ class GeneratedTester : public XlsccTestBase {
  private:
   absl::StatusOr<xls::Value> RunOptimized(
       const absl::flat_hash_map<std::string, xls::Value>& args,
-      const xls::InterpreterEvents& unopt_events) {
+      const xls::IrEvaluatorEvents& unopt_events) {
     // Run main pipeline.
     (void)xls::RunOptimizationPassPipeline(package_.get());
 
@@ -141,7 +141,7 @@ class GeneratedTester : public XlsccTestBase {
     XLS_ASSIGN_OR_RETURN(package_, ParsePackage(ir));
 
     absl::flat_hash_map<std::string, xls::Value> args;
-    xls::InterpreterEvents unopt_events;
+    xls::IrEvaluatorEvents unopt_events;
 
     // Run interpreter on unoptimized IR.
     {

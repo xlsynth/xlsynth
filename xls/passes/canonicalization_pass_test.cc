@@ -20,13 +20,13 @@
 #include <utility>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
-#include "xls/common/fuzzing/fuzztest.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+#include "xls/common/fuzzing/fuzztest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/fuzzer/ir_fuzzer/ir_fuzz_domain.h"
 #include "xls/fuzzer/ir_fuzzer/ir_fuzz_test_library.h"
@@ -236,7 +236,7 @@ TEST_F(CanonicalizePassTest, ExhaustiveClampTest) {
             for (int64_t x_value = 0; x_value < kMaxValue; ++x_value) {
               XLS_ASSERT_OK_AND_ASSIGN(
                   expected[x_value],
-                  DropInterpreterEvents(InterpretFunction(
+                  DropEvaluatorEvents(InterpretFunction(
                       f, {Value(UBits(x_value, kBitWidth))})));
             }
 
@@ -247,7 +247,7 @@ TEST_F(CanonicalizePassTest, ExhaustiveClampTest) {
 
             for (int64_t x_value = 0; x_value < kMaxValue; ++x_value) {
               XLS_ASSERT_OK_AND_ASSIGN(
-                  Value actual, DropInterpreterEvents(InterpretFunction(
+                  Value actual, DropEvaluatorEvents(InterpretFunction(
                                     f, {Value(UBits(x_value, kBitWidth))})));
               EXPECT_EQ(expected[x_value], actual)
                   << absl::StreamFormat("%s for x = %d", expr_str, x_value);

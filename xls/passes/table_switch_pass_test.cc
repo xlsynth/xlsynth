@@ -19,14 +19,14 @@
 #include <utility>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
-#include "xls/common/fuzzing/fuzztest.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/substitute.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+#include "xls/common/fuzzing/fuzztest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/fuzzer/ir_fuzzer/ir_fuzz_domain.h"
@@ -71,7 +71,7 @@ class TableSwitchPassTest : public IrTestBase {
 
     std::vector<Value> data;
     for (int i = 0; i < max_index + kOverflow; i++) {
-      XLS_ASSIGN_OR_RETURN(Value value, DropInterpreterEvents(InterpretFunction(
+      XLS_ASSIGN_OR_RETURN(Value value, DropEvaluatorEvents(InterpretFunction(
                                             f, {Value(UBits(i, width))})));
       data.push_back(value);
     }
@@ -85,7 +85,7 @@ class TableSwitchPassTest : public IrTestBase {
     for (int i = 0; i < before_data.size(); i++) {
       XLS_ASSIGN_OR_RETURN(
           Value value,
-          DropInterpreterEvents(InterpretFunction(
+          DropEvaluatorEvents(InterpretFunction(
               f, {Value(UBits(i, before_data[0].GetFlatBitCount()))})));
       if (value != before_data[i]) {
         return absl::InternalError(

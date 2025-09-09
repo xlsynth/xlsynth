@@ -6426,10 +6426,10 @@ TEST_P(TranslatorProcTest, DebugTrace) {
              /*top_class_name=*/"",
              /*expected_tick_status=*/absl::OkStatus(),
              /*expected_events_by_proc_name=*/
-             {{"Block_proc", xls::InterpreterEvents()}});
+             {{"Block_proc", xls::IrEvaluatorEvents()}});
   }
   {
-    xls::InterpreterEvents expected_events;
+    xls::IrEvaluatorEvents expected_events;
     expected_events.AddTraceStatementMessage(/*verbosity=*/0, "Value is 9");
 
     absl::flat_hash_map<std::string, std::list<xls::Value>> inputs;
@@ -6469,7 +6469,7 @@ TEST_P(TranslatorProcTest, DebugTraceInPipelinedLoop) {
       };)";
 
   {
-    xls::InterpreterEvents expected_events;
+    xls::IrEvaluatorEvents expected_events;
     expected_events.AddTraceStatementMessage(/*verbosity=*/0, "Value is 0");
     expected_events.AddTraceStatementMessage(/*verbosity=*/0, "Value is 1");
     expected_events.AddTraceStatementMessage(/*verbosity=*/0, "Value is 2");

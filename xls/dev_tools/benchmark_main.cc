@@ -569,7 +569,7 @@ absl::Status RunFunctionInterpreterAndJit(Function* function,
       CountRate(
           [&]() -> absl::Status {
             for (const std::vector<Value>& args : arg_set) {
-              CHECK_OK(InterpretFunction(function, args, &events).status());
+              CHECK_OK(InterpretFunction(function, args).status());
             }
             return absl::OkStatus();
           },

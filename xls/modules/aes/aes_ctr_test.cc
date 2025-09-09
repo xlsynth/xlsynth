@@ -77,7 +77,7 @@ static void IvToBuffer(const InitVector& iv,
   }
 }
 
-static void PrintTraceMessages(const InterpreterEvents& events) {
+static void PrintTraceMessages(const IrEvaluatorEvents& events) {
   if (absl::GetFlag(FLAGS_print_traces) &&
       events.GetTraceMessages().size() > 0) {
     std::cout << "Trace messages:" << '\n';
@@ -133,14 +133,14 @@ static absl::StatusOr<std::vector<Block>> XlsEncrypt(
 
   XLS_RETURN_IF_ERROR(jit_data->proc_runtime->Tick());
   PrintTraceMessages(
-      jit_data->proc_runtime->GetInterpreterEvents(jit_data->proc));
+      jit_data->proc_runtime->GetEvaluatorEvents(jit_data->proc));
 
   // TODO(rspringer): Set this up to handle partial blocks.
   for (int i = 1; i < num_blocks; i++) {
     input_data_queue.WriteRaw(sample_data.input_blocks[i].data());
     XLS_RETURN_IF_ERROR(jit_data->proc_runtime->Tick());
     PrintTraceMessages(
-        jit_data->proc_runtime->GetInterpreterEvents(jit_data->proc));
+        jit_data->proc_runtime->GetEvaluatorEvents(jit_data->proc));
   }
 
   // Finally, read out the ciphertext.

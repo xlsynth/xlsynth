@@ -83,10 +83,10 @@ TEST_F(BooleanifierTest, Crc32) {
     std::vector<Value> inputs({Value(UBits(i, 8))});
     XLS_ASSERT_OK_AND_ASSIGN(
         Value fancy_value,
-        DropInterpreterEvents(InterpretFunction(fd.source, inputs)));
+        DropEvaluatorEvents(InterpretFunction(fd.source, inputs)));
     XLS_ASSERT_OK_AND_ASSIGN(
         Value basic_value,
-        DropInterpreterEvents(InterpretFunction(fd.boolified, inputs)));
+        DropEvaluatorEvents(InterpretFunction(fd.boolified, inputs)));
     ASSERT_EQ(fancy_value, basic_value);
   }
 }

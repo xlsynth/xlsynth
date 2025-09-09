@@ -225,7 +225,7 @@ void XlsccTestBase::RunWithStatics(
     }
 
     XLS_ASSERT_OK_AND_ASSIGN(xls::Value actual,
-                             DropInterpreterEvents(xls::InterpretFunctionKwargs(
+                             DropEvaluatorEvents(xls::InterpretFunctionKwargs(
                                  top_func, args_with_statics)));
     XLS_ASSERT_OK_AND_ASSIGN(std::vector<xls::Value> returns,
                              actual.GetElements());
@@ -384,7 +384,7 @@ absl::StatusOr<std::string> XlsccTestBase::SourceToIr(
 }
 
 static absl::Status LogInterpreterEvents(std::string_view entity_name,
-                                         const xls::InterpreterEvents& events) {
+                                         const xls::IrEvaluatorEvents& events) {
   for (const auto& tm : events.GetTraceMessages()) {
     std::string unescaped_msg;
     XLS_RET_CHECK(absl::CUnescape(tm.message(), &unescaped_msg));
@@ -472,7 +472,7 @@ void XlsccTestBase::BlockTest(
         outputs_by_channel,
     int min_clocks, int max_blocks, int top_level_init_interval,
     const char* top_class_name, absl::Status expected_tick_status,
-    const absl::flat_hash_map<std::string, xls::InterpreterEvents>&
+    const absl::flat_hash_map<std::string, xls::IrEvaluatorEvents>&
         expected_events_by_proc_name) {
   absl::flat_hash_set<std::string> direct_in_channels_by_name;
   BuildTestIR(content, block_spec, top_level_init_interval, top_class_name,
@@ -601,7 +601,7 @@ void XlsccTestBase::ProcTest(
         outputs_by_channel,
     const int min_ticks, const int max_ticks, int top_level_init_interval,
     const char* top_class_name, absl::Status expected_tick_status,
-    const absl::flat_hash_map<std::string, xls::InterpreterEvents>&
+    const absl::flat_hash_map<std::string, xls::IrEvaluatorEvents>&
         expected_events_by_proc_name) {
   absl::flat_hash_set<std::string> direct_in_channels_by_name;
   BuildTestIR(content, block_spec, top_level_init_interval, top_class_name,
@@ -655,18 +655,18 @@ void XlsccTestBase::ProcTest(
                                   xls::ValueFormatter)));
   }
 
-  absl::flat_hash_map<std::string, xls::InterpreterEvents> got_events_for_proc;
+  absl::flat_hash_map<std::string, xls::IrEvaluatorEvents> got_events_for_proc;
 
   int tick = 1;
   for (; tick <= max_ticks; ++tick) {
     LOG(INFO) << "Before tick " << tick;
 
-    interpreter->ClearInterpreterEvents();
+    interpreter->ClearEvaluatorEvents();
     ASSERT_EQ(interpreter->Tick(), expected_tick_status);
 
     for (const auto& proc : package_->procs()) {
-      const xls::InterpreterEvents& events =
-          interpreter->GetInterpreterEvents(proc.get());
+      const xls::IrEvaluatorEvents& events =
+          interpreter->GetEvaluatorEvents(proc.get());
       XLS_EXPECT_OK(LogInterpreterEvents(proc->name(), events));
       got_events_for_proc[proc->name()].AppendFrom(events);
     }
@@ -709,7 +709,7 @@ void XlsccTestBase::ProcTest(
   }
 
   for (const auto& [proc_name, ref_events] : expected_events_by_proc_name) {
-    xls::InterpreterEvents got_events;
+    xls::IrEvaluatorEvents got_events;
     if (got_events_for_proc.contains(proc_name)) {
       got_events = got_events_for_proc.at(proc_name);
     }
@@ -1056,7 +1056,7 @@ void XlsccTestBase::IOTest(std::string_view content, std::list<IOOpTest> inputs,
 
   XLS_ASSERT_OK_AND_ASSIGN(
       xls::Value actual,
-      DropInterpreterEvents(xls::InterpretFunctionKwargs(entry, args)));
+      DropEvaluatorEvents(xls::InterpretFunctionKwargs(entry, args)));
 
   std::vector<xls::Value> returns;
 
