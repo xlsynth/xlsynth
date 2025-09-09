@@ -4281,7 +4281,7 @@ TEST_F(TranslatorLogicTest, UnusedTemplate) {
   args["a"] = in_tuple;
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * entry, package->GetTopAsFunction());
 
-  auto x = DropInterpreterEvents(
+  auto x = DropEvaluatorEvents(
       xls::InterpretFunctionKwargs(entry, {{"a", in_tuple}}));
 
   ASSERT_THAT(x, IsOkAndHolds(xls::Value(xls::UBits(0, 32))));
