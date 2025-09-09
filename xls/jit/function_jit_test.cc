@@ -979,7 +979,7 @@ TEST(FunctionJitTest, BigFunctionInputsOutputs) {
     };
     alignas(16) std::array<uint8_t, 256 / 8> ret_view{};
 
-    InterpreterEvents events;
+    IrEvaluatorEvents events;
     EXPECT_THAT(jit->RunWithViews({x_view.data(), y_view.data()},
                                   absl::MakeSpan(ret_view), &events),
                 IsOk());
@@ -1018,7 +1018,7 @@ fn f(x: bits[1], y: bits[21]) -> (bits[1], bits[21]) {
     std::vector<uint8_t*> args{reinterpret_cast<uint8_t*>(&x),
                                reinterpret_cast<uint8_t*>(&y)};
     absl::Span<uint8_t> result_buffer(result);
-    InterpreterEvents events;
+    IrEvaluatorEvents events;
     XLS_ASSERT_OK(jit->RunWithViews(args, result_buffer, &events));
 
     xls::TupleView<xls::BitsView<1>, xls::BitsView<21>> result_view(result);
@@ -1062,7 +1062,7 @@ fn f(x: bits[1], y: bits[8]) -> (bits[1], bits[8], bits[16]) {
     std::vector<uint8_t*> args{reinterpret_cast<uint8_t*>(&x),
                                reinterpret_cast<uint8_t*>(&y)};
     absl::Span<uint8_t> result_buffer(result);
-    InterpreterEvents events;
+    IrEvaluatorEvents events;
     XLS_ASSERT_OK(jit->RunWithViews(args, result_buffer, &events));
 
     xls::TupleView<xls::BitsView<1>, xls::BitsView<8>, xls::BitsView<16>>
@@ -1097,7 +1097,7 @@ TEST(FunctionJitTest, MisalignedPointerCopied) {
   };
   alignas(16) std::array<uint8_t, 1 + (256 / 8)> ret_view{};
   {
-    InterpreterEvents events;
+    IrEvaluatorEvents events;
     EXPECT_THAT(jit->RunWithViews</*kForceZeroCopy=*/false>(
                     {x_view.data() + 1, y_view.data() + 1},
                     absl::MakeSpan(ret_view).subspan(1), &events),
@@ -1130,7 +1130,7 @@ TEST(FunctionJitDeathTest, MisalignedPointerCaught) {
   alignas(16) std::array<uint8_t, 1 + (256 / 8)> ret_view{};
   ASSERT_DEATH(
       {
-        InterpreterEvents events;
+        IrEvaluatorEvents events;
         auto unused = jit->RunWithViews</*kForceZeroCopy=*/true>(
             {x_view.data() + 1, y_view.data() + 1},
             absl::MakeSpan(ret_view).subspan(1), &events);
@@ -1215,7 +1215,7 @@ void TestPackedBitsWithType(const TypeProto& type_proto) {
   std::array<uint8_t*, 2> inputs = {lhs.data(), rhs.data()};
   std::array<uint8_t*, 1> outputs = {output.data()};
 
-  InterpreterEvents events;
+  IrEvaluatorEvents events;
   JitRuntime runtime(data_layout);
   JitTempBuffer temp_buffer = jit.CreateTempBuffer();
   std::optional<int64_t> ret = jit.RunPackedJittedFunction(
@@ -1293,7 +1293,7 @@ void TestPackedTupleWithType(const TypeProto& type_proto) {
   std::array<uint8_t*, 2> inputs = {lhs.data(), rhs.data()};
   std::array<uint8_t*, 1> outputs = {output.data()};
 
-  InterpreterEvents events;
+  IrEvaluatorEvents events;
   JitRuntime runtime(data_layout);
   JitTempBuffer temp_buffer = jit.CreateTempBuffer();
   std::optional<int64_t> ret = jit.RunPackedJittedFunction(
@@ -1365,7 +1365,7 @@ void TestPackedArrayWithType(const TypeProto& type_proto) {
     bits_vector[index] = replacement.bits();
     std::vector<uint8_t> expected_data =
         FlattenValue(Value(VectorToPackedBits(bits_vector)));
-    InterpreterEvents events;
+    IrEvaluatorEvents events;
     JitRuntime runtime(data_layout);
     JitTempBuffer temp_buffer = jit.CreateTempBuffer();
     std::optional<int64_t> ret = jit.RunPackedJittedFunction(

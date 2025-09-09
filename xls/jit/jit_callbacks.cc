@@ -53,7 +53,7 @@ void PerformFormatStep(InstanceContext* thiz, JitRuntime* runtime,
 }
 
 void RecordTrace(InstanceContext* thiz, std::string* buffer, int64_t verbosity,
-                 InterpreterEvents* events) {
+                 IrEvaluatorEvents* events) {
   events->AddTraceStatementMessage(verbosity, *buffer);
   delete buffer;
 }
@@ -61,7 +61,7 @@ std::string* CreateTraceBuffer(InstanceContext* thiz) {
   return new std::string();
 }
 void RecordAssertion(InstanceContext* thiz, const char* msg,
-                     InterpreterEvents* events) {
+                     IrEvaluatorEvents* events) {
   events->AddAssertMessage(msg);
 }
 

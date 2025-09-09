@@ -777,7 +777,7 @@ class NodeIrContext {
   //     function. Each argument points to a buffer which must be filled with
   //     the computed result.
   //   include_wrapper_args: whether to include top-level arguments (such as
-  //     InterpreterEvents*, JitRuntime*, etc) in the node function. This is
+  //     IrEvaluatorEvents*, JitRuntime*, etc) in the node function. This is
   //     required when the node calls a top-level function (e.g, map, invoke,
   //     etc).
   //
@@ -877,7 +877,7 @@ class NodeIrContext {
     CHECK(has_metadata_args_);
     return llvm_function_->getArg(llvm_function_->arg_size() - 4);
   }
-  llvm::Value* GetInterpreterEventsArg() const {
+  llvm::Value* GetEvaluatorEventsArg() const {
     CHECK(has_metadata_args_);
     return llvm_function_->getArg(llvm_function_->arg_size() - 3);
   }
@@ -1746,10 +1746,9 @@ absl::Status IrBuilderVisitor::HandleAssert(Assert* assert_op) {
   llvm::BasicBlock* fail_block = llvm::BasicBlock::Create(
       ctx(), absl::StrCat(assert_label, "_fail"), function);
   llvm::IRBuilder<> fail_builder(fail_block);
-  XLS_RETURN_IF_ERROR(
-      InvokeAssertCallback(&fail_builder, assert_op->message(),
-                           node_context.GetInterpreterEventsArg(),
-                           node_context.GetInstanceContextArg()));
+  XLS_RETURN_IF_ERROR(InvokeAssertCallback(
+      &fail_builder, assert_op->message(), node_context.GetEvaluatorEventsArg(),
+      node_context.GetInstanceContextArg()));
 
   fail_builder.CreateBr(after_block);
 
@@ -1801,7 +1800,7 @@ absl::Status IrBuilderVisitor::HandleTrace(Trace* trace_op) {
 
   llvm::IRBuilder<>& b = node_context.entry_builder();
   llvm::Value* condition = Truthiness(node_context.LoadOperand(1), b);
-  llvm::Value* events_ptr = node_context.GetInterpreterEventsArg();
+  llvm::Value* events_ptr = node_context.GetEvaluatorEventsArg();
   llvm::Value* jit_runtime_ptr = node_context.GetJitRuntimeArg();
 
   std::string trace_name = trace_op->GetName();
@@ -2270,7 +2269,7 @@ absl::Status IrBuilderVisitor::HandleCountedFor(CountedFor* counted_for) {
   XLS_RETURN_IF_ERROR(
       CallFunction(body, input_arg_ptrs, {next_state_buffer.value()},
                    node_context.GetTempBufferArg(),
-                   node_context.GetInterpreterEventsArg(),
+                   node_context.GetEvaluatorEventsArg(),
                    node_context.GetInstanceContextArg(),
                    node_context.GetJitRuntimeArg(), loop.body_builder())
           .status());
@@ -2448,7 +2447,7 @@ absl::Status IrBuilderVisitor::HandleDynamicCountedFor(
   XLS_RETURN_IF_ERROR(
       CallFunction(loop_body_function, input_arg_ptrs,
                    {next_state_buffer.value()}, node_context.GetTempBufferArg(),
-                   node_context.GetInterpreterEventsArg(),
+                   node_context.GetEvaluatorEventsArg(),
                    node_context.GetInstanceContextArg(),
                    node_context.GetJitRuntimeArg(), *loop_builder)
           .status());
@@ -2602,7 +2601,7 @@ absl::Status IrBuilderVisitor::HandleInvoke(Invoke* invoke) {
   }
   XLS_RETURN_IF_ERROR(CallFunction(function, operand_ptrs, {output_buffer},
                                    node_context.GetTempBufferArg(),
-                                   node_context.GetInterpreterEventsArg(),
+                                   node_context.GetEvaluatorEventsArg(),
                                    node_context.GetInstanceContextArg(),
                                    node_context.GetJitRuntimeArg(), b)
                           .status());
@@ -2652,7 +2651,7 @@ absl::Status IrBuilderVisitor::HandleMap(Map* map) {
   XLS_ASSIGN_OR_RETURN(llvm::Function * to_apply, GetFunction(map->to_apply()));
   XLS_RETURN_IF_ERROR(CallFunction(to_apply, {input_element}, {output_element},
                                    node_context.GetTempBufferArg(),
-                                   node_context.GetInterpreterEventsArg(),
+                                   node_context.GetEvaluatorEventsArg(),
                                    node_context.GetInstanceContextArg(),
                                    node_context.GetJitRuntimeArg(),
                                    loop.body_builder())

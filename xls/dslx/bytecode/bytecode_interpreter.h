@@ -55,6 +55,8 @@ inline void InfoLoggingTraceHook(const FileTable& file_table,
   XLS_LOG_LINES_LOC(INFO, message, source_location.GetFilename(file_table),
                     source_location.start().GetHumanLineno());
 }
+//
+// using DslxInterpreterEvents = EvaluatorEventsBase<InterpValue>;
 
 // Stores name and use-location of a blocked channel, for error messaging.
 struct BlockedChannelInfo {

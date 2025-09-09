@@ -95,7 +95,7 @@ absl::StatusOr<InterpreterResult<Value>> InterpretFunction(
   XLS_RETURN_IF_ERROR(function->Accept(&visitor));
   Value result = visitor.ResolveAsValue(function->return_value());
   VLOG(2) << "Result = " << result;
-  InterpreterEvents events = visitor.GetInterpreterEvents();
+  IrEvaluatorEvents events = visitor.GetInterpreterEvents();
   return InterpreterResult<Value>{std::move(result), std::move(events)};
 }
 

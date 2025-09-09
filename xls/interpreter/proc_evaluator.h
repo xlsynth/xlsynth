@@ -53,8 +53,8 @@ class ProcContinuation {
   virtual absl::Status SetState(std::vector<Value> v) = 0;
 
   // Returns the events recorded during execution of this continuation.
-  virtual const InterpreterEvents& GetEvents() const = 0;
-  virtual InterpreterEvents& GetEvents() = 0;
+  virtual const IrEvaluatorEvents& GetEvents() const = 0;
+  virtual IrEvaluatorEvents& GetEvents() = 0;
   virtual void ClearEvents() = 0;
 
   // Returns true if the point of execution of this continuation is at the start

@@ -162,9 +162,10 @@ absl::StatusOr<std::unique_ptr<FunctionJit>> FunctionJit::CreateInternal(
                        orc_jit->CreateDataLayout());
   EvaluatorOptions eval_options = options;
   eval_options.set_support_observers(jit_options.include_observer_callbacks());
-  XLS_ASSIGN_OR_RETURN(auto function_base, JittedFunctionBase::Build(
-                                               xls_function, *orc_jit, eval_options,
-                                               jit_options.symbol_salt()));
+  XLS_ASSIGN_OR_RETURN(
+      auto function_base,
+      JittedFunctionBase::Build(xls_function, *orc_jit, eval_options,
+                                jit_options.symbol_salt()));
 
   XLS_ASSIGN_OR_RETURN(InterfaceMetadata metadata,
                        InterfaceMetadata::CreateFromFunction(xls_function));
@@ -194,7 +195,7 @@ absl::StatusOr<InterpreterResult<Value>> FunctionJit::Run(
   XLS_RETURN_IF_ERROR(jit_runtime_->PackArgs(
       args, metadata_.param_types, arg_buffers_->get_element_pointers()));
 
-  InterpreterEvents events;
+  IrEvaluatorEvents events;
   jitted_function_base_.RunJittedFunction(
       *arg_buffers_, *result_buffers_, temp_buffer_, &events,
       /*instance_context=*/&callbacks_, /*jit_runtime=*/runtime(),
@@ -215,7 +216,7 @@ absl::StatusOr<InterpreterResult<Value>> FunctionJit::Run(
 template <bool kForceZeroCopy>
 absl::Status FunctionJit::RunWithViews(absl::Span<uint8_t* const> args,
                                        absl::Span<uint8_t> result_buffer,
-                                       InterpreterEvents* events) {
+                                       IrEvaluatorEvents* events) {
   if (args.size() != metadata_.ParamCount()) {
     return absl::InvalidArgumentError(
         absl::StrFormat("Arg list has the wrong size: %d vs expected %d.",
@@ -235,15 +236,15 @@ absl::Status FunctionJit::RunWithViews(absl::Span<uint8_t* const> args,
 
 template absl::Status FunctionJit::RunWithViews</*kForceZeroCopy=*/true>(
     absl::Span<uint8_t* const> args, absl::Span<uint8_t> result_buffer,
-    InterpreterEvents* events);
+    IrEvaluatorEvents* events);
 template absl::Status FunctionJit::RunWithViews</*kForceZeroCopy=*/false>(
     absl::Span<uint8_t* const> args, absl::Span<uint8_t> result_buffer,
-    InterpreterEvents* events);
+    IrEvaluatorEvents* events);
 
 template <bool kForceZeroCopy>
 void FunctionJit::InvokeUnalignedJitFunction(
     absl::Span<const uint8_t* const> arg_buffers, uint8_t* output_buffer,
-    InterpreterEvents* events) {
+    IrEvaluatorEvents* events) {
   uint8_t* output_buffers[1] = {output_buffer};
   jitted_function_base_.RunUnalignedJittedFunction<kForceZeroCopy>(
       arg_buffers.data(), output_buffers, temp_buffer_.get_base_pointer(),
@@ -253,9 +254,9 @@ void FunctionJit::InvokeUnalignedJitFunction(
 
 template void FunctionJit::InvokeUnalignedJitFunction</*kForceZeroCopy=*/false>(
     absl::Span<const uint8_t* const> arg_buffers, uint8_t* output_buffer,
-    InterpreterEvents* events);
+    IrEvaluatorEvents* events);
 template void FunctionJit::InvokeUnalignedJitFunction</*kForceZeroCopy=*/true>(
     absl::Span<const uint8_t* const> arg_buffers, uint8_t* output_buffer,
-    InterpreterEvents* events);
+    IrEvaluatorEvents* events);
 
 }  // namespace xls

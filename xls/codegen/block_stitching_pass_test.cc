@@ -700,7 +700,7 @@ std::string ValueMapToString(
 
 struct BlockEvaluationResults {
   absl::flat_hash_map<std::string, std::vector<uint64_t>> actual_outputs;
-  InterpreterEvents interpreter_events;
+  IrEvaluatorEvents evaluator_events;
 };
 
 // Matcher to check outputs from block evaluation.
@@ -714,10 +714,10 @@ struct BlockEvaluationOutputsEqMatcher {
 
   bool MatchAndExplain(const BlockEvaluationResults& results,
                        ::testing::MatchResultListener* listener) const {
-    if (!results.interpreter_events.GetAssertMessages().empty()) {
+    if (!results.evaluator_events.GetAssertMessages().empty()) {
       *listener << absl::StreamFormat(
           "Unexpected assertion failures: %s.",
-          absl::StrJoin(results.interpreter_events.GetAssertMessages(), ", "));
+          absl::StrJoin(results.evaluator_events.GetAssertMessages(), ", "));
       return false;
     }
     if (results.actual_outputs != expected_outputs) {
@@ -890,7 +890,7 @@ absl::StatusOr<BlockEvaluationResults> EvalBlock(
 
   return BlockEvaluationResults{
       .actual_outputs = std::move(actual_outputs),
-      .interpreter_events = std::move(results.interpreter_events),
+      .evaluator_events = std::move(results.interpreter_events),
   };
 }
 
@@ -4996,10 +4996,10 @@ TEST_F(BlockStitchingPassTest, ProcWithAssert) {
   // Eval with a zero input, which should trip the assertion.
   EXPECT_THAT(
       EvalBlock(top_block, context.metadata(), {{"in", {100, 200, 300, 0}}}),
-      IsOkAndHolds(Field(
-          "interpreter_events", &BlockEvaluationResults::interpreter_events,
-          Property(&InterpreterEvents::GetAssertMessages,
-                   ElementsAre(HasSubstr("input must not be zero"))))));
+      IsOkAndHolds(
+          Field("evaluator_events", &BlockEvaluationResults::evaluator_events,
+                Property(&IrEvaluatorEvents::GetAssertMessages,
+                         ElementsAre(HasSubstr("input must not be zero"))))));
 }
 
 TEST_F(BlockStitchingPassTest, ProcWithCover) {
@@ -5139,7 +5139,7 @@ TEST_F(BlockStitchingPassTest, ProcWithTrace) {
                     {{"out", {100, 200, 300, 0, 400, 0, 500}}}));
 
   EXPECT_THAT(
-      interpreter->GetInterpreterEvents(p->GetProc("trace_not_zero").value())
+      interpreter->GetEvaluatorEvents(p->GetProc("trace_not_zero").value())
           .GetTraceMessageStrings(),
       ElementsAre(HasSubstr("data: 100"), HasSubstr("data: 200"),
                   HasSubstr("data: 300"), HasSubstr("data: 400"),
@@ -5159,10 +5159,9 @@ TEST_F(BlockStitchingPassTest, ProcWithTrace) {
                 /*num_cycles=*/45),
       IsOkAndHolds(AllOf(
           BlockOutputsEq({{"out", {100, 200, 300, 0, 400, 0, 500}}}),
-          Field("interpreter_events",
-                &BlockEvaluationResults::interpreter_events,
+          Field("interpreter_events", &BlockEvaluationResults::evaluator_events,
                 Property(
-                    &InterpreterEvents::GetTraceMessageStrings,
+                    &IrEvaluatorEvents::GetTraceMessageStrings,
                     ElementsAre(HasSubstr("data: 100"), HasSubstr("data: 200"),
                                 HasSubstr("data: 300"), HasSubstr("data: 400"),
                                 HasSubstr("data: 500")))))));

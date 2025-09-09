@@ -79,8 +79,8 @@ class ProcJitContinuation : public ProcContinuation {
 
   std::vector<Value> GetState() const override;
   absl::Status SetState(std::vector<Value> v) override;
-  const InterpreterEvents& GetEvents() const override { return events_; }
-  InterpreterEvents& GetEvents() override { return events_; }
+  const IrEvaluatorEvents& GetEvents() const override { return events_; }
+  IrEvaluatorEvents& GetEvents() override { return events_; }
   void ClearEvents() override { events_.Clear(); }
 
   bool AtStartOfTick() const override { return continuation_point_ == 0; }
@@ -134,7 +134,7 @@ class ProcJitContinuation : public ProcContinuation {
   int64_t continuation_point_;
   JitRuntime* jit_runtime_;
 
-  InterpreterEvents events_;
+  IrEvaluatorEvents events_;
 
   // Buffers to hold inputs, outputs, and temporary storage. This is allocated
   // once and then re-used with each invocation of Run. Not thread-safe.

@@ -21,9 +21,9 @@
 #include <string_view>
 #include <utility>
 
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/log.h"
+#include "gtest/gtest.h"
 #include "xls/codegen/codegen_options.h"
 #include "xls/codegen/codegen_result.h"
 #include "xls/codegen/combinational_generator.h"
@@ -99,14 +99,14 @@ void SimTestBase::RunAndExpectEq(
 void SimTestBase::RunAndExpectEq(
     const absl::flat_hash_map<std::string, Value>& args, const Value& expected,
     std::unique_ptr<Package>&& package, bool run_optimized, bool simulate) {
-  InterpreterEvents unopt_events;
+  IrEvaluatorEvents unopt_events;
 
   // Run interpreter on unoptimized IR.
   {
     XLS_ASSERT_OK_AND_ASSIGN(Function * entry, package->GetTopAsFunction());
     XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> result,
                              InterpretFunctionKwargs(entry, args));
-    XLS_ASSERT_OK(InterpreterEventsToStatus(result.events));
+    XLS_ASSERT_OK(IrEvaluatorEventsToStatus(result.events));
     unopt_events = result.events;
     ASSERT_TRUE(ValuesEqual(expected, result.value))
         << "(interpreted unoptimized IR)";
@@ -121,7 +121,7 @@ void SimTestBase::RunAndExpectEq(
       XLS_ASSERT_OK_AND_ASSIGN(Function * main, package->GetTopAsFunction());
       XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> result,
                                InterpretFunctionKwargs(main, args));
-      XLS_ASSERT_OK(InterpreterEventsToStatus(result.events));
+      XLS_ASSERT_OK(IrEvaluatorEventsToStatus(result.events));
       ASSERT_EQ(unopt_events, result.events);
       ASSERT_TRUE(ValuesEqual(expected, result.value))
           << "(interpreted optimized IR)";

@@ -16,7 +16,7 @@ extern "C" {
 // Unpacked entrypoint
 int64_t {{wrapped.aot_entrypoint.entrypoint[0].function_symbol}}(  // NOLINT
     const uint8_t* const* inputs, uint8_t* const* outputs, void* temp_buffer,
-    xls::InterpreterEvents* events, xls::InstanceContext* instance_context,
+    xls::IrEvaluatorEvents* events, xls::InstanceContext* instance_context,
     xls::JitRuntime* jit_runtime, int64_t continuation_point);
 }
 

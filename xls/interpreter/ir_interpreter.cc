@@ -90,7 +90,7 @@ absl::StatusOr<Value> InterpretNode(Node* node,
 }
 
 absl::Status IrInterpreter::AddInterpreterEvents(
-    const InterpreterEvents& events) {
+    const IrEvaluatorEvents& events) {
   GetInterpreterEvents().AppendFrom(events);
   return absl::OkStatus();
 }

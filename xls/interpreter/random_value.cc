@@ -97,7 +97,7 @@ absl::StatusOr<std::vector<Value>> RandomFunctionArguments(
       inputs.push_back(RandomValue(param->GetType(), rng));
     }
 
-    XLS_ASSIGN_OR_RETURN(Value result, DropInterpreterEvents(InterpretFunction(
+    XLS_ASSIGN_OR_RETURN(Value result, DropEvaluatorEvents(InterpretFunction(
                                            validator, inputs)));
     if (result.bits().IsOne()) {
       return inputs;

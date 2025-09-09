@@ -51,7 +51,7 @@ class IrInterpreter : public DfsVisitor {
         call_depth_(0) {}
 
   explicit IrInterpreter(
-      InterpreterEvents* events,
+      IrEvaluatorEvents* events,
       const EvaluatorOptions& options = EvaluatorOptions(),
       std::optional<EvaluationObserver*> observer = std::nullopt,
       int call_depth = 0)
@@ -65,7 +65,7 @@ class IrInterpreter : public DfsVisitor {
   // continuations to enable stopping and restarting execution of a
   // FunctionBase.
   IrInterpreter(absl::flat_hash_map<Node*, Value>* node_values,
-                InterpreterEvents* events,
+                IrEvaluatorEvents* events,
                 const EvaluatorOptions& options = EvaluatorOptions(),
                 std::optional<EvaluationObserver*> observer = std::nullopt,
                 int call_depth = 0)
@@ -86,17 +86,17 @@ class IrInterpreter : public DfsVisitor {
     return NodeValuesMap().at(node);
   }
 
-  const InterpreterEvents& GetInterpreterEvents() const {
+  const IrEvaluatorEvents& GetInterpreterEvents() const {
     return events_ptr_ != nullptr ? *events_ptr_ : events_;
   }
-  InterpreterEvents& GetInterpreterEvents() {
+  IrEvaluatorEvents& GetInterpreterEvents() {
     return events_ptr_ != nullptr ? *events_ptr_ : events_;
   }
 
   const EvaluatorOptions& options() const { return options_; }
   int call_depth() const { return call_depth_; }
 
-  absl::Status AddInterpreterEvents(const InterpreterEvents& events);
+  absl::Status AddInterpreterEvents(const IrEvaluatorEvents& events);
 
   // Returns true if a value has been set for the result of the given node.
   bool HasResult(Node* node) const { return NodeValuesMap().contains(node); }
@@ -239,8 +239,8 @@ class IrInterpreter : public DfsVisitor {
   // support continuations, an existing events object can either be passed in at
   // construction time (`events_ptr_` is not null), or a fresh events object is
   // used (`events_ptr` is null).
-  InterpreterEvents* events_ptr_;
-  InterpreterEvents events_;
+  IrEvaluatorEvents* events_ptr_;
+  IrEvaluatorEvents events_;
   EvaluatorOptions options_;
   std::optional<EvaluationObserver*> observer_;
   int call_depth_;

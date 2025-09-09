@@ -19,10 +19,10 @@
 #include <string_view>
 #include <type_traits>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/algorithm/container.h"
 #include "absl/status/statusor.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/file/filesystem.h"
 #include "xls/common/file/get_runfile_path.h"
 #include "xls/common/status/matchers.h"
@@ -52,23 +52,23 @@ extern "C" {
 // Top proc entrypoint
 int64_t proc_0(  // NOLINT
     const uint8_t* const* inputs, uint8_t* const* outputs, void* temp_buffer,
-    xls::InterpreterEvents* events, xls::InstanceContext* instance_context,
+    xls::IrEvaluatorEvents* events, xls::InstanceContext* instance_context,
     xls::JitRuntime* jit_runtime, int64_t continuation_point);
 int64_t proc_1(  // NOLINT
     const uint8_t* const* inputs, uint8_t* const* outputs, void* temp_buffer,
-    xls::InterpreterEvents* events, xls::InstanceContext* instance_context,
+    xls::IrEvaluatorEvents* events, xls::InstanceContext* instance_context,
     xls::JitRuntime* jit_runtime, int64_t continuation_point);
 int64_t __multi_proc__proc_ten__proc_quad_0_next(  // NOLINT
     const uint8_t* const* inputs, uint8_t* const* outputs, void* temp_buffer,
-    xls::InterpreterEvents* events, xls::InstanceContext* instance_context,
+    xls::IrEvaluatorEvents* events, xls::InstanceContext* instance_context,
     xls::JitRuntime* jit_runtime, int64_t continuation_point);
 int64_t __multi_proc__proc_ten__proc_double_0_next(  // NOLINT
     const uint8_t* const* inputs, uint8_t* const* outputs, void* temp_buffer,
-    xls::InterpreterEvents* events, xls::InstanceContext* instance_context,
+    xls::IrEvaluatorEvents* events, xls::InstanceContext* instance_context,
     xls::JitRuntime* jit_runtime, int64_t continuation_point);
 int64_t __multi_proc__proc_ten_0_next(  // NOLINT
     const uint8_t* const* inputs, uint8_t* const* outputs, void* temp_buffer,
-    xls::InterpreterEvents* events, xls::InstanceContext* instance_context,
+    xls::IrEvaluatorEvents* events, xls::InstanceContext* instance_context,
     xls::JitRuntime* jit_runtime, int64_t continuation_point);
 }
 

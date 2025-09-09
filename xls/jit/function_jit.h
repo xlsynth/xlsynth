@@ -95,7 +95,7 @@ class FunctionJit {
   template <bool kForceZeroCopy = false>
   absl::Status RunWithViews(absl::Span<uint8_t* const> args,
                             absl::Span<uint8_t> result_buffer,
-                            InterpreterEvents* events);
+                            IrEvaluatorEvents* events);
 
   // Similar to RunWithViews(), except the arguments here are _packed_views_ -
   // views whose data elements are tightly packed, with no padding bits or bytes
@@ -123,13 +123,13 @@ class FunctionJit {
     // Walk the type tree to get each arg's data buffer into our view/arg list.
     PackArgBuffers(arg_buffers, &result_buffer, args...);
 
-    InterpreterEvents events;
+    IrEvaluatorEvents events;
     uint8_t* output_buffers[1] = {result_buffer};
     jitted_function_base_.RunPackedJittedFunction(
         arg_buffers, output_buffers, temp_buffer_.get_base_pointer(), &events,
         /*instance_context=*/&callbacks_, runtime(), /*continuation_point=*/0);
 
-    return InterpreterEventsToStatus(events);
+    return IrEvaluatorEventsToStatus(events);
   }
 
   // Same as RunWithPackedViews but expects a View rather than a PackedView.
@@ -256,10 +256,10 @@ class FunctionJit {
     // Walk the type tree to get each arg's data buffer into our view/arg list.
     PackArgBuffers(arg_buffers, &result_buffer, args...);
 
-    InterpreterEvents events;
+    IrEvaluatorEvents events;
     InvokeUnalignedJitFunction<kForceZeroCopy>(arg_buffers, result_buffer,
                                                &events);
-    return InterpreterEventsToStatus(events);
+    return IrEvaluatorEventsToStatus(events);
   }
 
   // Builds a function which wraps the natively compiled XLS function `callee`
@@ -303,7 +303,7 @@ class FunctionJit {
   template <bool kForceZeroCopy = false>
   void InvokeUnalignedJitFunction(absl::Span<const uint8_t* const> arg_buffers,
                                   uint8_t* output_buffer,
-                                  InterpreterEvents* events);
+                                  IrEvaluatorEvents* events);
 
   InterfaceMetadata metadata_;
 

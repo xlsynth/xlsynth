@@ -15,7 +15,7 @@ extern "C" {
 void {{aot.extern_fn}}(const uint8_t* const* inputs,
                        uint8_t* const* outputs,
                        uint8_t* temp_buffer,
-                       ::xls::InterpreterEvents* events,
+                       ::xls::IrEvaluatorEvents* events,
                        void* unused,
                        int64_t continuation_point);
 }
@@ -65,7 +65,7 @@ absl::StatusOr<::xls::Value> {{aot.wrapper_function_name}}(
 
   uint8_t* output_buffers[1] = {result_buffer};
   alignas({{aot.temp_buffer_align}}) uint8_t temp_buffer[{{aot.temp_buffer_size}}];
-  ::xls::InterpreterEvents events;
+  ::xls::IrEvaluatorEvents events;
   {{aot.extern_fn}}(arg_buffers, output_buffers, temp_buffer,
                     &events, /*unused=*/nullptr, /*continuation_point=*/0);
 

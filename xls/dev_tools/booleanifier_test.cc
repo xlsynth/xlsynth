@@ -20,11 +20,11 @@
 #include <utility>
 #include <vector>
 
-#include "gtest/gtest.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
+#include "gtest/gtest.h"
 #include "xls/common/file/filesystem.h"
 #include "xls/common/file/get_runfile_path.h"
 #include "xls/common/status/matchers.h"
@@ -102,9 +102,9 @@ TEST_F(BooleanifierTest, Crc32_Jit) {
   for (int i = 0; i < 256; i++) {
     std::vector<Value> inputs({Value(UBits(i, 8))});
     XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                             DropInterpreterEvents(fancy_jit->Run(inputs)));
+                             DropEvaluatorEvents(fancy_jit->Run(inputs)));
     XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                             DropInterpreterEvents(basic_jit->Run(inputs)));
+                             DropEvaluatorEvents(basic_jit->Run(inputs)));
     ASSERT_EQ(fancy_value, basic_value);
   }
 }
@@ -137,9 +137,9 @@ fn main(a: (bits[2], bits[3], bits[4])) -> (bits[4], bits[3], bits[2]) {
     inputs[0] = Value::Tuple({a_0, a_1, a_2});
 
     XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                             DropInterpreterEvents(fancy_jit->Run(inputs)));
+                             DropEvaluatorEvents(fancy_jit->Run(inputs)));
     XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                             DropInterpreterEvents(basic_jit->Run(inputs)));
+                             DropEvaluatorEvents(basic_jit->Run(inputs)));
     ASSERT_EQ(fancy_value, basic_value) << testing::PrintToString(inputs);
   }
 }
@@ -185,9 +185,9 @@ fn main(a: (bits[2], bits[3], bits[4]), b: (bits[2], bits[3], bits[4])) -> (bits
       inputs[1] = Value::Tuple({b_0, b_1, b_2});
 
       XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                               DropInterpreterEvents(fancy_jit->Run(inputs)));
+                               DropEvaluatorEvents(fancy_jit->Run(inputs)));
       XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                               DropInterpreterEvents(basic_jit->Run(inputs)));
+                               DropEvaluatorEvents(basic_jit->Run(inputs)));
       ASSERT_EQ(fancy_value, basic_value) << testing::PrintToString(inputs);
     }
   }
@@ -219,9 +219,9 @@ fn main(a: bits[4][4], i: bits[2], j: bits[2]) -> bits[4][2] {
       inputs[2] = Value(UBits(j, 2));
 
       XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                               DropInterpreterEvents(fancy_jit->Run(inputs)));
+                               DropEvaluatorEvents(fancy_jit->Run(inputs)));
       XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                               DropInterpreterEvents(basic_jit->Run(inputs)));
+                               DropEvaluatorEvents(basic_jit->Run(inputs)));
       ASSERT_EQ(fancy_value, basic_value);
     }
   }
@@ -251,9 +251,9 @@ fn main(a: bits[4][4], i: bits[2], value: bits[4]) -> bits[4][4] {
       inputs[2] = Value(UBits(value, 4));
 
       XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                               DropInterpreterEvents(fancy_jit->Run(inputs)));
+                               DropEvaluatorEvents(fancy_jit->Run(inputs)));
       XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                               DropInterpreterEvents(basic_jit->Run(inputs)));
+                               DropEvaluatorEvents(basic_jit->Run(inputs)));
       ASSERT_EQ(fancy_value, basic_value);
     }
   }
@@ -288,9 +288,9 @@ fn main(a: bits[8][4][4], i: bits[2][2], value: bits[8]) -> bits[8][4][4] {
   for (uint64_t i = 0; i < 16; ++i) {
     XLS_ASSERT_OK_AND_ASSIGN(inputs[1], Value::UBitsArray({i / 4, i % 4}, 2));
     XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                             DropInterpreterEvents(fancy_jit->Run(inputs)));
+                             DropEvaluatorEvents(fancy_jit->Run(inputs)));
     XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                             DropInterpreterEvents(basic_jit->Run(inputs)));
+                             DropEvaluatorEvents(basic_jit->Run(inputs)));
     ASSERT_EQ(fancy_value, basic_value);
   }
 }
@@ -320,9 +320,9 @@ fn main(a: bits[8][4][4], value: bits[8]) -> bits[8][4][4] {
   Value replacement(UBits(0xff, 8));
   inputs[1] = replacement;
   XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                           DropInterpreterEvents(fancy_jit->Run(inputs)));
+                           DropEvaluatorEvents(fancy_jit->Run(inputs)));
   XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                           DropInterpreterEvents(basic_jit->Run(inputs)));
+                           DropEvaluatorEvents(basic_jit->Run(inputs)));
   ASSERT_EQ(fancy_value, basic_value);
 }
 
@@ -350,9 +350,9 @@ fn main(a: bits[8][4][4], value: bits[8][4]) -> bits[8][4][4] {
   XLS_ASSERT_OK_AND_ASSIGN(inputs[1],
                            Value::UBitsArray({0xc0, 0xd0, 0xe0, 0xf0}, 8));
   XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                           DropInterpreterEvents(fancy_jit->Run(inputs)));
+                           DropEvaluatorEvents(fancy_jit->Run(inputs)));
   XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                           DropInterpreterEvents(basic_jit->Run(inputs)));
+                           DropEvaluatorEvents(basic_jit->Run(inputs)));
   ASSERT_EQ(fancy_value, basic_value);
 }
 
@@ -383,9 +383,9 @@ fn main(a: bits[8][4][4], i: bits[2], value: bits[8]) -> bits[8][4][4] {
     Value index(UBits(i, 2));
     inputs[1] = index;
     XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                             DropInterpreterEvents(fancy_jit->Run(inputs)));
+                             DropEvaluatorEvents(fancy_jit->Run(inputs)));
     XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                             DropInterpreterEvents(basic_jit->Run(inputs)));
+                             DropEvaluatorEvents(basic_jit->Run(inputs)));
     ASSERT_EQ(fancy_value, basic_value);
   }
 }
@@ -417,9 +417,9 @@ fn main(a: bits[8][4][4], i: bits[2], value: bits[8]) -> bits[8][4][4] {
     Value index(UBits(i, 2));
     inputs[1] = index;
     XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                             DropInterpreterEvents(fancy_jit->Run(inputs)));
+                             DropEvaluatorEvents(fancy_jit->Run(inputs)));
     XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                             DropInterpreterEvents(basic_jit->Run(inputs)));
+                             DropEvaluatorEvents(basic_jit->Run(inputs)));
     ASSERT_EQ(fancy_value, basic_value);
   }
 }
@@ -450,9 +450,9 @@ fn main(a: bits[8][4][4], i: bits[2], value: bits[8][4]) -> bits[8][4][4] {
     Value index(UBits(i, 2));
     inputs[1] = index;
     XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                             DropInterpreterEvents(fancy_jit->Run(inputs)));
+                             DropEvaluatorEvents(fancy_jit->Run(inputs)));
     XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                             DropInterpreterEvents(basic_jit->Run(inputs)));
+                             DropEvaluatorEvents(basic_jit->Run(inputs)));
     ASSERT_EQ(fancy_value, basic_value);
   }
 }
@@ -486,9 +486,9 @@ fn main(a: bits[8][4][4], value: bits[8][4][4]) -> bits[8][4][4] {
   inputs[0] = a;
   inputs[1] = b;
   XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                           DropInterpreterEvents(fancy_jit->Run(inputs)));
+                           DropEvaluatorEvents(fancy_jit->Run(inputs)));
   XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                           DropInterpreterEvents(basic_jit->Run(inputs)));
+                           DropEvaluatorEvents(basic_jit->Run(inputs)));
   ASSERT_EQ(fancy_value, basic_value);
 }
 
@@ -516,9 +516,9 @@ fn main(a: bits[8][4][4], value: bits[8]) -> bits[8][4][4] {
   inputs[0] = a;
   inputs[1] = Value(UBits(0xff, 8));
   XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                           DropInterpreterEvents(fancy_jit->Run(inputs)));
+                           DropEvaluatorEvents(fancy_jit->Run(inputs)));
   XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                           DropInterpreterEvents(basic_jit->Run(inputs)));
+                           DropEvaluatorEvents(basic_jit->Run(inputs)));
   ASSERT_EQ(fancy_value, basic_value);
 }
 
@@ -546,9 +546,9 @@ fn main(a: bits[8][4][4], value: bits[8]) -> bits[8][4][4] {
   inputs[0] = a;
   inputs[1] = Value(UBits(0xff, 8));
   XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                           DropInterpreterEvents(fancy_jit->Run(inputs)));
+                           DropEvaluatorEvents(fancy_jit->Run(inputs)));
   XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                           DropInterpreterEvents(basic_jit->Run(inputs)));
+                           DropEvaluatorEvents(basic_jit->Run(inputs)));
   ASSERT_EQ(fancy_value, basic_value);
 }
 
@@ -583,18 +583,18 @@ fn main(a: bits[8][4][4], i: bits[3][2], value: bits[8]) -> bits[8][4][4] {
   {
     XLS_ASSERT_OK_AND_ASSIGN(inputs[1], Value::UBitsArray({5, 0}, 3));
     XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                             DropInterpreterEvents(fancy_jit->Run(inputs)));
+                             DropEvaluatorEvents(fancy_jit->Run(inputs)));
     XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                             DropInterpreterEvents(basic_jit->Run(inputs)));
+                             DropEvaluatorEvents(basic_jit->Run(inputs)));
     ASSERT_EQ(fancy_value, basic_value);
   }
   // [0, 5]
   {
     XLS_ASSERT_OK_AND_ASSIGN(inputs[1], Value::UBitsArray({0, 5}, 3));
     XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                             DropInterpreterEvents(fancy_jit->Run(inputs)));
+                             DropEvaluatorEvents(fancy_jit->Run(inputs)));
     XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                             DropInterpreterEvents(basic_jit->Run(inputs)));
+                             DropEvaluatorEvents(basic_jit->Run(inputs)));
     ASSERT_EQ(fancy_value, basic_value);
   }
 }
@@ -634,9 +634,9 @@ fn main(a: bits[4][4][4]) -> bits[4][4][4] {
 
   std::vector<Value> inputs = {a};
   XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                           DropInterpreterEvents(fancy_jit->Run(inputs)));
+                           DropEvaluatorEvents(fancy_jit->Run(inputs)));
   XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                           DropInterpreterEvents(basic_jit->Run(inputs)));
+                           DropEvaluatorEvents(basic_jit->Run(inputs)));
   ASSERT_EQ(fancy_value, basic_value);
 }
 
@@ -667,9 +667,9 @@ fn main(a: bits[4][4][4], i: bits[2][2]) -> bits[4] {
   for (uint64_t i = 0; i < 16; ++i) {
     XLS_ASSERT_OK_AND_ASSIGN(inputs[1], Value::UBitsArray({i / 4, i % 4}, 2));
     XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                             DropInterpreterEvents(fancy_jit->Run(inputs)));
+                             DropEvaluatorEvents(fancy_jit->Run(inputs)));
     XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                             DropInterpreterEvents(basic_jit->Run(inputs)));
+                             DropEvaluatorEvents(basic_jit->Run(inputs)));
     ASSERT_EQ(fancy_value, basic_value);
   }
 }
@@ -697,9 +697,9 @@ fn main(a: bits[4][4][4], i: bits[2]) -> bits[4][4] {
   for (uint64_t i = 0; i < 4; ++i) {
     inputs[1] = Value(UBits(i, 2));
     XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                             DropInterpreterEvents(fancy_jit->Run(inputs)));
+                             DropEvaluatorEvents(fancy_jit->Run(inputs)));
     XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                             DropInterpreterEvents(basic_jit->Run(inputs)));
+                             DropEvaluatorEvents(basic_jit->Run(inputs)));
     ASSERT_EQ(fancy_value, basic_value);
   }
 }
@@ -733,9 +733,9 @@ TEST_F(BooleanifierTest, HandleArraySlice) {
   for (int64_t i = 0; i < (1 << kStartBits); ++i) {
     std::array<Value, 2> inputs{array, Value(UBits(i, kStartBits))};
     XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                             DropInterpreterEvents(fancy_jit->Run(inputs)));
+                             DropEvaluatorEvents(fancy_jit->Run(inputs)));
     XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                             DropInterpreterEvents(basic_jit->Run(inputs)));
+                             DropEvaluatorEvents(basic_jit->Run(inputs)));
     ASSERT_EQ(fancy_value, basic_value);
   }
   auto finish = absl::Now();
@@ -768,9 +768,9 @@ fn main(a: bits[4][4][4]) -> bits[4] {
 
   std::vector<Value> inputs = {a};
   XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                           DropInterpreterEvents(fancy_jit->Run(inputs)));
+                           DropEvaluatorEvents(fancy_jit->Run(inputs)));
   XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                           DropInterpreterEvents(basic_jit->Run(inputs)));
+                           DropEvaluatorEvents(basic_jit->Run(inputs)));
   ASSERT_EQ(fancy_value, basic_value);
 }
 
@@ -795,9 +795,9 @@ fn main(a: bits[4][4][4]) -> bits[4][4] {
 
   std::vector<Value> inputs = {a};
   XLS_ASSERT_OK_AND_ASSIGN(Value fancy_value,
-                           DropInterpreterEvents(fancy_jit->Run(inputs)));
+                           DropEvaluatorEvents(fancy_jit->Run(inputs)));
   XLS_ASSERT_OK_AND_ASSIGN(Value basic_value,
-                           DropInterpreterEvents(basic_jit->Run(inputs)));
+                           DropEvaluatorEvents(basic_jit->Run(inputs)));
   ASSERT_EQ(fancy_value, basic_value);
 }
 

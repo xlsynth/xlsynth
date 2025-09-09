@@ -543,7 +543,7 @@ absl::Status RunFunctionInterpreterAndJit(Function* function,
   auto [jit_arg_buffers, jit_arg_pointers] = std::move(jit_args);
 
   // The JIT is much faster so run many times.
-  InterpreterEvents events;
+  IrEvaluatorEvents events;
   std::vector<uint8_t> result_buffer(jit->runtime()->ShouldAllocateForAlignment(
       jit->GetReturnTypeSize(), jit->GetReturnTypeAlignment()));
   absl::Span<uint8_t> result_aligned = jit->runtime()->AsAligned(
@@ -569,7 +569,7 @@ absl::Status RunFunctionInterpreterAndJit(Function* function,
       CountRate(
           [&]() -> absl::Status {
             for (const std::vector<Value>& args : arg_set) {
-              CHECK_OK(InterpretFunction(function, args).status());
+              CHECK_OK(InterpretFunction(function, args, &events).status());
             }
             return absl::OkStatus();
           },

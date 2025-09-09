@@ -58,7 +58,7 @@ namespace {
 // An interpreter for XLS blocks.
 class BlockInterpreter final : public IrInterpreter {
  public:
-  BlockInterpreter(Block* block, InterpreterEvents* events,
+  BlockInterpreter(Block* block, IrEvaluatorEvents* events,
                    std::string_view register_prefix,
                    const absl::flat_hash_map<std::string, Value>& reg_state,
                    absl::flat_hash_map<std::string, Value>& next_reg_state,
@@ -464,10 +464,9 @@ class ElaboratedBlockInterpreter final : public ElaboratedBlockDfsVisitor {
                                       next_reg_state_)});
       } else if (instance->block().has_value()) {
         interpreters_.insert(
-            {instance,
-             BlockInterpreter(*instance->block(), &interpreter_events_,
-                              instance->RegisterPrefix(), reg_state_,
-                              next_reg_state_, observer)});
+            {instance, BlockInterpreter(*instance->block(), &evaluator_events_,
+                                        instance->RegisterPrefix(), reg_state_,
+                                        next_reg_state_, observer)});
       }
     }
     CHECK_OK(SetInstance(elaboration.top()));
@@ -929,15 +928,15 @@ class ElaboratedBlockInterpreter final : public ElaboratedBlockDfsVisitor {
     return std::move(next_reg_state_);
   }
 
-  InterpreterEvents&& MoveInterpreterEvents() {
-    return std::move(interpreter_events_);
+  IrEvaluatorEvents&& MoveInterpreterEvents() {
+    return std::move(evaluator_events_);
   }
 
  private:
   const absl::flat_hash_map<std::string, Value>& inputs_;
   const absl::flat_hash_map<std::string, Value>& reg_state_;
   absl::flat_hash_map<std::string, Value> next_reg_state_;
-  InterpreterEvents interpreter_events_;
+  IrEvaluatorEvents evaluator_events_;
   absl::flat_hash_map<BlockInstance*, BlockInterpreter> interpreters_;
   absl::flat_hash_map<BlockInstance*, FifoModel> fifo_models_;
   absl::flat_hash_map<BlockInstance*, DelayLineModel> delay_line_models_;
@@ -1045,7 +1044,7 @@ class StatelessBlockContinuation final : public BlockContinuation {
     return last_result_.reg_state;
   }
 
-  const InterpreterEvents& events() final {
+  const IrEvaluatorEvents& events() final {
     return last_result_.interpreter_events;
   }
 

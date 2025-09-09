@@ -39,7 +39,7 @@ namespace xls {
 struct BlockRunResult {
   absl::flat_hash_map<std::string, Value> outputs;
   absl::flat_hash_map<std::string, Value> reg_state;
-  InterpreterEvents interpreter_events;
+  IrEvaluatorEvents interpreter_events;
 };
 
 // Drives input channel simulation for testing blocks.
@@ -201,13 +201,13 @@ class ChannelSink {
 struct BlockIOResults {
   std::vector<absl::flat_hash_map<std::string, Value>> inputs;
   std::vector<absl::flat_hash_map<std::string, Value>> outputs;
-  InterpreterEvents interpreter_events;
+  IrEvaluatorEvents interpreter_events;
 };
 
 struct BlockIOResultsAsUint64 {
   std::vector<absl::flat_hash_map<std::string, uint64_t>> inputs;
   std::vector<absl::flat_hash_map<std::string, uint64_t>> outputs;
-  InterpreterEvents interpreter_events;
+  IrEvaluatorEvents interpreter_events;
 };
 
 class BlockContinuation;
@@ -421,7 +421,7 @@ class BlockContinuation {
   // valid until the next call to 'RunOneCycle'.
   virtual const absl::flat_hash_map<std::string, Value>& registers() = 0;
   // Get the interpreter events for the last cycle.
-  virtual const InterpreterEvents& events() = 0;
+  virtual const IrEvaluatorEvents& events() = 0;
   // Run a single cycle of the block on the given inputs using the current
   // register state.
   virtual absl::Status RunOneCycle(

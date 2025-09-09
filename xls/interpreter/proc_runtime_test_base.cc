@@ -1111,7 +1111,7 @@ TEST_P(ProcRuntimeTestBase, TraceChannels) {
     XLS_ASSERT_OK(in_queue.Write({Value(UBits(123, 32))}));
     XLS_ASSERT_OK(runtime->TickUntilBlocked(/*max_ticks=*/100));
 
-    InterpreterEvents events = runtime->GetGlobalEvents();
+    IrEvaluatorEvents events = runtime->GetGlobalEvents();
     EXPECT_THAT(
         events.GetTraceMessageStrings(),
         ElementsAre(ContainsRegex("Sent data on channel `in`.*:42"),
@@ -1133,7 +1133,7 @@ TEST_P(ProcRuntimeTestBase, TraceChannels) {
     XLS_ASSERT_OK(in_queue.Write({Value(UBits(123, 32))}));
     XLS_ASSERT_OK(runtime->TickUntilBlocked(/*max_ticks=*/100));
 
-    InterpreterEvents events = runtime->GetGlobalEvents();
+    IrEvaluatorEvents events = runtime->GetGlobalEvents();
     EXPECT_THAT(
         events.GetTraceMessageStrings(),
         ElementsAre(ContainsRegex("Sent data on channel `in`.*:0x2a"),

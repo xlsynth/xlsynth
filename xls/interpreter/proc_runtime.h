@@ -110,19 +110,19 @@ class ProcRuntime {
   void ResetState();
 
   // Returns the events for each proc in the network.
-  const InterpreterEvents& GetInterpreterEvents(
+  const IrEvaluatorEvents& GetEvaluatorEvents(
       const ProcInstance* instance) const {
     return continuations_.at(instance)->GetEvents();
   }
-  const InterpreterEvents& GetInterpreterEvents(Proc* proc) const {
+  const IrEvaluatorEvents& GetEvaluatorEvents(Proc* proc) const {
     return continuations_.at(elaboration().GetUniqueInstance(proc).value())
         ->GetEvents();
   }
 
   // Return the events which are not associated with any particular proc (e.g.,
   // trace messages for channel activity).
-  InterpreterEvents GetGlobalEvents() const;
-  void ClearInterpreterEvents();
+  IrEvaluatorEvents GetGlobalEvents() const;
+  void ClearEvaluatorEvents();
 
   const ProcElaboration& elaboration() const {
     return queue_manager_->elaboration();
@@ -164,7 +164,7 @@ class ProcRuntime {
       continuations_;
 
   mutable absl::Mutex global_events_mutex_;
-  InterpreterEvents global_events_ ABSL_GUARDED_BY(global_events_mutex_);
+  IrEvaluatorEvents global_events_ ABSL_GUARDED_BY(global_events_mutex_);
 
   EvaluatorOptions options_;
   std::optional<EvaluationObserver*> observer_ = std::nullopt;

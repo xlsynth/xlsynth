@@ -503,7 +503,7 @@ absl::Status BlockJit::ReconcileMultipleRegisterWrites(
 
 absl::Status BlockJit::RunOneCycle(BlockJitContinuation& continuation) {
   // Run to update the registers
-  InterpreterEvents fake_events;
+  IrEvaluatorEvents fake_events;
   function_.RunJittedFunction(
       continuation.input_arg_set(), continuation.output_arg_set(),
       continuation.temp_buffer_, &continuation.GetEvents(),
@@ -819,7 +819,7 @@ class BlockContinuationJitWrapper final : public BlockContinuation {
     }
     return *temporary_regs_;
   }
-  const InterpreterEvents& events() final { return continuation_->GetEvents(); }
+  const IrEvaluatorEvents& events() final { return continuation_->GetEvents(); }
   absl::Status RunOneCycle(
       const absl::flat_hash_map<std::string, Value>& inputs) final {
     temporary_outputs_.reset();

@@ -174,7 +174,7 @@ class XlsccTestBase : public xls::SimTestBase, public ::absl::LogSink {
                 int top_level_init_interval = 1,
                 const char* top_class_name = "",
                 absl::Status expected_tick_status = absl::OkStatus(),
-                const absl::flat_hash_map<std::string, xls::InterpreterEvents>&
+                const absl::flat_hash_map<std::string, xls::IrEvaluatorEvents>&
                     expected_events_by_proc_name = {});
 
   void BlockTest(std::string_view content, std::string top_proc_name,
@@ -187,7 +187,7 @@ class XlsccTestBase : public xls::SimTestBase, public ::absl::LogSink {
                  int top_level_init_interval = 1,
                  const char* top_class_name = "",
                  absl::Status expected_tick_status = absl::OkStatus(),
-                 const absl::flat_hash_map<std::string, xls::InterpreterEvents>&
+                 const absl::flat_hash_map<std::string, xls::IrEvaluatorEvents>&
                      expected_events_by_proc_name = {});
 
   void IOTest(std::string_view content, std::list<IOOpTest> inputs,

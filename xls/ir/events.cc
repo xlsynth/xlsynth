@@ -18,7 +18,7 @@
 
 namespace xls {
 
-absl::Status InterpreterEventsToStatus(const InterpreterEvents& events) {
+absl::Status IrEvaluatorEventsToStatus(const IrEvaluatorEvents& events) {
   if (events.GetAssertMessages().empty()) {
     return absl::OkStatus();
   }

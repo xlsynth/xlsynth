@@ -245,12 +245,12 @@ ProcRuntime::GetJitChannelQueueManager() {
   return jit_qm;
 }
 
-InterpreterEvents ProcRuntime::GetGlobalEvents() const {
+IrEvaluatorEvents ProcRuntime::GetGlobalEvents() const {
   absl::MutexLock lock(&global_events_mutex_);
   return global_events_;
 }
 
-void ProcRuntime::ClearInterpreterEvents() {
+void ProcRuntime::ClearEvaluatorEvents() {
   for (const auto& [_, continuation] : continuations_) {
     continuation->ClearEvents();
   }

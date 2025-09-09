@@ -99,7 +99,7 @@ class IrRunner : public AbstractParsedTestRunner {
     VLOG(2) << "Test finished in " << result.value() << " ticks";
     std::vector<std::string> asserts;
     for (xls::ProcInstance* instance : rt->elaboration().proc_instances()) {
-      const InterpreterEvents& events = rt->GetInterpreterEvents(instance);
+      const IrEvaluatorEvents& events = rt->GetEvaluatorEvents(instance);
       for (const std::string& msg : events.GetTraceMessageStrings()) {
         options.trace_hook()(
             Span::FromString(msg, file_table()).value_or(Span{}), msg);

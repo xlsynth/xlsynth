@@ -122,7 +122,7 @@ class MemoizedIrInterpreter : public IrInterpreter {
 
 absl::StatusOr<InterpreterResult<Value>> Interpret(
     absl::flat_hash_map<Node*, Value> values, Function* function) {
-  InterpreterEvents e;
+  IrEvaluatorEvents e;
   Node* return_val = function->return_value();
   InterpreterResult<Value> res;
   MemoizedIrInterpreter interp(&values, &res.events);

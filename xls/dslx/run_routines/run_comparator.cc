@@ -101,12 +101,12 @@ absl::Status RunComparator::RunComparison(Package* ir_package,
       // once the DSLX interpreter supports them (and the JIT supports traces).
       XLS_ASSIGN_OR_RETURN(FunctionJit * jit,
                            GetOrCompileJitFunction(ir_name, ir_function));
-      XLS_ASSIGN_OR_RETURN(ir_result, DropInterpreterEvents(jit->Run(ir_args)));
+      XLS_ASSIGN_OR_RETURN(ir_result, DropEvaluatorEvents(jit->Run(ir_args)));
       mode_str = "JIT";
       break;
     }
     case CompareMode::kInterpreter: {  // Compare to IR interpreter.
-      XLS_ASSIGN_OR_RETURN(ir_result, DropInterpreterEvents(InterpretFunction(
+      XLS_ASSIGN_OR_RETURN(ir_result, DropEvaluatorEvents(InterpretFunction(
                                           ir_function, ir_args)));
       mode_str = "interpreter";
       break;

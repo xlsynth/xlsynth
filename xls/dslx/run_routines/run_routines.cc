@@ -482,7 +482,7 @@ absl::StatusOr<QuickCheckResults> DoQuickCheck(
     // failures, flag-controlled, ...).
     absl::Span<const Value> this_arg_set = results.arg_sets.back();
     XLS_ASSIGN_OR_RETURN(xls::Value result,
-                         DropInterpreterEvents(run_comparator->RunIrFunction(
+                         DropEvaluatorEvents(run_comparator->RunIrFunction(
                              ir_name, ir_function, this_arg_set)));
 
     // In the case of an implicit token signature we get (token, bool) as the

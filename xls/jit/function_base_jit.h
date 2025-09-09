@@ -72,7 +72,7 @@ namespace xls {
 // completed.
 using JitFunctionType = int64_t (*)(const uint8_t* const* inputs,
                                     uint8_t* const* outputs, void* temp_buffer,
-                                    InterpreterEvents* events,
+                                    IrEvaluatorEvents* events,
                                     InstanceContext* instance_context,
                                     JitRuntime* jit_runtime,
                                     int64_t continuation_point);
@@ -136,7 +136,7 @@ class JittedFunctionBase {
   // Execute the actual function (after verifying some invariants)
   int64_t RunJittedFunction(const JitArgumentSet& inputs,
                             JitArgumentSet& outputs, JitTempBuffer& temp_buffer,
-                            InterpreterEvents* events,
+                            IrEvaluatorEvents* events,
                             InstanceContext* instance_context,
                             JitRuntime* jit_runtime,
                             int64_t continuation_point) const;
@@ -147,7 +147,7 @@ class JittedFunctionBase {
   template <bool kForceZeroCopy = false>
   int64_t RunUnalignedJittedFunction(const uint8_t* const* inputs,
                                      uint8_t* const* outputs, void* temp_buffer,
-                                     InterpreterEvents* events,
+                                     IrEvaluatorEvents* events,
                                      InstanceContext* instance_context,
                                      JitRuntime* jit_runtime,
                                      int64_t continuation) const;
@@ -155,7 +155,7 @@ class JittedFunctionBase {
   // Execute the actual function (after verifying some invariants)
   std::optional<int64_t> RunPackedJittedFunction(
       const uint8_t* const* inputs, uint8_t* const* outputs, void* temp_buffer,
-      InterpreterEvents* events, InstanceContext* instance_context,
+      IrEvaluatorEvents* events, InstanceContext* instance_context,
       JitRuntime* jit_runtime, int64_t continuation_point) const;
 
   // Checks if we have a packed version of the function.

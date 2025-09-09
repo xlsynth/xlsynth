@@ -31,10 +31,10 @@
 
 namespace xls {
 
-// Common structure capturing events that can be produced by any XLS interpreter
+// Common structure capturing events that can be produced by any XLS evaluator
 // (DSLX, IR, JIT, etc.)
 template <typename ValueT>
-class InterpreterEventsBase {
+class EvaluatorEventsBase {
  public:
   void AddTraceStatementMessage(int64_t verbosity, std::string msg) {
     TraceMessageProto* tm = proto_.add_trace_msgs();
@@ -88,14 +88,14 @@ class InterpreterEventsBase {
 
   void Clear() { proto_.Clear(); }
 
-  bool operator==(const InterpreterEventsBase& other) const {
+  bool operator==(const EvaluatorEventsBase& other) const {
     return proto_.SerializeAsString() == other.proto_.SerializeAsString();
   }
-  bool operator!=(const InterpreterEventsBase& other) const {
+  bool operator!=(const EvaluatorEventsBase& other) const {
     return !(*this == other);
   }
 
-  void AppendFrom(const InterpreterEventsBase& other) {
+  void AppendFrom(const EvaluatorEventsBase& other) {
     for (const TraceMessageProto& t : other.proto_.trace_msgs()) {
       *proto_.add_trace_msgs() = t;
     }
@@ -111,15 +111,15 @@ class InterpreterEventsBase {
 };
 
 // Specialization used by IR evaluation.
-using InterpreterEvents = InterpreterEventsBase<Value>;
+using IrEvaluatorEvents = EvaluatorEventsBase<Value>;
 
-// Convert an InterpreterEvents structure into a result status, returning
+// Convert an IrEvaluatorEvents structure into a result status, returning
 // a failure when an assertion has been raised.
-absl::Status InterpreterEventsToStatus(const InterpreterEvents& events);
+absl::Status IrEvaluatorEventsToStatus(const IrEvaluatorEvents& events);
 template <typename ValueT>
 struct InterpreterResult {
   ValueT value;
-  InterpreterEvents events;
+  IrEvaluatorEvents events;
 };
 
 // Convert an interpreter result to a status or a value depending on whether
@@ -127,7 +127,7 @@ struct InterpreterResult {
 template <typename ValueT>
 absl::StatusOr<ValueT> InterpreterResultToStatusOrValue(
     const InterpreterResult<ValueT>& result) {
-  absl::Status status = InterpreterEventsToStatus(result.events);
+  absl::Status status = IrEvaluatorEventsToStatus(result.events);
 
   if (!status.ok()) {
     return status;
@@ -139,7 +139,7 @@ absl::StatusOr<ValueT> InterpreterResultToStatusOrValue(
 // Convert an interpreter result or error to a value or error by dropping
 // interpreter events and including assertion failures as errors.
 template <typename ValueT>
-absl::StatusOr<ValueT> DropInterpreterEvents(
+absl::StatusOr<ValueT> DropEvaluatorEvents(
     const absl::StatusOr<InterpreterResult<ValueT>>& result) {
   if (!result.ok()) {
     return result.status();

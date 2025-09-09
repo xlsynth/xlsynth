@@ -23,8 +23,6 @@
 #include <string_view>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
@@ -32,6 +30,8 @@
 #include "absl/strings/str_format.h"
 #include "absl/strings/substitute.h"
 #include "absl/types/span.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/file/temp_file.h"
 #include "xls/common/source_location.h"
 #include "xls/common/status/matchers.h"
@@ -240,7 +240,7 @@ TEST_F(TranslatorLogicTest, ArrayParam) {
   args["arr"] = in_arr;
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * entry, package->GetTopAsFunction());
 
-  auto x = DropInterpreterEvents(xls::InterpretFunctionKwargs(
+  auto x = DropEvaluatorEvents(xls::InterpretFunctionKwargs(
       entry, {{"arr", xls::Value::UBitsArray({55, 20}, 64).value()}}));
 
   ASSERT_THAT(x, IsOkAndHolds(xls::Value(xls::UBits(75, 64))));
@@ -2500,7 +2500,7 @@ TEST_F(TranslatorLogicTest, CapitalizeFirstLetter) {
     args["c"] = xls::Value(xls::UBits(inc, 8));
     XLS_ASSERT_OK_AND_ASSIGN(
         xls::Value actual,
-        DropInterpreterEvents(xls::InterpretFunctionKwargs(entry, args)));
+        DropEvaluatorEvents(xls::InterpretFunctionKwargs(entry, args)));
     XLS_ASSERT_OK_AND_ASSIGN(std::vector<xls::Value> returns,
                              actual.GetElements());
     ASSERT_EQ(returns.size(), 2);
@@ -3679,12 +3679,8 @@ TEST_F(TranslatorLogicTest, NativeOperatorShrUnsigned) {
       {
         return a >> b;
       })";
-  {
-    Run({{"a", 10}, {"b", 1}}, 5, content);
-  }
-  {
-    Run({{"a", -20}, {"b", 2}}, 4611686018427387899L, content);
-  }
+  { Run({{"a", 10}, {"b", 1}}, 5, content); }
+  { Run({{"a", -20}, {"b", 2}}, 4611686018427387899L, content); }
 }
 TEST_F(TranslatorLogicTest, NativeOperatorShl) {
   const std::string op = "<<";
@@ -5316,7 +5312,7 @@ TEST_F(TranslatorLogicTest, DelegatingCtorInArray) {
   std::string_view content = R"(
     struct DefaultUnrollInner {
         DefaultUnrollInner(int value) {
-          x = value; 
+          x = value;
         }
         DefaultUnrollInner(): DefaultUnrollInner(10) {}
         int x;

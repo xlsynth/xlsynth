@@ -22,11 +22,11 @@
 #include <string_view>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/codegen/vast/vast.h"
 #include "xls/common/status/matchers.h"
 #include "xls/examples/sample_packages.h"
@@ -873,7 +873,7 @@ top fn main(a: bits[32],
   Function* fn = top.value()->AsFunctionOrDie();
   std::vector<Value> arguments = RandomFunctionArguments(fn, engine);
   XLS_ASSERT_OK_AND_ASSIGN(
-      Value expected, DropInterpreterEvents(InterpretFunction(fn, arguments)));
+      Value expected, DropEvaluatorEvents(InterpretFunction(fn, arguments)));
   EXPECT_THAT(simulator.RunFunction(arguments), IsOkAndHolds(expected));
 }
 

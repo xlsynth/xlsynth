@@ -209,8 +209,8 @@ namespace xls {
 
 namespace {
 
-static absl::Status LogInterpreterEvents(
-    std::string_view entity_name, const InterpreterEvents& events,
+static absl::Status LogEvaluatorEvents(
+    std::string_view entity_name, const IrEvaluatorEvents& events,
     std::optional<int> cycle = std::nullopt) {
   const std::string cycle_str =
       cycle.has_value() ? absl::StrFormat("Cycle[%d]: ", cycle.value()) : "";
@@ -359,7 +359,7 @@ static absl::Status EvaluateProcs(
         LOG(INFO) << "Tick " << i << ": " << ostr.str();
       }
       // Don't double print events (traces, assertions, etc)
-      runtime->ClearInterpreterEvents();
+      runtime->ClearEvaluatorEvents();
       absl::Status tick_ret = runtime->Tick();
 
       if (!tick_ret.ok()) {
@@ -402,11 +402,11 @@ static absl::Status EvaluateProcs(
       std::vector<std::string> asserts;
 
       XLS_RETURN_IF_ERROR(
-          LogInterpreterEvents("[global]", runtime->GetGlobalEvents()));
+          LogEvaluatorEvents("[global]", runtime->GetGlobalEvents()));
       for (Proc* proc : sorted_procs) {
-        const xls::InterpreterEvents& events =
-            runtime->GetInterpreterEvents(proc);
-        XLS_RETURN_IF_ERROR(LogInterpreterEvents(proc->name(), events));
+        const xls::IrEvaluatorEvents& events =
+            runtime->GetEvaluatorEvents(proc);
+        XLS_RETURN_IF_ERROR(LogEvaluatorEvents(proc->name(), events));
         if (options.fail_on_assert) {
           for (const std::string& assert : events.GetAssertMessages()) {
             asserts.push_back(
@@ -896,8 +896,8 @@ static absl::Status RunBlock(
         continuation->output_ports();
 
     // Output trace messages
-    const xls::InterpreterEvents& events = continuation->events();
-    XLS_RETURN_IF_ERROR(LogInterpreterEvents(block->name(), events, cycle));
+    const xls::IrEvaluatorEvents& events = continuation->events();
+    XLS_RETURN_IF_ERROR(LogEvaluatorEvents(block->name(), events, cycle));
 
     if (!events.GetAssertMessages().empty() && options.fail_on_assert) {
       return absl::UnknownError(

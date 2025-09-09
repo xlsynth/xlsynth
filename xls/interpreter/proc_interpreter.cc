@@ -72,8 +72,8 @@ class ProcInterpreterContinuation : public ProcContinuation {
     return absl::OkStatus();
   }
 
-  const InterpreterEvents& GetEvents() const override { return events_; }
-  InterpreterEvents& GetEvents() override { return events_; }
+  const IrEvaluatorEvents& GetEvents() const override { return events_; }
+  IrEvaluatorEvents& GetEvents() override { return events_; }
   void ClearEvents() override { events_.Clear(); }
   bool AtStartOfTick() const override { return node_index_ == 0; }
 
@@ -110,7 +110,7 @@ class ProcInterpreterContinuation : public ProcContinuation {
   int64_t node_index_;
   std::vector<Value> state_;
 
-  InterpreterEvents events_;
+  IrEvaluatorEvents events_;
   absl::flat_hash_map<Node*, Value> node_values_;
   absl::flat_hash_map<StateElement*, std::vector<Next*>> active_next_values_;
 };
@@ -129,7 +129,7 @@ class ProcIrInterpreter : public IrInterpreter {
   //   queue_manager: manager for channel queues.
   ProcIrInterpreter(ProcInstance* proc_instance, absl::Span<const Value> state,
                     absl::flat_hash_map<Node*, Value>* node_values,
-                    InterpreterEvents* events,
+                    IrEvaluatorEvents* events,
                     ChannelQueueManager* queue_manager,
                     absl::flat_hash_map<StateElement*, std::vector<Next*>>*
                         active_next_values,
@@ -296,7 +296,7 @@ absl::StatusOr<TickResult> ProcInterpreter::Tick(
       cont->SetNodeExecutionIndex(i + 1);
       // Raise a status error if interpreter events indicate failure such as a
       // failed assert.
-      XLS_RETURN_IF_ERROR(InterpreterEventsToStatus(cont->GetEvents()));
+      XLS_RETURN_IF_ERROR(IrEvaluatorEventsToStatus(cont->GetEvents()));
       return TickResult{
           .execution_state = TickExecutionState::kSentOnChannel,
           .channel_instance = result.sent_channel_instance,
@@ -308,7 +308,7 @@ absl::StatusOr<TickResult> ProcInterpreter::Tick(
       cont->SetNodeExecutionIndex(i);
       // Raise a status error if interpreter events indicate failure such as a
       // failed assert.
-      XLS_RETURN_IF_ERROR(InterpreterEventsToStatus(cont->GetEvents()));
+      XLS_RETURN_IF_ERROR(IrEvaluatorEventsToStatus(cont->GetEvents()));
       return TickResult{
           .execution_state = TickExecutionState::kBlockedOnReceive,
           .channel_instance = result.blocked_channel_instance,
@@ -339,7 +339,7 @@ absl::StatusOr<TickResult> ProcInterpreter::Tick(
 
   // Raise a status error if interpreter events indicate failure such as a
   // failed assert.
-  XLS_RETURN_IF_ERROR(InterpreterEventsToStatus(cont->GetEvents()));
+  XLS_RETURN_IF_ERROR(IrEvaluatorEventsToStatus(cont->GetEvents()));
 
   return TickResult{.execution_state = TickExecutionState::kCompleted,
                     .channel_instance = std::nullopt,

@@ -22,7 +22,6 @@
 #include <string_view>
 #include <vector>
 
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/flags/flag.h"
@@ -31,6 +30,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_replace.h"
+#include "gtest/gtest.h"
 #include "xls/codegen/codegen_options.h"
 #include "xls/codegen/codegen_result.h"
 #include "xls/codegen/combinational_generator.h"
@@ -106,7 +106,7 @@ class GeneratedTester : public XlsccTestBase {
       XLS_ASSIGN_OR_RETURN(xls::Function * main, package_->GetTopAsFunction());
       XLS_ASSIGN_OR_RETURN(xls::InterpreterResult<xls::Value> result,
                            xls::InterpretFunctionKwargs(main, args));
-      XLS_RETURN_IF_ERROR(xls::InterpreterEventsToStatus(result.events));
+      XLS_RETURN_IF_ERROR(xls::IrEvaluatorEventsToStatus(result.events));
       return result.value;
     }
   }
@@ -148,7 +148,7 @@ class GeneratedTester : public XlsccTestBase {
       XLS_ASSIGN_OR_RETURN(xls::Function * entry, package_->GetTopAsFunction());
       XLS_ASSIGN_OR_RETURN(xls::InterpreterResult<xls::Value> result,
                            xls::InterpretFunctionKwargs(entry, args));
-      XLS_RETURN_IF_ERROR(xls::InterpreterEventsToStatus(result.events));
+      XLS_RETURN_IF_ERROR(xls::IrEvaluatorEventsToStatus(result.events));
       unopt_events = result.events;
       if (expected != result.value) {
         return result.value;
@@ -169,7 +169,8 @@ class GeneratedTester : public XlsccTestBase {
       xabsl::SourceLocation loc = xabsl::SourceLocation::current()) {
     XLS_ASSIGN_OR_RETURN(
         std::string ac_int_path,
-        xls::GetXlsRunfilePath("external/com_github_hlslibs_ac_types/include/ac_int.h"));
+        xls::GetXlsRunfilePath(
+            "external/com_github_hlslibs_ac_types/include/ac_int.h"));
     XLS_ASSIGN_OR_RETURN(
         std::string xls_int_path,
         xls::GetXlsRunfilePath("xls/contrib/xlscc/synth_only/xls_int.h"));

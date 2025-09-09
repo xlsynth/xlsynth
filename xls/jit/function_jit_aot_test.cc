@@ -43,11 +43,11 @@ extern "C" {
 // The actual symbols the AOT generates.
 int64_t __multi_func_with_trace__multi_function_one_packed(  // NOLINT
     const uint8_t* const* inputs, uint8_t* const* outputs, void* temp_buffer,
-    xls::InterpreterEvents* events, xls::InstanceContext* instance_context,
+    xls::IrEvaluatorEvents* events, xls::InstanceContext* instance_context,
     xls::JitRuntime* jit_runtime, int64_t continuation_point);
 int64_t __multi_func_with_trace__multi_function_one(  // NOLINT
     const uint8_t* const* inputs, uint8_t* const* outputs, void* temp_buffer,
-    xls::InterpreterEvents* events, xls::InstanceContext* instance_context,
+    xls::IrEvaluatorEvents* events, xls::InstanceContext* instance_context,
     xls::JitRuntime* jit_runtime, int64_t continuation_point);
 }
 
@@ -175,7 +175,7 @@ TEST_F(FunctionJitAotTest, InterceptCallAot) {
       FunctionJit::CreateFromAot(
           proto.entrypoint(0), proto.data_layout(),
           [](const uint8_t* const* inputs, uint8_t* const* outputs,
-             void* temp_buffer, xls::InterpreterEvents* events,
+             void* temp_buffer, xls::IrEvaluatorEvents* events,
              xls::InstanceContext* instance_context,
              xls::JitRuntime* jit_runtime,
              int64_t continuation_point) -> int64_t {
@@ -188,7 +188,7 @@ TEST_F(FunctionJitAotTest, InterceptCallAot) {
                 jit_runtime, continuation_point);
           },
           [](const uint8_t* const* inputs, uint8_t* const* outputs,
-             void* temp_buffer, xls::InterpreterEvents* events,
+             void* temp_buffer, xls::IrEvaluatorEvents* events,
              xls::InstanceContext* instance_context,
              xls::JitRuntime* jit_runtime,
              int64_t continuation_point) -> int64_t {

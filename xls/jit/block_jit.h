@@ -219,8 +219,8 @@ class BlockJitContinuation {
     LOG(FATAL) << "unknown sample type.";
   }
 
-  const InterpreterEvents& GetEvents() const { return events_; }
-  InterpreterEvents& GetEvents() { return events_; }
+  const IrEvaluatorEvents& GetEvents() const { return events_; }
+  IrEvaluatorEvents& GetEvents() { return events_; }
   void ClearEvents() { events_.Clear(); }
 
   const JitTempBuffer& temp_buffer() const { return temp_buffer_; }
@@ -293,7 +293,7 @@ class BlockJitContinuation {
 
   InstanceContext callbacks_;
 
-  InterpreterEvents events_;
+  IrEvaluatorEvents events_;
 
   friend class BlockJit;
 };

@@ -330,7 +330,7 @@ absl::StatusOr<InterpreterResult<Value>> RunLlvmInterpreter(
       << "\" in module code\n"
       << llvm_ir;
 
-  InterpreterEvents events;
+  IrEvaluatorEvents events;
   // Turn values into llvm values.
   // TODO(allight): Deduplicate with FunctionJit::Run
   std::vector<Type*> arg_types;
@@ -437,7 +437,7 @@ absl::StatusOr<std::vector<Value>> Eval(
         XLS_ASSIGN_OR_RETURN(
             Value inj, Parser::ParseTypedValue(
                            absl::GetFlag(FLAGS_test_only_inject_jit_result)));
-        run_res = InterpreterResult<Value>{std::move(inj), InterpreterEvents{}};
+        run_res = InterpreterResult<Value>{std::move(inj), IrEvaluatorEvents{}};
       }
     } else {
       XLS_ASSIGN_OR_RETURN(
@@ -673,7 +673,7 @@ absl::StatusOr<std::unique_ptr<Package>> ConvertValidator(
 
 // Runs the validator to confirm that the args set is compatible.
 absl::StatusOr<bool> ValidateInput(Function* validator, const ArgSet& arg_set) {
-  XLS_ASSIGN_OR_RETURN(Value result, DropInterpreterEvents(InterpretFunction(
+  XLS_ASSIGN_OR_RETURN(Value result, DropEvaluatorEvents(InterpretFunction(
                                          validator, arg_set.args)));
   XLS_ASSIGN_OR_RETURN(Bits bits, result.GetBitsWithStatus());
   XLS_RET_CHECK_EQ(bits.bit_count(), 1);

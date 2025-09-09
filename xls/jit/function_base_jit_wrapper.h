@@ -103,10 +103,10 @@ class BaseFunctionJitWrapper {
       ext_args.push_back(Value::Bool(true));
       absl::c_copy(args, std::back_inserter(ext_args));
       XLS_ASSIGN_OR_RETURN(auto retval,
-                           DropInterpreterEvents(jit_->Run(ext_args)));
+                           DropEvaluatorEvents(jit_->Run(ext_args)));
       return retval.element(1);
     }
-    return DropInterpreterEvents(jit_->Run(args));
+    return DropEvaluatorEvents(jit_->Run(args));
   }
 
   // Run the jitted function using packed views

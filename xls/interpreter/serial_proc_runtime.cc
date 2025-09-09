@@ -95,9 +95,9 @@ SerialProcRuntime::TickInternal() {
                                   element.instance->GetName());
     XLS_ASSIGN_OR_RETURN(TickResult tick_result,
                          element.evaluator->Tick(*element.continuation));
-    const InterpreterEvents& events =
-        this->GetInterpreterEvents(element.instance);
-    XLS_RETURN_IF_ERROR(InterpreterEventsToStatus(events));
+    const IrEvaluatorEvents& events =
+        this->GetEvaluatorEvents(element.instance);
+    XLS_RETURN_IF_ERROR(IrEvaluatorEventsToStatus(events));
     VLOG(3) << "Tick result: " << tick_result;
 
     progress_made |= tick_result.progress_made;

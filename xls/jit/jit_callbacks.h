@@ -60,18 +60,18 @@ struct InstanceContextVTable {
   const PerformFormatStepFn perform_format_step;
 
   using RecordTraceFn = void (*)(InstanceContext* thiz, std::string* buffer,
-                                 int64_t verbosity, InterpreterEvents* events);
+                                 int64_t verbosity, IrEvaluatorEvents* events);
   // This a shim to let JIT code record a completed trace as an interpreter
   // event.
   const RecordTraceFn record_trace;
 
-  using CreateTraceBufferFn = std::string* (*)(InstanceContext * thiz);
+  using CreateTraceBufferFn = std::string* (*)(InstanceContext* thiz);
   // This is a shim to let JIT code create a buffer for accumulating trace
   // fragments.
   const CreateTraceBufferFn create_trace_buffer;
 
   using RecordAssertionFn = void (*)(InstanceContext* thiz, const char* msg,
-                                     InterpreterEvents* events);
+                                     IrEvaluatorEvents* events);
   // This a shim to let JIT code record an assertion failure as an interpreter
   // event.
   const RecordAssertionFn record_assertion;
@@ -101,7 +101,7 @@ struct InstanceContextVTable {
   // information for the node.
   const RecordNodeResultFn record_node_result;
 
-  using AllocateBufferFn = void* (*)(InstanceContext * thiz, int64_t byte_size,
+  using AllocateBufferFn = void* (*)(InstanceContext* thiz, int64_t byte_size,
                                      int64_t alignment);
   // This is a shim to let the JIT allocate a large buffer on the heap for cases
   // where its required to avoid blowing out the stack.

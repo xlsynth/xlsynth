@@ -55,14 +55,14 @@ class BaseBlockJitWrapperContinuation {
   // Get the interpreter events since the last time
   // `interpreter_events().Clear()` was called. This includes trace and
   // assertions.
-  const InterpreterEvents& interpreter_events() const {
+  const IrEvaluatorEvents& interpreter_events() const {
     return inner_->GetEvents();
   }
 
   // Get the interpreter events since the last time
   // `interpreter_events().Clear()` was called. This includes trace and
   // assertions.
-  InterpreterEvents& interpreter_events() { return inner_->GetEvents(); }
+  IrEvaluatorEvents& interpreter_events() { return inner_->GetEvents(); }
 
   absl::Status SetInputPorts(absl::Span<const Value> values) {
     XLS_RET_CHECK(to_set_inputs_.empty())
