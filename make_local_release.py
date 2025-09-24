@@ -29,7 +29,8 @@ targets = [
     "//xls/tools:delay_info_main",
     "//xls/dslx:dslx_fmt",
     "//xls/dslx:prove_quickcheck_main",
-    "//xls/dslx/type_system:typecheck_main"
+    "//xls/dslx/type_system:typecheck_main",
+    "//xls/tools:block_to_verilog_main"
 ]
 
 # Function to get the current git hash and cleanliness status
