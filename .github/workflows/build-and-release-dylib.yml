@@ -51,7 +51,7 @@ jobs:
           //xls/dslx:prove_quickcheck_main \
           //xls/dslx/type_system:typecheck_main \
           //xls/dslx:highlight_main \
-          //xls/dev_tools:check_ir_equivalence_main
+          //xls/dev_tools:check_ir_equivalence_main \
           //xls/tools:block_to_verilog_main
 
     - name: Verify arm64 binaries
@@ -172,7 +172,7 @@ jobs:
           //xls/dslx:prove_quickcheck_main \
           //xls/dslx/type_system:typecheck_main \
           //xls/dslx:highlight_main \
-          //xls/dev_tools:check_ir_equivalence_main
+          //xls/dev_tools:check_ir_equivalence_main \
           //xls/tools:block_to_verilog_main
 
     - name: Create artifact directory
@@ -325,7 +325,7 @@ jobs:
           //xls/dslx:prove_quickcheck_main \
           //xls/dslx/type_system:typecheck_main \
           //xls/dslx:highlight_main \
-          //xls/dev_tools:check_ir_equivalence_main
+          //xls/dev_tools:check_ir_equivalence_main \
           //xls/tools:block_to_verilog_main
 
     - name: Create artifact directory
