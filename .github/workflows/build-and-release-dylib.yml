@@ -100,103 +100,6 @@ jobs:
       with:
         name: osx-artifacts-arm64
         path: osx-artifacts-arm64/
-
-  build-osx-x64:
-    runs-on: macos-latest
-    env:
-      MACOSX_DEPLOYMENT_TARGET: 11.0
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Cache Bazel output
-      uses: actions/cache@v4
-      id: cache-bazel
-      with:
-        path: |
-          ~/.cache/bazel
-          bazel-out
-        key: ${{ runner.os }}-bazel-${{ hashFiles('**/BUILD') }}
-        restore-keys: |
-          ${{ runner.os }}-bazel-
-
-    - name: Create artifact directory
-      run: mkdir -p osx-artifacts-x64
-
-    - name: Note Clang version
-      run: |
-        clang --version
-
-    - name: Build for x86_64
-      run: |
-        wget -q https://github.com/bazelbuild/bazel/releases/download/7.3.1rc2/bazel-7.3.1rc2-darwin-x86_64
-        mv bazel-7.3.1rc2-darwin-x86_64 bazel-x86_64
-        chmod +x bazel-x86_64
-        ./bazel-x86_64 info
-        ./bazel-x86_64 test -c opt --action_env=MACOSX_DEPLOYMENT_TARGET --macos_minimum_os=11.0 //xls/public:test_c_api_symbols
-        ./bazel-x86_64 build -c opt --action_env=MACOSX_DEPLOYMENT_TARGET --macos_minimum_os=11.0 \
-          //xls/public:libxls.dylib \
-          //xls/dslx:interpreter_main \
-          //xls/dslx/lsp:dslx_ls \
-          //xls/tools:opt_main \
-          //xls/tools:codegen_main \
-          //xls/dslx/ir_convert:ir_converter_main \
-          //xls/tools:delay_info_main \
-          //xls/dslx:dslx_fmt \
-          //xls/dslx:prove_quickcheck_main \
-          //xls/dslx/type_system:typecheck_main \
-          //xls/dslx:highlight_main \
-          //xls/dev_tools:check_ir_equivalence_main
-
-    - name: Verify x86_64 binaries
-      run: |
-        lipo -info bazel-bin/xls/public/libxls.dylib
-
-    - name: Collect x86_64 artifacts
-      run: |
-        gzip -c bazel-bin/xls/public/libxls.dylib > osx-artifacts-x64/libxls-x64.dylib.gz
-        shasum -a 256 osx-artifacts-x64/libxls-x64.dylib.gz > osx-artifacts-x64/libxls-x64.dylib.gz.sha256
-
-        cp bazel-bin/xls/dslx/interpreter_main              osx-artifacts-x64/dslx_interpreter_main-x64
-        shasum -a 256 osx-artifacts-x64/dslx_interpreter_main-x64 > osx-artifacts-x64/dslx_interpreter_main-x64.sha256
-
-        cp bazel-bin/xls/dslx/lsp/dslx_ls                   osx-artifacts-x64/dslx_ls-x64
-        shasum -a 256 osx-artifacts-x64/dslx_ls-x64 > osx-artifacts-x64/dslx_ls-x64.sha256
-
-        cp bazel-bin/xls/tools/opt_main                     osx-artifacts-x64/opt_main-x64
-        shasum -a 256 osx-artifacts-x64/opt_main-x64 > osx-artifacts-x64/opt_main-x64.sha256
-
-        cp bazel-bin/xls/tools/delay_info_main              osx-artifacts-x64/delay_info_main-x64
-        shasum -a 256 osx-artifacts-x64/delay_info_main-x64 > osx-artifacts-x64/delay_info_main-x64.sha256
-
-        cp bazel-bin/xls/dslx/dslx_fmt                      osx-artifacts-x64/dslx_fmt-x64
-        shasum -a 256 osx-artifacts-x64/dslx_fmt-x64 > osx-artifacts-x64/dslx_fmt-x64.sha256
-
-        cp bazel-bin/xls/dslx/prove_quickcheck_main         osx-artifacts-x64/prove_quickcheck_main-x64
-        shasum -a 256 osx-artifacts-x64/prove_quickcheck_main-x64 > osx-artifacts-x64/prove_quickcheck_main-x64.sha256
-
-        cp bazel-bin/xls/tools/codegen_main                 osx-artifacts-x64/codegen_main-x64
-        shasum -a 256 osx-artifacts-x64/codegen_main-x64 > osx-artifacts-x64/codegen_main-x64.sha256
-
-        cp bazel-bin/xls/dslx/ir_convert/ir_converter_main  osx-artifacts-x64/ir_converter_main-x64
-        shasum -a 256 osx-artifacts-x64/ir_converter_main-x64 > osx-artifacts-x64/ir_converter_main-x64.sha256
-
-        cp bazel-bin/xls/dslx/type_system/typecheck_main    osx-artifacts-x64/typecheck_main-x64
-        shasum -a 256 osx-artifacts-x64/typecheck_main-x64 > osx-artifacts-x64/typecheck_main-x64.sha256
-
-        cp bazel-bin/xls/dslx/highlight_main              osx-artifacts-x64/highlight_main-x64
-        shasum -a 256 osx-artifacts-x64/highlight_main-x64 > osx-artifacts-x64/highlight_main-x64.sha256
-
-        cp bazel-bin/xls/dev_tools/check_ir_equivalence_main osx-artifacts-x64/check_ir_equivalence_main-x64
-        shasum -a 256 osx-artifacts-x64/check_ir_equivalence_main-x64 > osx-artifacts-x64/check_ir_equivalence_main-x64.sha256
-
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: osx-artifacts-x64
-        path: osx-artifacts-x64/
-
   build-rocky8:
     runs-on: ubuntu-latest  # Use a GitHub-hosted runner
     container: rockylinux:8.9 # Specify the Docker container
@@ -595,7 +498,6 @@ jobs:
   release:
     needs:
       - build-osx-arm64
-      - build-osx-x64
       - build-ubuntu2004
       - build-ubuntu2204
       - build-rocky8
@@ -609,12 +511,6 @@ jobs:
       with:
         name: osx-artifacts-arm64
         path: osx-artifacts-arm64
-
-    - name: Download osx-artifacts-x64
-      uses: actions/download-artifact@v4
-      with:
-        name: osx-artifacts-x64
-        path: osx-artifacts-x64
 
     - name: Download ubuntu2004-artifacts
       uses: actions/download-artifact@v4
@@ -678,30 +574,6 @@ jobs:
           osx-artifacts-arm64/highlight_main-arm64.sha256 \
           osx-artifacts-arm64/check_ir_equivalence_main-arm64 \
           osx-artifacts-arm64/check_ir_equivalence_main-arm64.sha256 \
-          osx-artifacts-x64/libxls-x64.dylib.gz \
-          osx-artifacts-x64/libxls-x64.dylib.gz.sha256 \
-          osx-artifacts-x64/dslx_interpreter_main-x64 \
-          osx-artifacts-x64/dslx_interpreter_main-x64.sha256 \
-          osx-artifacts-x64/dslx_ls-x64 \
-          osx-artifacts-x64/dslx_ls-x64.sha256 \
-          osx-artifacts-x64/opt_main-x64 \
-          osx-artifacts-x64/opt_main-x64.sha256 \
-          osx-artifacts-x64/delay_info_main-x64 \
-          osx-artifacts-x64/delay_info_main-x64.sha256 \
-          osx-artifacts-x64/dslx_fmt-x64 \
-          osx-artifacts-x64/dslx_fmt-x64.sha256 \
-          osx-artifacts-x64/prove_quickcheck_main-x64 \
-          osx-artifacts-x64/prove_quickcheck_main-x64.sha256 \
-          osx-artifacts-x64/codegen_main-x64 \
-          osx-artifacts-x64/codegen_main-x64.sha256 \
-          osx-artifacts-x64/ir_converter_main-x64 \
-          osx-artifacts-x64/ir_converter_main-x64.sha256 \
-          osx-artifacts-x64/typecheck_main-x64 \
-          osx-artifacts-x64/typecheck_main-x64.sha256 \
-          osx-artifacts-x64/highlight_main-x64 \
-          osx-artifacts-x64/highlight_main-x64.sha256 \
-          osx-artifacts-x64/check_ir_equivalence_main-x64 \
-          osx-artifacts-x64/check_ir_equivalence_main-x64.sha256 \
           ubuntu2004-artifacts/dslx_stdlib.tar.gz \
           ubuntu2004-artifacts/dslx_stdlib.tar.gz.sha256 \
           ubuntu2004-artifacts/libxls-ubuntu2004.so.gz \
