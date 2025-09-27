@@ -145,7 +145,7 @@ class BlockToVerilogMainTest(absltest.TestCase):
     for i, line in enumerate(text.splitlines(), start=1):
       if substring in line:
         return i
-    self.fail(f"Substring '{substring}' not found in provided text: ```{text}```")
+    self.fail(f"Substring '{substring}' not found in provided text")
 
   def run_with_inline_specs(self, ir_file, block_name: str, node_specs) -> str:
     """Writes residual using `node_specs` and returns Verilog."""
