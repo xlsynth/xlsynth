@@ -62,6 +62,7 @@ jobs:
       run: |
         gzip -c bazel-bin/xls/public/libxls.dylib > osx-artifacts-arm64/libxls-arm64.dylib.gz
         shasum -a 256 osx-artifacts-arm64/libxls-arm64.dylib.gz > osx-artifacts-arm64/libxls-arm64.dylib.gz.sha256
+        shasum -a 256 bazel-bin/xls/public/libxls.dylib > osx-artifacts-arm64/libxls-arm64.dylib.sha256
 
         cp bazel-bin/xls/dslx/interpreter_main              osx-artifacts-arm64/dslx_interpreter_main-arm64
         shasum -a 256 osx-artifacts-arm64/dslx_interpreter_main-arm64 > osx-artifacts-arm64/dslx_interpreter_main-arm64.sha256
@@ -180,6 +181,7 @@ jobs:
       run: |
         gzip -c bazel-bin/xls/public/libxls.so > rocky8-artifacts/libxls-rocky8.so.gz
         sha256sum rocky8-artifacts/libxls-rocky8.so.gz > rocky8-artifacts/libxls-rocky8.so.gz.sha256
+        sha256sum bazel-bin/xls/public/libxls.so > rocky8-artifacts/libxls-rocky8.so.sha256
 
         cp bazel-bin/xls/dslx/interpreter_main              rocky8-artifacts/dslx_interpreter_main-rocky8
         sha256sum rocky8-artifacts/dslx_interpreter_main-rocky8 > rocky8-artifacts/dslx_interpreter_main-rocky8.sha256
@@ -329,6 +331,7 @@ jobs:
       run: |
         gzip -c bazel-bin/xls/public/libxls.so > ubuntu2004-artifacts/libxls-ubuntu2004.so.gz
         sha256sum ubuntu2004-artifacts/libxls-ubuntu2004.so.gz > ubuntu2004-artifacts/libxls-ubuntu2004.so.gz.sha256
+        sha256sum bazel-bin/xls/public/libxls.so > ubuntu2004-artifacts/libxls-ubuntu2004.so.sha256
 
         cp bazel-bin/xls/dslx/interpreter_main             ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004
         sha256sum ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004 > ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004.sha256
@@ -462,6 +465,7 @@ jobs:
       run: |
         gzip -c bazel-bin/xls/public/libxls.so > ubuntu2204-artifacts/libxls-ubuntu2204.so.gz
         sha256sum ubuntu2204-artifacts/libxls-ubuntu2204.so.gz > ubuntu2204-artifacts/libxls-ubuntu2204.so.gz.sha256
+        sha256sum bazel-bin/xls/public/libxls.so > ubuntu2204-artifacts/libxls-ubuntu2204.so.sha256
 
         cp bazel-bin/xls/dslx/interpreter_main             ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204
         sha256sum ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204 > ubuntu2204-artifacts/dslx_interpreter_main-ubuntu2204.sha256
@@ -564,6 +568,7 @@ jobs:
         gh release create "$TAG_NAME" \
           osx-artifacts-arm64/libxls-arm64.dylib.gz \
           osx-artifacts-arm64/libxls-arm64.dylib.gz.sha256 \
+          osx-artifacts-arm64/libxls-arm64.dylib.sha256 \
           osx-artifacts-arm64/dslx_interpreter_main-arm64 \
           osx-artifacts-arm64/dslx_interpreter_main-arm64.sha256 \
           osx-artifacts-arm64/dslx_ls-arm64 \
@@ -592,6 +597,7 @@ jobs:
           ubuntu2004-artifacts/dslx_stdlib.tar.gz.sha256 \
           ubuntu2004-artifacts/libxls-ubuntu2004.so.gz \
           ubuntu2004-artifacts/libxls-ubuntu2004.so.gz.sha256 \
+          ubuntu2004-artifacts/libxls-ubuntu2004.so.sha256 \
           ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004 \
           ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004.sha256 \
           ubuntu2004-artifacts/dslx_ls-ubuntu2004 \
@@ -618,6 +624,7 @@ jobs:
           ubuntu2004-artifacts/block_to_verilog_main-ubuntu2004.sha256 \
           rocky8-artifacts/libxls-rocky8.so.gz \
           rocky8-artifacts/libxls-rocky8.so.gz.sha256 \
+          rocky8-artifacts/libxls-rocky8.so.sha256 \
           rocky8-artifacts/dslx_interpreter_main-rocky8 \
           rocky8-artifacts/dslx_interpreter_main-rocky8.sha256 \
           rocky8-artifacts/dslx_ls-rocky8 \
