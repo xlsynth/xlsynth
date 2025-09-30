@@ -3032,6 +3032,7 @@ class Slice : public AstNode {
 
   std::string ToString() const override;
   std::optional<Span> GetSpan() const override { return span_; }
+  const Span& span() const { return span_; }
 
   Expr* start() const { return start_; }
   Expr* limit() const { return limit_; }
@@ -3628,6 +3629,7 @@ class WidthSlice : public AstNode {
   Expr* start() const { return start_; }
   TypeAnnotation* width() const { return width_; }
   std::optional<Span> GetSpan() const override { return span_; }
+  const Span& span() const { return span_; }
 
  private:
   Span span_;
