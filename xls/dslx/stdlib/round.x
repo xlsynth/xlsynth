@@ -347,6 +347,7 @@ pub fn round_trunc_u<NumBitsRounded: u32, N: u32, R: u32 = {N - NumBitsRounded}>
     (rounding_mode: RoundingMode, unrounded: uN[N]) -> (u1, uN[R]) {
     const_assert!(NumBitsRounded <= N);
     const W_NBR: u32 = std::clog2(N + u32:1);
+
     let (overflow, rounded) = round_u(rounding_mode, NumBitsRounded as uN[W_NBR], unrounded);
     let (rounded_msbs, _) = std::split_msbs<R>(rounded);
     (overflow, rounded_msbs)
@@ -360,6 +361,7 @@ pub fn round_trunc_u<NumBitsRounded: u32, N: u32, R: u32 = {N - NumBitsRounded}>
 pub fn round_trunc_to_u<AtMost: u32, N: u32, R: u32 = {std::min(AtMost, N)}>
     (rounding_mode: RoundingMode, unrounded: uN[N]) -> (u1, uN[R]) {
     const NUM_BITS_ROUNDED: u32 = std::usub_or_zero(N, R);
+
     if NUM_BITS_ROUNDED == u32:0 {
         // This no-op cast is required by the type checker. When this branch is not taken, this
         // cast op unifies the types of the branches.
@@ -408,6 +410,7 @@ pub fn round_trunc_s<num_bits_rounded: u32, N: u32, R: u32 = {N - num_bits_round
 pub fn round_trunc_to_s<AtMost: u32, N: u32, R: u32 = {std::min(AtMost, N)}>
     (rounding_mode: RoundingMode, unrounded: sN[N]) -> (u1, sN[R]) {
     const NUM_BITS_ROUNDED: u32 = std::usub_or_zero(N, R);
+
     if NUM_BITS_ROUNDED == u32:0 {
         let unrounded = unrounded as sN[R];
         (u1:0, unrounded)
