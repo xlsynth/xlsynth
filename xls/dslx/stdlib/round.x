@@ -357,11 +357,9 @@ pub fn round_trunc_u<NumBitsRounded: u32, N: u32, R: u32 = {N - NumBitsRounded}>
 // - returns only the most significant bits (i.e., the rounded result), discarding the rounded-off
 //   bits.
 // Returns (overflow, rounded result).
-pub fn round_trunc_to_u
-    <AtMost: u32, N: u32, R: u32 = {std::min(AtMost, N)} >
+pub fn round_trunc_to_u<AtMost: u32, N: u32, R: u32 = {std::min(AtMost, N)}>
     (rounding_mode: RoundingMode, unrounded: uN[N]) -> (u1, uN[R]) {
-    const NUM_BITS_ROUNDED: u32 = {std::usub_or_zero(N, R)};
-    const W_NBR: u32 = {std::clog2(N + u32:1)};
+    const NUM_BITS_ROUNDED: u32 = std::usub_or_zero(N, R);
     if NUM_BITS_ROUNDED == u32:0 {
         // This no-op cast is required by the type checker. When this branch is not taken, this
         // cast op unifies the types of the branches.
