@@ -385,11 +385,11 @@ pub fn round_s<N: u32, W_NBR: u32 = {std::clog2(N + u32:1)}>
 // - returns only the most significant bits (i.e., the rounded result), discarding the rounded-off
 //   bits.
 // Returns (overflow, rounded result).
-pub fn round_trunc_s
-    <num_bits_rounded: u32, N: u32, R: u32 = {N - num_bits_rounded},
-     W_NBR: u32 = {std::clog2(N + u32:1)}>
+pub fn round_trunc_s<num_bits_rounded: u32, N: u32, R: u32 = {N - num_bits_rounded}>
     (rounding_mode: RoundingMode, unrounded: sN[N]) -> (u1, sN[R]) {
     const_assert!(num_bits_rounded <= N);
+    const W_NBR: u32 = std::clog2(N + u32:1);
+
     if R == u32:0 {
         let (overflow, _) = round_s(rounding_mode, num_bits_rounded as uN[W_NBR], unrounded);
         (overflow, zero!<sN[R]>())
