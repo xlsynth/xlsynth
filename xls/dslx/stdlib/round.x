@@ -105,15 +105,20 @@ pub enum Sign : u1 {
 // round down is chosen. E.g.
 // round(RNE, 4 bits, unsigned, u5:0b1_1000) -> rounds up (retained msb is 1)
 // round(RNE, 4 bits, unsigned, u4:0b1000) -> rounds down (no retained bits)
-pub fn round
-    <S: bool, N: u32, W_NBR: u32 = {std::clog2(N + u32:1)}, NP1: u32 = {N + u32:1},
-     W_SAFE: u32 = {std::max(N, u32:1)}>
-    (rounding_mode: RoundingMode, num_bits_rounded: uN[W_NBR], sign: Sign, unrounded: xN[S][N])
-    -> (u1, xN[S][N]) {
+pub fn round<S: bool, N: u32>
+    (rounding_mode: RoundingMode, num_bits_rounded: uN[std::clog2(N + u32:1)], sign: Sign,
+     unrounded: xN[S][N]) -> (u1, xN[S][N]) {
+    type NumBitsRoundedT = uN[std::clog2(N + u32:1)];
+
+    // Works even when N is zero.
+    type SafeWord = uN[std::max(N, u32:1)];
+
+    // Wide enough to represent overflow.
+    type ExtendedWord = uN[N + u32:1];
+
     // Compute sign bit while avoiding issues when N is zero.
     let unrounded_u = unrounded as uN[N];
-    let sign_shift = std::usub_or_zero(N, u32:1) as uN[W_NBR];
-    type SafeWord = uN[W_SAFE];
+    let sign_shift = std::usub_or_zero(N, u32:1) as NumBitsRoundedT;
     let unrounded_sign_bit = std::lsb((unrounded_u as SafeWord) >> sign_shift);
 
     // determine sign when unrounded is two's complement
@@ -125,7 +130,7 @@ pub fn round
 
     if N == u32:0 {
         (u1:0, xN[S][N]:0)
-    } else if num_bits_rounded == uN[W_NBR]:0 {
+    } else if num_bits_rounded == NumBitsRoundedT:0 {
         (u1:0, unrounded)
     } else if num_bits_rounded as u32 > N {
         let is_zero = unrounded_u == uN[N]:0;
@@ -159,8 +164,8 @@ pub fn round
         let half_value = (SafeWord:1) << (num_bits_rounded as SafeWord - SafeWord:1);
 
         // as we defined half above, we use a similar definition of one
-        let one = (uN[NP1]:1) << num_bits_rounded;
-        let zero = uN[NP1]:0;
+        let one = (ExtendedWord:1) << num_bits_rounded;
+        let zero = ExtendedWord:0;
 
         // Beware rounded_gt_half when unrounded is two's complement and negative; it's
         // misleading.
@@ -272,7 +277,7 @@ pub fn round
             },
         };
 
-        let sum = retained_bits as uN[NP1] + adjustment;
+        let sum = retained_bits as ExtendedWord + adjustment;
         let (carry, rounded_u) = std::split_msbs<u32:1>(sum);
 
         let rounded_sign_bit = std::lsb((rounded_u as SafeWord) >> sign_shift);
