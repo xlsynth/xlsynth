@@ -451,14 +451,14 @@ pub fn round_trunc_sm<num_bits_rounded: u32, N: u32, R: u32 = {N - num_bits_roun
 // - returns only the most significant bits (i.e., the rounded result), discarding the rounded-off
 //   bits.
 // Returns (overflow, rounded result).
-pub fn round_trunc_to_sm
-    <AtMost: u32, N: u32, R: u32 = {std::min(AtMost, N)},
-     NumBitsRounded: u32 = {std::usub_or_zero(N, R)}>
+pub fn round_trunc_to_sm<AtMost: u32, N: u32, R: u32 = {std::min(AtMost, N)}>
     (rounding_mode: RoundingMode, sign: Sign, magnitude: uN[N]) -> (u1, uN[R]) {
-    if NumBitsRounded == u32:0 {
+    const NUM_BITS_ROUNDED: u32 = std::usub_or_zero(N, R);
+
+    if NUM_BITS_ROUNDED == u32:0 {
         let magnitude = magnitude as uN[R];
         (u1:0, magnitude)
     } else {
-        round_trunc_sm<NumBitsRounded>(rounding_mode, sign, magnitude)
+        round_trunc_sm<NUM_BITS_ROUNDED>(rounding_mode, sign, magnitude)
     }
 }
