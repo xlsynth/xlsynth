@@ -105,10 +105,10 @@ pub enum Sign : u1 {
 // round down is chosen. E.g.
 // round(RNE, 4 bits, unsigned, u5:0b1_1000) -> rounds up (retained msb is 1)
 // round(RNE, 4 bits, unsigned, u4:0b1000) -> rounds down (no retained bits)
-pub fn round<S: bool, N: u32>
-    (rounding_mode: RoundingMode, num_bits_rounded: uN[std::clog2(N + u32:1)], sign: Sign,
+pub fn round<S: bool, N: u32, W_NBR: u32 = {std::clog2(N + u32:1)}>
+    (rounding_mode: RoundingMode, num_bits_rounded: uN[W_NBR], sign: Sign,
      unrounded: xN[S][N]) -> (u1, xN[S][N]) {
-    type NumBitsRoundedT = uN[std::clog2(N + u32:1)];
+    type NumBitsRoundedT = uN[W_NBR];
 
     // Works even when N is zero.
     type SafeWord = uN[std::max(N, u32:1)];
