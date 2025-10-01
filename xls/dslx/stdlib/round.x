@@ -453,7 +453,7 @@ pub fn round_trunc_sm<num_bits_rounded: u32, N: u32, R: u32 = {N - num_bits_roun
 // Returns (overflow, rounded result).
 pub fn round_trunc_to_sm
     <AtMost: u32, N: u32, R: u32 = {std::min(AtMost, N)},
-     NumBitsRounded: u32 = {std::usub_or_zero(N, R)}, W_NBR: u32 = {std::clog2(N + u32:1)}>
+     NumBitsRounded: u32 = {std::usub_or_zero(N, R)}>
     (rounding_mode: RoundingMode, sign: Sign, magnitude: uN[N]) -> (u1, uN[R]) {
     if NumBitsRounded == u32:0 {
         let magnitude = magnitude as uN[R];
