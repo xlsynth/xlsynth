@@ -79,6 +79,50 @@ struct xls_dslx_param;
 struct xls_dslx_expr;
 struct xls_dslx_module_member;
 struct xls_dslx_type_dim;
+struct xls_dslx_parametric_env;
+struct xls_dslx_interp_value;
+struct xls_bits;
+
+struct xls_dslx_parametric_env_item {
+  const char* identifier;
+  const struct xls_dslx_interp_value* value;
+};
+
+// Creates a parametric environment from items.
+bool xls_dslx_parametric_env_create(
+    const struct xls_dslx_parametric_env_item* items, size_t items_count,
+    char** error_out, struct xls_dslx_parametric_env** env_out);
+
+// Frees a previously created parametric environment.
+void xls_dslx_parametric_env_free(struct xls_dslx_parametric_env*);
+
+// InterpValue constructors.
+struct xls_dslx_interp_value* xls_dslx_interp_value_make_ubits(
+    int64_t bit_count, uint64_t value);
+struct xls_dslx_interp_value* xls_dslx_interp_value_make_sbits(
+    int64_t bit_count, int64_t value);
+
+// Constructs an enum InterpValue given an enum def and the underlying bits.
+bool xls_dslx_interp_value_make_enum(struct xls_dslx_enum_def* def,
+                                     bool is_signed,
+                                     const struct xls_bits* bits,
+                                     char** error_out,
+                                     struct xls_dslx_interp_value** result_out);
+
+// Constructs a tuple InterpValue from elements.
+bool xls_dslx_interp_value_make_tuple(
+    size_t element_count, struct xls_dslx_interp_value** elements,
+    char** error_out, struct xls_dslx_interp_value** result_out);
+
+// Constructs an array InterpValue from elements of the same type.
+bool xls_dslx_interp_value_make_array(
+    size_t element_count, struct xls_dslx_interp_value** elements,
+    char** error_out, struct xls_dslx_interp_value** result_out);
+
+// Parses an InterpValue from DSLX text using the parser/evaluator.
+bool xls_dslx_interp_value_from_string(
+    const char* text, const char* dslx_stdlib_path, char** error_out,
+    struct xls_dslx_interp_value** result_out);
 
 struct xls_dslx_import_data* xls_dslx_import_data_create(
     const char* dslx_stdlib_path, const char* additional_search_paths[],
@@ -123,7 +167,7 @@ struct xls_dslx_type_alias* xls_dslx_module_member_get_type_alias(
 // Returns the function AST node from the given module member if it is a
 // function; otherwise returns nullptr.
 struct xls_dslx_function* xls_dslx_module_member_get_function(
-  struct xls_dslx_module_member*);
+    struct xls_dslx_module_member*);
 
 // Returns whether the given DSLX function is parametric.
 bool xls_dslx_function_is_parametric(struct xls_dslx_function*);
@@ -137,8 +181,8 @@ int64_t xls_dslx_function_get_param_count(struct xls_dslx_function* fn);
 // Returns the i-th parameter of the given DSLX function.
 // The returned pointer is borrowed and tied to the lifetime of the underlying
 // function/module objects.
-struct xls_dslx_param* xls_dslx_function_get_param(
-    struct xls_dslx_function* fn, int64_t index);
+struct xls_dslx_param* xls_dslx_function_get_param(struct xls_dslx_function* fn,
+                                                   int64_t index);
 
 // Note: return value is owned by the caller, free via `xls_c_str_free`.
 char* xls_dslx_param_get_name(struct xls_dslx_param* p);
@@ -147,6 +191,9 @@ char* xls_dslx_param_get_name(struct xls_dslx_param* p);
 // DSLX source.
 struct xls_dslx_type_annotation* xls_dslx_param_get_type_annotation(
     struct xls_dslx_param* p);
+
+// Note: return value is owned by the caller, free via `xls_c_str_free`.
+char* xls_dslx_function_to_string(struct xls_dslx_function* fn);
 
 // Returns the QuickCheck AST node from the given module member. The caller
 // should ensure the module member kind is
@@ -167,6 +214,9 @@ bool xls_dslx_quickcheck_is_exhaustive(struct xls_dslx_quickcheck*);
 // `*result_out` is not modified).
 bool xls_dslx_quickcheck_get_count(struct xls_dslx_quickcheck*,
                                    int64_t* result_out);
+
+// Note: return value is owned by the caller, free via `xls_c_str_free`.
+char* xls_dslx_quickcheck_to_string(struct xls_dslx_quickcheck*);
 
 int64_t xls_dslx_module_get_type_definition_count(
     struct xls_dslx_module* module);
@@ -201,6 +251,9 @@ char* xls_dslx_constant_def_get_name(struct xls_dslx_constant_def*);
 struct xls_dslx_expr* xls_dslx_constant_def_get_value(
     struct xls_dslx_constant_def*);
 
+// Note: return value is owned by the caller, free via `xls_c_str_free`.
+char* xls_dslx_constant_def_to_string(struct xls_dslx_constant_def*);
+
 // -- struct_def
 
 // Note: the return value is owned by the caller and must be freed via
@@ -218,6 +271,9 @@ char* xls_dslx_struct_member_get_name(struct xls_dslx_struct_member*);
 
 struct xls_dslx_type_annotation* xls_dslx_struct_member_get_type(
     struct xls_dslx_struct_member*);
+
+// Note: return value is owned by the caller, free via `xls_c_str_free`.
+char* xls_dslx_struct_def_to_string(struct xls_dslx_struct_def*);
 
 // -- enum_def (AST node)
 
@@ -238,6 +294,9 @@ char* xls_dslx_enum_member_get_name(struct xls_dslx_enum_member*);
 
 struct xls_dslx_expr* xls_dslx_enum_member_get_value(
     struct xls_dslx_enum_member*);
+
+// Note: return value is owned by the caller, free via `xls_c_str_free`.
+char* xls_dslx_enum_def_to_string(struct xls_dslx_enum_def*);
 
 // Returns the owning module for the given expression AST node.
 struct xls_dslx_module* xls_dslx_expr_get_owner_module(
@@ -287,6 +346,9 @@ char* xls_dslx_type_alias_get_identifier(struct xls_dslx_type_alias*);
 
 struct xls_dslx_type_annotation* xls_dslx_type_alias_get_type_annotation(
     struct xls_dslx_type_alias*);
+
+// Note: return value is owned by the caller, free via `xls_c_str_free`.
+char* xls_dslx_type_alias_to_string(struct xls_dslx_type_alias*);
 
 // -- interp_value
 
