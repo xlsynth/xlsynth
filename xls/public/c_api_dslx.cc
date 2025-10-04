@@ -35,17 +35,20 @@
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/interp_value_from_string.h"
 #include "xls/dslx/parse_and_typecheck.h"
+#include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/type_system/unwrap_meta_type.h"
 #include "xls/dslx/virtualizable_file_system.h"
 #include "xls/dslx/warning_kind.h"
+#include "xls/ir/bits.h"
 #include "xls/ir/value.h"
 #include "xls/public/c_api_impl_helpers.h"
-#include "absl/log/check.h"
 
 namespace {
+
 const struct xls_dslx_type* GetMetaTypeHelper(
     struct xls_dslx_type_info* type_info, xls::dslx::AstNode* cpp_node) {
   CHECK(cpp_node != nullptr);
@@ -61,9 +64,133 @@ const struct xls_dslx_type* GetMetaTypeHelper(
   CHECK_OK(unwrapped);
   return reinterpret_cast<const struct xls_dslx_type*>(*unwrapped);
 }
+
 }  // namespace
 
 extern "C" {
+
+bool xls_dslx_parametric_env_create(
+    const struct xls_dslx_parametric_env_item* items, size_t items_count,
+    char** error_out, struct xls_dslx_parametric_env** env_out) {
+  CHECK(error_out != nullptr);
+  CHECK(env_out != nullptr);
+  *error_out = nullptr;
+  if (items_count == 0) {
+    *env_out = reinterpret_cast<xls_dslx_parametric_env*>(
+        new xls::dslx::ParametricEnv());
+    return true;
+  }
+
+  std::vector<std::pair<std::string, xls::dslx::InterpValue>> v;
+  v.reserve(items_count);
+  for (size_t i = 0; i < items_count; ++i) {
+    const xls_dslx_parametric_env_item& it = items[i];
+    CHECK(it.identifier != nullptr);
+    CHECK(it.value != nullptr);
+    const xls::dslx::InterpValue* iv =
+        reinterpret_cast<const xls::dslx::InterpValue*>(it.value);
+    v.emplace_back(it.identifier, *iv);
+  }
+
+  *env_out = reinterpret_cast<xls_dslx_parametric_env*>(
+      new xls::dslx::ParametricEnv(absl::MakeSpan(v)));
+  return true;
+}
+
+void xls_dslx_parametric_env_free(struct xls_dslx_parametric_env* env) {
+  delete reinterpret_cast<xls::dslx::ParametricEnv*>(env);
+}
+
+// InterpValue simple constructors
+struct xls_dslx_interp_value* xls_dslx_interp_value_make_ubits(
+    int64_t bit_count, uint64_t value) {
+  auto* iv = new xls::dslx::InterpValue(xls::dslx::InterpValue::MakeUBits(
+      bit_count, static_cast<int64_t>(value)));
+  return reinterpret_cast<xls_dslx_interp_value*>(iv);
+}
+
+struct xls_dslx_interp_value* xls_dslx_interp_value_make_sbits(
+    int64_t bit_count, int64_t value) {
+  auto* iv = new xls::dslx::InterpValue(
+      xls::dslx::InterpValue::MakeSBits(bit_count, value));
+  return reinterpret_cast<xls_dslx_interp_value*>(iv);
+}
+
+bool xls_dslx_interp_value_make_enum(
+    struct xls_dslx_enum_def* def, bool is_signed, const struct xls_bits* bits,
+    char** error_out, struct xls_dslx_interp_value** result_out) {
+  CHECK(error_out != nullptr);
+  CHECK(result_out != nullptr);
+  *error_out = nullptr;
+  auto* enum_def = reinterpret_cast<xls::dslx::EnumDef*>(def);
+  const xls::Bits* cpp_bits = reinterpret_cast<const xls::Bits*>(bits);
+  auto iv = xls::dslx::InterpValue::MakeEnum(*cpp_bits, is_signed, enum_def);
+  *result_out = reinterpret_cast<xls_dslx_interp_value*>(
+      new xls::dslx::InterpValue(std::move(iv)));
+  return true;
+}
+
+bool xls_dslx_interp_value_from_string(
+    const char* text, const char* dslx_stdlib_path, char** error_out,
+    struct xls_dslx_interp_value** result_out) {
+  CHECK(error_out != nullptr);
+  CHECK(result_out != nullptr);
+  *error_out = nullptr;
+  auto status_or = xls::dslx::InterpValueFromString(
+      std::string_view{text}, std::filesystem::path{dslx_stdlib_path});
+  if (!status_or.ok()) {
+    *result_out = nullptr;
+    *error_out = xls::ToOwnedCString(status_or.status().ToString());
+    return false;
+  }
+  *result_out = reinterpret_cast<xls_dslx_interp_value*>(
+      new xls::dslx::InterpValue(std::move(status_or.value())));
+  return true;
+}
+
+bool xls_dslx_interp_value_make_tuple(
+    size_t element_count, struct xls_dslx_interp_value** elements,
+    char** error_out, struct xls_dslx_interp_value** result_out) {
+  CHECK(error_out != nullptr);
+  CHECK(result_out != nullptr);
+  *error_out = nullptr;
+  std::vector<xls::dslx::InterpValue> vec;
+  vec.reserve(element_count);
+  for (size_t i = 0; i < element_count; ++i) {
+    CHECK(elements[i] != nullptr);
+    auto* iv = reinterpret_cast<xls::dslx::InterpValue*>(elements[i]);
+    vec.push_back(*iv);
+  }
+  auto value = xls::dslx::InterpValue::MakeTuple(std::move(vec));
+  *result_out = reinterpret_cast<xls_dslx_interp_value*>(
+      new xls::dslx::InterpValue(std::move(value)));
+  return true;
+}
+
+bool xls_dslx_interp_value_make_array(
+    size_t element_count, struct xls_dslx_interp_value** elements,
+    char** error_out, struct xls_dslx_interp_value** result_out) {
+  CHECK(error_out != nullptr);
+  CHECK(result_out != nullptr);
+  *error_out = nullptr;
+  std::vector<xls::dslx::InterpValue> vec;
+  vec.reserve(element_count);
+  for (size_t i = 0; i < element_count; ++i) {
+    CHECK(elements[i] != nullptr);
+    auto* iv = reinterpret_cast<xls::dslx::InterpValue*>(elements[i]);
+    vec.push_back(*iv);
+  }
+  absl::StatusOr<xls::dslx::InterpValue> arr =
+      xls::dslx::InterpValue::MakeArray(std::move(vec));
+  if (!arr.ok()) {
+    *result_out = nullptr;
+    *error_out = xls::ToOwnedCString(arr.status().ToString());
+    return false;
+  }
+  *result_out = reinterpret_cast<xls_dslx_interp_value*>(
+      new xls::dslx::InterpValue(std::move(*arr)));
+  return true;
+}
 
 struct xls_dslx_import_data* xls_dslx_import_data_create(
     const char* dslx_stdlib_path, const char* additional_search_paths[],
@@ -255,8 +382,8 @@ int64_t xls_dslx_function_get_param_count(struct xls_dslx_function* fn) {
   return static_cast<int64_t>(cpp_function->params().size());
 }
 
-struct xls_dslx_param* xls_dslx_function_get_param(
-    struct xls_dslx_function* fn, int64_t index) {
+struct xls_dslx_param* xls_dslx_function_get_param(struct xls_dslx_function* fn,
+                                                   int64_t index) {
   auto* cpp_function = reinterpret_cast<xls::dslx::Function*>(fn);
   xls::dslx::Param* cpp_param = cpp_function->params().at(index);
   return reinterpret_cast<xls_dslx_param*>(cpp_param);
@@ -272,6 +399,11 @@ struct xls_dslx_type_annotation* xls_dslx_param_get_type_annotation(
   auto* cpp_param = reinterpret_cast<xls::dslx::Param*>(p);
   xls::dslx::TypeAnnotation* cpp_ta = cpp_param->type_annotation();
   return reinterpret_cast<xls_dslx_type_annotation*>(cpp_ta);
+}
+
+char* xls_dslx_function_to_string(struct xls_dslx_function* fn) {
+  auto* cpp_function = reinterpret_cast<xls::dslx::Function*>(fn);
+  return xls::ToOwnedCString(cpp_function->ToString());
 }
 
 struct xls_dslx_quickcheck* xls_dslx_module_member_get_quickcheck(
@@ -308,6 +440,11 @@ bool xls_dslx_quickcheck_get_count(struct xls_dslx_quickcheck* quickcheck,
     *result_out = xls::dslx::QuickCheckTestCases::kDefaultTestCount;
   }
   return true;
+}
+
+char* xls_dslx_quickcheck_to_string(struct xls_dslx_quickcheck* quickcheck) {
+  auto* cpp_qc = reinterpret_cast<xls::dslx::QuickCheck*>(quickcheck);
+  return xls::ToOwnedCString(cpp_qc->ToString());
 }
 
 bool xls_dslx_type_info_get_requires_implicit_token(
@@ -416,6 +553,11 @@ int64_t xls_dslx_struct_def_get_member_count(struct xls_dslx_struct_def* n) {
   return cpp_struct_def->size();
 }
 
+char* xls_dslx_struct_def_to_string(struct xls_dslx_struct_def* n) {
+  auto* cpp_struct_def = reinterpret_cast<xls::dslx::StructDef*>(n);
+  return xls::ToOwnedCString(cpp_struct_def->ToString());
+}
+
 // -- colon_ref
 
 struct xls_dslx_import* xls_dslx_colon_ref_resolve_import_subject(
@@ -457,6 +599,11 @@ struct xls_dslx_type_annotation* xls_dslx_type_alias_get_type_annotation(
   auto* cpp = reinterpret_cast<xls::dslx::TypeAlias*>(n);
   xls::dslx::TypeAnnotation& cpp_type_annotation = cpp->type_annotation();
   return reinterpret_cast<xls_dslx_type_annotation*>(&cpp_type_annotation);
+}
+
+char* xls_dslx_type_alias_to_string(struct xls_dslx_type_alias* n) {
+  auto* cpp = reinterpret_cast<xls::dslx::TypeAlias*>(n);
+  return xls::ToOwnedCString(cpp->ToString());
 }
 
 // -- type_annotation
@@ -540,6 +687,11 @@ struct xls_dslx_expr* xls_dslx_constant_def_get_value(
   return reinterpret_cast<xls_dslx_expr*>(cpp_value);
 }
 
+char* xls_dslx_constant_def_to_string(struct xls_dslx_constant_def* n) {
+  auto* cpp = reinterpret_cast<xls::dslx::ConstantDef*>(n);
+  return xls::ToOwnedCString(cpp->ToString());
+}
+
 // -- enum_def
 
 char* xls_dslx_enum_def_get_identifier(struct xls_dslx_enum_def* n) {
@@ -577,6 +729,11 @@ struct xls_dslx_expr* xls_dslx_enum_member_get_value(
   auto* cpp_member = reinterpret_cast<xls::dslx::EnumMember*>(m);
   xls::dslx::Expr* cpp_value = cpp_member->value;
   return reinterpret_cast<xls_dslx_expr*>(cpp_value);
+}
+
+char* xls_dslx_enum_def_to_string(struct xls_dslx_enum_def* n) {
+  auto* cpp_enum_def = reinterpret_cast<xls::dslx::EnumDef*>(n);
+  return xls::ToOwnedCString(cpp_enum_def->ToString());
 }
 
 struct xls_dslx_module* xls_dslx_expr_get_owner_module(

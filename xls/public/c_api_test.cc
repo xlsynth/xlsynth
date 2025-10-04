@@ -26,12 +26,12 @@
 #include <variant>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/base/macros.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/log/log.h"
 #include "absl/strings/str_format.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/file/filesystem.h"
 #include "xls/common/file/temp_directory.h"
 #include "xls/common/logging/log_lines.h"
@@ -70,8 +70,110 @@ TEST(XlsCApiTest, ConvertDslxToIrSimple) {
   EXPECT_THAT(ir_out, HasSubstr("fn __my_module__id"));
 }
 
+// -- Bits comparisons
+
+TEST(XlsCApiTest, BitsUnsignedComparisonsMixedWidths) {
+  char* error_out = nullptr;
+  xls_bits* a8 = nullptr;
+  xls_bits* b16 = nullptr;
+  ASSERT_TRUE(xls_bits_make_ubits(8, /*value=*/0x10, &error_out, &a8));
+  absl::Cleanup free_a8([a8] { xls_bits_free(a8); });
+  ASSERT_TRUE(xls_bits_make_ubits(16, /*value=*/0x20, &error_out, &b16));
+  absl::Cleanup free_b16([b16] { xls_bits_free(b16); });
+
+  EXPECT_TRUE(xls_bits_ult(a8, b16));
+  EXPECT_TRUE(xls_bits_ule(a8, b16));
+  EXPECT_FALSE(xls_bits_ugt(a8, b16));
+  EXPECT_FALSE(xls_bits_uge(a8, b16));
+
+  // Reflexive equal case across mixed widths.
+  xls_bits* a16_same = nullptr;
+  ASSERT_TRUE(xls_bits_make_ubits(16, /*value=*/0x0010, &error_out, &a16_same));
+  absl::Cleanup free_a16_same([a16_same] { xls_bits_free(a16_same); });
+  EXPECT_FALSE(xls_bits_ult(a8, a16_same));
+  EXPECT_TRUE(xls_bits_ule(a8, a16_same));
+  EXPECT_FALSE(xls_bits_ugt(a8, a16_same));
+  EXPECT_TRUE(xls_bits_uge(a8, a16_same));
+}
+
+TEST(XlsCApiTest, BitsSignedComparisons) {
+  char* error_out = nullptr;
+  xls_bits* neg8 = nullptr;
+  xls_bits* pos8 = nullptr;
+  ASSERT_TRUE(xls_bits_make_sbits(8, /*value=*/-1, &error_out, &neg8));
+  absl::Cleanup free_neg8([neg8] { xls_bits_free(neg8); });
+  ASSERT_TRUE(xls_bits_make_sbits(8, /*value=*/1, &error_out, &pos8));
+  absl::Cleanup free_pos8([pos8] { xls_bits_free(pos8); });
+
+  EXPECT_TRUE(xls_bits_slt(neg8, pos8));
+  EXPECT_TRUE(xls_bits_sle(neg8, pos8));
+  EXPECT_FALSE(xls_bits_sgt(neg8, pos8));
+  EXPECT_FALSE(xls_bits_sge(neg8, pos8));
+
+  // Equal values.
+  xls_bits* neg8_copy = nullptr;
+  ASSERT_TRUE(xls_bits_make_sbits(8, /*value=*/-1, &error_out, &neg8_copy));
+  absl::Cleanup free_neg8_copy([neg8_copy] { xls_bits_free(neg8_copy); });
+  EXPECT_FALSE(xls_bits_slt(neg8, neg8_copy));
+  EXPECT_TRUE(xls_bits_sle(neg8, neg8_copy));
+  EXPECT_FALSE(xls_bits_sgt(neg8, neg8_copy));
+  EXPECT_TRUE(xls_bits_sge(neg8, neg8_copy));
+}
+
+TEST(XlsCApiTest, BitsSignedComparisonsMixedWidths) {
+  char* error_out = nullptr;
+  // -1 (8-bit) vs +1 (16-bit)
+  xls_bits* neg8 = nullptr;
+  xls_bits* pos16 = nullptr;
+  ASSERT_TRUE(xls_bits_make_sbits(8, /*value=*/-1, &error_out, &neg8));
+  absl::Cleanup free_neg8([neg8] { xls_bits_free(neg8); });
+  ASSERT_TRUE(xls_bits_make_sbits(16, /*value=*/1, &error_out, &pos16));
+  absl::Cleanup free_pos16([pos16] { xls_bits_free(pos16); });
+
+  EXPECT_TRUE(xls_bits_slt(neg8, pos16));
+  EXPECT_TRUE(xls_bits_sle(neg8, pos16));
+  EXPECT_FALSE(xls_bits_sgt(neg8, pos16));
+  EXPECT_FALSE(xls_bits_sge(neg8, pos16));
+
+  // +1 (8-bit) vs -1 (16-bit)
+  xls_bits* pos8 = nullptr;
+  xls_bits* neg16 = nullptr;
+  ASSERT_TRUE(xls_bits_make_sbits(8, /*value=*/1, &error_out, &pos8));
+  absl::Cleanup free_pos8([pos8] { xls_bits_free(pos8); });
+  ASSERT_TRUE(xls_bits_make_sbits(16, /*value=*/-1, &error_out, &neg16));
+  absl::Cleanup free_neg16([neg16] { xls_bits_free(neg16); });
+
+  EXPECT_FALSE(xls_bits_slt(pos8, neg16));
+  EXPECT_FALSE(xls_bits_sle(pos8, neg16));
+  EXPECT_TRUE(xls_bits_sgt(pos8, neg16));
+  EXPECT_TRUE(xls_bits_sge(pos8, neg16));
+}
+
+TEST(XlsCApiTest, BitsEqualityAndInequalityComparisons) {
+  char* error_out = nullptr;
+  xls_bits* a = nullptr;
+  xls_bits* b = nullptr;
+  ASSERT_TRUE(xls_bits_make_ubits(5, 0b10101, &error_out, &a));
+  absl::Cleanup free_a([a] { xls_bits_free(a); });
+  ASSERT_TRUE(xls_bits_make_ubits(5, 0b10101, &error_out, &b));
+  absl::Cleanup free_b([b] { xls_bits_free(b); });
+
+  EXPECT_TRUE(xls_bits_eq(a, b));
+  EXPECT_FALSE(xls_bits_ne(a, b));
+
+  xls_bits* c = nullptr;
+  ASSERT_TRUE(xls_bits_make_ubits(6, 0b010101, &error_out, &c));
+  absl::Cleanup free_c([c] { xls_bits_free(c); });
+
+  // Mixed-width equality should be false; inequality true.
+  EXPECT_FALSE(xls_bits_eq(a, c));
+  EXPECT_TRUE(xls_bits_ne(a, c));
+}
+
+// TODO(williamjhuang) - Many warnings that may be generated under TIv1 are not
+// generated under TIv2, so we are forcing TIv1 in this case.
 TEST(XlsCApiTest, ConvertDslxToIrWithWarningsSet) {
-  const std::string kProgram = "fn id() { let x = u32:1; }";
+  const std::string kProgram = R"(fn id() { let x = u32:1; })";
   const char* additional_search_paths[] = {};
   const std::string dslx_stdlib_path = std::string(xls::kDefaultDslxStdlibPath);
 
@@ -953,6 +1055,93 @@ TEST(XlsCApiTest, MangleDslxName) {
   EXPECT_EQ(std::string_view(mangled), "__foo_bar__baz_bat");
 }
 
+TEST(XlsCApiTest, MangleDslxNameFullBasic) {
+  char* error = nullptr;
+  char* mangled = nullptr;
+  ASSERT_TRUE(xls_mangle_dslx_name_full(
+      /*module_name=*/"my_mod", /*function_name=*/"f",
+      xls_calling_convention_typical,
+      /*free_keys=*/nullptr, /*free_keys_count=*/0,
+      /*param_env=*/nullptr,
+      /*scope=*/nullptr, &error, &mangled))
+      << (error ? error : "");
+  absl::Cleanup free_mangled([&] { xls_c_str_free(mangled); });
+  EXPECT_EQ(std::string_view(mangled), "__my_mod__f");
+}
+
+TEST(XlsCApiTest, MangleDslxNameFullScope) {
+  char* error = nullptr;
+  char* mangled = nullptr;
+  ASSERT_TRUE(xls_mangle_dslx_name_full(
+      /*module_name=*/"my_mod", /*function_name=*/"f",
+      xls_calling_convention_typical,
+      /*free_keys=*/nullptr, /*free_keys_count=*/0,
+      /*param_env=*/nullptr,
+      /*scope=*/"Point", &error, &mangled))
+      << (error ? error : "");
+  absl::Cleanup free_mangled([&] { xls_c_str_free(mangled); });
+  EXPECT_EQ(std::string_view(mangled), "__my_mod__Point__f");
+}
+
+TEST(XlsCApiTest, MangleDslxNameFullParametrics) {
+  char* error = nullptr;
+  struct xls_dslx_interp_value* x_val =
+      xls_dslx_interp_value_make_ubits(/*bit_count=*/32, /*value=*/42);
+  struct xls_dslx_interp_value* y_val =
+      xls_dslx_interp_value_make_ubits(/*bit_count=*/32, /*value=*/64);
+  absl::Cleanup free_vals([&] {
+    xls_dslx_interp_value_free(x_val);
+    xls_dslx_interp_value_free(y_val);
+  });
+  const char* free_keys[] = {"X", "Y"};
+  struct xls_dslx_parametric_env_item items[] = {
+      {.identifier = "X", .value = x_val},
+      {.identifier = "Y", .value = y_val},
+  };
+  struct xls_dslx_parametric_env* env = nullptr;
+  ASSERT_TRUE(
+      xls_dslx_parametric_env_create(items, /*items_count=*/2, &error, &env))
+      << (error ? error : "");
+  absl::Cleanup free_env([&] { xls_dslx_parametric_env_free(env); });
+  char* mangled = nullptr;
+  ASSERT_TRUE(xls_mangle_dslx_name_full(
+      /*module_name=*/"my_mod", /*function_name=*/"p",
+      xls_calling_convention_typical, free_keys,
+      /*free_keys_count=*/2, env,
+      /*scope=*/nullptr, &error, &mangled))
+      << (error ? error : "");
+  absl::Cleanup free_mangled([&] { xls_c_str_free(mangled); });
+  EXPECT_EQ(std::string_view(mangled), "__my_mod__p__42_64");
+}
+
+TEST(XlsCApiTest, MangleDslxNameFullImplicitToken) {
+  char* error = nullptr;
+  char* mangled = nullptr;
+  ASSERT_TRUE(xls_mangle_dslx_name_full(
+      /*module_name=*/"my_mod", /*function_name=*/"f",
+      xls_calling_convention_implicit_token,
+      /*free_keys=*/nullptr, /*free_keys_count=*/0,
+      /*param_env=*/nullptr,
+      /*scope=*/nullptr, &error, &mangled))
+      << (error ? error : "");
+  absl::Cleanup free_mangled([&] { xls_c_str_free(mangled); });
+  EXPECT_EQ(std::string_view(mangled), "__itok__my_mod__f");
+}
+
+TEST(XlsCApiTest, MangleDslxNameFullProcNext) {
+  char* error = nullptr;
+  char* mangled = nullptr;
+  ASSERT_TRUE(xls_mangle_dslx_name_full(
+      /*module_name=*/"my_mod", /*function_name=*/"f",
+      xls_calling_convention_proc_next,
+      /*free_keys=*/nullptr, /*free_keys_count=*/0,
+      /*param_env=*/nullptr,
+      /*scope=*/nullptr, &error, &mangled))
+      << (error ? error : "");
+  absl::Cleanup free_mangled([&] { xls_c_str_free(mangled); });
+  EXPECT_EQ(std::string_view(mangled), "__my_mod__f_next");
+}
+
 TEST(XlsCApiTest, ValueToStringFormatPreferences) {
   char* error = nullptr;
   struct xls_value* value = nullptr;
@@ -1624,6 +1813,70 @@ top fn aoi21(inputs: (bits[1], bits[1], bits[1]) id=1) -> (bits[1], bits[1]) {
 }
 )";
   EXPECT_EQ(std::string_view{package_str}, kWant);
+}
+
+TEST(XlsCApiTest, VerifyPackageOk) {
+  xls_package* package = xls_package_create("verify_ok");
+  absl::Cleanup free_package([=] { xls_package_free(package); });
+
+  xls_type* u1 = xls_package_get_bits_type(package, 1);
+  xls_function_builder* fb =
+      xls_function_builder_create("id1", package, /*should_verify=*/true);
+  absl::Cleanup free_fb([=] { xls_function_builder_free(fb); });
+  xls_builder_base* b = xls_function_builder_as_builder_base(fb);
+  xls_bvalue* x = xls_function_builder_add_parameter(fb, "x", u1);
+  absl::Cleanup free_x([=] { xls_bvalue_free(x); });
+  xls_bvalue* ret = xls_builder_base_add_identity(b, x, "ret");
+  absl::Cleanup free_ret([=] { xls_bvalue_free(ret); });
+  xls_function* fn = nullptr;
+  {
+    char* error = nullptr;
+    ASSERT_TRUE(
+        xls_function_builder_build_with_return_value(fb, ret, &error, &fn))
+        << "error: " << (error == nullptr ? "<none>" : error);
+  }
+  {
+    char* error = nullptr;
+    ASSERT_TRUE(xls_verify_package(package, &error))
+        << "error: " << (error == nullptr ? "<none>" : error);
+    ASSERT_EQ(error, nullptr);
+  }
+}
+
+TEST(XlsCApiTest, VerifyPackageDuplicateFunctionNameFails) {
+  xls_package* package = xls_package_create("verify_dup");
+  absl::Cleanup free_package([=] { xls_package_free(package); });
+
+  xls_type* u1 = xls_package_get_bits_type(package, 1);
+  // Build two functions with the same name; skip verification on build so that
+  // package-level verify detects the duplicate.
+  for (int i = 0; i < 2; ++i) {
+    xls_function_builder* fb =
+        xls_function_builder_create("dup", package, /*should_verify=*/false);
+    absl::Cleanup free_fb([=] { xls_function_builder_free(fb); });
+    xls_builder_base* b = xls_function_builder_as_builder_base(fb);
+    xls_bvalue* x = xls_function_builder_add_parameter(fb, "x", u1);
+    absl::Cleanup free_x([=] { xls_bvalue_free(x); });
+    xls_bvalue* ret = xls_builder_base_add_identity(b, x, "ret");
+    absl::Cleanup free_ret([=] { xls_bvalue_free(ret); });
+    xls_function* fn = nullptr;
+    char* error = nullptr;
+    ASSERT_TRUE(
+        xls_function_builder_build_with_return_value(fb, ret, &error, &fn))
+        << "error: " << (error == nullptr ? "<none>" : error);
+  }
+
+  char* error = nullptr;
+  EXPECT_FALSE(xls_verify_package(package, &error));
+  ASSERT_NE(error, nullptr);
+  {
+    const std::string_view got(error);
+    const std::string_view want_suffix =
+        "Function/proc/block with name dup is not unique within package "
+        "verify_dup";
+    EXPECT_NE(got.find(want_suffix), std::string_view::npos) << got;
+  }
+  xls_c_str_free(error);
 }
 
 TEST(XlsCApiTest, FnBuilderConcatAndSlice) {
@@ -2677,8 +2930,9 @@ fn parametric_fn<N: u32>(x: bits[N]) -> bits[N] { x }
 
   xls_dslx_typechecked_module* tm = nullptr;
   char* error = nullptr;
-  bool ok = xls_dslx_parse_and_typecheck(kProgram.data(), "test_module.x",
-                                         "test_module", import_data, &error, &tm);
+  bool ok =
+      xls_dslx_parse_and_typecheck(kProgram.data(), "test_module.x",
+                                   "test_module", import_data, &error, &tm);
   absl::Cleanup free_tm([=] { xls_dslx_typechecked_module_free(tm); });
   ASSERT_TRUE(ok) << "parse-and-typecheck error: " << error;
   ASSERT_EQ(error, nullptr);
@@ -2750,7 +3004,6 @@ fn prop(x: u8) -> bool {
   EXPECT_EQ(count, 123);
 }
 
-// Tests that a DSLX function requires the implicit-token calling convention.
 TEST(XlsCApiTest, FunctionRequiresImplicitToken) {
   const std::string kProgram =
       R"(// Function that requires implicit token due to fail! macro.
@@ -2797,8 +3050,7 @@ fn no_token(x: u32) -> u32 {
 
   // Function that does not require implicit token.
   xls_dslx_module_member* member1 = xls_dslx_module_get_member(module, 1);
-  xls_dslx_function* no_token_fn =
-      xls_dslx_module_member_get_function(member1);
+  xls_dslx_function* no_token_fn = xls_dslx_module_member_get_function(member1);
   ASSERT_NE(no_token_fn, nullptr);
   requires_implicit_token = false;
   ASSERT_TRUE(xls_dslx_type_info_get_requires_implicit_token(
@@ -2832,7 +3084,9 @@ fn top(x: u32, y: MyE) -> u32 { x }
   for (int64_t i = 0; i < members; ++i) {
     xls_dslx_module_member* mm = xls_dslx_module_get_member(module, i);
     fn = xls_dslx_module_member_get_function(mm);
-    if (fn != nullptr) break;
+    if (fn != nullptr) {
+      break;
+    }
   }
   ASSERT_NE(fn, nullptr);
 

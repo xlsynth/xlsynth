@@ -63,6 +63,7 @@ struct xls_package;
 struct xls_schedule_and_codegen_result;
 struct xls_type;
 struct xls_value;
+struct xls_dslx_parametric_env;
 
 void xls_init_xls(const char* usage, int argc, char* argv[]);
 
@@ -111,6 +112,22 @@ bool xls_optimize_ir(const char* ir, const char* top, char** error_out,
 
 bool xls_mangle_dslx_name(const char* module_name, const char* function_name,
                           char** error_out, char** mangled_out);
+
+typedef int32_t xls_calling_convention;
+enum {
+  xls_calling_convention_typical = 0,
+  xls_calling_convention_implicit_token = 1,
+  xls_calling_convention_proc_next = 2,
+};
+
+// Mangling with full options. If `param_env` is non-null, its bindings are
+// used as the parametric environment; otherwise no parametric bindings are
+// applied.
+bool xls_mangle_dslx_name_full(
+    const char* module_name, const char* function_name,
+    xls_calling_convention convention, const char* const free_keys[],
+    size_t free_keys_count, const struct xls_dslx_parametric_env* param_env,
+    const char* scope, char** error_out, char** mangled_out);
 
 // Args:
 //   p: The package to schedule and codegen.
@@ -231,7 +248,24 @@ bool xls_bits_make_sbits(int64_t bit_count, int64_t value, char** error_out,
 void xls_bits_free(struct xls_bits* bits);
 void xls_bits_rope_free(xls_bits_rope* b);
 
+// Equality compares exact bit patterns including bit_count. If widths differ,
+// equality returns false (no error). Pointers must be non-null.
 bool xls_bits_eq(const struct xls_bits* a, const struct xls_bits* b);
+
+// Inequality and comparison operations on bits values.
+// Unsigned comparisons interpret both operands as unsigned. Mixed widths are
+// allowed; comparisons follow bits_ops semantics. Pointers must be non-null.
+bool xls_bits_ne(const struct xls_bits* a, const struct xls_bits* b);
+bool xls_bits_ult(const struct xls_bits* a, const struct xls_bits* b);
+bool xls_bits_ule(const struct xls_bits* a, const struct xls_bits* b);
+bool xls_bits_ugt(const struct xls_bits* a, const struct xls_bits* b);
+bool xls_bits_uge(const struct xls_bits* a, const struct xls_bits* b);
+// Signed comparisons interpret both operands as two's-complement signed values.
+// Mixed widths are allowed; comparisons follow bits_ops semantics.
+bool xls_bits_slt(const struct xls_bits* a, const struct xls_bits* b);
+bool xls_bits_sle(const struct xls_bits* a, const struct xls_bits* b);
+bool xls_bits_sgt(const struct xls_bits* a, const struct xls_bits* b);
+bool xls_bits_sge(const struct xls_bits* a, const struct xls_bits* b);
 
 // Returns the bit at the given index, where `index` is a zero-is-lsb value.
 //
@@ -384,6 +418,12 @@ bool xls_package_set_top_by_name(struct xls_package* p, const char* name,
 bool xls_parse_ir_package(const char* ir, const char* filename,
                           char** error_out,
                           struct xls_package** xls_package_out);
+
+// Verifies that the given package satisfies all IR invariants.
+//
+// Returns true on success; on failure returns false and populates `error_out`
+// with an error message that must be freed via `xls_c_str_free`.
+bool xls_verify_package(struct xls_package* p, char** error_out);
 
 // Returns a function contained within the given `package`.
 //
