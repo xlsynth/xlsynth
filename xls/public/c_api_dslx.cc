@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/variant.h"
@@ -1026,6 +1027,15 @@ bool xls_dslx_type_dim_get_as_int64(struct xls_dslx_type_dim* td,
 void xls_dslx_type_dim_free(struct xls_dslx_type_dim* td) {
   auto* cpp_type_dim = reinterpret_cast<xls::dslx::TypeDim*>(td);
   delete cpp_type_dim;
+}
+
+bool xls_dslx_replace_invocations_in_module(
+    struct xls_dslx_typechecked_module* tm,
+    struct xls_dslx_function* const callers[], size_t callers_count,
+    const struct xls_dslx_invocation_rewrite_rule* rules, size_t rules_count,
+    struct xls_dslx_import_data* import_data, const char* install_subject,
+    char** error_out, struct xls_dslx_typechecked_module** result_out) {
+  LOG(FATAL) << "xls_dslx_replace_invocations_in_module is not supported";
 }
 
 }  // extern "C"

@@ -73,12 +73,15 @@ bool xls_convert_dslx_to_ir_with_warnings(
     size_t additional_search_paths_count, const char* enable_warnings[],
     size_t enable_warnings_count, const char* disable_warnings[],
     size_t disable_warnings_count, bool warnings_as_errors,
-    char*** warnings_out, size_t* warnings_out_count, char** error_out,
-    char** ir_out) {
+    bool force_implicit_token_calling_convention, char*** warnings_out,
+    size_t* warnings_out_count, char** error_out, char** ir_out) {
   CHECK(dslx != nullptr);
   CHECK(path != nullptr);
   CHECK(dslx_stdlib_path != nullptr);
   CHECK(error_out != nullptr);
+
+  CHECK(!force_implicit_token_calling_convention)
+      << "force_implicit_token_calling_convention is not supported";
 
   std::vector<std::filesystem::path> additional_search_paths_cpp =
       xls::ToCppPaths(additional_search_paths, additional_search_paths_count);
@@ -122,6 +125,7 @@ bool xls_convert_dslx_to_ir(const char* dslx, const char* path,
       dslx, path, module_name, dslx_stdlib_path, additional_search_paths,
       additional_search_paths_count, enable_warnings, 0, disable_warnings, 0,
       /*warnings_as_errors=*/false,
+      /*force_implicit_token_calling_convention=*/false,
       /*warnings_out=*/nullptr,
       /*warnings_out_count=*/nullptr, error_out, ir_out);
 }
@@ -131,11 +135,15 @@ bool xls_convert_dslx_path_to_ir_with_warnings(
     const char* additional_search_paths[], size_t additional_search_paths_count,
     const char* enable_warnings[], size_t enable_warnings_count,
     const char* disable_warnings[], size_t disable_warnings_count,
-    bool warnings_as_errors, char*** warnings_out, size_t* warnings_out_count,
-    char** error_out, char** ir_out) {
+    bool warnings_as_errors, bool force_implicit_token_calling_convention,
+    char*** warnings_out, size_t* warnings_out_count, char** error_out,
+    char** ir_out) {
   CHECK(path != nullptr);
   CHECK(dslx_stdlib_path != nullptr);
   CHECK(error_out != nullptr);
+  CHECK(!force_implicit_token_calling_convention)
+      << "force_implicit_token_calling_convention is not supported";
+
   if (warnings_out != nullptr) {
     CHECK(warnings_out_count != nullptr);
   }
@@ -178,6 +186,7 @@ bool xls_convert_dslx_path_to_ir(const char* path, const char* dslx_stdlib_path,
       path, dslx_stdlib_path, additional_search_paths,
       additional_search_paths_count, enable_warnings, 0, disable_warnings, 0,
       /*warnings_as_errors=*/false,
+      /*force_implicit_token_calling_convention=*/false,
       /*warnings_out=*/nullptr,
       /*warnings_out_count=*/nullptr, error_out, ir_out);
 }
