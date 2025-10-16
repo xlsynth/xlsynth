@@ -34,7 +34,11 @@ targets = [
 ]
 
 # Smoke test target to validate the C API symbols
-smoke_test_target = "//xls/public:test_c_api_symbols"
+smoke_test_targets = [
+    "//xls/public:test_c_api_symbols",
+    "//xls/public:c_api_vast_test",
+    "//xls/public:c_api_test",
+]
 
 # Function to get the current git hash and cleanliness status
 def get_git_info():
@@ -60,8 +64,8 @@ def make_local_release(output_dir, mode="opt"):
     os.makedirs(output_dir, exist_ok=True)
 
     # Build the targets using Bazel; adjust flags based on the mode.
-    # Include the smoke test target in the build to ensure it compiles with the rest.
-    build_targets = targets + [smoke_test_target]
+    # Include the smoke test targets in the build to ensure they compile with the rest.
+    build_targets = targets + smoke_test_targets
     if mode == "dbg-asan":
         build_command = [
             "CC=clang", "CXX=clang++", "bazel", "build", "-c", "dbg", "--config=asan"
@@ -84,19 +88,19 @@ def make_local_release(output_dir, mode="opt"):
         print(f"Build failed: {e}")
         sys.exit(1)
 
-    # Run a smoke test to validate C API symbols with the same compilation mode.
+    # Run smoke tests with the same compilation mode.
     if mode == "dbg-asan":
         test_command = [
-            "CC=clang", "CXX=clang++", "bazel", "test", "-c", "dbg", "--config=asan", smoke_test_target
-        ]
+            "CC=clang", "CXX=clang++", "bazel", "test", "-c", "dbg", "--config=asan",
+        ] + smoke_test_targets
     elif mode == "dbg":
         test_command = [
-            "CC=clang", "CXX=clang++", "bazel", "test", "-c", "dbg", smoke_test_target
-        ]
+            "CC=clang", "CXX=clang++", "bazel", "test", "-c", "dbg",
+        ] + smoke_test_targets
     elif mode == "opt":
         test_command = [
-            "CC=clang", "CXX=clang++", "bazel", "test", "-c", "opt", smoke_test_target
-        ]
+            "CC=clang", "CXX=clang++", "bazel", "test", "-c", "opt",
+        ] + smoke_test_targets
     try:
         subprocess.run(" ".join(test_command), shell=True, check=True)
     except subprocess.CalledProcessError as e:
