@@ -368,6 +368,20 @@ void xls_vast_verilog_module_add_member_comment(
   auto* cpp_comment = reinterpret_cast<xls::verilog::Comment*>(comment);
   cpp_module->AddModuleMember(cpp_comment);
 }
+void xls_vast_verilog_module_add_member_blank_line(
+    struct xls_vast_verilog_module* m, struct xls_vast_blank_line* blank) {
+  auto* cpp_module = reinterpret_cast<xls::verilog::Module*>(m);
+  auto* cpp_blank = reinterpret_cast<xls::verilog::BlankLine*>(blank);
+  cpp_module->AddModuleMember(cpp_blank);
+}
+void xls_vast_verilog_module_add_member_inline_statement(
+    struct xls_vast_verilog_module* m,
+    struct xls_vast_inline_verilog_statement* stmt) {
+  auto* cpp_module = reinterpret_cast<xls::verilog::Module*>(m);
+  auto* cpp_stmt =
+      reinterpret_cast<xls::verilog::InlineVerilogStatement*>(stmt);
+  cpp_module->AddModuleMember(cpp_stmt);
+}
 
 struct xls_vast_literal* xls_vast_verilog_file_make_plain_literal(
     struct xls_vast_verilog_file* f, int32_t value) {
@@ -437,6 +451,22 @@ struct xls_vast_comment* xls_vast_verilog_file_make_comment(
   xls::verilog::Comment* cpp_comment =
       cpp_file->Make<xls::verilog::Comment>(xls::SourceInfo(), text);
   return reinterpret_cast<xls_vast_comment*>(cpp_comment);
+}
+struct xls_vast_blank_line* xls_vast_verilog_file_make_blank_line(
+    struct xls_vast_verilog_file* f) {
+  auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
+  xls::verilog::BlankLine* cpp_blank =
+      cpp_file->Make<xls::verilog::BlankLine>(xls::SourceInfo());
+  return reinterpret_cast<xls_vast_blank_line*>(cpp_blank);
+}
+struct xls_vast_inline_verilog_statement*
+xls_vast_verilog_file_make_inline_verilog_statement(
+    struct xls_vast_verilog_file* f, const char* text) {
+  auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
+  xls::verilog::InlineVerilogStatement* cpp_stmt =
+      cpp_file->Make<xls::verilog::InlineVerilogStatement>(
+          xls::SourceInfo(), text);
+  return reinterpret_cast<xls_vast_inline_verilog_statement*>(cpp_stmt);
 }
 
 struct xls_vast_instantiation* xls_vast_verilog_file_make_instantiation(
@@ -827,6 +857,28 @@ struct xls_vast_statement* xls_vast_statement_block_add_nonblocking_assignment(
       cpp_block->Add<xls::verilog::NonblockingAssignment>(xls::SourceInfo(),
                                                           cpp_lhs, cpp_rhs);
   return reinterpret_cast<xls_vast_statement*>(cpp_assignment);
+}
+struct xls_vast_statement* xls_vast_statement_block_add_comment_text(
+    struct xls_vast_statement_block* block, const char* text) {
+  auto* cpp_block = reinterpret_cast<xls::verilog::StatementBlock*>(block);
+  xls::verilog::Comment* cpp_comment =
+      cpp_block->Add<xls::verilog::Comment>(xls::SourceInfo(), text);
+  return reinterpret_cast<xls_vast_statement*>(cpp_comment);
+}
+struct xls_vast_statement* xls_vast_statement_block_add_blank_line(
+    struct xls_vast_statement_block* block) {
+  auto* cpp_block = reinterpret_cast<xls::verilog::StatementBlock*>(block);
+  xls::verilog::BlankLine* cpp_blank =
+      cpp_block->Add<xls::verilog::BlankLine>(xls::SourceInfo());
+  return reinterpret_cast<xls_vast_statement*>(cpp_blank);
+}
+struct xls_vast_statement* xls_vast_statement_block_add_inline_text(
+    struct xls_vast_statement_block* block, const char* text) {
+  auto* cpp_block = reinterpret_cast<xls::verilog::StatementBlock*>(block);
+  xls::verilog::InlineVerilogStatement* cpp_stmt =
+      cpp_block->Add<xls::verilog::InlineVerilogStatement>(
+          xls::SourceInfo(), text);
+  return reinterpret_cast<xls_vast_statement*>(cpp_stmt);
 }
 
 struct xls_vast_module_port** xls_vast_verilog_module_get_ports(
