@@ -79,11 +79,13 @@ void ToOwnedCStrings(absl::Span<const std::string> cpp, char*** c_out,
 bool ReturnStringHelper(absl::StatusOr<std::string>& to_return,
                         char** error_out, char** value_out) {
   if (to_return.ok()) {
+    // std::cerr << "ReturnStringHelper; ok: " << to_return.value() << std::endl;
     *value_out = ToOwnedCString(to_return.value());
     *error_out = nullptr;
     return true;
   }
 
+  // std::cerr << "ReturnStringHelper; error: " << to_return.status().ToString() << std::endl;
   *value_out = nullptr;
   *error_out = ToOwnedCString(to_return.status().ToString());
   return false;
