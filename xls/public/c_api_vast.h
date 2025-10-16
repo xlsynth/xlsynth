@@ -194,7 +194,6 @@ struct xls_vast_localparam_ref* xls_vast_verilog_module_add_localparam(
 
 // Note: returned value is owned by the caller, free via `xls_c_str_free`.
 char* xls_vast_verilog_module_get_name(struct xls_vast_verilog_module* m);
-
 // Returns the ports that are present on the given module.
 //
 // Note: the returned array is owned by the caller, to be freed by
@@ -287,6 +286,18 @@ void xls_vast_verilog_file_add_include(struct xls_vast_verilog_file* f,
 struct xls_vast_concat* xls_vast_verilog_file_make_concat(
     struct xls_vast_verilog_file* f, struct xls_vast_expression** elements,
     size_t element_count);
+
+// Creates a replicated concatenation expression: {replication{elements...}}.
+// For single-element replication, pass element_count=1.
+struct xls_vast_concat* xls_vast_verilog_file_make_replicated_concat(
+    struct xls_vast_verilog_file* f,
+    struct xls_vast_expression* replication,
+    struct xls_vast_expression** elements, size_t element_count);
+
+// Convenience: replicated concatenation with an integer replication count.
+struct xls_vast_concat* xls_vast_verilog_file_make_replicated_concat_i64(
+    struct xls_vast_verilog_file* f, int64_t replication_count,
+    struct xls_vast_expression** elements, size_t element_count);
 
 struct xls_vast_slice* xls_vast_verilog_file_make_slice_i64(
     struct xls_vast_verilog_file* f,
