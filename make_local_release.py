@@ -33,6 +33,9 @@ targets = [
     "//xls/tools:block_to_verilog_main"
 ]
 
+# Smoke test target to validate the C API symbols
+smoke_test_target = "//xls/public:test_c_api_symbols"
+
 # Function to get the current git hash and cleanliness status
 def get_git_info():
     try:
@@ -57,18 +60,20 @@ def make_local_release(output_dir, mode="opt"):
     os.makedirs(output_dir, exist_ok=True)
 
     # Build the targets using Bazel; adjust flags based on the mode.
+    # Include the smoke test target in the build to ensure it compiles with the rest.
+    build_targets = targets + [smoke_test_target]
     if mode == "dbg-asan":
         build_command = [
-            "CC=clang", "CXX=clang++", "bazel", "run", "-c", "dbg", "--config=asan"
-        ] + targets
+            "CC=clang", "CXX=clang++", "bazel", "build", "-c", "dbg", "--config=asan"
+        ] + build_targets
     elif mode == "dbg":
         build_command = [
             "CC=clang", "CXX=clang++", "bazel", "build", "-c", "dbg"
-        ] + targets
+        ] + build_targets
     elif mode == "opt":
         build_command = [
             "CC=clang", "CXX=clang++", "bazel", "build", "-c", "opt"
-        ] + targets
+        ] + build_targets
     else:
         print(f"Unsupported mode: {mode}")
         sys.exit(1)
@@ -77,6 +82,25 @@ def make_local_release(output_dir, mode="opt"):
         subprocess.run(" ".join(build_command), shell=True, check=True)
     except subprocess.CalledProcessError as e:
         print(f"Build failed: {e}")
+        sys.exit(1)
+
+    # Run a smoke test to validate C API symbols with the same compilation mode.
+    if mode == "dbg-asan":
+        test_command = [
+            "CC=clang", "CXX=clang++", "bazel", "test", "-c", "dbg", "--config=asan", smoke_test_target
+        ]
+    elif mode == "dbg":
+        test_command = [
+            "CC=clang", "CXX=clang++", "bazel", "test", "-c", "dbg", smoke_test_target
+        ]
+    elif mode == "opt":
+        test_command = [
+            "CC=clang", "CXX=clang++", "bazel", "test", "-c", "opt", smoke_test_target
+        ]
+    try:
+        subprocess.run(" ".join(test_command), shell=True, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Smoke test failed: {e}")
         sys.exit(1)
 
     # Copy built binaries to the output directory
