@@ -621,6 +621,42 @@ struct xls_vast_concat* xls_vast_verilog_file_make_concat(
   return reinterpret_cast<xls_vast_concat*>(cpp_concat);
 }
 
+struct xls_vast_concat* xls_vast_verilog_file_make_replicated_concat(
+    struct xls_vast_verilog_file* f,
+    struct xls_vast_expression* replication,
+    struct xls_vast_expression** elements, size_t element_count) {
+  auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
+  auto* cpp_rep = reinterpret_cast<xls::verilog::Expression*>(replication);
+  std::vector<xls::verilog::Expression*> cpp_elements;
+  cpp_elements.reserve(element_count);
+  for (size_t i = 0; i < element_count; ++i) {
+    cpp_elements.push_back(
+        reinterpret_cast<xls::verilog::Expression*>(elements[i]));
+  }
+  xls::verilog::Concat* cpp_concat =
+      cpp_file->Make<xls::verilog::Concat>(xls::SourceInfo(), cpp_rep,
+                                           absl::MakeConstSpan(cpp_elements));
+  return reinterpret_cast<xls_vast_concat*>(cpp_concat);
+}
+
+struct xls_vast_concat* xls_vast_verilog_file_make_replicated_concat_i64(
+    struct xls_vast_verilog_file* f, int64_t replication_count,
+    struct xls_vast_expression** elements, size_t element_count) {
+  auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
+  xls::verilog::Expression* cpp_rep =
+      cpp_file->PlainLiteral(replication_count, xls::SourceInfo());
+  std::vector<xls::verilog::Expression*> cpp_elements;
+  cpp_elements.reserve(element_count);
+  for (size_t i = 0; i < element_count; ++i) {
+    cpp_elements.push_back(
+        reinterpret_cast<xls::verilog::Expression*>(elements[i]));
+  }
+  xls::verilog::Concat* cpp_concat =
+      cpp_file->Make<xls::verilog::Concat>(xls::SourceInfo(), cpp_rep,
+                                           absl::MakeConstSpan(cpp_elements));
+  return reinterpret_cast<xls_vast_concat*>(cpp_concat);
+}
+
 struct xls_vast_index* xls_vast_verilog_file_make_index_i64(
     struct xls_vast_verilog_file* f,
     struct xls_vast_indexable_expression* subject, int64_t index) {
