@@ -506,6 +506,73 @@ endmodule
   EXPECT_EQ(std::string_view{emitted}, kWantEmitted);
 }
 
+TEST(XlsCApiTest, VastModuleCommentsAndBlankLines) {
+  const std::string_view kWantEmitted = R"(module top;
+  // top comment
+
+  if (1) ;
+endmodule
+)";
+  xls_vast_verilog_file* f =
+      xls_vast_make_verilog_file(xls_vast_file_type_verilog);
+  ASSERT_NE(f, nullptr);
+  absl::Cleanup free_file([&] { xls_vast_verilog_file_free(f); });
+
+  xls_vast_verilog_module* m = xls_vast_verilog_file_add_module(f, "top");
+  ASSERT_NE(m, nullptr);
+
+  xls_vast_comment* c = xls_vast_verilog_file_make_comment(f, "top comment");
+  xls_vast_verilog_module_add_member_comment(m, c);
+  xls_vast_blank_line* b = xls_vast_verilog_file_make_blank_line(f);
+  xls_vast_verilog_module_add_member_blank_line(m, b);
+  xls_vast_inline_verilog_statement* inl =
+      xls_vast_verilog_file_make_inline_verilog_statement(f, "if (1) ;");
+  xls_vast_verilog_module_add_member_inline_statement(m, inl);
+
+  char* emitted = xls_vast_verilog_file_emit(f);
+  ASSERT_NE(emitted, nullptr);
+  absl::Cleanup free_emitted([&] { xls_c_str_free(emitted); });
+  EXPECT_EQ(std::string_view{emitted}, kWantEmitted);
+}
+
+TEST(XlsCApiTest, VastBlockCommentsAndInline) {
+  const std::string_view kWantEmitted = R"(module top;
+  always @ (*) begin
+    // inside
+
+    // raw
+  end
+endmodule
+)";
+  xls_vast_verilog_file* f =
+      xls_vast_make_verilog_file(xls_vast_file_type_verilog);
+  ASSERT_NE(f, nullptr);
+  absl::Cleanup free_file([&] { xls_vast_verilog_file_free(f); });
+
+  xls_vast_verilog_module* m = xls_vast_verilog_file_add_module(f, "top");
+  ASSERT_NE(m, nullptr);
+
+  xls_vast_expression* sl[] = {nullptr};
+  xls_vast_always_base* ab = nullptr;
+  char* err = nullptr;
+  ASSERT_TRUE(xls_vast_verilog_module_add_always_at(m, sl, 1, &ab, &err));
+  ASSERT_EQ(err, nullptr);
+
+  xls_vast_statement_block* block =
+      xls_vast_always_base_get_statement_block(ab);
+  ASSERT_NE(block, nullptr);
+  ASSERT_NE(xls_vast_statement_block_add_comment_text(block, "inside"),
+            nullptr);
+  ASSERT_NE(xls_vast_statement_block_add_blank_line(block), nullptr);
+  ASSERT_NE(xls_vast_statement_block_add_inline_text(block, "// raw"),
+            nullptr);
+
+  char* emitted = xls_vast_verilog_file_emit(f);
+  ASSERT_NE(emitted, nullptr);
+  absl::Cleanup free_emitted([&] { xls_c_str_free(emitted); });
+  EXPECT_EQ(std::string_view{emitted}, kWantEmitted);
+}
+
 // Adds module parameters and uses them in expressions.
 TEST(XlsCApiTest, VastModuleParameters) {
   const std::string_view kWantEmitted = R"(module param_module;

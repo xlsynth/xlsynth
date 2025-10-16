@@ -153,6 +153,11 @@ void xls_vast_verilog_module_add_member_continuous_assignment(
     struct xls_vast_continuous_assignment* member);
 void xls_vast_verilog_module_add_member_comment(
     struct xls_vast_verilog_module* m, struct xls_vast_comment* comment);
+void xls_vast_verilog_module_add_member_blank_line(
+    struct xls_vast_verilog_module* m, struct xls_vast_blank_line* blank);
+void xls_vast_verilog_module_add_member_inline_statement(
+    struct xls_vast_verilog_module* m,
+    struct xls_vast_inline_verilog_statement* stmt);
 
 struct xls_vast_logic_ref* xls_vast_verilog_module_add_input(
     struct xls_vast_verilog_module* m, const char* name,
@@ -273,6 +278,16 @@ xls_vast_verilog_file_make_continuous_assignment(
     struct xls_vast_expression* rhs);
 
 struct xls_vast_comment* xls_vast_verilog_file_make_comment(
+    struct xls_vast_verilog_file* f, const char* text);
+
+struct xls_vast_blank_line;
+struct xls_vast_inline_verilog_statement;
+
+struct xls_vast_blank_line* xls_vast_verilog_file_make_blank_line(
+    struct xls_vast_verilog_file* f);
+
+struct xls_vast_inline_verilog_statement*
+xls_vast_verilog_file_make_inline_verilog_statement(
     struct xls_vast_verilog_file* f, const char* text);
 
 struct xls_vast_instantiation* xls_vast_verilog_file_make_instantiation(
@@ -418,11 +433,14 @@ struct xls_vast_statement* xls_vast_statement_block_add_blocking_assignment(
     struct xls_vast_statement_block* block, struct xls_vast_expression* lhs,
     struct xls_vast_expression* rhs);
 
-// Adds a blocking assignment statement (lhs = rhs) to a statement block and
-// returns a pointer to the created statement.
-struct xls_vast_statement* xls_vast_statement_block_add_blocking_assignment(
-    struct xls_vast_statement_block* block, struct xls_vast_expression* lhs,
-    struct xls_vast_expression* rhs);
+struct xls_vast_statement* xls_vast_statement_block_add_comment_text(
+    struct xls_vast_statement_block* block, const char* text);
+
+struct xls_vast_statement* xls_vast_statement_block_add_blank_line(
+    struct xls_vast_statement_block* block);
+
+struct xls_vast_statement* xls_vast_statement_block_add_inline_text(
+    struct xls_vast_statement_block* block, const char* text);
 
 // Emits/formats the contents of the given verilog file to a string.
 //
