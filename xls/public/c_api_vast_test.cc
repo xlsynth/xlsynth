@@ -23,8 +23,8 @@
 #include <utility>
 #include <vector>
 
-#include "gtest/gtest.h"
 #include "absl/cleanup/cleanup.h"
+#include "gtest/gtest.h"
 #include "xls/public/c_api.h"
 #include "xls/public/c_api_format_preference.h"
 
@@ -446,8 +446,8 @@ endmodule
   xls_vast_logic_ref* y_ref = xls_vast_verilog_module_add_wire(m, "y", u12);
 
   xls_vast_expression* elems[] = {xls_vast_logic_ref_as_expression(a_ref)};
-  xls_vast_concat* rc = xls_vast_verilog_file_make_replicated_concat_i64(
-      f, 3, elems, 1);
+  xls_vast_concat* rc =
+      xls_vast_verilog_file_make_replicated_concat_i64(f, 3, elems, 1);
 
   xls_vast_continuous_assignment* assignment =
       xls_vast_verilog_file_make_continuous_assignment(
@@ -564,8 +564,7 @@ endmodule
   ASSERT_NE(xls_vast_statement_block_add_comment_text(block, "inside"),
             nullptr);
   ASSERT_NE(xls_vast_statement_block_add_blank_line(block), nullptr);
-  ASSERT_NE(xls_vast_statement_block_add_inline_text(block, "// raw"),
-            nullptr);
+  ASSERT_NE(xls_vast_statement_block_add_inline_text(block, "// raw"), nullptr);
 
   char* emitted = xls_vast_verilog_file_emit(f);
   ASSERT_NE(emitted, nullptr);

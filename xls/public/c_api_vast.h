@@ -308,8 +308,7 @@ struct xls_vast_concat* xls_vast_verilog_file_make_concat(
 // Creates a replicated concatenation expression: {replication{elements...}}.
 // For single-element replication, pass element_count=1.
 struct xls_vast_concat* xls_vast_verilog_file_make_replicated_concat(
-    struct xls_vast_verilog_file* f,
-    struct xls_vast_expression* replication,
+    struct xls_vast_verilog_file* f, struct xls_vast_expression* replication,
     struct xls_vast_expression** elements, size_t element_count);
 
 // Convenience: replicated concatenation with an integer replication count.
@@ -441,6 +440,12 @@ struct xls_vast_statement* xls_vast_statement_block_add_blank_line(
 
 struct xls_vast_statement* xls_vast_statement_block_add_inline_text(
     struct xls_vast_statement_block* block, const char* text);
+
+// Adds a blocking assignment statement (lhs = rhs) to a statement block and
+// returns a pointer to the created statement.
+struct xls_vast_statement* xls_vast_statement_block_add_blocking_assignment(
+    struct xls_vast_statement_block* block, struct xls_vast_expression* lhs,
+    struct xls_vast_expression* rhs);
 
 // Emits/formats the contents of the given verilog file to a string.
 //

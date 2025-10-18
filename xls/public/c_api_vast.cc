@@ -504,8 +504,8 @@ xls_vast_verilog_file_make_inline_verilog_statement(
     struct xls_vast_verilog_file* f, const char* text) {
   auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
   xls::verilog::InlineVerilogStatement* cpp_stmt =
-      cpp_file->Make<xls::verilog::InlineVerilogStatement>(
-          xls::SourceInfo(), text);
+      cpp_file->Make<xls::verilog::InlineVerilogStatement>(xls::SourceInfo(),
+                                                           text);
   return reinterpret_cast<xls_vast_inline_verilog_statement*>(cpp_stmt);
 }
 
@@ -733,8 +733,7 @@ struct xls_vast_concat* xls_vast_verilog_file_make_concat(
 }
 
 struct xls_vast_concat* xls_vast_verilog_file_make_replicated_concat(
-    struct xls_vast_verilog_file* f,
-    struct xls_vast_expression* replication,
+    struct xls_vast_verilog_file* f, struct xls_vast_expression* replication,
     struct xls_vast_expression** elements, size_t element_count) {
   auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
   auto* cpp_rep = reinterpret_cast<xls::verilog::Expression*>(replication);
@@ -744,9 +743,8 @@ struct xls_vast_concat* xls_vast_verilog_file_make_replicated_concat(
     cpp_elements.push_back(
         reinterpret_cast<xls::verilog::Expression*>(elements[i]));
   }
-  xls::verilog::Concat* cpp_concat =
-      cpp_file->Make<xls::verilog::Concat>(xls::SourceInfo(), cpp_rep,
-                                           absl::MakeConstSpan(cpp_elements));
+  xls::verilog::Concat* cpp_concat = cpp_file->Make<xls::verilog::Concat>(
+      xls::SourceInfo(), cpp_rep, absl::MakeConstSpan(cpp_elements));
   return reinterpret_cast<xls_vast_concat*>(cpp_concat);
 }
 
@@ -762,9 +760,8 @@ struct xls_vast_concat* xls_vast_verilog_file_make_replicated_concat_i64(
     cpp_elements.push_back(
         reinterpret_cast<xls::verilog::Expression*>(elements[i]));
   }
-  xls::verilog::Concat* cpp_concat =
-      cpp_file->Make<xls::verilog::Concat>(xls::SourceInfo(), cpp_rep,
-                                           absl::MakeConstSpan(cpp_elements));
+  xls::verilog::Concat* cpp_concat = cpp_file->Make<xls::verilog::Concat>(
+      xls::SourceInfo(), cpp_rep, absl::MakeConstSpan(cpp_elements));
   return reinterpret_cast<xls_vast_concat*>(cpp_concat);
 }
 
@@ -1016,8 +1013,8 @@ struct xls_vast_statement* xls_vast_statement_block_add_inline_text(
     struct xls_vast_statement_block* block, const char* text) {
   auto* cpp_block = reinterpret_cast<xls::verilog::StatementBlock*>(block);
   xls::verilog::InlineVerilogStatement* cpp_stmt =
-      cpp_block->Add<xls::verilog::InlineVerilogStatement>(
-          xls::SourceInfo(), text);
+      cpp_block->Add<xls::verilog::InlineVerilogStatement>(xls::SourceInfo(),
+                                                           text);
   return reinterpret_cast<xls_vast_statement*>(cpp_stmt);
 }
 
