@@ -1,4 +1,4 @@
-module ReturnTupleLiteral(
+module ReturnTupleLiteral (
   input wire clk,
   output wire [32:0] out
 );

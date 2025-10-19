@@ -1,4 +1,4 @@
-module ArrayIndexNilIndex(
+module ArrayIndexNilIndex (
   input wire [23:0] a,
   output wire [23:0] out
 );

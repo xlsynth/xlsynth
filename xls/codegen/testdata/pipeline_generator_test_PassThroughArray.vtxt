@@ -1,4 +1,4 @@
-module PassThroughArray(
+module PassThroughArray (
   input wire clk,
   input wire [23:0] x,
   output wire [23:0] out

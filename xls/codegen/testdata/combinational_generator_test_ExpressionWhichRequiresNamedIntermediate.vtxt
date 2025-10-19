@@ -1,4 +1,4 @@
-module ExpressionWhichRequiresNamedIntermediate(
+module ExpressionWhichRequiresNamedIntermediate (
   input wire [7:0] a,
   input wire [7:0] b,
   output wire [3:0] out

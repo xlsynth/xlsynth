@@ -1,4 +1,4 @@
-module CounterFsm(
+module CounterFsm (
   input wire clk,
   input wire rst
 );

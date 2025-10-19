@@ -1,4 +1,4 @@
-module test(
+module test (
   input wire [2:0] i0,
   input wire [2:0] i1,
   output wire [2:0] out

@@ -1,4 +1,4 @@
-module identity_of_mul(
+module identity_of_mul (
   input wire clk,
   input wire [7:0] x,
   input wire [7:0] y,

@@ -1,4 +1,4 @@
-module SimilarArrayPrioritySelects(
+module SimilarArrayPrioritySelects (
   input wire [1:0] s1,
   input wire [1:0] s2,
   input wire [12287:0] x1,

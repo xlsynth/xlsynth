@@ -1,4 +1,4 @@
-module ArrayUpdateLiteralIndex(
+module ArrayUpdateLiteralIndex (
   input wire [23:0] a,
   input wire [7:0] value,
   output wire [23:0] out

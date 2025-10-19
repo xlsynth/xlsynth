@@ -1,4 +1,4 @@
-module shifter5(
+module shifter5 (
   input wire [159:0] array,
   output wire [159:0] shifted
 );
@@ -18,7 +18,7 @@ module shifter5(
 endmodule
 
 
-module shifter10(
+module shifter10 (
   input wire [319:0] array,
   output wire [319:0] shifted
 );
@@ -48,7 +48,7 @@ module shifter10(
 endmodule
 
 
-module my_block(
+module my_block (
   input wire [31:0] x,
   input wire [31:0] y,
   input wire [31:0] z,

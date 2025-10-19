@@ -1,4 +1,4 @@
-module multi_proc__1(
+module multi_proc__1 (
   input wire clk,
   input wire rst,
   input wire [31:0] in,
@@ -59,7 +59,7 @@ module multi_proc__1(
 endmodule
 
 
-module proc1(
+module proc1 (
   input wire clk,
   input wire rst,
   input wire [31:0] internal,
@@ -120,7 +120,7 @@ module proc1(
 endmodule
 
 
-module multi_proc(
+module multi_proc (
   input wire clk,
   input wire rst,
   input wire [31:0] in,

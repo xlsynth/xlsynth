@@ -1,4 +1,4 @@
-module ArrayUpdateWithNarrowIndex(
+module ArrayUpdateWithNarrowIndex (
   input wire [319:0] a,
   input wire [1:0] idx,
   input wire [31:0] v,

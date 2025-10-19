@@ -1,4 +1,4 @@
-module ArrayIndexWithNarrowIndex(
+module ArrayIndexWithNarrowIndex (
   input wire [31:0] a,
   input wire [1:0] idx,
   output wire [7:0] out

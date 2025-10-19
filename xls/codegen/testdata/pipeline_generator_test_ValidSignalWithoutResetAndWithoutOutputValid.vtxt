@@ -1,4 +1,4 @@
-module ValidSignalWithoutResetAndWithoutOutputValid(
+module ValidSignalWithoutResetAndWithoutOutputValid (
   input wire clk,
   input wire in_valid,
   input wire [1:0] s,

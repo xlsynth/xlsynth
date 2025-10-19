@@ -801,13 +801,29 @@ absl::StatusOr<LogicRef*> Module::AddGenvar(std::string_view name,
 
 ParameterRef* Module::AddParameter(std::string_view name, Expression* rhs,
                                    const SourceInfo& loc) {
-  Parameter* param = AddModuleMember(file()->Make<Parameter>(loc, name, rhs));
+  Parameter* param = file()->Make<Parameter>(loc, name, rhs);
+  AddModuleMember(file()->Make<ParameterStatement>(loc, param));
   return file()->Make<ParameterRef>(loc, param);
 }
 
 ParameterRef* Module::AddParameter(Def* def, Expression* rhs,
                                    const SourceInfo& loc) {
-  Parameter* param = AddModuleMember(file()->Make<Parameter>(loc, def, rhs));
+  Parameter* param = file()->Make<Parameter>(loc, def, rhs);
+  AddModuleMember(file()->Make<ParameterStatement>(loc, param));
+  return file()->Make<ParameterRef>(loc, param);
+}
+
+ParameterRef* Module::AddParameterPort(std::string_view name, Expression* rhs,
+                                       const SourceInfo& loc) {
+  Parameter* param = file()->Make<Parameter>(loc, name, rhs);
+  parameter_ports_.push_back(param);
+  return file()->Make<ParameterRef>(loc, param);
+}
+
+ParameterRef* Module::AddParameterPort(Def* def, Expression* rhs,
+                                       const SourceInfo& loc) {
+  Parameter* param = file()->Make<Parameter>(loc, def, rhs);
+  parameter_ports_.push_back(param);
   return file()->Make<ParameterRef>(loc, param);
 }
 
@@ -847,15 +863,15 @@ TypedefType* VerilogPackageSection::AddStructTypedef(
 ParameterRef* VerilogPackageSection::AddParameter(std::string_view name,
                                                   Expression* rhs,
                                                   const SourceInfo& loc) {
-  Parameter* param =
-      AddVerilogPackageMember(file()->Make<Parameter>(loc, name, rhs));
+  Parameter* param = file()->Make<Parameter>(loc, name, rhs);
+  AddVerilogPackageMember(file()->Make<ParameterStatement>(loc, param));
   return file()->Make<ParameterRef>(loc, param);
 }
 
 ParameterRef* VerilogPackageSection::AddParameter(Def* def, Expression* rhs,
                                                   const SourceInfo& loc) {
-  Parameter* param =
-      AddVerilogPackageMember(file()->Make<Parameter>(loc, def, rhs));
+  Parameter* param = file()->Make<Parameter>(loc, def, rhs);
+  AddVerilogPackageMember(file()->Make<ParameterStatement>(loc, param));
   return file()->Make<ParameterRef>(loc, param);
 }
 
@@ -1301,11 +1317,22 @@ std::string SystemFunctionCall::Emit(LineInfo* line_info) const {
 std::string Module::Emit(LineInfo* line_info) const {
   LineInfoStart(line_info, this);
   std::string result = absl::StrCat("module ", name_);
+  if (!parameter_ports_.empty()) {
+    absl::StrAppend(&result, " #(\n  ");
+    LineInfoIncrease(line_info, 1);
+    absl::StrAppend(&result, absl::StrJoin(parameter_ports_, ",\n  ",
+                                           [=](std::string* out, Parameter* p) {
+                                             absl::StrAppend(
+                                                 out, p->Emit(line_info));
+                                           }));
+    absl::StrAppend(&result, "\n)");
+    LineInfoIncrease(line_info, 1);
+  }
   if (ports_.empty()) {
     absl::StrAppend(&result, ";\n");
     LineInfoIncrease(line_info, 1);
   } else {
-    absl::StrAppend(&result, "(\n  ");
+    absl::StrAppend(&result, " (\n  ");
     LineInfoIncrease(line_info, 1);
     absl::StrAppend(
         &result,
@@ -1486,8 +1513,15 @@ std::string Parameter::Emit(LineInfo* line_info) const {
   LineInfoStart(line_info, this);
   LineInfoIncrease(line_info, NumberOfNewlines(name_));
   std::string result = absl::StrFormat(
-      "parameter %s = %s;", def_ ? def_->EmitNoSemi(line_info) : name_,
+      "parameter %s = %s", def_ ? def_->EmitNoSemi(line_info) : name_,
       rhs_->Emit(line_info));
+  LineInfoEnd(line_info, this);
+  return result;
+}
+
+std::string ParameterStatement::Emit(LineInfo* line_info) const {
+  LineInfoStart(line_info, this);
+  std::string result = absl::StrCat(parameter_->Emit(line_info), ";");
   LineInfoEnd(line_info, this);
   return result;
 }

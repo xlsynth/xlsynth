@@ -1,4 +1,4 @@
-module TwoDArraySlice(
+module TwoDArraySlice (
   input wire [191:0] a,
   input wire [15:0] start,
   output wire [127:0] out

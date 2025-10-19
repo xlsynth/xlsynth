@@ -1,6 +1,6 @@
 `include "fifo.v"
 
-module subproc1(
+module subproc1 (
   input wire clk,
   input wire rst,
   input wire [31:0] sub1_in,
@@ -68,7 +68,7 @@ module subproc1(
 endmodule
 
 
-module subproc2(
+module subproc2 (
   input wire clk,
   input wire rst,
   input wire [31:0] sub2_in,
@@ -128,7 +128,7 @@ module subproc2(
 endmodule
 
 
-module my_proc(
+module my_proc (
   input wire clk,
   input wire rst,
   input wire [31:0] top_in,

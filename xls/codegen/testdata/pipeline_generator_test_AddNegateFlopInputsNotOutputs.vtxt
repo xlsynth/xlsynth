@@ -1,4 +1,4 @@
-module AddNegateFlopInputsNotOutputs(
+module AddNegateFlopInputsNotOutputs (
   input wire clk,
   input wire [7:0] x,
   input wire [7:0] y,

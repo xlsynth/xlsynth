@@ -1,4 +1,4 @@
-module FsmWithNestedLogic(
+module FsmWithNestedLogic (
   input wire clk,
   input wire rst_n,
   input wire foo,

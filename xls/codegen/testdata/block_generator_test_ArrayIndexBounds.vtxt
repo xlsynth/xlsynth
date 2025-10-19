@@ -1,4 +1,4 @@
-module array_idx_in_bounds(
+module array_idx_in_bounds (
   input wire [4:0] idx,
   input wire [511:0] arr,
   output wire [31:0] out

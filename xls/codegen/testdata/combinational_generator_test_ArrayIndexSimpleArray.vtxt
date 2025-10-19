@@ -1,4 +1,4 @@
-module ArrayIndexSimpleArray(
+module ArrayIndexSimpleArray (
   input wire [23:0] a,
   input wire [15:0] idx,
   output wire [7:0] out

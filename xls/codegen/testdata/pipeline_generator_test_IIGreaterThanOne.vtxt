@@ -1,4 +1,4 @@
-module ii_greater_than_one(
+module ii_greater_than_one (
   input wire clk,
   input wire rst,
   input wire [31:0] in,

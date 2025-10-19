@@ -1,6 +1,6 @@
 `include "fifo.v"
 
-module pipelined_proc__1(
+module pipelined_proc__1 (
   input wire clk,
   input wire rst,
   input wire in_vld,
@@ -47,7 +47,7 @@ module pipelined_proc__1(
 endmodule
 
 
-module proc_out(
+module proc_out (
   input wire clk,
   input wire rst,
   input wire internal_vld,
@@ -94,7 +94,7 @@ module proc_out(
 endmodule
 
 
-module pipelined_proc(
+module pipelined_proc (
   input wire clk,
   input wire rst,
   input wire in_vld,

@@ -1,4 +1,4 @@
-module OutputAssignments(
+module OutputAssignments (
   input wire clk,
   input wire rst_n,
   input wire a,

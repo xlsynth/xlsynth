@@ -1,4 +1,4 @@
-module PrioritySelectAsFunction(
+module PrioritySelectAsFunction (
   input wire [2:0] s,
   input wire [31:0] x,
   input wire [31:0] y,

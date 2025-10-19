@@ -1,4 +1,4 @@
-module ArrayUpdate2DUpdateArrayLiteralIndex(
+module ArrayUpdate2DUpdateArrayLiteralIndex (
   input wire [47:0] a,
   input wire [23:0] value,
   output wire [47:0] out

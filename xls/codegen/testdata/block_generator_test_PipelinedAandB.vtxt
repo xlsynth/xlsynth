@@ -1,4 +1,4 @@
-module PipelinedAandB(
+module PipelinedAandB (
   input wire the_clock,
   input wire the_reset,
   input wire [31:0] a,

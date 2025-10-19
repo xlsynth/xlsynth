@@ -150,7 +150,7 @@ class BlockToVerilogMainTest(absltest.TestCase):
 
     with open(verilog_path, 'r') as f:
       verilog = f.read()
-      self.assertIn('module my_function(', verilog)
+      self.assertIn('module my_function (', verilog)
       self.assertIn('endmodule', verilog)
       self.assertIn('input wire', verilog)
       self.assertIn('output wire', verilog)
@@ -183,7 +183,7 @@ class BlockToVerilogMainTest(absltest.TestCase):
     ])
     with open(verilog_path, 'r') as f:
       verilog = f.read()
-      self.assertIn('module my_function(', verilog)
+      self.assertIn('module my_function (', verilog)
       self.assertIn('module sub_block', verilog)
       self.assertIn('sub_block my_inst', verilog)
 
@@ -222,7 +222,7 @@ class BlockToVerilogMainTest(absltest.TestCase):
     with open(verilog1_path, 'r') as f:
       v1 = f.read()
       # Check the module is emitted and matches expected top name.
-      self.assertIn('module my_function(', v1)
+      self.assertIn('module my_function (', v1)
       self.assertLess(
           self.find_line_number(v1, 'assign neg_a ='),
           self.find_line_number(v1, 'assign not_b ='),
@@ -253,7 +253,7 @@ class BlockToVerilogMainTest(absltest.TestCase):
     ])
     with open(verilog2_path, 'r') as f:
       v2 = f.read()
-      self.assertIn('module my_function(', v2)
+      self.assertIn('module my_function (', v2)
       self.assertLess(
           self.find_line_number(v2, 'assign not_b ='),
           self.find_line_number(v2, 'assign neg_a ='),

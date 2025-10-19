@@ -1,4 +1,4 @@
-module not_add(
+module not_add (
   input wire [31:0] x,
   input wire [31:0] y,
   output wire [31:0] out

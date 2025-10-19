@@ -1,4 +1,4 @@
-module MultidimensionalArray(
+module MultidimensionalArray (
   input wire clk,
   input wire [47:0] a,
   input wire [15:0] index,

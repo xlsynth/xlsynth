@@ -1,4 +1,4 @@
-module ReturnLiteral(
+module ReturnLiteral (
   input wire clk,
   output wire [31:0] out
 );

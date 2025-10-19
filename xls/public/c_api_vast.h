@@ -115,6 +115,14 @@ struct xls_vast_data_type* xls_vast_verilog_file_make_scalar_type(
 struct xls_vast_data_type* xls_vast_verilog_file_make_bit_vector_type(
     struct xls_vast_verilog_file* f, int64_t bit_count, bool is_signed);
 
+struct xls_vast_data_type*
+xls_vast_verilog_file_make_bit_vector_type_with_expression(
+    struct xls_vast_verilog_file* f, struct xls_vast_expression* expression,
+    bool is_signed);
+
+struct xls_vast_data_type* xls_vast_verilog_file_make_integer_type(
+    struct xls_vast_verilog_file* f, bool is_signed);
+
 struct xls_vast_data_type* xls_vast_verilog_file_make_extern_package_type(
     struct xls_vast_verilog_file* f, const char* package_name,
     const char* entity_name);
@@ -149,7 +157,19 @@ struct xls_vast_logic_ref* xls_vast_verilog_module_add_logic_output(
 struct xls_vast_logic_ref* xls_vast_verilog_module_add_wire(
     struct xls_vast_verilog_module* m, const char* name,
     struct xls_vast_data_type* type);
+struct xls_vast_expression* xls_vast_verilog_module_add_parameter_port(
+    struct xls_vast_verilog_module* m, const char* name,
+    struct xls_vast_expression* rhs);
+struct xls_vast_expression* xls_vast_verilog_module_add_typed_parameter_port(
+    struct xls_vast_verilog_module* m, const char* name,
+    struct xls_vast_data_type* type, struct xls_vast_expression* rhs);
 // TODO(cdleary): 2024-09-05 Add xls_vast_verilog_module_add_wire_with_expr
+
+// Adds a module parameter with the given name and RHS expression.
+// Returns a handle to the created parameter reference.
+struct xls_vast_parameter_ref* xls_vast_verilog_module_add_parameter(
+    struct xls_vast_verilog_module* m, const char* name,
+    struct xls_vast_expression* rhs);
 
 // Note: returned value is owned by the caller, free via `xls_c_str_free`.
 char* xls_vast_verilog_module_get_name(struct xls_vast_verilog_module* m);

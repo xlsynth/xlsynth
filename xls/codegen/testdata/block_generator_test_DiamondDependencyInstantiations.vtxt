@@ -1,4 +1,4 @@
-module subtractor(
+module subtractor (
   input wire [31:0] a,
   input wire [31:0] b,
   output wire [31:0] result
@@ -9,7 +9,7 @@ module subtractor(
 endmodule
 
 
-module delegator0(
+module delegator0 (
   input wire [31:0] x,
   input wire [31:0] y,
   output wire [31:0] z
@@ -26,7 +26,7 @@ module delegator0(
 endmodule
 
 
-module delegator1(
+module delegator1 (
   input wire [31:0] x,
   input wire [31:0] y,
   output wire [31:0] z
@@ -43,7 +43,7 @@ module delegator1(
 endmodule
 
 
-module my_block(
+module my_block (
   input wire [31:0] j,
   input wire [31:0] k,
   output wire [31:0] j_minus_k,

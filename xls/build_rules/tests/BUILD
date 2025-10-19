@@ -149,7 +149,7 @@ xls_dslx_verilog(
 check_sha256sum_test(
     name = "add_one_pipeline_rtl_v_sha256sum_test",
     src = ":add_one_pipeline_rtl.sv",
-    sha256sum = "7230178ff270fa174805ff808bbe927c19a13961fc4e957e59aa434569e36caf",
+    sha256sum = "20492ef1257ad3f02ade5664ce30a7069c0406ab624863fc40f0c2e2c2128d06",
 )
 
 # Build a frozen file generated with a build rule.
@@ -157,14 +157,14 @@ check_sha256sum_frozen(
     name = "add_one_pipeline_rtl_v_sha256sum_frozen",
     src = ":add_one_pipeline_rtl.sv",
     frozen_file = ":add_one_pipeline_rtl.frozen.v",
-    sha256sum = "7230178ff270fa174805ff808bbe927c19a13961fc4e957e59aa434569e36caf",
+    sha256sum = "20492ef1257ad3f02ade5664ce30a7069c0406ab624863fc40f0c2e2c2128d06",
 )
 
 # Test with a frozen checksum file generated with a check_sha256sum_frozen rule.
 check_sha256sum_test(
     name = "add_one_pipeline_rtl_frozen_v_sha256sum_test",
     src = ":add_one_pipeline_rtl.frozen.v",
-    sha256sum = "7230178ff270fa174805ff808bbe927c19a13961fc4e957e59aa434569e36caf",
+    sha256sum = "20492ef1257ad3f02ade5664ce30a7069c0406ab624863fc40f0c2e2c2128d06",
 )
 
 sh_test(

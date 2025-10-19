@@ -196,6 +196,50 @@ struct xls_vast_logic_ref* xls_vast_verilog_module_add_wire(
   return reinterpret_cast<xls_vast_logic_ref*>(logic_ref.value());
 }
 
+struct xls_vast_expression* xls_vast_verilog_module_add_parameter_port(
+    struct xls_vast_verilog_module* m, const char* name,
+    struct xls_vast_expression* rhs) {
+  auto* cpp_module = reinterpret_cast<xls::verilog::Module*>(m);
+  auto* cpp_rhs = reinterpret_cast<xls::verilog::Expression*>(rhs);
+  xls::verilog::ParameterRef* parameter_ref =
+      cpp_module->AddParameterPort(name, cpp_rhs, xls::SourceInfo());
+  return reinterpret_cast<xls_vast_expression*>(parameter_ref);
+}
+
+struct xls_vast_expression* xls_vast_verilog_module_add_typed_parameter_port(
+    struct xls_vast_verilog_module* m, const char* name,
+    struct xls_vast_data_type* type, struct xls_vast_expression* rhs) {
+  auto* cpp_module = reinterpret_cast<xls::verilog::Module*>(m);
+  auto* cpp_type = reinterpret_cast<xls::verilog::DataType*>(type);
+  auto* cpp_rhs = reinterpret_cast<xls::verilog::Expression*>(rhs);
+  auto* cpp_def = cpp_module->file()->Make<xls::verilog::Def>(
+      xls::SourceInfo(), name, xls::verilog::DataKind::kLogic, cpp_type);
+  xls::verilog::ParameterRef* parameter_ref =
+      cpp_module->AddParameterPort(cpp_def, cpp_rhs, xls::SourceInfo());
+  return reinterpret_cast<xls_vast_expression*>(parameter_ref);
+}
+
+struct xls_vast_parameter_ref* xls_vast_verilog_module_add_parameter(
+    struct xls_vast_verilog_module* m, const char* name,
+    struct xls_vast_expression* rhs) {
+  auto* cpp_module = reinterpret_cast<xls::verilog::Module*>(m);
+  auto* cpp_rhs = reinterpret_cast<xls::verilog::Expression*>(rhs);
+  xls::verilog::ParameterRef* param_ref =
+      cpp_module->AddParameter(name, cpp_rhs, xls::SourceInfo());
+  return reinterpret_cast<xls_vast_parameter_ref*>(param_ref);
+}
+
+struct xls_vast_parameter_ref* xls_vast_verilog_module_add_parameter_with_def(
+    struct xls_vast_verilog_module* m, struct xls_vast_def* def,
+    struct xls_vast_expression* rhs) {
+  auto* cpp_module = reinterpret_cast<xls::verilog::Module*>(m);
+  auto* cpp_def = reinterpret_cast<xls::verilog::Def*>(def);
+  auto* cpp_rhs = reinterpret_cast<xls::verilog::Expression*>(rhs);
+  xls::verilog::ParameterRef* param_ref =
+      cpp_module->AddParameter(cpp_def, cpp_rhs, xls::SourceInfo());
+  return reinterpret_cast<xls_vast_parameter_ref*>(param_ref);
+}
+
 char* xls_vast_verilog_file_emit(const struct xls_vast_verilog_file* f) {
   const auto* cpp_file = reinterpret_cast<const xls::verilog::VerilogFile*>(f);
   std::string result = cpp_file->Emit();
@@ -214,6 +258,26 @@ struct xls_vast_data_type* xls_vast_verilog_file_make_bit_vector_type(
   auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
   xls::verilog::DataType* type =
       cpp_file->BitVectorType(bit_count, xls::SourceInfo(), is_signed);
+  return reinterpret_cast<xls_vast_data_type*>(type);
+}
+
+struct xls_vast_data_type*
+xls_vast_verilog_file_make_bit_vector_type_with_expression(
+    struct xls_vast_verilog_file* f, struct xls_vast_expression* expression,
+    bool is_signed) {
+  auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
+  auto* cpp_expression =
+      reinterpret_cast<xls::verilog::Expression*>(expression);
+  xls::verilog::DataType* type = cpp_file->Make<xls::verilog::BitVectorType>(
+      xls::SourceInfo(), cpp_expression, is_signed);
+  return reinterpret_cast<xls_vast_data_type*>(type);
+}
+
+struct xls_vast_data_type* xls_vast_verilog_file_make_integer_type(
+    struct xls_vast_verilog_file* f, bool is_signed) {
+  auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
+  xls::verilog::DataType* type =
+      cpp_file->Make<xls::verilog::IntegerType>(xls::SourceInfo(), is_signed);
   return reinterpret_cast<xls_vast_data_type*>(type);
 }
 

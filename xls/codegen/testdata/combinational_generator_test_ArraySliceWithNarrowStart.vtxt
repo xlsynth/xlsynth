@@ -1,4 +1,4 @@
-module ArraySliceWithNarrowStart(
+module ArraySliceWithNarrowStart (
   input wire [159:0] a,
   input wire start,
   output wire [95:0] out

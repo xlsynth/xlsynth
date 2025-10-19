@@ -1,4 +1,4 @@
-module ArrayEq(
+module ArrayEq (
   input wire [159:0] x,
   input wire [159:0] y,
   output wire out

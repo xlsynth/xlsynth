@@ -1,4 +1,4 @@
-module ArraySliceWiderThanInputArray(
+module ArraySliceWiderThanInputArray (
   input wire [95:0] a,
   input wire [31:0] start,
   output wire [159:0] out

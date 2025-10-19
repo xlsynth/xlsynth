@@ -1,4 +1,4 @@
-module TwoWayPrioritySelectAsFunction(
+module TwoWayPrioritySelectAsFunction (
   input wire s,
   input wire [31:0] x,
   input wire [31:0] d

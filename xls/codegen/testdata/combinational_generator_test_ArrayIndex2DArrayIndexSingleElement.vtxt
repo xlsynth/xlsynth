@@ -1,4 +1,4 @@
-module ArrayIndex2DArrayIndexSingleElement(
+module ArrayIndex2DArrayIndexSingleElement (
   input wire [47:0] a,
   input wire [15:0] idx0,
   input wire [15:0] idx1,

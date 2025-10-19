@@ -1,4 +1,4 @@
-module subtractor(
+module subtractor (
   input wire [31:0] a,
   input wire [31:0] b,
   output wire [31:0] result
@@ -9,7 +9,7 @@ module subtractor(
 endmodule
 
 
-module my_block(
+module my_block (
   input wire [31:0] x,
   input wire [31:0] y,
   output wire [31:0] out

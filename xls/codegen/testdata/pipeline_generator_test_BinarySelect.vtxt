@@ -1,4 +1,4 @@
-module BinarySelect(
+module BinarySelect (
   input wire clk,
   input wire s,
   input wire [7:0] x,

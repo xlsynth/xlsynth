@@ -1,4 +1,4 @@
-module ArrayUpdate2DVariableIndex(
+module ArrayUpdate2DVariableIndex (
   input wire [47:0] a,
   input wire [7:0] value,
   input wire [31:0] idx0,

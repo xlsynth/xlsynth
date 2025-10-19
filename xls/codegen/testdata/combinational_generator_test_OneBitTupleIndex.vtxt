@@ -1,4 +1,4 @@
-module OneBitTupleIndex(
+module OneBitTupleIndex (
   input wire x,
   output wire out
 );

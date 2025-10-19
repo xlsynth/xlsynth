@@ -1,4 +1,4 @@
-module ArrayUpdate1D(
+module ArrayUpdate1D (
   input wire [127:0] array,
   input wire [1:0] index,
   input wire [31:0] value

@@ -1,4 +1,4 @@
-module ExpressionsOfTuples(
+module ExpressionsOfTuples (
   input wire [7:0] a,
   input wire [9:0] b,
   input wire [25:0] c,

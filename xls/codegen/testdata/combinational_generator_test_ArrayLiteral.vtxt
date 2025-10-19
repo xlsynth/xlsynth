@@ -1,4 +1,4 @@
-module main(
+module main (
   input wire [31:0] x,
   input wire [31:0] y,
   output wire [43:0] out

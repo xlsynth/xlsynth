@@ -1,4 +1,4 @@
-module ComplexFsm(
+module ComplexFsm (
   input wire clk,
   input wire foo_in,
   output wire bar_in,

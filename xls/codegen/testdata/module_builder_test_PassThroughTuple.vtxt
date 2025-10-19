@@ -1,4 +1,4 @@
-module PassThroughTuple(
+module PassThroughTuple (
   input wire [83:0] a,
   output wire [83:0] out
 );

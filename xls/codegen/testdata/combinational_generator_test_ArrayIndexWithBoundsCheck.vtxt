@@ -1,4 +1,4 @@
-module ArrayIndexWithBoundsCheck(
+module ArrayIndexWithBoundsCheck (
   input wire [23:0] A,
   input wire [7:0] index,
   output wire [7:0] out

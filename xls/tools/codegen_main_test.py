@@ -180,7 +180,7 @@ class CodeGenMainTest(parameterized.TestCase):
     ])
 
     with open(verilog_path, 'r') as f:
-      self.assertIn('module not_add(', f.read())
+      self.assertIn('module not_add (', f.read())
 
     with open(signature_path, 'r') as f:
       sig_proto = text_format.Parse(
@@ -280,7 +280,7 @@ class CodeGenMainTest(parameterized.TestCase):
         '--module_name=foo_qux_baz',
         ir_file.full_path,
     ]).decode('utf-8')
-    self.assertIn('module foo_qux_baz(', verilog)
+    self.assertIn('module foo_qux_baz (', verilog)
 
   def test_pipeline_system_verilog(self):
     verilog_path = test_base.create_named_output_text_file('sha256.sv')

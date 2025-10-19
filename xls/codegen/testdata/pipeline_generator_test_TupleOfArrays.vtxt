@@ -1,4 +1,4 @@
-module TupleOfArrays(
+module TupleOfArrays (
   input wire clk,
   input wire [55:0] x,
   output wire [55:0] out

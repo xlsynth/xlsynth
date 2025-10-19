@@ -1,4 +1,4 @@
-module ReturnConstantArray(
+module ReturnConstantArray (
   output wire [41:0] out
 );
   wire [6:0] ar[0:1][0:2];

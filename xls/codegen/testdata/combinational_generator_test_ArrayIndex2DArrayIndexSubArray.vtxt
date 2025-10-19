@@ -1,4 +1,4 @@
-module ArrayIndex2DArrayIndexSubArray(
+module ArrayIndex2DArrayIndexSubArray (
   input wire [47:0] a,
   input wire [15:0] idx,
   output wire [23:0] out

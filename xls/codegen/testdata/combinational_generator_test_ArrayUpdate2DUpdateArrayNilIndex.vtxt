@@ -1,4 +1,4 @@
-module ArrayUpdate2DUpdateArrayNilIndex(
+module ArrayUpdate2DUpdateArrayNilIndex (
   input wire [47:0] a,
   input wire [47:0] value,
   output wire [47:0] out

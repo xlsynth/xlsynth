@@ -1,4 +1,4 @@
-module x_plus_y_plus_z(
+module x_plus_y_plus_z (
   input wire clk,
   input wire [31:0] a,
   input wire [31:0] b,

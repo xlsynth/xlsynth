@@ -1,4 +1,4 @@
-module ArrayUpdateBitsNilIndex(
+module ArrayUpdateBitsNilIndex (
   input wire [7:0] a,
   input wire [7:0] value,
   output wire [7:0] out

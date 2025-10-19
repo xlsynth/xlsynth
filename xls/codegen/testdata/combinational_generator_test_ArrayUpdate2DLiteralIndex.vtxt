@@ -1,4 +1,4 @@
-module ArrayUpdate2DLiteralIndex(
+module ArrayUpdate2DLiteralIndex (
   input wire [47:0] a,
   input wire [7:0] value,
   output wire [47:0] out

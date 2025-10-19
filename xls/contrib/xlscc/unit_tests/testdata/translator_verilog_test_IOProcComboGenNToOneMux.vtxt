@@ -1,4 +1,4 @@
-module foo_proc(
+module foo_proc (
   input wire [31:0] dir,
   input wire [31:0] in1,
   input wire in1_vld,

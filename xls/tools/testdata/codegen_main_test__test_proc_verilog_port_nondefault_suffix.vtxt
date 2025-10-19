@@ -1,4 +1,4 @@
-module neg_proc(
+module neg_proc (
   input wire [31:0] in_d,
   input wire in_v,
   input wire out_r,

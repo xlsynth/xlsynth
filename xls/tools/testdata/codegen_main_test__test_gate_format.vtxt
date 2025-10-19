@@ -1,4 +1,4 @@
-module gate_example(
+module gate_example (
   input wire [31:0] x,
   input wire y,
   output wire [31:0] out

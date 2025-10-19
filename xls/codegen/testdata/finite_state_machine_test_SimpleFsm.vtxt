@@ -1,4 +1,4 @@
-module SimpleFsm(
+module SimpleFsm (
   input wire clk,
   input wire rst_n,
   input wire ready_in,

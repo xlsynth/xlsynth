@@ -1,4 +1,4 @@
-module PassThroughArray(
+module PassThroughArray (
   input wire [51:0] a,
   output wire [51:0] out
 );

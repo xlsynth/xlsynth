@@ -1,4 +1,4 @@
-module ArrayIndexAsFunction(
+module ArrayIndexAsFunction (
   input wire [12287:0] x,
   input wire [31:0] y,
   input wire [31:0] z

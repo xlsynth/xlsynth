@@ -1,4 +1,4 @@
-module DifferentPrioritySelects(
+module DifferentPrioritySelects (
   input wire [1:0] s1,
   input wire [31:0] x1,
   input wire [31:0] y1,

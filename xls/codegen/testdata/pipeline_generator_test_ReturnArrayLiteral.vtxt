@@ -1,4 +1,4 @@
-module ReturnArrayLiteral(
+module ReturnArrayLiteral (
   input wire clk,
   output wire [1:0] out
 );

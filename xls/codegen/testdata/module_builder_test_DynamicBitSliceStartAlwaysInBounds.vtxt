@@ -1,4 +1,4 @@
-module DynamicBitSliceStartAlwaysInBounds(
+module DynamicBitSliceStartAlwaysInBounds (
   input wire [7:0] x,
   input wire [2:0] y,
   input wire [3:0] z

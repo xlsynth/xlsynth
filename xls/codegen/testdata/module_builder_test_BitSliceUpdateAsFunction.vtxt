@@ -1,4 +1,4 @@
-module BitSliceUpdateAsFunction(
+module BitSliceUpdateAsFunction (
   input wire [31:0] x,
   input wire [15:0] start,
   input wire [7:0] value

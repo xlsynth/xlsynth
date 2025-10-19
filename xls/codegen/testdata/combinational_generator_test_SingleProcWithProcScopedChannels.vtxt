@@ -1,4 +1,4 @@
-module myleaf(
+module myleaf (
   input wire [31:0] in,
   input wire in_vld,
   input wire out_rdy,

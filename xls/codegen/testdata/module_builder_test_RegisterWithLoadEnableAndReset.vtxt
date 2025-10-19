@@ -1,4 +1,4 @@
-module RegisterWithLoadEnableAndReset(
+module RegisterWithLoadEnableAndReset (
   input wire clk,
   input wire rstn,
   input wire [31:0] x,

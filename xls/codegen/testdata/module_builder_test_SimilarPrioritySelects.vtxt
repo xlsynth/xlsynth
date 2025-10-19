@@ -1,4 +1,4 @@
-module SimilarPrioritySelects(
+module SimilarPrioritySelects (
   input wire [1:0] s1,
   input wire [1:0] s2,
   input wire [31:0] x1,

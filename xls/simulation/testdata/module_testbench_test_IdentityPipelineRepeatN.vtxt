@@ -1,4 +1,4 @@
-module test_module(
+module test_module (
   input wire clk,
   input wire reset,
   input wire [15:0] in,

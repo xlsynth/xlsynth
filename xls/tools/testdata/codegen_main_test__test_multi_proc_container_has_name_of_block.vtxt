@@ -1,4 +1,4 @@
-module proc0__1(
+module proc0__1 (
   input wire clk,
   input wire rst,
   input wire [31:0] in,
@@ -59,7 +59,7 @@ module proc0__1(
 endmodule
 
 
-module proc1(
+module proc1 (
   input wire clk,
   input wire rst,
   input wire [31:0] internal,
@@ -120,7 +120,7 @@ module proc1(
 endmodule
 
 
-module proc0(
+module proc0 (
   input wire clk,
   input wire rst,
   input wire [31:0] in,

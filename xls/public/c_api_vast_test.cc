@@ -59,7 +59,7 @@ TEST(XlsCApiTest, VastAddIncludesAndEmit) {
   absl::Cleanup free_emitted([&] { xls_c_str_free(emitted); });
   const std::string_view kWant = R"(`include "one_include.v"
 `include "another_include.v"
-module my_empty_module(
+module my_empty_module (
   input wire [7:0] my_input,
   output wire my_output
 );
@@ -158,7 +158,7 @@ TEST(XlsCApiTest, ContinuousAssignmentOfSlice) {
   char* emitted = xls_vast_verilog_file_emit(f);
   ASSERT_NE(emitted, nullptr);
   absl::Cleanup free_emitted([&] { xls_c_str_free(emitted); });
-  const std::string_view kWant = R"(module my_module(
+  const std::string_view kWant = R"(module my_module (
   input wire [7:0] my_input,
   output wire [3:0] my_output
 );
@@ -170,7 +170,7 @@ endmodule
 }
 
 TEST(XlsCApiTest, VastExternPackageTypePackedArrayPort) {
-  const std::string_view kWantEmitted = R"(module top(
+  const std::string_view kWantEmitted = R"(module top (
   input mypack::mystruct_t [1:0][2:0][3:0] my_input
 );
 
@@ -385,7 +385,7 @@ TEST(XlsCApiTest, ContinuousAssignmentOf128BitLiteral) {
   char* emitted = xls_vast_verilog_file_emit(f);
   ASSERT_NE(emitted, nullptr);
   absl::Cleanup free_emitted([&] { xls_c_str_free(emitted); });
-  const std::string_view kWant = R"(module my_module(
+  const std::string_view kWant = R"(module my_module (
   output wire [127:0] my_output
 );
   assign my_output = 128'b1001_0010_0011_0100_0101_0110_0111_1000_1001_0000_1010_1011_1100_1101_1110_1111_0001_0010_0011_0100_0101_0110_0111_1000_1001_0000_1010_1011_1100_1101_1110_1111;
@@ -430,7 +430,7 @@ TEST(XlsCApiTest, VastUnaryOps) {
   char* emitted = xls_vast_verilog_file_emit(f);
   ASSERT_NE(emitted, nullptr);
   absl::Cleanup free_emitted([&] { xls_c_str_free(emitted); });
-  const std::string_view kWant = R"(module my_module(
+  const std::string_view kWant = R"(module my_module (
   input wire [7:0] arg
 );
   wire [7:0] my_negate;
@@ -507,7 +507,7 @@ TEST(XlsCApiTest, VastBinaryOps) {
   char* emitted = xls_vast_verilog_file_emit(f);
   ASSERT_NE(emitted, nullptr);
   absl::Cleanup free_emitted([&] { xls_c_str_free(emitted); });
-  const std::string_view kWant = R"(module my_module(
+  const std::string_view kWant = R"(module my_module (
   input wire [7:0] lhs,
   input wire [7:0] rhs
 );
@@ -601,7 +601,7 @@ TEST(XlsCApiTest, VastTernary) {
   char* emitted = xls_vast_verilog_file_emit(f);
   ASSERT_NE(emitted, nullptr);
   absl::Cleanup free_emitted([&] { xls_c_str_free(emitted); });
-  const std::string_view kWant = R"(module my_module(
+  const std::string_view kWant = R"(module my_module (
   input wire cond,
   input wire [7:0] consequent,
   input wire [7:0] alternate,
@@ -679,7 +679,7 @@ TEST(XlsCApiTest, VastExpressions) {
   char* emitted = xls_vast_verilog_file_emit(f);
   ASSERT_NE(emitted, nullptr);
   absl::Cleanup free_emitted([&] { xls_c_str_free(emitted); });
-  const std::string_view kWant = R"(module my_module(
+  const std::string_view kWant = R"(module my_module (
   input wire [7:0] input,
   output wire [7:0] output
 );
@@ -776,7 +776,7 @@ TEST(XlsCApiTest, VastAlwaysFfReg) {
   ASSERT_NE(emitted, nullptr);
   absl::Cleanup free_emitted([&] { xls_c_str_free(emitted); });
 
-  const std::string_view kWant = R"(module test_module(
+  const std::string_view kWant = R"(module test_module (
   input wire clk,
   input wire pred,
   input wire x,
@@ -895,7 +895,7 @@ TEST_P(VastSequentialBlockTest, GenerateSequentialLogic) {
 
   std::string kWant_string;
   if (use_system_verilog()) {
-    kWant_string = R"(module test_module(
+    kWant_string = R"(module test_module (
   input wire clk,
   input wire pred,
   input wire x,
@@ -910,7 +910,7 @@ TEST_P(VastSequentialBlockTest, GenerateSequentialLogic) {
 endmodule
 )";
   } else {
-    kWant_string = R"(module test_module(
+    kWant_string = R"(module test_module (
   input wire clk,
   input wire pred,
   input wire x,
@@ -1136,4 +1136,45 @@ TEST(XlsCApiTest, VastDataTypeAccessors) {
   ASSERT_NE(def_name, nullptr);
   absl::Cleanup free_name([&] { xls_c_str_free(def_name); });
   EXPECT_EQ(std::string_view{def_name}, "arr");
+}
+
+TEST(XlsCApiTest, ModuleWithParameterPort) {
+  xls_vast_verilog_file* f =
+      xls_vast_make_verilog_file(xls_vast_file_type_verilog);
+  ASSERT_NE(f, nullptr);
+  absl::Cleanup free_file([&] { xls_vast_verilog_file_free(f); });
+
+  xls_vast_verilog_module* m = xls_vast_verilog_file_add_module(f, "my_module");
+  ASSERT_NE(m, nullptr);
+
+  // Add input/output and a wire.
+  xls_vast_data_type* scalar = xls_vast_verilog_file_make_scalar_type(f);
+  xls_vast_expression* my_param = xls_vast_verilog_module_add_parameter_port(
+      m, "my_param",
+      xls_vast_literal_as_expression(
+          xls_vast_verilog_file_make_plain_literal(f, 8)));
+  xls_vast_data_type* u8 =
+      xls_vast_verilog_file_make_bit_vector_type_with_expression(f, my_param,
+                                                                 false);
+  xls_vast_verilog_module_add_input(m, "my_input", u8);
+  xls_vast_logic_ref* output_ref =
+      xls_vast_verilog_module_add_output(m, "my_output", scalar);
+
+  xls_vast_continuous_assignment* assignment =
+      xls_vast_verilog_file_make_continuous_assignment(
+          f, xls_vast_logic_ref_as_expression(output_ref), my_param);
+  xls_vast_verilog_module_add_member_continuous_assignment(m, assignment);
+  char* emitted = xls_vast_verilog_file_emit(f);
+  ASSERT_NE(emitted, nullptr);
+  absl::Cleanup free_emitted([&] { xls_c_str_free(emitted); });
+  const std::string_view kWant = R"(module my_module #(
+  parameter my_param = 8
+) (
+  input wire [my_param - 1:0] my_input,
+  output wire my_output
+);
+  assign my_output = my_param;
+endmodule
+)";
+  EXPECT_EQ(std::string_view{emitted}, kWant);
 }

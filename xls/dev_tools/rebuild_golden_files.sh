@@ -1,4 +1,4 @@
-#!/bin/sh -ex
+#!/bin/bash -ex
 
 # Rebuilds the golden files of all tests using
 # `xls/common/golden_files.h` infrastructure.
@@ -11,7 +11,10 @@ TARGETS=(
 "//xls/codegen:combinational_generator_test"
 "//xls/codegen:finite_state_machine_test"
 "//xls/codegen:module_builder_test"
+"//xls/codegen:name_legalization_pass_test"
 "//xls/codegen:pipeline_generator_test"
+"//xls/codegen:synchronous_procs_test"
+"//xls/codegen:trace_test"
 "//xls/contrib/xlscc/unit_tests:translator_verilog_test"
 "//xls/dev_tools:extract_state_element_test"
 "//xls/dslx/cpp_transpiler:cpp_transpiler_test"

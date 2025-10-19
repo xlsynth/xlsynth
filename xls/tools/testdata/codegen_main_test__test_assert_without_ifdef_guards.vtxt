@@ -1,4 +1,4 @@
-module invert_with_assert(
+module invert_with_assert (
   input wire x,
   output wire out
 );

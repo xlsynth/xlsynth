@@ -1,4 +1,4 @@
-module device_to_wrap(
+module device_to_wrap (
   input wire [31:0] in,
   output wire [31:0] out
 );
@@ -6,7 +6,7 @@ module device_to_wrap(
 endmodule
 `include "xls/contrib/ice40/uncore_rtl/ice40/uart_receiver.v"
 `include "xls/contrib/ice40/uncore_rtl/ice40/uart_transmitter.v"
-module input_resetter(
+module input_resetter (
   input wire clk,
   input wire [7:0] byte_in,
   output wire byte_in_ready,
@@ -64,7 +64,7 @@ module input_resetter(
   assign byte_in_ready = byte_in_ready_reg;
   assign rst_n_out = rst_n_in && rst_n_reg;
 endmodule
-module input_shifter(
+module input_shifter (
   input wire clk,
   input wire clear,
   input wire [7:0] byte_in,
@@ -95,7 +95,7 @@ module input_shifter(
   assign done = byte_countdown == 0;
   assign data_out = data;
 endmodule
-module escape_decoder(
+module escape_decoder (
   input wire [7:0] byte_in,
   output wire [7:0] byte_out,
   input wire is_escaped
@@ -116,7 +116,7 @@ module escape_decoder(
   end
   assign byte_out = byte_out_reg;
 endmodule
-module input_controller(
+module input_controller (
   input wire clk,
   input wire [7:0] byte_in,
   input wire byte_in_valid,
@@ -241,7 +241,7 @@ module input_controller(
     .is_escaped(is_escaped)
   );
 endmodule
-module output_controller(
+module output_controller (
   input wire clk,
   input wire rst_n,
   input wire [31:0] data_in,
@@ -340,7 +340,7 @@ module output_controller(
   assign byte_out_valid = byte_out_valid_reg;
   assign data_in_ready = data_in_ready_reg;
 endmodule
-module io_wrapper(
+module io_wrapper (
   input wire clk,
   input wire rx_in,
   output wire tx_out,

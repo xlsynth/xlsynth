@@ -1,4 +1,4 @@
-module TwoBitSelector(
+module TwoBitSelector (
   input wire clk,
   input wire [1:0] s,
   input wire [7:0] x,

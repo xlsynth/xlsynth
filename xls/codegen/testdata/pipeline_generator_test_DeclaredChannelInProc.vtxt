@@ -1,6 +1,6 @@
 `include "fifo.v"
 
-module leaf_proc(
+module leaf_proc (
   input wire clk,
   input wire rst,
   input wire [31:0] accum_in,
@@ -43,7 +43,7 @@ module leaf_proc(
 endmodule
 
 
-module a_top_proc(
+module a_top_proc (
   input wire clk,
   input wire rst,
   input wire [31:0] in_ch,

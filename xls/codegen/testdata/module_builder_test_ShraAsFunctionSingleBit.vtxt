@@ -1,4 +1,4 @@
-module ShraAsFunctionSingleBit(
+module ShraAsFunctionSingleBit (
   input wire x,
   input wire y
 );

@@ -22,8 +22,6 @@
 #include <utility>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
@@ -31,6 +29,8 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/substitute.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/codegen/codegen_options.h"
 #include "xls/codegen/codegen_result.h"
 #include "xls/codegen/module_signature.h"
@@ -909,7 +909,7 @@ TEST_P(PipelineGeneratorTest, CustomModuleName) {
           BuildPipelineOptions().module_name("foobar").use_system_verilog(
               UseSystemVerilog())));
 
-  EXPECT_THAT(result.verilog_text, HasSubstr("module foobar("));
+  EXPECT_THAT(result.verilog_text, HasSubstr("module foobar ("));
 }
 
 TEST_P(PipelineGeneratorTest, AddNegateFlopInputsAndOutputs) {

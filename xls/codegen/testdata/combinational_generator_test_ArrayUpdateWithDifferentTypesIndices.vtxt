@@ -1,4 +1,4 @@
-module ArrayUpdateWithDifferentTypesIndices(
+module ArrayUpdateWithDifferentTypesIndices (
   input wire [3:0] i0,
   input wire [4:0] i1,
   input wire [191:0] a,

@@ -1,4 +1,4 @@
-module ComplexComputation(
+module ComplexComputation (
   input wire [31:0] x,
   input wire [31:0] y,
   output wire [15:0] out

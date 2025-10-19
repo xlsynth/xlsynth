@@ -1,4 +1,4 @@
-module TrivialFunction(
+module TrivialFunction (
   input wire clk,
   input wire [7:0] x,
   output wire [7:0] out

@@ -1,4 +1,4 @@
-module TrivialFsmWithOutputs(
+module TrivialFsmWithOutputs (
   input wire clk
 );
   // TrivialFsm FSM:
