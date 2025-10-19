@@ -1412,6 +1412,42 @@ TEST(XlsCApiTest, VastDataTypeAccessors) {
   EXPECT_EQ(std::string_view{def_name}, "arr");
 }
 
+TEST(XlsCApiTest, VastBitVectorTypeExpr) {
+  const std::string_view kWantEmitted = R"(module my_module(
+  input wire [ADDR_WIDTH - 1:0] addr
+);
+  parameter ADDR_WIDTH = 8;
+endmodule
+)";
+
+  xls_vast_verilog_file* f =
+      xls_vast_make_verilog_file(xls_vast_file_type_verilog);
+  ASSERT_NE(f, nullptr);
+  absl::Cleanup free_file([&] { xls_vast_verilog_file_free(f); });
+
+  xls_vast_verilog_module* m = xls_vast_verilog_file_add_module(f, "my_module");
+  ASSERT_NE(m, nullptr);
+
+  // parameter ADDR_WIDTH = 8;
+  xls_vast_literal* lit8 = xls_vast_verilog_file_make_plain_literal(f, 8);
+  ASSERT_NE(lit8, nullptr);
+  auto* width_param = xls_vast_verilog_module_add_parameter(
+      m, "ADDR_WIDTH", xls_vast_literal_as_expression(lit8));
+  ASSERT_NE(width_param, nullptr);
+
+  // input wire [ADDR_WIDTH-1:0] addr
+  xls_vast_data_type* bv_type = xls_vast_verilog_file_make_bit_vector_type_expr(
+      f, xls_vast_parameter_ref_as_expression(width_param),
+      /*is_signed=*/false);
+  ASSERT_NE(bv_type, nullptr);
+  ASSERT_NE(xls_vast_verilog_module_add_input(m, "addr", bv_type), nullptr);
+
+  char* emitted = xls_vast_verilog_file_emit(f);
+  ASSERT_NE(emitted, nullptr);
+  absl::Cleanup free_emitted([&] { xls_c_str_free(emitted); });
+  EXPECT_EQ(std::string_view{emitted}, kWantEmitted);
+}
+
 TEST(XlsCApiTest, VastProceduralControlAndBlocking) {
   const std::string_view kWantEmitted = R"XLS(module pc_block(
   input wire clk,
