@@ -216,6 +216,17 @@ struct xls_vast_data_type* xls_vast_verilog_file_make_bit_vector_type(
   return reinterpret_cast<xls_vast_data_type*>(type);
 }
 
+struct xls_vast_data_type* xls_vast_verilog_file_make_bit_vector_type_expr(
+    struct xls_vast_verilog_file* f, struct xls_vast_expression* width_expr,
+    bool is_signed) {
+  auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
+  auto* cpp_width_expr =
+      reinterpret_cast<xls::verilog::Expression*>(width_expr);
+  xls::verilog::DataType* type = cpp_file->Make<xls::verilog::BitVectorType>(
+      xls::SourceInfo(), cpp_width_expr, is_signed);
+  return reinterpret_cast<xls_vast_data_type*>(type);
+}
+
 struct xls_vast_data_type* xls_vast_verilog_file_make_integer_type(
     struct xls_vast_verilog_file* f, bool is_signed) {
   auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
