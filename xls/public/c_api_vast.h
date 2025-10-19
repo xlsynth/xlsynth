@@ -118,6 +118,11 @@ struct xls_vast_data_type* xls_vast_verilog_file_make_scalar_type(
 struct xls_vast_data_type* xls_vast_verilog_file_make_bit_vector_type(
     struct xls_vast_verilog_file* f, int64_t bit_count, bool is_signed);
 
+// Creates a bit-vector type with an expression-based width (emits [width-1:0]).
+struct xls_vast_data_type* xls_vast_verilog_file_make_bit_vector_type_expr(
+    struct xls_vast_verilog_file* f, struct xls_vast_expression* width_expr,
+    bool is_signed);
+
 struct xls_vast_data_type* xls_vast_verilog_file_make_integer_type(
     struct xls_vast_verilog_file* f, bool is_signed);
 
