@@ -23,8 +23,8 @@
 #include <utility>
 #include <vector>
 
-#include "gtest/gtest.h"
 #include "absl/cleanup/cleanup.h"
+#include "gtest/gtest.h"
 #include "xls/public/c_api.h"
 #include "xls/public/c_api_format_preference.h"
 
@@ -361,8 +361,8 @@ endmodule
   xls_vast_logic_ref* y_ref = xls_vast_verilog_module_add_wire(m, "y", u12);
 
   xls_vast_expression* elems[] = {xls_vast_logic_ref_as_expression(a_ref)};
-  xls_vast_concat* rc = xls_vast_verilog_file_make_replicated_concat_i64(
-      f, 3, elems, 1);
+  xls_vast_concat* rc =
+      xls_vast_verilog_file_make_replicated_concat_i64(f, 3, elems, 1);
 
   xls_vast_continuous_assignment* assignment =
       xls_vast_verilog_file_make_continuous_assignment(
@@ -479,8 +479,7 @@ endmodule
   ASSERT_NE(xls_vast_statement_block_add_comment_text(block, "inside"),
             nullptr);
   ASSERT_NE(xls_vast_statement_block_add_blank_line(block), nullptr);
-  ASSERT_NE(xls_vast_statement_block_add_inline_text(block, "// raw"),
-            nullptr);
+  ASSERT_NE(xls_vast_statement_block_add_inline_text(block, "// raw"), nullptr);
 
   char* emitted = xls_vast_verilog_file_emit(f);
   ASSERT_NE(emitted, nullptr);
@@ -1529,4 +1528,45 @@ TEST(XlsCApiTest, VastMakeBlockingAssignmentFactorySmoke) {
       f, xls_vast_literal_as_expression(lit0),
       xls_vast_literal_as_expression(lit0));
   ASSERT_NE(stmt, nullptr);
+}
+
+TEST(XlsCApiTest, ModuleWithParameterPort) {
+  xls_vast_verilog_file* f =
+      xls_vast_make_verilog_file(xls_vast_file_type_verilog);
+  ASSERT_NE(f, nullptr);
+  absl::Cleanup free_file([&] { xls_vast_verilog_file_free(f); });
+
+  xls_vast_verilog_module* m = xls_vast_verilog_file_add_module(f, "my_module");
+  ASSERT_NE(m, nullptr);
+
+  // Add input/output and a wire.
+  xls_vast_data_type* scalar = xls_vast_verilog_file_make_scalar_type(f);
+  xls_vast_expression* my_param = xls_vast_verilog_module_add_parameter_port(
+      m, "my_param",
+      xls_vast_literal_as_expression(
+          xls_vast_verilog_file_make_plain_literal(f, 8)));
+  xls_vast_data_type* u8 =
+      xls_vast_verilog_file_make_bit_vector_type_with_expression(f, my_param,
+                                                                 false);
+  xls_vast_verilog_module_add_input(m, "my_input", u8);
+  xls_vast_logic_ref* output_ref =
+      xls_vast_verilog_module_add_output(m, "my_output", scalar);
+
+  xls_vast_continuous_assignment* assignment =
+      xls_vast_verilog_file_make_continuous_assignment(
+          f, xls_vast_logic_ref_as_expression(output_ref), my_param);
+  xls_vast_verilog_module_add_member_continuous_assignment(m, assignment);
+  char* emitted = xls_vast_verilog_file_emit(f);
+  ASSERT_NE(emitted, nullptr);
+  absl::Cleanup free_emitted([&] { xls_c_str_free(emitted); });
+  const std::string_view kWant = R"(module my_module #(
+  parameter my_param = 8
+) (
+  input wire [my_param - 1:0] my_input,
+  output wire my_output
+);
+  assign my_output = my_param;
+endmodule
+)";
+  EXPECT_EQ(std::string_view{emitted}, kWant);
 }

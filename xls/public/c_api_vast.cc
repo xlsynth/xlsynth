@@ -174,6 +174,29 @@ struct xls_vast_logic_ref* xls_vast_verilog_module_add_wire(
   return reinterpret_cast<xls_vast_logic_ref*>(logic_ref.value());
 }
 
+struct xls_vast_expression* xls_vast_verilog_module_add_parameter_port(
+    struct xls_vast_verilog_module* m, const char* name,
+    struct xls_vast_expression* rhs) {
+  auto* cpp_module = reinterpret_cast<xls::verilog::Module*>(m);
+  auto* cpp_rhs = reinterpret_cast<xls::verilog::Expression*>(rhs);
+  xls::verilog::ParameterRef* parameter_ref =
+      cpp_module->AddParameterPort(name, cpp_rhs, xls::SourceInfo());
+  return reinterpret_cast<xls_vast_expression*>(parameter_ref);
+}
+
+struct xls_vast_expression* xls_vast_verilog_module_add_typed_parameter_port(
+    struct xls_vast_verilog_module* m, const char* name,
+    struct xls_vast_data_type* type, struct xls_vast_expression* rhs) {
+  auto* cpp_module = reinterpret_cast<xls::verilog::Module*>(m);
+  auto* cpp_type = reinterpret_cast<xls::verilog::DataType*>(type);
+  auto* cpp_rhs = reinterpret_cast<xls::verilog::Expression*>(rhs);
+  auto* cpp_def = cpp_module->file()->Make<xls::verilog::Def>(
+      xls::SourceInfo(), name, xls::verilog::DataKind::kLogic, cpp_type);
+  xls::verilog::ParameterRef* parameter_ref =
+      cpp_module->AddParameterPort(cpp_def, cpp_rhs, xls::SourceInfo());
+  return reinterpret_cast<xls_vast_expression*>(parameter_ref);
+}
+
 struct xls_vast_parameter_ref* xls_vast_verilog_module_add_parameter(
     struct xls_vast_verilog_module* m, const char* name,
     struct xls_vast_expression* rhs) {
@@ -363,8 +386,8 @@ xls_vast_verilog_file_make_inline_verilog_statement(
     struct xls_vast_verilog_file* f, const char* text) {
   auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
   xls::verilog::InlineVerilogStatement* cpp_stmt =
-      cpp_file->Make<xls::verilog::InlineVerilogStatement>(
-          xls::SourceInfo(), text);
+      cpp_file->Make<xls::verilog::InlineVerilogStatement>(xls::SourceInfo(),
+                                                           text);
   return reinterpret_cast<xls_vast_inline_verilog_statement*>(cpp_stmt);
 }
 
@@ -544,8 +567,7 @@ struct xls_vast_concat* xls_vast_verilog_file_make_concat(
 }
 
 struct xls_vast_concat* xls_vast_verilog_file_make_replicated_concat(
-    struct xls_vast_verilog_file* f,
-    struct xls_vast_expression* replication,
+    struct xls_vast_verilog_file* f, struct xls_vast_expression* replication,
     struct xls_vast_expression** elements, size_t element_count) {
   auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
   auto* cpp_rep = reinterpret_cast<xls::verilog::Expression*>(replication);
@@ -555,9 +577,8 @@ struct xls_vast_concat* xls_vast_verilog_file_make_replicated_concat(
     cpp_elements.push_back(
         reinterpret_cast<xls::verilog::Expression*>(elements[i]));
   }
-  xls::verilog::Concat* cpp_concat =
-      cpp_file->Make<xls::verilog::Concat>(xls::SourceInfo(), cpp_rep,
-                                           absl::MakeConstSpan(cpp_elements));
+  xls::verilog::Concat* cpp_concat = cpp_file->Make<xls::verilog::Concat>(
+      xls::SourceInfo(), cpp_rep, absl::MakeConstSpan(cpp_elements));
   return reinterpret_cast<xls_vast_concat*>(cpp_concat);
 }
 
@@ -573,9 +594,8 @@ struct xls_vast_concat* xls_vast_verilog_file_make_replicated_concat_i64(
     cpp_elements.push_back(
         reinterpret_cast<xls::verilog::Expression*>(elements[i]));
   }
-  xls::verilog::Concat* cpp_concat =
-      cpp_file->Make<xls::verilog::Concat>(xls::SourceInfo(), cpp_rep,
-                                           absl::MakeConstSpan(cpp_elements));
+  xls::verilog::Concat* cpp_concat = cpp_file->Make<xls::verilog::Concat>(
+      xls::SourceInfo(), cpp_rep, absl::MakeConstSpan(cpp_elements));
   return reinterpret_cast<xls_vast_concat*>(cpp_concat);
 }
 
@@ -780,8 +800,8 @@ struct xls_vast_statement* xls_vast_statement_block_add_inline_text(
     struct xls_vast_statement_block* block, const char* text) {
   auto* cpp_block = reinterpret_cast<xls::verilog::StatementBlock*>(block);
   xls::verilog::InlineVerilogStatement* cpp_stmt =
-      cpp_block->Add<xls::verilog::InlineVerilogStatement>(
-          xls::SourceInfo(), text);
+      cpp_block->Add<xls::verilog::InlineVerilogStatement>(xls::SourceInfo(),
+                                                           text);
   return reinterpret_cast<xls_vast_statement*>(cpp_stmt);
 }
 

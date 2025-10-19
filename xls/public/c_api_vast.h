@@ -158,6 +158,12 @@ struct xls_vast_logic_ref* xls_vast_verilog_module_add_output(
 struct xls_vast_logic_ref* xls_vast_verilog_module_add_wire(
     struct xls_vast_verilog_module* m, const char* name,
     struct xls_vast_data_type* type);
+struct xls_vast_expression* xls_vast_verilog_module_add_parameter_port(
+    struct xls_vast_verilog_module* m, const char* name,
+    struct xls_vast_expression* rhs);
+struct xls_vast_expression* xls_vast_verilog_module_add_typed_parameter_port(
+    struct xls_vast_verilog_module* m, const char* name,
+    struct xls_vast_data_type* type, struct xls_vast_expression* rhs);
 // TODO(cdleary): 2024-09-05 Add xls_vast_verilog_module_add_wire_with_expr
 
 // Adds a module parameter with the given name and RHS expression.
@@ -270,8 +276,7 @@ struct xls_vast_concat* xls_vast_verilog_file_make_concat(
 // Creates a replicated concatenation expression: {replication{elements...}}.
 // For single-element replication, pass element_count=1.
 struct xls_vast_concat* xls_vast_verilog_file_make_replicated_concat(
-    struct xls_vast_verilog_file* f,
-    struct xls_vast_expression* replication,
+    struct xls_vast_verilog_file* f, struct xls_vast_expression* replication,
     struct xls_vast_expression** elements, size_t element_count);
 
 // Convenience: replicated concatenation with an integer replication count.
