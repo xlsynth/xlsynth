@@ -20,17 +20,18 @@ import glob
 
 # List of Bazel targets to build
 targets = [
-    "//xls/public:libxls.so",
-    "//xls/dslx:interpreter_main",
-    "//xls/dslx/lsp:dslx_ls",
-    "//xls/tools:opt_main",
-    "//xls/tools:codegen_main",
-    "//xls/dslx/ir_convert:ir_converter_main",
-    "//xls/tools:delay_info_main",
+    "//xls/dev_tools:check_ir_equivalence_main",
     "//xls/dslx:dslx_fmt",
+    "//xls/dslx:interpreter_main",
     "//xls/dslx:prove_quickcheck_main",
+    "//xls/dslx/ir_convert:ir_converter_main",
+    "//xls/dslx/lsp:dslx_ls",
     "//xls/dslx/type_system:typecheck_main",
-    "//xls/tools:block_to_verilog_main"
+    "//xls/public:libxls.so",
+    "//xls/tools:block_to_verilog_main",
+    "//xls/tools:codegen_main",
+    "//xls/tools:delay_info_main",
+    "//xls/tools:opt_main",
 ]
 
 # Smoke test target to validate the C API symbols
