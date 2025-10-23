@@ -431,6 +431,12 @@ struct xls_vast_statement* xls_vast_statement_block_add_blocking_assignment(
     struct xls_vast_statement_block* block, struct xls_vast_expression* lhs,
     struct xls_vast_expression* rhs);
 
+// Adds a blocking assignment statement (lhs = rhs) to a statement block and
+// returns a pointer to the created statement.
+struct xls_vast_statement* xls_vast_statement_block_add_blocking_assignment(
+    struct xls_vast_statement_block* block, struct xls_vast_expression* lhs,
+    struct xls_vast_expression* rhs);
+
 struct xls_vast_statement* xls_vast_statement_block_add_comment_text(
     struct xls_vast_statement_block* block, const char* text);
 
@@ -439,12 +445,6 @@ struct xls_vast_statement* xls_vast_statement_block_add_blank_line(
 
 struct xls_vast_statement* xls_vast_statement_block_add_inline_text(
     struct xls_vast_statement_block* block, const char* text);
-
-// Adds a blocking assignment statement (lhs = rhs) to a statement block and
-// returns a pointer to the created statement.
-struct xls_vast_statement* xls_vast_statement_block_add_blocking_assignment(
-    struct xls_vast_statement_block* block, struct xls_vast_expression* lhs,
-    struct xls_vast_expression* rhs);
 
 // Emits/formats the contents of the given verilog file to a string.
 //
