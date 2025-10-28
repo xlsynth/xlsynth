@@ -1721,8 +1721,7 @@ TEST(XlsCApiTest, ModuleWithParameterPort) {
       xls_vast_literal_as_expression(
           xls_vast_verilog_file_make_plain_literal(f, 8)));
   xls_vast_data_type* u8 =
-      xls_vast_verilog_file_make_bit_vector_type_with_expression(f, my_param,
-                                                                 false);
+      xls_vast_verilog_file_make_bit_vector_type_expr(f, my_param, false);
   xls_vast_verilog_module_add_input(m, "my_input", u8);
   xls_vast_logic_ref* output_ref =
       xls_vast_verilog_module_add_output(m, "my_output", scalar);
