@@ -54,7 +54,7 @@ struct xls_vast_def;
 struct xls_vast_parameter_ref;
 struct xls_vast_conditional;
 struct xls_vast_case_statement;
-
+struct xls_vast_localparam_ref;
 // Note: We define the enum with a fixed width integer type for clarity of the
 // exposed ABI.
 typedef int32_t xls_vast_file_type;
@@ -126,6 +126,15 @@ struct xls_vast_data_type* xls_vast_verilog_file_make_bit_vector_type_expr(
 struct xls_vast_data_type* xls_vast_verilog_file_make_integer_type(
     struct xls_vast_verilog_file* f, bool is_signed);
 
+struct xls_vast_data_type* xls_vast_verilog_file_make_int_type(
+    struct xls_vast_verilog_file* f, bool is_signed);
+
+// Convenience creators for typed Defs of integer/int kinds.
+struct xls_vast_def* xls_vast_verilog_file_make_integer_def(
+    struct xls_vast_verilog_file* f, const char* name, bool is_signed);
+struct xls_vast_def* xls_vast_verilog_file_make_int_def(
+    struct xls_vast_verilog_file* f, const char* name, bool is_signed);
+
 struct xls_vast_data_type* xls_vast_verilog_file_make_extern_package_type(
     struct xls_vast_verilog_file* f, const char* package_name,
     const char* entity_name);
@@ -179,6 +188,12 @@ struct xls_vast_parameter_ref* xls_vast_verilog_module_add_parameter(
     struct xls_vast_verilog_module* m, const char* name,
     struct xls_vast_expression* rhs);
 
+// Adds a module parameter with the given name and RHS expression.
+// Returns a handle to the created parameter reference.
+struct xls_vast_localparam_ref* xls_vast_verilog_module_add_localparam(
+    struct xls_vast_verilog_module* m, const char* name,
+    struct xls_vast_expression* rhs);
+
 // Note: returned value is owned by the caller, free via `xls_c_str_free`.
 char* xls_vast_verilog_module_get_name(struct xls_vast_verilog_module* m);
 // Returns the ports that are present on the given module.
@@ -225,6 +240,7 @@ enum {
   xls_vast_data_kind_wire,
   xls_vast_data_kind_logic,
   xls_vast_data_kind_integer,
+  xls_vast_data_kind_int,
   xls_vast_data_kind_user,
   xls_vast_data_kind_untyped_enum,
   xls_vast_data_kind_genvar,
@@ -240,6 +256,9 @@ struct xls_vast_def* xls_vast_verilog_file_make_def(
 // Adds a module parameter with an explicit Def (type/kind) and RHS expression.
 // Returns a handle to the created parameter reference.
 struct xls_vast_parameter_ref* xls_vast_verilog_module_add_parameter_with_def(
+    struct xls_vast_verilog_module* m, struct xls_vast_def* def,
+    struct xls_vast_expression* rhs);
+struct xls_vast_localparam_ref* xls_vast_verilog_module_add_localparam_with_def(
     struct xls_vast_verilog_module* m, struct xls_vast_def* def,
     struct xls_vast_expression* rhs);
 
@@ -334,6 +353,14 @@ bool xls_vast_verilog_file_make_literal(struct xls_vast_verilog_file* f,
                                         bool emit_bit_count, char** error_out,
                                         struct xls_vast_literal** literal_out);
 
+// Creates unsized literal expressions: '1, '0, 'X
+struct xls_vast_expression* xls_vast_verilog_file_make_unsized_one_literal(
+    struct xls_vast_verilog_file* f);
+struct xls_vast_expression* xls_vast_verilog_file_make_unsized_zero_literal(
+    struct xls_vast_verilog_file* f);
+struct xls_vast_expression* xls_vast_verilog_file_make_unsized_x_literal(
+    struct xls_vast_verilog_file* f);
+
 // Casts to turn the given node to an expression, where possible.
 struct xls_vast_expression* xls_vast_literal_as_expression(
     struct xls_vast_literal* v);
@@ -347,6 +374,8 @@ struct xls_vast_expression* xls_vast_index_as_expression(
     struct xls_vast_index* v);
 struct xls_vast_expression* xls_vast_parameter_ref_as_expression(
     struct xls_vast_parameter_ref* v);
+struct xls_vast_expression* xls_vast_localparam_ref_as_expression(
+    struct xls_vast_localparam_ref* v);
 
 struct xls_vast_indexable_expression*
 xls_vast_logic_ref_as_indexable_expression(
