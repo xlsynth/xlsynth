@@ -21,6 +21,7 @@ import glob
 # List of Bazel targets to build
 targets = [
     "//xls/public:libxls.so",
+    "//xls/dev_tools:check_ir_equivalence_main",
     "//xls/dslx:interpreter_main",
     "//xls/dslx/lsp:dslx_ls",
     "//xls/tools:opt_main",
