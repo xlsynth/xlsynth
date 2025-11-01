@@ -385,6 +385,8 @@ struct xls_vast_expression* xls_vast_parameter_ref_as_expression(
     struct xls_vast_parameter_ref* v);
 struct xls_vast_expression* xls_vast_localparam_ref_as_expression(
     struct xls_vast_localparam_ref* v);
+struct xls_vast_expression* xls_vast_indexable_expression_as_expression(
+    struct xls_vast_indexable_expression* v);
 
 struct xls_vast_indexable_expression*
 xls_vast_logic_ref_as_indexable_expression(

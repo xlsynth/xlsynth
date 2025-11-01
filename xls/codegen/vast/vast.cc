@@ -669,6 +669,8 @@ std::string ModulePort::ToString() const {
                          xls::verilog::ToString(direction), name());
 }
 
+// Returns true if the given string looks like an identifier or keyword. Escaped
+// identifiers are not handled.
 static bool IsDigitsOrIdentifier(std::string_view s) {
   if (s.empty()) {
     return false;
@@ -690,7 +692,7 @@ static bool IsDigitsOrIdentifier(std::string_view s) {
     return false;
   }
   for (char ch : s.substr(1)) {
-    if (!absl::ascii_isalnum(ch) && ch != '_') {
+    if (!absl::ascii_isalnum(ch) && ch != '_' && ch != '$') {
       return false;
     }
   }
@@ -702,11 +704,11 @@ std::string WidthCast::Emit(LineInfo* line_info) const {
   LineInfoEnd(line_info, this);
   std::string width_expr = width_->Emit(line_info);
   if (IsDigitsOrIdentifier(width_expr)) {
-    // Parentheses are not needed for digits or identifiers.
+    // Parentheses are not needed for digits or identifiers. This is purely
+    // cosmetic as parentheses are always correct to emit.
     return absl::StrFormat("%s'(%s)", width_expr, value_->Emit(line_info));
-  } else {
-    return absl::StrFormat("(%s)'(%s)", width_expr, value_->Emit(line_info));
   }
+  return absl::StrFormat("(%s)'(%s)", width_expr, value_->Emit(line_info));
 }
 
 VerilogFunction::VerilogFunction(std::string_view name, DataType* result_type,

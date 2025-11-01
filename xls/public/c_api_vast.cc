@@ -590,6 +590,13 @@ struct xls_vast_expression* xls_vast_localparam_ref_as_expression(
   return reinterpret_cast<xls_vast_expression*>(cpp_expression);
 }
 
+struct xls_vast_expression* xls_vast_indexable_expression_as_expression(
+    struct xls_vast_indexable_expression* v) {
+  auto* cpp_v = reinterpret_cast<xls::verilog::IndexableExpression*>(v);
+  auto* cpp_expression = static_cast<xls::verilog::Expression*>(cpp_v);
+  return reinterpret_cast<xls_vast_expression*>(cpp_expression);
+}
+
 struct xls_vast_indexable_expression*
 xls_vast_logic_ref_as_indexable_expression(
     struct xls_vast_logic_ref* logic_ref) {
