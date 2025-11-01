@@ -656,6 +656,17 @@ struct xls_vast_expression* xls_vast_verilog_file_make_ternary(
   return reinterpret_cast<xls_vast_expression*>(result);
 }
 
+struct xls_vast_expression* xls_vast_verilog_file_make_width_cast(
+    struct xls_vast_verilog_file* f, struct xls_vast_expression* width,
+    struct xls_vast_expression* value) {
+  auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
+  auto* cpp_width = reinterpret_cast<xls::verilog::Expression*>(width);
+  auto* cpp_value = reinterpret_cast<xls::verilog::Expression*>(value);
+  xls::verilog::Expression* result = cpp_file->Make<xls::verilog::WidthCast>(
+      xls::SourceInfo(), cpp_width, cpp_value);
+  return reinterpret_cast<xls_vast_expression*>(result);
+}
+
 struct xls_vast_concat* xls_vast_verilog_file_make_concat(
     struct xls_vast_verilog_file* f, struct xls_vast_expression** elements,
     size_t element_count) {

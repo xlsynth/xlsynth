@@ -332,6 +332,10 @@ struct xls_vast_expression* xls_vast_verilog_file_make_ternary(
     struct xls_vast_expression* consequent,
     struct xls_vast_expression* alternate);
 
+struct xls_vast_expression* xls_vast_verilog_file_make_width_cast(
+    struct xls_vast_verilog_file* f, struct xls_vast_expression* width,
+    struct xls_vast_expression* value);
+
 struct xls_vast_index* xls_vast_verilog_file_make_index_i64(
     struct xls_vast_verilog_file* f,
     struct xls_vast_indexable_expression* subject, int64_t index);
