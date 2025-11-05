@@ -227,16 +227,6 @@ endmodule
 }
 
 TEST(XlsCApiTest, VastGenerateLoopElementwiseAssignment) {
-  const std::string_view kWantEmitted = R"(module top(
-  input wire [7:0] in,
-  output wire [7:0] out
-);
-  for (genvar i = 0; i < 8; i = i + 1) begin : gen
-    assign out[i] = in[i];
-  end
-endmodule
-)";
-
   xls_vast_verilog_file* f =
       xls_vast_make_verilog_file(xls_vast_file_type_verilog);
   ASSERT_NE(f, nullptr);
@@ -276,11 +266,34 @@ endmodule
           xls_vast_index_as_expression(in_index));
   ASSERT_NE(assignment_stmt, nullptr);
 
+  // Add a blank line, a comment, an inline verilog statement, and an empty
+  // instantiation inside the generate loop.
+  xls_vast_generate_loop_add_blank_line(loop);
+  xls_vast_comment* comment =
+      xls_vast_verilog_file_make_comment(f, "This is a comment.");
+  xls_vast_generate_loop_add_comment(loop, comment);
+  xls_vast_inline_verilog_statement* inline_stmt =
+      xls_vast_verilog_file_make_inline_verilog_statement(
+          f, "inline_verilog_statement;");
+  xls_vast_generate_loop_add_inline_verilog_statement(loop, inline_stmt);
+
   char* emitted = xls_vast_verilog_file_emit(f);
   ASSERT_NE(emitted, nullptr);
   absl::Cleanup free_emitted([&] { xls_c_str_free(emitted); });
 
-  EXPECT_EQ(std::string_view{emitted}, kWantEmitted);
+  const std::string_view kWantEmittedWithExtras = R"(module top(
+  input wire [7:0] in,
+  output wire [7:0] out
+);
+  for (genvar i = 0; i < 8; i = i + 1) begin : gen
+    assign out[i] = in[i];
+
+    // This is a comment.
+    inline_verilog_statement;
+  end
+endmodule
+)";
+  EXPECT_EQ(std::string_view{emitted}, kWantEmittedWithExtras);
 }
 
 // Tests that we can reference a slice of a multidimensional packed array on

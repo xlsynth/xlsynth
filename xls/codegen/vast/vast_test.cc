@@ -2836,6 +2836,9 @@ TEST_P(VastTest, SimpleGenerateLoop) {
   LogicRef* i = generate_loop->genvar();
   generate_loop->Add<ContinuousAssignment>(si, f.Make<Index>(si, output, i),
                                            f.Make<Index>(si, input, i));
+  generate_loop->Add<BlankLine>(si);
+  generate_loop->Add<Comment>(si, "This is a comment.");
+  generate_loop->Add<InlineVerilogStatement>(si, "inline_verilog_statement;");
 
   LineInfo line_info;
   EXPECT_EQ(m->Emit(&line_info),
@@ -2845,6 +2848,9 @@ TEST_P(VastTest, SimpleGenerateLoop) {
 );
   for (genvar i = 0; i < 32; i = i + 1) begin : gen_loop
     assign my_output[i] = my_input[i];
+
+    // This is a comment.
+    inline_verilog_statement;
   end
 endmodule)");
 }

@@ -613,13 +613,6 @@ struct xls_vast_logic_ref* xls_vast_generate_loop_get_genvar(
   return reinterpret_cast<xls_vast_logic_ref*>(cpp_loop->genvar());
 }
 
-void xls_vast_generate_loop_add_statement(
-    struct xls_vast_generate_loop* loop, struct xls_vast_statement* statement) {
-  auto* cpp_loop = reinterpret_cast<xls::verilog::GenerateLoop*>(loop);
-  auto* cpp_statement = reinterpret_cast<xls::verilog::Statement*>(statement);
-  cpp_loop->AddGenerateLoopMember(cpp_statement);
-}
-
 struct xls_vast_generate_loop* xls_vast_generate_loop_add_generate_loop(
     struct xls_vast_generate_loop* loop, const char* genvar_name,
     struct xls_vast_expression* init, struct xls_vast_expression* limit,
@@ -635,6 +628,37 @@ struct xls_vast_generate_loop* xls_vast_generate_loop_add_generate_loop(
                                                 std::string_view(genvar_name),
                                                 cpp_init, cpp_limit, cpp_label);
   return reinterpret_cast<xls_vast_generate_loop*>(cpp_inner_loop);
+}
+
+void xls_vast_generate_loop_add_blank_line(
+    struct xls_vast_generate_loop* loop) {
+  auto* cpp_loop = reinterpret_cast<xls::verilog::GenerateLoop*>(loop);
+  cpp_loop->Add<xls::verilog::BlankLine>(xls::SourceInfo());
+}
+
+void xls_vast_generate_loop_add_comment(struct xls_vast_generate_loop* loop,
+                                        struct xls_vast_comment* comment) {
+  auto* cpp_loop = reinterpret_cast<xls::verilog::GenerateLoop*>(loop);
+  auto* cpp_comment = reinterpret_cast<xls::verilog::Comment*>(comment);
+  cpp_loop->AddMember(cpp_comment);
+}
+
+void xls_vast_generate_loop_add_instantiation(
+    struct xls_vast_generate_loop* loop,
+    struct xls_vast_instantiation* instantiation) {
+  auto* cpp_loop = reinterpret_cast<xls::verilog::GenerateLoop*>(loop);
+  auto* cpp_inst =
+      reinterpret_cast<xls::verilog::Instantiation*>(instantiation);
+  cpp_loop->AddMember(cpp_inst);
+}
+
+void xls_vast_generate_loop_add_inline_verilog_statement(
+    struct xls_vast_generate_loop* loop,
+    struct xls_vast_inline_verilog_statement* stmt) {
+  auto* cpp_loop = reinterpret_cast<xls::verilog::GenerateLoop*>(loop);
+  auto* cpp_stmt =
+      reinterpret_cast<xls::verilog::InlineVerilogStatement*>(stmt);
+  cpp_loop->AddMember(cpp_stmt);
 }
 
 bool xls_vast_generate_loop_add_always_comb(
