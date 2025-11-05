@@ -731,38 +731,6 @@ class StatementBlock final : public VastNode {
   std::vector<Statement*> statements_;
 };
 
-// Represents a generate loop construct. Example:
-// ```verilog
-// for (genvar i = 0; i < 32; i = i + 1) begin : gen_loop
-//   assign output[i] = input[i];
-// end
-// ```
-//
-class GenerateLoop final : public Statement {
- public:
-  GenerateLoop(std::string_view genvar_name, Expression* init,
-               Expression* limit, std::optional<std::string> label,
-               VerilogFile* file, const SourceInfo& loc);
-
-  LogicRef* genvar() const { return genvar_; }
-  Expression* init() const { return init_; }
-  Expression* limit() const { return limit_; }
-  const std::optional<std::string>& label() const { return label_; }
-  StatementBlock* body() const { return body_; }
-  absl::Span<Statement* const> statements() const {
-    return body_->statements();
-  }
-
-  std::string Emit(LineInfo* line_info) const final;
-
- private:
-  LogicRef* genvar_;
-  Expression* init_;
-  Expression* limit_;
-  std::optional<std::string> label_;
-  StatementBlock* body_;
-};
-
 // Similar to statement block,  but for use if `ifdef `else `endif blocks (no
 // "begin" or "end").
 class MacroStatementBlock final : public VastNode {
@@ -1665,6 +1633,43 @@ class AlwaysFf final : public AlwaysBase {
 
  protected:
   std::string name() const final { return "always_ff"; }
+};
+
+using GenerateLoopMember =
+    std::variant<LocalParam*, Statement*, AlwaysComb*, AlwaysFf*, AlwaysFlop*>;
+
+// Represents a generate loop construct. Example:
+// ```verilog
+// for (genvar i = 0; i < 32; i = i + 1) begin : gen_loop
+//   assign output[i] = input[i];
+// end
+// ```
+//
+class GenerateLoop final : public Statement {
+ public:
+  GenerateLoop(std::string_view genvar_name, Expression* init,
+               Expression* limit, std::optional<std::string> label,
+               VerilogFile* file, const SourceInfo& loc);
+
+  LogicRef* genvar() const { return genvar_; }
+  Expression* init() const { return init_; }
+  Expression* limit() const { return limit_; }
+  const std::optional<std::string>& label() const { return label_; }
+
+  template <typename T, typename... Args>
+  T* Add(const SourceInfo& loc, Args&&... args);
+  void AddGenerateLoopMember(GenerateLoopMember member) {
+    members_.push_back(member);
+  }
+
+  std::string Emit(LineInfo* line_info) const final;
+
+ private:
+  LogicRef* genvar_;
+  Expression* init_;
+  Expression* limit_;
+  std::optional<std::string> label_;
+  std::vector<GenerateLoopMember> members_;
 };
 
 // Defines an 'initial' block.
@@ -2975,6 +2980,12 @@ inline T* VerilogPackageSection::Add(const SourceInfo& loc, Args&&... args) {
   return ptr;
 }
 
+template <typename T, typename... Args>
+inline T* GenerateLoop::Add(const SourceInfo& loc, Args&&... args) {
+  T* ptr = file()->Make<T>(loc, std::forward<Args>(args)...);
+  AddGenerateLoopMember(ptr);
+  return ptr;
+}
 }  // namespace verilog
 }  // namespace xls
 

@@ -2803,8 +2803,8 @@ TEST_P(VastTest, SimpleGenerateLoop) {
       m->Add<GenerateLoop>(si, std::string("i"), f.PlainLiteral(0, si),
                            f.PlainLiteral(32, si), "gen_loop");
   LogicRef* i = generate_loop->genvar();
-  generate_loop->body()->Add<ContinuousAssignment>(
-      si, f.Make<Index>(si, output, i), f.Make<Index>(si, input, i));
+  generate_loop->Add<ContinuousAssignment>(si, f.Make<Index>(si, output, i),
+                                           f.Make<Index>(si, input, i));
 
   LineInfo line_info;
   EXPECT_EQ(m->Emit(&line_info),
@@ -2885,11 +2885,11 @@ TEST_P(VastTest, NestedGenerateLoop) {
       m->Add<GenerateLoop>(si, std::string("i"), f.PlainLiteral(0, si),
                            f.PlainLiteral(4, si), "outer");
   LogicRef* i = outer_loop->genvar();
-  auto* inner_loop = outer_loop->body()->Add<GenerateLoop>(
-      si, std::string("j"), f.PlainLiteral(0, si), f.PlainLiteral(3, si),
-      "inner");
+  auto* inner_loop =
+      outer_loop->Add<GenerateLoop>(si, std::string("j"), f.PlainLiteral(0, si),
+                                    f.PlainLiteral(3, si), "inner");
   LogicRef* j = inner_loop->genvar();
-  inner_loop->body()->Add<ContinuousAssignment>(
+  inner_loop->Add<ContinuousAssignment>(
       si, f.Make<Index>(si, f.Make<Index>(si, dst, i), j),
       f.Make<Index>(si, f.Make<Index>(si, src, i), j));
 

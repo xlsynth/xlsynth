@@ -393,8 +393,43 @@ xls_vast_logic_ref_as_indexable_expression(
     struct xls_vast_logic_ref* logic_ref);
 struct xls_vast_logic_ref* xls_vast_generate_loop_get_genvar(
     struct xls_vast_generate_loop* loop);
-struct xls_vast_statement_block* xls_vast_generate_loop_get_body(
-    struct xls_vast_generate_loop* loop);
+void xls_vast_generate_loop_add_statement(struct xls_vast_generate_loop* loop,
+                                          struct xls_vast_statement* statement);
+// Adds a nested generate loop inside the given generate loop.
+struct xls_vast_generate_loop* xls_vast_generate_loop_add_generate_loop(
+    struct xls_vast_generate_loop* loop, const char* genvar_name,
+    struct xls_vast_expression* init, struct xls_vast_expression* limit,
+    const char* label);
+
+// Adds an always_comb block inside the given generate loop.
+// Returns true on success; on failure returns false and sets error_out.
+bool xls_vast_generate_loop_add_always_comb(
+    struct xls_vast_generate_loop* loop,
+    struct xls_vast_always_base** out_always_comb, char** error_out);
+
+// Adds an always_ff block inside the given generate loop.
+// 'sensitivity_list_elements' is an array of expressions.
+// Returns true on success; on failure returns false and sets error_out.
+bool xls_vast_generate_loop_add_always_ff(
+    struct xls_vast_generate_loop* loop,
+    struct xls_vast_expression** sensitivity_list_elements,
+    size_t sensitivity_list_count, struct xls_vast_always_base** out_always_ff,
+    char** error_out);
+
+// Adds a localparam item declaration inside the given generate loop.
+struct xls_vast_localparam_ref* xls_vast_generate_loop_add_localparam(
+    struct xls_vast_generate_loop* loop, const char* name,
+    struct xls_vast_expression* rhs);
+
+// Adds a localparam item using an existing def inside the given generate loop.
+struct xls_vast_localparam_ref* xls_vast_generate_loop_add_localparam_with_def(
+    struct xls_vast_generate_loop* loop, struct xls_vast_def* def,
+    struct xls_vast_expression* rhs);
+
+// Adds a continuous assignment inside the given generate loop.
+struct xls_vast_statement* xls_vast_generate_loop_add_continuous_assignment(
+    struct xls_vast_generate_loop* loop, struct xls_vast_expression* lhs,
+    struct xls_vast_expression* rhs);
 
 // Note: returned value is owned by the caller, free via `xls_c_str_free`.
 char* xls_vast_logic_ref_get_name(struct xls_vast_logic_ref* logic_ref);
@@ -412,10 +447,6 @@ struct xls_vast_statement_block* xls_vast_always_base_get_statement_block(
 struct xls_vast_statement* xls_vast_statement_block_add_nonblocking_assignment(
     struct xls_vast_statement_block* block, struct xls_vast_expression* lhs,
     struct xls_vast_expression* rhs);
-struct xls_vast_generate_loop* xls_vast_statement_block_add_generate_loop(
-    struct xls_vast_statement_block* block, const char* genvar_name,
-    struct xls_vast_expression* init, struct xls_vast_expression* limit,
-    const char* label);
 struct xls_vast_statement* xls_vast_statement_block_add_continuous_assignment(
     struct xls_vast_statement_block* block, struct xls_vast_expression* lhs,
     struct xls_vast_expression* rhs);
