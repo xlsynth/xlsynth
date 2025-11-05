@@ -995,6 +995,17 @@ bool xls_vast_verilog_module_add_always_comb(
   return true;
 }
 
+struct xls_vast_logic_ref* xls_vast_verilog_module_add_inout(
+    struct xls_vast_verilog_module* m, const char* name,
+    struct xls_vast_data_type* type) {
+  auto* cpp_module = reinterpret_cast<xls::verilog::Module*>(m);
+  auto* cpp_type = reinterpret_cast<xls::verilog::DataType*>(type);
+  absl::StatusOr<xls::verilog::LogicRef*> logic_ref =
+      cpp_module->AddInOut(name, cpp_type, xls::SourceInfo());
+  CHECK_OK(logic_ref.status());
+  return reinterpret_cast<xls_vast_logic_ref*>(logic_ref.value());
+}
+
 bool xls_vast_verilog_module_add_reg(struct xls_vast_verilog_module* m,
                                      const char* name,
                                      struct xls_vast_data_type* type,
@@ -1053,18 +1064,6 @@ struct xls_vast_statement* xls_vast_verilog_file_make_nonblocking_assignment(
   xls::verilog::NonblockingAssignment* cpp_assignment =
       cpp_file->Make<xls::verilog::NonblockingAssignment>(xls::SourceInfo(),
                                                           cpp_lhs, cpp_rhs);
-  return reinterpret_cast<xls_vast_statement*>(cpp_assignment);
-}
-
-struct xls_vast_statement* xls_vast_verilog_file_make_blocking_assignment(
-    struct xls_vast_verilog_file* f, struct xls_vast_expression* lhs,
-    struct xls_vast_expression* rhs) {
-  auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
-  auto* cpp_lhs = reinterpret_cast<xls::verilog::Expression*>(lhs);
-  auto* cpp_rhs = reinterpret_cast<xls::verilog::Expression*>(rhs);
-  xls::verilog::BlockingAssignment* cpp_assignment =
-      cpp_file->Make<xls::verilog::BlockingAssignment>(xls::SourceInfo(),
-                                                       cpp_lhs, cpp_rhs);
   return reinterpret_cast<xls_vast_statement*>(cpp_assignment);
 }
 
@@ -1154,18 +1153,6 @@ struct xls_vast_generate_loop* xls_vast_statement_block_add_generate_loop(
   return reinterpret_cast<xls_vast_generate_loop*>(cpp_loop);
 }
 
-struct xls_vast_statement* xls_vast_statement_block_add_continuous_assignment(
-    struct xls_vast_statement_block* block, struct xls_vast_expression* lhs,
-    struct xls_vast_expression* rhs) {
-  auto* cpp_block = reinterpret_cast<xls::verilog::StatementBlock*>(block);
-  auto* cpp_lhs = reinterpret_cast<xls::verilog::Expression*>(lhs);
-  auto* cpp_rhs = reinterpret_cast<xls::verilog::Expression*>(rhs);
-  xls::verilog::ContinuousAssignment* cpp_assignment =
-      cpp_block->Add<xls::verilog::ContinuousAssignment>(xls::SourceInfo(),
-                                                         cpp_lhs, cpp_rhs);
-  return reinterpret_cast<xls_vast_statement*>(cpp_assignment);
-}
-
 struct xls_vast_conditional* xls_vast_statement_block_add_conditional(
     struct xls_vast_statement_block* block, struct xls_vast_expression* cond) {
   auto* cpp_block = reinterpret_cast<xls::verilog::StatementBlock*>(block);
@@ -1224,23 +1211,6 @@ struct xls_vast_statement_block* xls_vast_case_statement_add_default(
   return reinterpret_cast<xls_vast_statement_block*>(block);
 }
 
-struct xls_vast_generate_loop* xls_vast_statement_block_add_generate_loop(
-    struct xls_vast_statement_block* block, const char* genvar_name,
-    struct xls_vast_expression* init, struct xls_vast_expression* limit,
-    const char* label) {
-  CHECK_NE(genvar_name, nullptr);
-  auto* cpp_block = reinterpret_cast<xls::verilog::StatementBlock*>(block);
-  auto* cpp_init = reinterpret_cast<xls::verilog::Expression*>(init);
-  auto* cpp_limit = reinterpret_cast<xls::verilog::Expression*>(limit);
-  std::optional<std::string> cpp_label =
-      label == nullptr ? std::nullopt : std::optional<std::string>(label);
-  xls::verilog::GenerateLoop* cpp_loop =
-      cpp_block->Add<xls::verilog::GenerateLoop>(
-          xls::SourceInfo(), std::string_view(genvar_name), cpp_init, cpp_limit,
-          cpp_label);
-  return reinterpret_cast<xls_vast_generate_loop*>(cpp_loop);
-}
-
 struct xls_vast_statement* xls_vast_statement_block_add_continuous_assignment(
     struct xls_vast_statement_block* block, struct xls_vast_expression* lhs,
     struct xls_vast_expression* rhs) {
@@ -1289,6 +1259,8 @@ xls_vast_module_port_direction xls_vast_verilog_module_port_get_direction(
       return xls_vast_module_port_direction_input;
     case xls::verilog::ModulePortDirection::kOutput:
       return xls_vast_module_port_direction_output;
+    case xls::verilog::ModulePortDirection::kInOut:
+      return xls_vast_module_port_direction_inout;
   }
   LOG(FATAL) << "Invalid ModulePortDirection encountered.";
 }
