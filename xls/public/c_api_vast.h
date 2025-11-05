@@ -46,6 +46,7 @@ struct xls_vast_literal;
 struct xls_vast_instantiation;
 struct xls_vast_continuous_assignment;
 struct xls_vast_comment;
+struct xls_vast_inline_verilog_statement;
 struct xls_vast_always_base;
 struct xls_vast_statement;
 struct xls_vast_statement_block;
@@ -399,13 +400,29 @@ xls_vast_logic_ref_as_indexable_expression(
     struct xls_vast_logic_ref* logic_ref);
 struct xls_vast_logic_ref* xls_vast_generate_loop_get_genvar(
     struct xls_vast_generate_loop* loop);
-void xls_vast_generate_loop_add_statement(struct xls_vast_generate_loop* loop,
-                                          struct xls_vast_statement* statement);
+
 // Adds a nested generate loop inside the given generate loop.
 struct xls_vast_generate_loop* xls_vast_generate_loop_add_generate_loop(
     struct xls_vast_generate_loop* loop, const char* genvar_name,
     struct xls_vast_expression* init, struct xls_vast_expression* limit,
     const char* label);
+
+// Adds a blank line inside the given generate loop.
+void xls_vast_generate_loop_add_blank_line(struct xls_vast_generate_loop* loop);
+
+// Adds a comment inside the given generate loop.
+void xls_vast_generate_loop_add_comment(struct xls_vast_generate_loop* loop,
+                                        struct xls_vast_comment* comment);
+
+// Adds an instantiation inside the given generate loop.
+void xls_vast_generate_loop_add_instantiation(
+    struct xls_vast_generate_loop* loop,
+    struct xls_vast_instantiation* instantiation);
+
+// Adds an inline verilog statement inside the given generate loop.
+void xls_vast_generate_loop_add_inline_verilog_statement(
+    struct xls_vast_generate_loop* loop,
+    struct xls_vast_inline_verilog_statement* stmt);
 
 // Adds an always_comb block inside the given generate loop.
 // Returns true on success; on failure returns false and sets error_out.
@@ -451,9 +468,6 @@ struct xls_vast_statement_block* xls_vast_always_base_get_statement_block(
 // Adds a non-blocking assignment statement (lhs <= rhs) to a statement block
 // and returns a pointer to the created statement.
 struct xls_vast_statement* xls_vast_statement_block_add_nonblocking_assignment(
-    struct xls_vast_statement_block* block, struct xls_vast_expression* lhs,
-    struct xls_vast_expression* rhs);
-struct xls_vast_statement* xls_vast_statement_block_add_continuous_assignment(
     struct xls_vast_statement_block* block, struct xls_vast_expression* lhs,
     struct xls_vast_expression* rhs);
 

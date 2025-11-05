@@ -2276,6 +2276,7 @@ class VerilogFunctionCall final : public Expression {
 
 class ModuleSection;
 class ModuleConditionalDirective;
+class GenerateLoop;
 
 // Represents a member of a module.
 using ModuleMember =
@@ -2298,6 +2299,38 @@ using ModuleMember =
                  // Generate loop, can effectively generate more module members
                  // at elaboration time
                  GenerateLoop*>;
+
+// Represents a generate loop construct. Example:
+// ```verilog
+// for (genvar i = 0; i < 32; i = i + 1) begin : gen_loop
+//   assign output[i] = input[i];
+// end
+// ```
+//
+class GenerateLoop final : public Statement {
+ public:
+  GenerateLoop(std::string_view genvar_name, Expression* init,
+               Expression* limit, std::optional<std::string> label,
+               VerilogFile* file, const SourceInfo& loc);
+
+  LogicRef* genvar() const { return genvar_; }
+  Expression* init() const { return init_; }
+  Expression* limit() const { return limit_; }
+  const std::optional<std::string>& label() const { return label_; }
+
+  template <typename T, typename... Args>
+  T* Add(const SourceInfo& loc, Args&&... args);
+  void AddMember(ModuleMember member) { members_.push_back(member); }
+
+  std::string Emit(LineInfo* line_info) const final;
+
+ private:
+  LogicRef* genvar_;
+  Expression* init_;
+  Expression* limit_;
+  std::optional<std::string> label_;
+  std::vector<ModuleMember> members_;
+};
 
 // A ModuleSection is a container of ModuleMembers used to organize the contents
 // of a module. A Module contains a single top-level ModuleSection which may
@@ -3012,7 +3045,7 @@ inline T* VerilogPackageSection::Add(const SourceInfo& loc, Args&&... args) {
 template <typename T, typename... Args>
 inline T* GenerateLoop::Add(const SourceInfo& loc, Args&&... args) {
   T* ptr = file()->Make<T>(loc, std::forward<Args>(args)...);
-  AddGenerateLoopMember(ptr);
+  AddMember(ptr);
   return ptr;
 }
 }  // namespace verilog
