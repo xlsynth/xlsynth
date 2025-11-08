@@ -528,6 +528,13 @@ struct xls_vast_statement* xls_vast_statement_block_add_blocking_assignment(
 // Note: caller owns the returned string, to be freed by `xls_c_str_free`.
 char* xls_vast_verilog_file_emit(const struct xls_vast_verilog_file* f);
 
+// Emits any VAST node (expression, statement, module, etc.) to a string.
+// The `node` argument must be a pointer to an underlying VAST node type
+// created by this API (e.g., xls_vast_expression*, xls_vast_statement*,
+// xls_vast_verilog_module*, etc.). Returns an owned C string; caller must
+// free with xls_c_str_free.
+char* xls_vast_emit_node(void* node);
+
 // Adds an always_ff block to the module.
 // 'sensitivity_list_elements' is an array of expressions, typically created
 // using 'xls_vast_verilog_file_make_pos_edge' or

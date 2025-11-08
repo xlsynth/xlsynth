@@ -304,6 +304,51 @@ endmodule
   EXPECT_EQ(std::string_view{emitted}, kWantEmittedWithExtras);
 }
 
+TEST(XlsCApiTest, VastEmitNodeForExpressionStatementAndModule) {
+  // Create a file and module.
+  xls_vast_verilog_file* f =
+      xls_vast_make_verilog_file(xls_vast_file_type_verilog);
+  ASSERT_NE(f, nullptr);
+  absl::Cleanup free_file([&] { xls_vast_verilog_file_free(f); });
+
+  xls_vast_verilog_module* m = xls_vast_verilog_file_add_module(f, "emit_top");
+  ASSERT_NE(m, nullptr);
+
+  // Expression: plain literal 7 -> "7"
+  {
+    xls_vast_literal* lit7 = xls_vast_verilog_file_make_plain_literal(f, 7);
+    ASSERT_NE(lit7, nullptr);
+    xls_vast_expression* expr = xls_vast_literal_as_expression(lit7);
+    ASSERT_NE(expr, nullptr);
+    char* emitted = xls_vast_emit_node(reinterpret_cast<void*>(expr));
+    ASSERT_NE(emitted, nullptr);
+    absl::Cleanup free_expr([&] { xls_c_str_free(emitted); });
+    EXPECT_EQ(std::string_view{emitted}, "7");
+  }
+
+  // Statement: inline verilog "foo;" -> "foo;"
+  {
+    xls_vast_inline_verilog_statement* inl =
+        xls_vast_verilog_file_make_inline_verilog_statement(f, "foo;");
+    ASSERT_NE(inl, nullptr);
+    char* emitted = xls_vast_emit_node(reinterpret_cast<void*>(inl));
+    ASSERT_NE(emitted, nullptr);
+    absl::Cleanup free_stmt([&] { xls_c_str_free(emitted); });
+    EXPECT_EQ(std::string_view{emitted}, "foo;");
+  }
+
+  // Module: empty body -> "module emit_top;\nendmodule\n"
+  {
+    char* emitted = xls_vast_emit_node(reinterpret_cast<void*>(m));
+    ASSERT_NE(emitted, nullptr);
+    absl::Cleanup free_mod([&] { xls_c_str_free(emitted); });
+    const std::string_view kWant = R"(module emit_top;
+
+endmodule)";
+    EXPECT_EQ(std::string_view{emitted}, kWant);
+  }
+}
+
 // Tests that we can reference a slice of a multidimensional packed array on
 // the LHS or RHS of an assign statement; e.g.
 // ```
