@@ -289,9 +289,10 @@ char* xls_vast_verilog_file_emit(const struct xls_vast_verilog_file* f) {
   return xls::ToOwnedCString(result);
 }
 
-char* xls_vast_emit_node(void* node) {
-  auto* cpp_node = reinterpret_cast<xls::verilog::VastNode*>(node);
-  std::string result = cpp_node->Emit(/*line_info=*/nullptr);
+char* xls_vast_expression_emit(struct xls_vast_expression* expr) {
+  CHECK_NE(expr, nullptr);
+  auto* cpp_expr = reinterpret_cast<xls::verilog::Expression*>(expr);
+  std::string result = cpp_expr->Emit(/*line_info=*/nullptr);
   return xls::ToOwnedCString(result);
 }
 
