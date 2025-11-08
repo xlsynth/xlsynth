@@ -289,6 +289,12 @@ char* xls_vast_verilog_file_emit(const struct xls_vast_verilog_file* f) {
   return xls::ToOwnedCString(result);
 }
 
+char* xls_vast_emit_node(void* node) {
+  auto* cpp_node = reinterpret_cast<xls::verilog::VastNode*>(node);
+  std::string result = cpp_node->Emit(/*line_info=*/nullptr);
+  return xls::ToOwnedCString(result);
+}
+
 struct xls_vast_data_type* xls_vast_verilog_file_make_scalar_type(
     struct xls_vast_verilog_file* f) {
   auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
