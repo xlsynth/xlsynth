@@ -458,6 +458,14 @@ void xls_vast_verilog_module_add_member_macro_statement(
   cpp_module->AddModuleMember(cpp_stmt);
 }
 
+void xls_vast_verilog_module_add_member_macro_statement(
+    struct xls_vast_verilog_module* m,
+    struct xls_vast_macro_statement* statement) {
+  auto* cpp_module = reinterpret_cast<xls::verilog::Module*>(m);
+  auto* cpp_stmt = reinterpret_cast<xls::verilog::MacroStatement*>(statement);
+  cpp_module->AddModuleMember(cpp_stmt);
+}
+
 struct xls_vast_literal* xls_vast_verilog_file_make_plain_literal(
     struct xls_vast_verilog_file* f, int32_t value) {
   auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
@@ -829,6 +837,16 @@ struct xls_vast_statement* xls_vast_generate_loop_add_continuous_assignment(
       cpp_loop->Add<xls::verilog::ContinuousAssignment>(xls::SourceInfo(),
                                                         cpp_lhs, cpp_rhs);
   return reinterpret_cast<xls_vast_statement*>(cpp_assignment);
+}
+
+struct xls_vast_macro_statement* xls_vast_generate_loop_add_macro_statement(
+    struct xls_vast_generate_loop* loop,
+    struct xls_vast_macro_statement* statement) {
+  auto* cpp_loop = reinterpret_cast<xls::verilog::GenerateLoop*>(loop);
+  auto* cpp_statement =
+      reinterpret_cast<xls::verilog::MacroStatement*>(statement);
+  cpp_loop->AddMember(cpp_statement);
+  return reinterpret_cast<xls_vast_macro_statement*>(cpp_statement);
 }
 
 struct xls_vast_indexable_expression* xls_vast_index_as_indexable_expression(
