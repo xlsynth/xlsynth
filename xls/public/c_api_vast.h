@@ -47,6 +47,8 @@ struct xls_vast_instantiation;
 struct xls_vast_continuous_assignment;
 struct xls_vast_comment;
 struct xls_vast_inline_verilog_statement;
+struct xls_vast_macro_ref;
+struct xls_vast_macro_statement;
 struct xls_vast_always_base;
 struct xls_vast_statement;
 struct xls_vast_statement_block;
@@ -140,6 +142,8 @@ struct xls_vast_def* xls_vast_verilog_file_make_int_def(
 struct xls_vast_data_type* xls_vast_verilog_file_make_extern_package_type(
     struct xls_vast_verilog_file* f, const char* package_name,
     const char* entity_name);
+struct xls_vast_data_type* xls_vast_verilog_file_make_extern_type(
+    struct xls_vast_verilog_file* f, const char* entity_name);
 
 struct xls_vast_data_type* xls_vast_verilog_file_make_packed_array_type(
     struct xls_vast_verilog_file* f, xls_vast_data_type* element_type,
@@ -159,6 +163,11 @@ void xls_vast_verilog_module_add_member_blank_line(
 void xls_vast_verilog_module_add_member_inline_statement(
     struct xls_vast_verilog_module* m,
     struct xls_vast_inline_verilog_statement* stmt);
+
+// Adds a macro statement (e.g. `FOO(...);) to the module.
+void xls_vast_verilog_module_add_member_macro_statement(
+    struct xls_vast_verilog_module* m,
+    struct xls_vast_macro_statement* statement);
 
 struct xls_vast_logic_ref* xls_vast_verilog_module_add_input(
     struct xls_vast_verilog_module* m, const char* name,
@@ -290,6 +299,23 @@ struct xls_vast_blank_line* xls_vast_verilog_file_make_blank_line(
 struct xls_vast_inline_verilog_statement*
 xls_vast_verilog_file_make_inline_verilog_statement(
     struct xls_vast_verilog_file* f, const char* text);
+
+// Creates a MacroRef expression: `NAME or `NAME(args...)
+// If args is NULL and arg_count == 0, emits `NAME (no parentheses).
+// If args is non-NULL and arg_count == 0, emits `NAME() (empty parentheses).
+struct xls_vast_macro_ref* xls_vast_verilog_file_make_macro_ref(
+    struct xls_vast_verilog_file* f, const char* name);
+struct xls_vast_macro_ref* xls_vast_verilog_file_make_macro_ref_with_args(
+    struct xls_vast_verilog_file* f, const char* name,
+    struct xls_vast_expression** args, size_t arg_count);
+
+// Cast: MacroRef -> Expression
+struct xls_vast_expression* xls_vast_macro_ref_as_expression(
+    struct xls_vast_macro_ref* ref);
+
+// Creates a MacroStatement from a MacroRef: e.g. `NAME(...);
+struct xls_vast_macro_statement* xls_vast_verilog_file_make_macro_statement(
+    struct xls_vast_verilog_file* f, struct xls_vast_macro_ref* ref);
 
 struct xls_vast_instantiation* xls_vast_verilog_file_make_instantiation(
     struct xls_vast_verilog_file* f, const char* module_name,
@@ -423,6 +449,11 @@ void xls_vast_generate_loop_add_instantiation(
 void xls_vast_generate_loop_add_inline_verilog_statement(
     struct xls_vast_generate_loop* loop,
     struct xls_vast_inline_verilog_statement* stmt);
+
+// Adds a macro statement (e.g. `NAME(...);) inside the given generate loop,
+// using the provided MacroRef (which may include arguments).
+void xls_vast_generate_loop_add_macro_statement(
+    struct xls_vast_generate_loop* loop, struct xls_vast_macro_ref* macro_ref);
 
 // Adds an always_comb block inside the given generate loop.
 // Returns true on success; on failure returns false and sets error_out.

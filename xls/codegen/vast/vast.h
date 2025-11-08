@@ -1143,16 +1143,44 @@ class TemplateInstantiation final : public Instantiation {
   std::string template_text_;
 };
 
-// Represents a reference to an already-defined macro. For example: `MY_MACRO.
+// Represents a reference to an already-defined macro. Examples:
+//
+//  `MY_MACRO             // Arguments not given.
+//  `MY_MACRO(arg1, arg2) // Two argments.
+//  `MY_MACRO()           // Arguments given, but empty.
 class MacroRef final : public Expression {
  public:
   MacroRef(std::string_view name, VerilogFile* file, const SourceInfo& loc)
       : Expression(file, loc), name_(name) {}
+  MacroRef(std::string_view name, absl::Span<Expression* const> args,
+           VerilogFile* file, const SourceInfo& loc)
+      : Expression(file, loc),
+        name_(name),
+        args_(std::vector<Expression*>(args.begin(), args.end())) {}
 
   std::string Emit(LineInfo* line_info) const final;
 
  private:
   std::string name_;
+  std::optional<std::vector<Expression*>> args_;
+};
+
+// A macro as a statement. Example:
+//
+//   `MY_MACRO;
+//
+// The emitted text is the member MacroRef followed by a semicolon.
+class MacroStatement final : public Statement {
+ public:
+  MacroStatement(MacroRef* macro_ref, VerilogFile* file, const SourceInfo& loc)
+      : Statement(file, loc), macro_ref_(macro_ref) {}
+
+  std::string Emit(LineInfo* line_info) const final {
+    return macro_ref_->Emit(line_info) + ";";
+  }
+
+ private:
+  MacroRef* macro_ref_;
 };
 
 // Defines a module parameter. A parameter must be assigned to an expression,
@@ -1243,13 +1271,15 @@ class Typedef final : public VastNode {
   Def* def_;
 };
 
-// A type that is defined in an external package, where we may not know the
-// underlying bit vector count as we request in `ExternType`.
-class ExternPackageType : public DataType {
+// A type that is defined elsewhere including in an external package.
+class ExternType : public DataType {
  public:
-  explicit ExternPackageType(std::string_view package_name,
-                             std::string_view type_name, VerilogFile* file,
-                             const SourceInfo& loc)
+  ExternType(std::string_view type_name, VerilogFile* file,
+             const SourceInfo& loc)
+      : DataType(file, loc), type_name_(type_name) {}
+  // A type from a external package (e.g, `the_pkg::the_type`).
+  ExternType(std::string_view package_name, std::string_view type_name,
+             VerilogFile* file, const SourceInfo& loc)
       : DataType(file, loc),
         package_name_(package_name),
         type_name_(type_name) {}
@@ -1270,7 +1300,7 @@ class ExternPackageType : public DataType {
   bool is_signed() const final { return false; }
 
  private:
-  std::string package_name_;
+  std::optional<std::string> package_name_;
   std::string type_name_;
 };
 
@@ -1289,19 +1319,6 @@ class TypedefType final : public UserDefinedAliasType {
 
  private:
   Typedef* type_def_;
-};
-
-class ExternType final : public UserDefinedAliasType {
- public:
-  explicit ExternType(DataType* bitvec_repr, std::string_view name,
-                      VerilogFile* file, const SourceInfo& loc)
-      : UserDefinedAliasType(bitvec_repr, file, loc), name_(name) {}
-
-  // Just emits the name_
-  std::string Emit(LineInfo* line_info) const final;
-
- private:
-  std::string name_;
 };
 
 // Represents the definition of a member of an enum.
@@ -1636,43 +1653,6 @@ class AlwaysFf final : public AlwaysBase {
 
  protected:
   std::string name() const final { return "always_ff"; }
-};
-
-using GenerateLoopMember =
-    std::variant<LocalParam*, Statement*, AlwaysComb*, AlwaysFf*, AlwaysFlop*>;
-
-// Represents a generate loop construct. Example:
-// ```verilog
-// for (genvar i = 0; i < 32; i = i + 1) begin : gen_loop
-//   assign output[i] = input[i];
-// end
-// ```
-//
-class GenerateLoop final : public Statement {
- public:
-  GenerateLoop(std::string_view genvar_name, Expression* init,
-               Expression* limit, std::optional<std::string> label,
-               VerilogFile* file, const SourceInfo& loc);
-
-  LogicRef* genvar() const { return genvar_; }
-  Expression* init() const { return init_; }
-  Expression* limit() const { return limit_; }
-  const std::optional<std::string>& label() const { return label_; }
-
-  template <typename T, typename... Args>
-  T* Add(const SourceInfo& loc, Args&&... args);
-  void AddGenerateLoopMember(GenerateLoopMember member) {
-    members_.push_back(member);
-  }
-
-  std::string Emit(LineInfo* line_info) const final;
-
- private:
-  LogicRef* genvar_;
-  Expression* init_;
-  Expression* limit_;
-  std::optional<std::string> label_;
-  std::vector<GenerateLoopMember> members_;
 };
 
 // Defines an 'initial' block.
@@ -2298,7 +2278,7 @@ using ModuleMember =
                  ModuleSection*,
                  // Generate loop, can effectively generate more module members
                  // at elaboration time
-                 GenerateLoop*>;
+                 GenerateLoop*, MacroStatement*>;
 
 // Represents a generate loop construct. Example:
 // ```verilog
@@ -2930,8 +2910,7 @@ class VerilogFile {
   DataType* BitVectorType(int64_t bit_count, const SourceInfo& loc,
                           bool is_signed = false);
 
-  DataType* ExternType(DataType* punable_type, std::string_view name,
-                       const SourceInfo& loc);
+  DataType* ExternType(std::string_view name, const SourceInfo& loc);
 
   // As above, but does not produce a scalar value when the bit_count is 1.
   //
@@ -3048,6 +3027,7 @@ inline T* GenerateLoop::Add(const SourceInfo& loc, Args&&... args) {
   AddMember(ptr);
   return ptr;
 }
+
 }  // namespace verilog
 }  // namespace xls
 
