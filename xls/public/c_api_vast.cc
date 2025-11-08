@@ -355,12 +355,18 @@ struct xls_vast_data_type* xls_vast_verilog_file_make_extern_package_type(
     struct xls_vast_verilog_file* f, const char* package_name,
     const char* entity_name) {
   auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
-  xls::verilog::DataType* type =
-      cpp_file->Make<xls::verilog::ExternPackageType>(
-          xls::SourceInfo(), package_name, entity_name);
+  xls::verilog::DataType* type = cpp_file->Make<xls::verilog::ExternType>(
+      xls::SourceInfo(), package_name, entity_name);
   return reinterpret_cast<xls_vast_data_type*>(type);
 }
 
+struct xls_vast_data_type* xls_vast_verilog_file_make_extern_type(
+    struct xls_vast_verilog_file* f, const char* entity_name) {
+  auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
+  xls::verilog::DataType* type =
+      cpp_file->Make<xls::verilog::ExternType>(xls::SourceInfo(), entity_name);
+  return reinterpret_cast<xls_vast_data_type*>(type);
+}
 struct xls_vast_data_type* xls_vast_verilog_file_make_packed_array_type(
     struct xls_vast_verilog_file* f, struct xls_vast_data_type* element_type,
     const int64_t* packed_dims, size_t packed_dims_count) {
@@ -419,6 +425,14 @@ void xls_vast_verilog_module_add_member_inline_statement(
   auto* cpp_module = reinterpret_cast<xls::verilog::Module*>(m);
   auto* cpp_stmt =
       reinterpret_cast<xls::verilog::InlineVerilogStatement*>(stmt);
+  cpp_module->AddModuleMember(cpp_stmt);
+}
+
+void xls_vast_verilog_module_add_member_macro_statement(
+    struct xls_vast_verilog_module* m,
+    struct xls_vast_macro_statement* statement) {
+  auto* cpp_module = reinterpret_cast<xls::verilog::Module*>(m);
+  auto* cpp_stmt = reinterpret_cast<xls::verilog::MacroStatement*>(statement);
   cpp_module->AddModuleMember(cpp_stmt);
 }
 
@@ -506,6 +520,49 @@ xls_vast_verilog_file_make_inline_verilog_statement(
       cpp_file->Make<xls::verilog::InlineVerilogStatement>(xls::SourceInfo(),
                                                            text);
   return reinterpret_cast<xls_vast_inline_verilog_statement*>(cpp_stmt);
+}
+
+struct xls_vast_macro_ref* xls_vast_verilog_file_make_macro_ref(
+    struct xls_vast_verilog_file* f, const char* name) {
+  auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
+  auto* cpp_ref =
+      cpp_file->Make<xls::verilog::MacroRef>(xls::SourceInfo(), name);
+  return reinterpret_cast<xls_vast_macro_ref*>(cpp_ref);
+}
+
+struct xls_vast_macro_ref* xls_vast_verilog_file_make_macro_ref_with_args(
+    struct xls_vast_verilog_file* f, const char* name,
+    struct xls_vast_expression** args, size_t arg_count) {
+  auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
+  if (arg_count == 0) {
+    auto* cpp_ref = cpp_file->Make<xls::verilog::MacroRef>(
+        xls::SourceInfo(), name, std::vector<xls::verilog::Expression*>{});
+    return reinterpret_cast<xls_vast_macro_ref*>(cpp_ref);
+  }
+  std::vector<xls::verilog::Expression*> cpp_args;
+  cpp_args.reserve(arg_count);
+  for (size_t i = 0; i < arg_count; ++i) {
+    cpp_args.push_back(reinterpret_cast<xls::verilog::Expression*>(args[i]));
+  }
+  auto* cpp_ref = cpp_file->Make<xls::verilog::MacroRef>(
+      xls::SourceInfo(), name, absl::MakeConstSpan(cpp_args));
+  return reinterpret_cast<xls_vast_macro_ref*>(cpp_ref);
+}
+
+struct xls_vast_expression* xls_vast_macro_ref_as_expression(
+    struct xls_vast_macro_ref* ref) {
+  auto* cpp_ref = reinterpret_cast<xls::verilog::MacroRef*>(ref);
+  auto* cpp_expr = static_cast<xls::verilog::Expression*>(cpp_ref);
+  return reinterpret_cast<xls_vast_expression*>(cpp_expr);
+}
+
+struct xls_vast_macro_statement* xls_vast_verilog_file_make_macro_statement(
+    struct xls_vast_verilog_file* f, struct xls_vast_macro_ref* ref) {
+  auto* cpp_file = reinterpret_cast<xls::verilog::VerilogFile*>(f);
+  auto* cpp_ref = reinterpret_cast<xls::verilog::MacroRef*>(ref);
+  auto* cpp_stmt =
+      cpp_file->Make<xls::verilog::MacroStatement>(xls::SourceInfo(), cpp_ref);
+  return reinterpret_cast<xls_vast_macro_statement*>(cpp_stmt);
 }
 
 struct xls_vast_instantiation* xls_vast_verilog_file_make_instantiation(
@@ -659,6 +716,16 @@ void xls_vast_generate_loop_add_inline_verilog_statement(
   auto* cpp_stmt =
       reinterpret_cast<xls::verilog::InlineVerilogStatement*>(stmt);
   cpp_loop->AddMember(cpp_stmt);
+}
+
+void xls_vast_generate_loop_add_macro_statement(
+    struct xls_vast_generate_loop* loop, struct xls_vast_macro_ref* macro_ref) {
+  auto* cpp_loop = reinterpret_cast<xls::verilog::GenerateLoop*>(loop);
+  auto* cpp_ref = reinterpret_cast<xls::verilog::MacroRef*>(macro_ref);
+  xls::verilog::VerilogFile* file = cpp_loop->file();
+  xls::verilog::MacroStatement* ms =
+      file->Make<xls::verilog::MacroStatement>(xls::SourceInfo(), cpp_ref);
+  cpp_loop->AddMember(ms);
 }
 
 bool xls_vast_generate_loop_add_always_comb(
