@@ -420,6 +420,16 @@ struct xls_dslx_function* xls_dslx_call_graph_get_callee_function(
     struct xls_dslx_call_graph* call_graph, struct xls_dslx_function* caller,
     int64_t callee_index);
 
+// Specializes each requested function within `typechecked_module`, producing a
+// cloned module that is re-typechecked and installed into `import_data` under
+// `install_subject`. On success, `*result_out` receives the new module.
+bool xls_dslx_typechecked_module_insert_function_specializations(
+    struct xls_dslx_typechecked_module* typechecked_module,
+    const struct xls_dslx_function_specialization_request* requests,
+    size_t request_count, struct xls_dslx_import_data* import_data,
+    const char* install_subject, char** error_out,
+    struct xls_dslx_typechecked_module** result_out);
+
 // Retrieves the underlying function associated with the given QuickCheck.
 struct xls_dslx_function* xls_dslx_quickcheck_get_function(
     struct xls_dslx_quickcheck*);
