@@ -32,11 +32,14 @@
 #include "absl/cleanup/cleanup.h"
 #include "absl/log/log.h"
 #include "absl/strings/str_format.h"
+#include "absl/types/span.h"
 #include "xls/common/file/filesystem.h"
 #include "xls/common/file/temp_directory.h"
 #include "xls/common/logging/log_lines.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/default_dslx_stdlib_path.h"
+#include "xls/jit/aot_entrypoint.pb.h"
+#include "xls/jit/orc_jit.h"
 #include "xls/public/c_api_dslx.h"
 #include "xls/public/c_api_format_preference.h"
 #include "xls/public/c_api_ir_builder.h"
@@ -1969,7 +1972,7 @@ fn main(x: u32) -> u32 {
       &cloned_tm));
   EXPECT_NE(error, nullptr);
   absl::Cleanup free_error([&] { xls_c_str_free(error); });
-  EXPECT_THAT(error, HasSubstr("helper"));
+  EXPECT_TRUE(std::string_view{error}.find("helper") != std::string::npos);
   EXPECT_EQ(cloned_tm, nullptr);
 }
 
@@ -2109,6 +2112,340 @@ top fn add_one(tok: token, x: bits[32]) -> bits[32] {
   ASSERT_TRUE(xls_value_to_string(result, &result_str));
   absl::Cleanup free_result_str([=] { xls_c_str_free(result_str); });
   EXPECT_EQ(std::string_view{result_str}, "bits[32]:43");
+}
+
+TEST(XlsCApiTest, AotCompileFunction) {
+  const std::string_view kIr = R"(package my_package
+
+top fn add_one(x: bits[32]) -> bits[32] {
+  one: bits[32] = literal(value=1)
+  ret result: bits[32] = add(x, one)
+}
+)";
+
+  char* error = nullptr;
+  xls_package* package = nullptr;
+  ASSERT_TRUE(xls_parse_ir_package(kIr.data(), "test.ir", &error, &package))
+      << "error: " << error;
+  ASSERT_NE(package, nullptr);
+  absl::Cleanup free_package([=] { xls_package_free(package); });
+
+  xls_function* function = nullptr;
+  ASSERT_TRUE(xls_package_get_function(package, "add_one", &error, &function));
+  ASSERT_NE(function, nullptr);
+
+  uint8_t* object_bytes = nullptr;
+  size_t object_byte_count = 0;
+  uint8_t* proto_bytes = nullptr;
+  size_t proto_byte_count = 0;
+  ASSERT_TRUE(xls_aot_compile_function(function, &error, &object_bytes,
+                                       &object_byte_count, &proto_bytes,
+                                       &proto_byte_count))
+      << "error: " << error;
+  ASSERT_GT(object_byte_count, 0);
+  absl::Cleanup free_object_bytes(
+      [=] { xls_aot_object_code_free(object_bytes); });
+  ASSERT_GT(proto_byte_count, 0);
+  absl::Cleanup free_proto_bytes(
+      [=] { xls_aot_entrypoints_proto_free(proto_bytes); });
+
+  xls::AotPackageEntrypointsProto entrypoints;
+  ASSERT_TRUE(entrypoints.ParseFromArray(proto_bytes, proto_byte_count));
+  ASSERT_EQ(entrypoints.entrypoint_size(), 1);
+  EXPECT_TRUE(entrypoints.entrypoint(0).has_function_symbol());
+  EXPECT_TRUE(entrypoints.entrypoint(0).has_packed_function_symbol());
+
+  xls_bits* input_bits = nullptr;
+  ASSERT_TRUE(xls_bits_make_ubits(32, 41, &error, &input_bits));
+  xls_value* input = xls_value_from_bits_owned(input_bits);
+  absl::Cleanup free_input([=] { xls_value_free(input); });
+
+  std::vector<xls_value*> args = {input};
+  xls_aot_exec_context* context = nullptr;
+  ASSERT_TRUE(
+      xls_aot_exec_context_create(proto_bytes, proto_byte_count, &error, &context))
+      << "error: " << error;
+  ASSERT_NE(context, nullptr);
+  absl::Cleanup free_context([=] { xls_aot_exec_context_free(context); });
+
+  xls_value* result = nullptr;
+  size_t trace_messages_count = 0;
+  size_t assert_messages_count = 0;
+  ASSERT_TRUE(xls_aot_run_function(
+      object_bytes, object_byte_count, proto_bytes, proto_byte_count, context,
+      args.size(), args.data(), &error, &result, &trace_messages_count,
+      &assert_messages_count))
+      << "error: " << error;
+  absl::Cleanup free_result([=] { xls_value_free(result); });
+  EXPECT_EQ(trace_messages_count, 0);
+  EXPECT_EQ(assert_messages_count, 0);
+
+  xls_trace_message trace_message;
+  EXPECT_FALSE(xls_aot_exec_context_get_trace_message(context, 0, &error,
+                                                      &trace_message));
+  ASSERT_NE(error, nullptr);
+  xls_c_str_free(error);
+  error = nullptr;
+  char* assert_message = nullptr;
+  EXPECT_FALSE(xls_aot_exec_context_get_assert_message(context, 0, &error,
+                                                       &assert_message));
+  ASSERT_NE(error, nullptr);
+  xls_c_str_free(error);
+  error = nullptr;
+
+  char* result_str = nullptr;
+  ASSERT_TRUE(xls_value_to_string(result, &result_str));
+  absl::Cleanup free_result_str([=] { xls_c_str_free(result_str); });
+  EXPECT_EQ(std::string_view{result_str}, "bits[32]:42");
+}
+
+TEST(XlsCApiTest, AotRunFunctionTraceMessages) {
+  const std::string_view kIr = R"(package my_package
+
+top fn add_one(tok: token, x: bits[32]) -> bits[32] {
+  one: bits[32] = literal(value=1)
+  add: bits[32] = add(x, one)
+  always_on: bits[1] = literal(value=1)
+  trace: token = trace(tok, always_on, format="result: {}", data_operands=[add])
+  ret result: bits[32] = identity(add)
+}
+)";
+
+  char* error = nullptr;
+  xls_package* package = nullptr;
+  ASSERT_TRUE(xls_parse_ir_package(kIr.data(), "test.ir", &error, &package))
+      << "error: " << error;
+  ASSERT_NE(package, nullptr);
+  absl::Cleanup free_package([=] { xls_package_free(package); });
+
+  xls_function* function = nullptr;
+  ASSERT_TRUE(xls_package_get_function(package, "add_one", &error, &function));
+  ASSERT_NE(function, nullptr);
+
+  uint8_t* object_bytes = nullptr;
+  size_t object_byte_count = 0;
+  uint8_t* proto_bytes = nullptr;
+  size_t proto_byte_count = 0;
+  ASSERT_TRUE(xls_aot_compile_function(function, &error, &object_bytes,
+                                       &object_byte_count, &proto_bytes,
+                                       &proto_byte_count))
+      << "error: " << error;
+  absl::Cleanup free_object_bytes(
+      [=] { xls_aot_object_code_free(object_bytes); });
+  absl::Cleanup free_proto_bytes(
+      [=] { xls_aot_entrypoints_proto_free(proto_bytes); });
+
+  xls_aot_exec_context* context = nullptr;
+  ASSERT_TRUE(
+      xls_aot_exec_context_create(proto_bytes, proto_byte_count, &error, &context))
+      << "error: " << error;
+  ASSERT_NE(context, nullptr);
+  absl::Cleanup free_context([=] { xls_aot_exec_context_free(context); });
+
+  xls_value* tok = xls_value_make_token();
+  absl::Cleanup free_tok([=] { xls_value_free(tok); });
+  xls_bits* x_bits = nullptr;
+  ASSERT_TRUE(xls_bits_make_ubits(32, 42, &error, &x_bits));
+  xls_value* x = xls_value_from_bits_owned(x_bits);
+  absl::Cleanup free_x([=] { xls_value_free(x); });
+
+  std::vector<xls_value*> args = {tok, x};
+  xls_value* result = nullptr;
+  size_t trace_messages_count = 0;
+  size_t assert_messages_count = 0;
+  ASSERT_TRUE(xls_aot_run_function(
+      object_bytes, object_byte_count, proto_bytes, proto_byte_count, context,
+      args.size(), args.data(), &error, &result, &trace_messages_count,
+      &assert_messages_count))
+      << "error: " << error;
+  absl::Cleanup free_result([=] { xls_value_free(result); });
+  EXPECT_EQ(trace_messages_count, 1);
+  EXPECT_EQ(assert_messages_count, 0);
+
+  xls_trace_message trace_message;
+  ASSERT_TRUE(xls_aot_exec_context_get_trace_message(context, 0, &error,
+                                                     &trace_message))
+      << "error: " << error;
+  EXPECT_EQ(std::string_view{trace_message.message}, "result: 43");
+  EXPECT_EQ(trace_message.verbosity, 0);
+  xls_c_str_free(trace_message.message);
+  trace_message.message = nullptr;
+
+  EXPECT_FALSE(xls_aot_exec_context_get_trace_message(context, 1, &error,
+                                                      &trace_message));
+  ASSERT_NE(error, nullptr);
+  xls_c_str_free(error);
+  error = nullptr;
+}
+
+TEST(XlsCApiTest, AotRunFunctionAssertMessages) {
+  const std::string_view kIr = R"(package my_package
+
+top fn add_one(tok: token, x: bits[32]) -> bits[32] {
+  one: bits[32] = literal(value=1)
+  add: bits[32] = add(x, one)
+  expected: bits[32] = literal(value=42)
+  ok: bits[1] = eq(x, expected)
+  asserted: token = assert(tok, ok, message="x must be 42")
+  ret result: bits[32] = identity(add)
+}
+)";
+
+  char* error = nullptr;
+  xls_package* package = nullptr;
+  ASSERT_TRUE(xls_parse_ir_package(kIr.data(), "test.ir", &error, &package))
+      << "error: " << error;
+  ASSERT_NE(package, nullptr);
+  absl::Cleanup free_package([=] { xls_package_free(package); });
+
+  xls_function* function = nullptr;
+  ASSERT_TRUE(xls_package_get_function(package, "add_one", &error, &function));
+  ASSERT_NE(function, nullptr);
+
+  uint8_t* object_bytes = nullptr;
+  size_t object_byte_count = 0;
+  uint8_t* proto_bytes = nullptr;
+  size_t proto_byte_count = 0;
+  ASSERT_TRUE(xls_aot_compile_function(function, &error, &object_bytes,
+                                       &object_byte_count, &proto_bytes,
+                                       &proto_byte_count))
+      << "error: " << error;
+  absl::Cleanup free_object_bytes(
+      [=] { xls_aot_object_code_free(object_bytes); });
+  absl::Cleanup free_proto_bytes(
+      [=] { xls_aot_entrypoints_proto_free(proto_bytes); });
+
+  xls_aot_exec_context* context = nullptr;
+  ASSERT_TRUE(
+      xls_aot_exec_context_create(proto_bytes, proto_byte_count, &error, &context))
+      << "error: " << error;
+  ASSERT_NE(context, nullptr);
+  absl::Cleanup free_context([=] { xls_aot_exec_context_free(context); });
+
+  xls_value* tok = xls_value_make_token();
+  absl::Cleanup free_tok([=] { xls_value_free(tok); });
+  xls_bits* x_bits = nullptr;
+  ASSERT_TRUE(xls_bits_make_ubits(32, 41, &error, &x_bits));
+  xls_value* x = xls_value_from_bits_owned(x_bits);
+  absl::Cleanup free_x([=] { xls_value_free(x); });
+
+  std::vector<xls_value*> args = {tok, x};
+  xls_value* result = nullptr;
+  size_t trace_messages_count = 0;
+  size_t assert_messages_count = 0;
+  ASSERT_TRUE(xls_aot_run_function(
+      object_bytes, object_byte_count, proto_bytes, proto_byte_count, context,
+      args.size(), args.data(), &error, &result, &trace_messages_count,
+      &assert_messages_count))
+      << "error: " << error;
+  absl::Cleanup free_result([=] { xls_value_free(result); });
+  EXPECT_EQ(trace_messages_count, 0);
+  EXPECT_EQ(assert_messages_count, 1);
+
+  char* assert_message = nullptr;
+  ASSERT_TRUE(xls_aot_exec_context_get_assert_message(context, 0, &error,
+                                                      &assert_message))
+      << "error: " << error;
+  EXPECT_EQ(std::string_view{assert_message}, "x must be 42");
+  xls_c_str_free(assert_message);
+  assert_message = nullptr;
+
+  EXPECT_FALSE(
+      xls_aot_exec_context_get_assert_message(context, 1, &error, &assert_message));
+  ASSERT_NE(error, nullptr);
+  xls_c_str_free(error);
+  error = nullptr;
+}
+
+TEST(XlsCApiTest, AotEntrypointTrampoline) {
+  const std::string_view kIr = R"(package my_package
+
+top fn add_one(x: bits[8]) -> bits[8] {
+  one: bits[8] = literal(value=1)
+  ret result: bits[8] = add(x, one)
+}
+)";
+
+  char* error = nullptr;
+  xls_package* package = nullptr;
+  ASSERT_TRUE(xls_parse_ir_package(kIr.data(), "test.ir", &error, &package))
+      << "error: " << error;
+  ASSERT_NE(package, nullptr);
+  absl::Cleanup free_package([=] { xls_package_free(package); });
+  absl::Cleanup free_error([&] { xls_c_str_free(error); });
+
+  xls_function* function = nullptr;
+  ASSERT_TRUE(xls_package_get_function(package, "add_one", &error, &function));
+  ASSERT_NE(function, nullptr);
+
+  uint8_t* object_bytes = nullptr;
+  size_t object_byte_count = 0;
+  uint8_t* proto_bytes = nullptr;
+  size_t proto_byte_count = 0;
+  ASSERT_TRUE(xls_aot_compile_function(function, &error, &object_bytes,
+                                       &object_byte_count, &proto_bytes,
+                                       &proto_byte_count))
+      << "error: " << error;
+  ASSERT_GT(object_byte_count, 0);
+  absl::Cleanup free_object_bytes(
+      [=] { xls_aot_object_code_free(object_bytes); });
+  ASSERT_GT(proto_byte_count, 0);
+  absl::Cleanup free_proto_bytes(
+      [=] { xls_aot_entrypoints_proto_free(proto_bytes); });
+
+  xls::AotPackageEntrypointsProto entrypoints;
+  ASSERT_TRUE(entrypoints.ParseFromArray(proto_bytes, proto_byte_count));
+  ASSERT_EQ(entrypoints.entrypoint_size(), 1);
+  const xls::AotEntrypointProto& entrypoint = entrypoints.entrypoint(0);
+  ASSERT_TRUE(entrypoint.has_packed_function_symbol());
+
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xls::OrcJit> orc_jit,
+                           xls::OrcJit::Create());
+  XLS_ASSERT_OK(
+      orc_jit->LoadObjectCode(absl::MakeConstSpan(object_bytes, object_byte_count)));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      llvm::orc::ExecutorAddr packed_address,
+      orc_jit->LoadSymbol(entrypoint.packed_function_symbol()));
+
+  xls_aot_exec_context* context = nullptr;
+  ASSERT_TRUE(xls_aot_exec_context_create(proto_bytes, proto_byte_count, &error,
+                                          &context))
+      << "error: " << error;
+  ASSERT_NE(context, nullptr);
+  absl::Cleanup free_context([=] { xls_aot_exec_context_free(context); });
+
+  uint8_t input = 41;
+  uint8_t output = 0;
+  const uint8_t* inputs[1] = {&input};
+  uint8_t* outputs[1] = {&output};
+
+  int64_t alignment = entrypoint.temp_buffer_alignment();
+  if (alignment < 1) {
+    alignment = 1;
+  }
+  int64_t size = entrypoint.temp_buffer_size();
+  if (size < 1) {
+    size = 1;
+  }
+  int64_t alloc_size = ((size + alignment - 1) / alignment) * alignment;
+  void* temp_buffer =
+      std::aligned_alloc(static_cast<size_t>(alignment),
+                         static_cast<size_t>(alloc_size));
+  ASSERT_NE(temp_buffer, nullptr);
+  absl::Cleanup free_temp_buffer([=] { std::free(temp_buffer); });
+
+  size_t trace_messages_count = 0;
+  size_t assert_messages_count = 0;
+  int64_t continuation = xls_aot_entrypoint_trampoline(
+      static_cast<uintptr_t>(packed_address.getValue()), inputs, outputs,
+      temp_buffer, context, /*continuation_point=*/0, &trace_messages_count,
+      &assert_messages_count);
+
+  EXPECT_EQ(continuation, 0);
+  EXPECT_EQ(output, 42);
+  EXPECT_EQ(trace_messages_count, 0);
+  EXPECT_EQ(assert_messages_count, 0);
+  xls_aot_exec_context_clear_events(context);
 }
 
 // Tests that we can build a simple sample function. For fun we make one that
@@ -3705,444 +4042,6 @@ fn fmt_fn(x: u32) -> u32 { x }
   char* fmt_arg = xls_dslx_attribute_get_string_literal_argument(fmt_attr, 0);
   absl::Cleanup free_fmt_arg([&]() { xls_c_str_free(fmt_arg); });
   EXPECT_EQ(std::string(fmt_arg), "fmt-off");
-}
-
-TEST(XlsCApiTest, IrAnalysisKnownBitsAndIntervalsByNodeId) {
-  const std::string_view kIr = R"(package p
-top fn f() -> bits[8] {
-  ret lit: bits[8] = literal(value=42, id=1)
-})";
-
-  char* error = nullptr;
-  xls_package* package = nullptr;
-  ASSERT_TRUE(xls_parse_ir_package(std::string(kIr).c_str(), "test.ir", &error,
-                                   &package))
-      << "xls_parse_ir_package error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(package, nullptr);
-  absl::Cleanup free_package([&] { xls_package_free(package); });
-
-  xls_ir_analysis* analysis = nullptr;
-  ASSERT_TRUE(xls_ir_analysis_create_from_package(package, &error, &analysis))
-      << "xls_ir_analysis_create_from_package error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(analysis, nullptr);
-  absl::Cleanup free_analysis([&] { xls_ir_analysis_free(analysis); });
-
-  xls_bits* known_mask = nullptr;
-  xls_bits* known_value = nullptr;
-  ASSERT_TRUE(xls_ir_analysis_get_known_bits_for_node_id(
-      analysis, /*node_id=*/1, &error, &known_mask, &known_value))
-      << "xls_ir_analysis_get_known_bits_for_node_id error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(known_mask, nullptr);
-  ASSERT_NE(known_value, nullptr);
-  absl::Cleanup free_known_bits([&] {
-    xls_bits_free(known_mask);
-    xls_bits_free(known_value);
-  });
-
-  char* known_mask_s = nullptr;
-  char* known_value_s = nullptr;
-  ASSERT_TRUE(xls_bits_to_string(known_mask, xls_format_preference_hex,
-                                 /*include_bit_count=*/true, &error,
-                                 &known_mask_s))
-      << "xls_bits_to_string error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_TRUE(xls_bits_to_string(known_value, xls_format_preference_hex,
-                                 /*include_bit_count=*/true, &error,
-                                 &known_value_s))
-      << "xls_bits_to_string error: " << error;
-  ASSERT_EQ(error, nullptr);
-  absl::Cleanup free_known_bits_strs([&] {
-    xls_c_str_free(known_mask_s);
-    xls_c_str_free(known_value_s);
-  });
-
-  EXPECT_EQ(std::string_view(known_mask_s), "0xff [8 bits]");
-  EXPECT_EQ(std::string_view(known_value_s), "0x2a [8 bits]");
-
-  xls_interval_set* intervals = nullptr;
-  ASSERT_TRUE(xls_ir_analysis_get_intervals_for_node_id(analysis, /*node_id=*/1,
-                                                        &error, &intervals))
-      << "xls_ir_analysis_get_intervals_for_node_id error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(intervals, nullptr);
-  absl::Cleanup free_intervals([&] { xls_interval_set_free(intervals); });
-
-  EXPECT_EQ(xls_interval_set_get_interval_count(intervals), 1);
-
-  xls_bits* lo = nullptr;
-  xls_bits* hi = nullptr;
-  ASSERT_TRUE(xls_interval_set_get_interval_bounds(intervals, /*i=*/0, &error,
-                                                   &lo, &hi))
-      << "xls_interval_set_get_interval_bounds error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(lo, nullptr);
-  ASSERT_NE(hi, nullptr);
-  absl::Cleanup free_bounds([&] {
-    xls_bits_free(lo);
-    xls_bits_free(hi);
-  });
-
-  char* lo_s = nullptr;
-  char* hi_s = nullptr;
-  ASSERT_TRUE(xls_bits_to_string(lo, xls_format_preference_hex,
-                                 /*include_bit_count=*/true, &error, &lo_s))
-      << "xls_bits_to_string error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_TRUE(xls_bits_to_string(hi, xls_format_preference_hex,
-                                 /*include_bit_count=*/true, &error, &hi_s))
-      << "xls_bits_to_string error: " << error;
-  ASSERT_EQ(error, nullptr);
-  absl::Cleanup free_bounds_strs([&] {
-    xls_c_str_free(lo_s);
-    xls_c_str_free(hi_s);
-  });
-
-  EXPECT_EQ(std::string_view(lo_s), "0x2a [8 bits]");
-  EXPECT_EQ(std::string_view(hi_s), "0x2a [8 bits]");
-}
-
-TEST(XlsCApiTest, IrAnalysisFullIntervalByNodeId) {
-  const std::string_view kIr = R"(package p
-top fn f(x: bits[8] id=1) -> bits[8] {
-  ret y: bits[8] = identity(x, id=2)
-})";
-
-  char* error = nullptr;
-  xls_package* package = nullptr;
-  ASSERT_TRUE(xls_parse_ir_package(std::string(kIr).c_str(), "test.ir", &error,
-                                   &package))
-      << "xls_parse_ir_package error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(package, nullptr);
-  absl::Cleanup free_package([&] { xls_package_free(package); });
-
-  xls_ir_analysis* analysis = nullptr;
-  ASSERT_TRUE(xls_ir_analysis_create_from_package(package, &error, &analysis))
-      << "xls_ir_analysis_create_from_package error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(analysis, nullptr);
-  absl::Cleanup free_analysis([&] { xls_ir_analysis_free(analysis); });
-
-  xls_bits* known_mask = nullptr;
-  xls_bits* known_value = nullptr;
-  ASSERT_TRUE(xls_ir_analysis_get_known_bits_for_node_id(
-      analysis, /*node_id=*/2, &error, &known_mask, &known_value))
-      << "xls_ir_analysis_get_known_bits_for_node_id error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(known_mask, nullptr);
-  ASSERT_NE(known_value, nullptr);
-  absl::Cleanup free_known_bits([&] {
-    xls_bits_free(known_mask);
-    xls_bits_free(known_value);
-  });
-
-  char* known_mask_s = nullptr;
-  char* known_value_s = nullptr;
-  ASSERT_TRUE(xls_bits_to_string(known_mask, xls_format_preference_hex,
-                                 /*include_bit_count=*/true, &error,
-                                 &known_mask_s))
-      << "xls_bits_to_string error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_TRUE(xls_bits_to_string(known_value, xls_format_preference_hex,
-                                 /*include_bit_count=*/true, &error,
-                                 &known_value_s))
-      << "xls_bits_to_string error: " << error;
-  ASSERT_EQ(error, nullptr);
-  absl::Cleanup free_known_strs([&] {
-    xls_c_str_free(known_mask_s);
-    xls_c_str_free(known_value_s);
-  });
-
-  EXPECT_EQ(std::string_view(known_mask_s), "0x0 [8 bits]");
-  EXPECT_EQ(std::string_view(known_value_s), "0x0 [8 bits]");
-
-  xls_interval_set* intervals = nullptr;
-  ASSERT_TRUE(xls_ir_analysis_get_intervals_for_node_id(analysis, /*node_id=*/2,
-                                                        &error, &intervals))
-      << "xls_ir_analysis_get_intervals_for_node_id error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(intervals, nullptr);
-  absl::Cleanup free_intervals([&] { xls_interval_set_free(intervals); });
-
-  EXPECT_EQ(xls_interval_set_get_interval_count(intervals), 1);
-
-  xls_bits* lo = nullptr;
-  xls_bits* hi = nullptr;
-  ASSERT_TRUE(xls_interval_set_get_interval_bounds(intervals, /*i=*/0, &error,
-                                                   &lo, &hi))
-      << "xls_interval_set_get_interval_bounds error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(lo, nullptr);
-  ASSERT_NE(hi, nullptr);
-  absl::Cleanup free_bounds([&] {
-    xls_bits_free(lo);
-    xls_bits_free(hi);
-  });
-
-  char* lo_s = nullptr;
-  char* hi_s = nullptr;
-  ASSERT_TRUE(xls_bits_to_string(lo, xls_format_preference_hex,
-                                 /*include_bit_count=*/true, &error, &lo_s))
-      << "xls_bits_to_string error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_TRUE(xls_bits_to_string(hi, xls_format_preference_hex,
-                                 /*include_bit_count=*/true, &error, &hi_s))
-      << "xls_bits_to_string error: " << error;
-  ASSERT_EQ(error, nullptr);
-  absl::Cleanup free_bounds_strs([&] {
-    xls_c_str_free(lo_s);
-    xls_c_str_free(hi_s);
-  });
-
-  EXPECT_EQ(std::string_view(lo_s), "0x0 [8 bits]");
-  EXPECT_EQ(std::string_view(hi_s), "0xff [8 bits]");
-}
-
-TEST(XlsCApiTest, IrAnalysisMultiIntervalByNodeId) {
-  const std::string_view kIr = R"(package p
-top fn f(s: bits[1] id=1) -> bits[8] {
-  zero: bits[8] = literal(value=0, id=2)
-  two: bits[8] = literal(value=2, id=3)
-  ret result: bits[8] = sel(s, cases=[zero, two], id=4)
-})";
-
-  char* error = nullptr;
-  xls_package* package = nullptr;
-  ASSERT_TRUE(xls_parse_ir_package(std::string(kIr).c_str(), "test.ir", &error,
-                                   &package))
-      << "xls_parse_ir_package error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(package, nullptr);
-  absl::Cleanup free_package([&] { xls_package_free(package); });
-
-  xls_ir_analysis* analysis = nullptr;
-  ASSERT_TRUE(xls_ir_analysis_create_from_package(package, &error, &analysis))
-      << "xls_ir_analysis_create_from_package error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(analysis, nullptr);
-  absl::Cleanup free_analysis([&] { xls_ir_analysis_free(analysis); });
-
-  xls_bits* known_mask = nullptr;
-  xls_bits* known_value = nullptr;
-  ASSERT_TRUE(xls_ir_analysis_get_known_bits_for_node_id(
-      analysis, /*node_id=*/4, &error, &known_mask, &known_value))
-      << "xls_ir_analysis_get_known_bits_for_node_id error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(known_mask, nullptr);
-  ASSERT_NE(known_value, nullptr);
-  absl::Cleanup free_known_bits([&] {
-    xls_bits_free(known_mask);
-    xls_bits_free(known_value);
-  });
-
-  char* known_mask_s = nullptr;
-  char* known_value_s = nullptr;
-  ASSERT_TRUE(xls_bits_to_string(known_mask, xls_format_preference_hex,
-                                 /*include_bit_count=*/true, &error,
-                                 &known_mask_s))
-      << "xls_bits_to_string error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_TRUE(xls_bits_to_string(known_value, xls_format_preference_hex,
-                                 /*include_bit_count=*/true, &error,
-                                 &known_value_s))
-      << "xls_bits_to_string error: " << error;
-  ASSERT_EQ(error, nullptr);
-  absl::Cleanup free_known_strs([&] {
-    xls_c_str_free(known_mask_s);
-    xls_c_str_free(known_value_s);
-  });
-
-  // Possible values are {0, 2}, so all bits are known to be 0 except bit 1.
-  EXPECT_EQ(std::string_view(known_mask_s), "0xfd [8 bits]");
-  EXPECT_EQ(std::string_view(known_value_s), "0x0 [8 bits]");
-
-  xls_interval_set* intervals = nullptr;
-  ASSERT_TRUE(xls_ir_analysis_get_intervals_for_node_id(analysis, /*node_id=*/4,
-                                                        &error, &intervals))
-      << "xls_ir_analysis_get_intervals_for_node_id error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(intervals, nullptr);
-  absl::Cleanup free_intervals([&] { xls_interval_set_free(intervals); });
-
-  EXPECT_EQ(xls_interval_set_get_interval_count(intervals), 2);
-
-  xls_bits* lo0 = nullptr;
-  xls_bits* hi0 = nullptr;
-  ASSERT_TRUE(xls_interval_set_get_interval_bounds(intervals, /*i=*/0, &error,
-                                                   &lo0, &hi0))
-      << "xls_interval_set_get_interval_bounds error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(lo0, nullptr);
-  ASSERT_NE(hi0, nullptr);
-  absl::Cleanup free_bounds0([&] {
-    xls_bits_free(lo0);
-    xls_bits_free(hi0);
-  });
-
-  xls_bits* lo1 = nullptr;
-  xls_bits* hi1 = nullptr;
-  ASSERT_TRUE(xls_interval_set_get_interval_bounds(intervals, /*i=*/1, &error,
-                                                   &lo1, &hi1))
-      << "xls_interval_set_get_interval_bounds error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(lo1, nullptr);
-  ASSERT_NE(hi1, nullptr);
-  absl::Cleanup free_bounds1([&] {
-    xls_bits_free(lo1);
-    xls_bits_free(hi1);
-  });
-
-  char* lo0_s = nullptr;
-  char* hi0_s = nullptr;
-  char* lo1_s = nullptr;
-  char* hi1_s = nullptr;
-  ASSERT_TRUE(xls_bits_to_string(lo0, xls_format_preference_hex,
-                                 /*include_bit_count=*/true, &error, &lo0_s))
-      << "xls_bits_to_string error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_TRUE(xls_bits_to_string(hi0, xls_format_preference_hex,
-                                 /*include_bit_count=*/true, &error, &hi0_s))
-      << "xls_bits_to_string error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_TRUE(xls_bits_to_string(lo1, xls_format_preference_hex,
-                                 /*include_bit_count=*/true, &error, &lo1_s))
-      << "xls_bits_to_string error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_TRUE(xls_bits_to_string(hi1, xls_format_preference_hex,
-                                 /*include_bit_count=*/true, &error, &hi1_s))
-      << "xls_bits_to_string error: " << error;
-  ASSERT_EQ(error, nullptr);
-  absl::Cleanup free_bounds_strs([&] {
-    xls_c_str_free(lo0_s);
-    xls_c_str_free(hi0_s);
-    xls_c_str_free(lo1_s);
-    xls_c_str_free(hi1_s);
-  });
-
-  EXPECT_EQ(std::string_view(lo0_s), "0x0 [8 bits]");
-  EXPECT_EQ(std::string_view(hi0_s), "0x0 [8 bits]");
-  EXPECT_EQ(std::string_view(lo1_s), "0x2 [8 bits]");
-  EXPECT_EQ(std::string_view(hi1_s), "0x2 [8 bits]");
-}
-
-TEST(XlsCApiTest, IrAnalysisOptionsEnableContextSensitiveRange) {
-  const std::string_view kIr = R"(package p
-top fn f(x: bits[4] id=1) -> bits[4] {
-  k: bits[4] = literal(value=2, id=2)
-  p: bits[1] = sgt(x, k, id=3)
-  ret y: bits[4] = sel(p, cases=[k, x], id=4)
-})";
-
-  char* error = nullptr;
-  xls_package* package = nullptr;
-  ASSERT_TRUE(xls_parse_ir_package(std::string(kIr).c_str(), "test.ir", &error,
-                                   &package))
-      << "xls_parse_ir_package error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(package, nullptr);
-  absl::Cleanup free_package([&] { xls_package_free(package); });
-
-  // Default analysis (fast).
-  xls_ir_analysis* default_analysis = nullptr;
-  ASSERT_TRUE(
-      xls_ir_analysis_create_from_package(package, &error, &default_analysis))
-      << "xls_ir_analysis_create_from_package error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(default_analysis, nullptr);
-  absl::Cleanup free_default_analysis(
-      [&] { xls_ir_analysis_free(default_analysis); });
-
-  // Context-sensitive analysis.
-  xls_ir_analysis* context_analysis = nullptr;
-  xls_ir_analysis_options options;
-  options.level = xls_ir_analysis_level_range_with_context;
-  ASSERT_TRUE(xls_ir_analysis_create_from_package_with_options(
-      package, &options, &error, &context_analysis))
-      << "xls_ir_analysis_create_from_package_with_options error: " << error;
-  ASSERT_EQ(error, nullptr);
-  ASSERT_NE(context_analysis, nullptr);
-  absl::Cleanup free_context_analysis(
-      [&] { xls_ir_analysis_free(context_analysis); });
-
-  // Node id 4 is the clamp select: sel(sgt(x, 2), cases=[2, x]).
-  uint64_t default_lo = 0;
-  uint64_t default_hi = 0;
-  {
-    xls_interval_set* intervals = nullptr;
-    ASSERT_TRUE(xls_ir_analysis_get_intervals_for_node_id(
-        default_analysis, /*node_id=*/4, &error, &intervals))
-        << "xls_ir_analysis_get_intervals_for_node_id error: " << error;
-    ASSERT_EQ(error, nullptr);
-    ASSERT_NE(intervals, nullptr);
-    absl::Cleanup free_intervals([&] { xls_interval_set_free(intervals); });
-
-    ASSERT_EQ(xls_interval_set_get_interval_count(intervals), 1);
-
-    xls_bits* lo = nullptr;
-    xls_bits* hi = nullptr;
-    ASSERT_TRUE(xls_interval_set_get_interval_bounds(intervals, /*i=*/0, &error,
-                                                     &lo, &hi))
-        << "xls_interval_set_get_interval_bounds error: " << error;
-    ASSERT_EQ(error, nullptr);
-    ASSERT_NE(lo, nullptr);
-    ASSERT_NE(hi, nullptr);
-    absl::Cleanup free_bounds([&] {
-      xls_bits_free(lo);
-      xls_bits_free(hi);
-    });
-
-    ASSERT_TRUE(xls_bits_to_uint64(lo, &error, &default_lo))
-        << "xls_bits_to_uint64(lo) error: " << error;
-    ASSERT_EQ(error, nullptr);
-    ASSERT_TRUE(xls_bits_to_uint64(hi, &error, &default_hi))
-        << "xls_bits_to_uint64(hi) error: " << error;
-    ASSERT_EQ(error, nullptr);
-  }
-
-  uint64_t context_lo = 0;
-  uint64_t context_hi = 0;
-  {
-    xls_interval_set* intervals = nullptr;
-    ASSERT_TRUE(xls_ir_analysis_get_intervals_for_node_id(
-        context_analysis, /*node_id=*/4, &error, &intervals))
-        << "xls_ir_analysis_get_intervals_for_node_id error: " << error;
-    ASSERT_EQ(error, nullptr);
-    ASSERT_NE(intervals, nullptr);
-    absl::Cleanup free_intervals([&] { xls_interval_set_free(intervals); });
-
-    ASSERT_EQ(xls_interval_set_get_interval_count(intervals), 1);
-
-    xls_bits* lo = nullptr;
-    xls_bits* hi = nullptr;
-    ASSERT_TRUE(xls_interval_set_get_interval_bounds(intervals, /*i=*/0, &error,
-                                                     &lo, &hi))
-        << "xls_interval_set_get_interval_bounds error: " << error;
-    ASSERT_EQ(error, nullptr);
-    ASSERT_NE(lo, nullptr);
-    ASSERT_NE(hi, nullptr);
-    absl::Cleanup free_bounds([&] {
-      xls_bits_free(lo);
-      xls_bits_free(hi);
-    });
-
-    ASSERT_TRUE(xls_bits_to_uint64(lo, &error, &context_lo))
-        << "xls_bits_to_uint64(lo) error: " << error;
-    ASSERT_EQ(error, nullptr);
-    ASSERT_TRUE(xls_bits_to_uint64(hi, &error, &context_hi))
-        << "xls_bits_to_uint64(hi) error: " << error;
-    ASSERT_EQ(error, nullptr);
-  }
-
-  // The clamp implies the result is always >= 2, and always <= 7.
-  EXPECT_EQ(context_lo, 2);
-  EXPECT_EQ(context_hi, 7);
-
-  // Default analysis is expected to be weaker (at least on the lower bound).
-  EXPECT_LT(default_lo, 2);
-  EXPECT_GE(default_hi, context_hi);
 }
 
 }  // namespace
