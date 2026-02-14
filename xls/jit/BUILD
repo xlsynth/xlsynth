@@ -157,7 +157,6 @@ cc_binary(
         "@llvm-project//llvm:ir_headers",
     ],
 )
-
 cc_binary(
     name = "aot_compiler_main",
     srcs = ["aot_compiler_main.cc"],
