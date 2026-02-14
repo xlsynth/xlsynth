@@ -27,12 +27,12 @@
 #include <variant>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/base/macros.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/log/log.h"
 #include "absl/strings/str_format.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "llvm/include/llvm/ADT/StringRef.h"
 #include "llvm/include/llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/include/llvm/ExecutionEngine/Orc/LLJIT.h"
@@ -2305,8 +2305,9 @@ top fn add_one(x: bits[8]) -> bits[8] {
   size_t trace_messages_count = 0;
   size_t assert_messages_count = 0;
   int64_t continuation = xls_aot_entrypoint_trampoline(
-      packed_address.toPtr<void*>(), inputs, outputs, temp_buffer, context,
-      /*continuation_point=*/0, &trace_messages_count, &assert_messages_count);
+      static_cast<uintptr_t>(packed_address.getValue()), inputs, outputs,
+      temp_buffer, context, /*continuation_point=*/0, &trace_messages_count,
+      &assert_messages_count);
 
   EXPECT_EQ(continuation, 0);
   EXPECT_EQ(output, 42);
