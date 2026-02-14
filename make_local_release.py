@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import glob
+import re
 
 # List of Bazel targets to build
 COMMON_TARGETS = [
@@ -43,6 +44,59 @@ SMOKE_TEST_TARGETS = [
     "//xls/public:c_api_test",
     "//xls/dslx/type_system:typecheck_main"
 ]
+
+IMPORT_RE = re.compile(r'^\s*import\s+"([^"]+)";\s*$')
+AOT_ENTRYPOINT_PROTO = "xls/jit/aot_entrypoint.proto"
+
+
+def collect_proto_dependencies(proto_path):
+    """Returns all local proto dependencies reachable from `proto_path`."""
+    all_protos = set()
+    stack = [proto_path]
+    while stack:
+        current = stack.pop()
+        if current in all_protos:
+            continue
+        all_protos.add(current)
+        with open(current, "r", encoding="utf-8") as f:
+            for line in f:
+                match = IMPORT_RE.match(line)
+                if not match:
+                    continue
+                imported = match.group(1)
+                # We only bundle local proto dependencies from this tree.
+                if os.path.exists(imported):
+                    stack.append(imported)
+    return all_protos
+
+
+def copy_flattened_protos(output_dir, root_proto):
+    """Copies `root_proto` and local dependencies into output_dir/proto."""
+    proto_paths = collect_proto_dependencies(root_proto)
+    by_basename = {}
+    for proto_path in sorted(proto_paths):
+        basename = os.path.basename(proto_path)
+        existing = by_basename.get(basename)
+        if existing and existing != proto_path:
+            raise ValueError(
+                f"Cannot flatten protos: {existing} and {proto_path} share {basename}"
+            )
+        by_basename[basename] = proto_path
+
+    proto_out_dir = os.path.join(output_dir, "proto")
+    os.makedirs(proto_out_dir, exist_ok=True)
+    for proto_path in sorted(proto_paths):
+        destination = os.path.join(proto_out_dir, os.path.basename(proto_path))
+        with open(proto_path, "r", encoding="utf-8") as src:
+            content = src.read()
+        # Rewrite local imports to the flattened import path.
+        for dep_path in sorted(proto_paths):
+            old_import = f'import "{dep_path}";'
+            new_import = f'import "{os.path.basename(dep_path)}";'
+            content = content.replace(old_import, new_import)
+        with open(destination, "w", encoding="utf-8") as dst:
+            dst.write(content)
+        print(f"Copied {proto_path} to {destination}")
 
 # Function to get the current git hash and cleanliness status
 def get_git_info():
@@ -156,6 +210,14 @@ def make_local_release(output_dir, targets, run_tests=True, mode="opt"):
         except FileNotFoundError as e:
             print(f"Standard library file not found {stdlib_path}: {e}")
             sys.exit(1)
+
+    # Copy the AOT entrypoint proto and all local dependencies into a flat
+    # proto directory for downstream consumers.
+    try:
+        copy_flattened_protos(output_dir, AOT_ENTRYPOINT_PROTO)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Failed to copy protos for release: {e}")
+        sys.exit(1)
 
     # Write git information to a file
     git_hash, clean_status = get_git_info()
