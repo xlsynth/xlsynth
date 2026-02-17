@@ -239,7 +239,7 @@ cc_test(
     deps = [
         ":math_util",
         ":xls_gunit_main",
-        "//xls/common/fuzzing:fuzztest",
+        #"//xls/common/fuzzing:fuzztest",
         "@abseil-cpp//absl/base:core_headers",
         "@googletest//:gtest",
     ],
@@ -587,7 +587,7 @@ cc_library(
     deps = [
         ":benchmark_support",
         ":gunit_init_xls",
-        "@com_google_fuzztest//fuzztest:init_fuzztest",
+        #"@com_google_fuzztest//fuzztest:init_fuzztest",
         "@googletest//:gtest",
     ],
     alwayslink = True,
@@ -629,7 +629,7 @@ cc_test(
     deps = [
         ":stopwatch",
         ":xls_gunit_main",
-        "//xls/common/fuzzing:fuzztest",
+        #"//xls/common/fuzzing:fuzztest",
         "@abseil-cpp//absl/time",
         "@googletest//:gtest",
     ],
