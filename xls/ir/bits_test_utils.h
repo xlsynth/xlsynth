@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-#include "xls/common/fuzzing/fuzztest.h"
+//#include "xls/common/fuzzing/fuzztest.h"
 #include "absl/log/check.h"
 #include "xls/data_structures/inline_bitmap.h"
 #include "xls/ir/bits.h"
@@ -53,6 +53,7 @@ inline Bits PrimeBits(int64_t bit_count) {
   return Bits::FromBitmap(bitmap);
 }
 
+#if 0
 // GoogleFuzzTest "Arbitrary" domain for Bits with known count.
 inline auto ArbitraryBits(int64_t bit_count) {
   const int64_t byte_count = (bit_count + 7) / 8;
@@ -112,6 +113,7 @@ inline auto NonemptyBits(std::optional<size_t> max_byte_count = std::nullopt) {
       },
       std::move(data), fuzztest::InRange<uint8_t>(0, 7));
 }
+#endif
 
 }  // namespace xls
 
