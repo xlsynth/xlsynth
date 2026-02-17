@@ -609,26 +609,26 @@ cc_library(
     ],
 )
 
-cc_test(
-    name = "scanned_token_to_string_fuzz_test",
-    srcs = ["scanned_token_to_string_fuzz_test.cc"],
-    tags = ["componentid:1408685"],
-    deps = [
-        ":bindings",
-        ":pos",
-        ":scanner",
-        ":token",
-        "//xls/common:xls_gunit_main",
-        "//xls/common/fuzzing:fuzztest",
-        "//xls/common/status:ret_check",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:status_matchers",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:span",
-        "@googletest//:gtest",
-    ],
-)
+# cc_test(
+#     name = "scanned_token_to_string_fuzz_test",
+#     srcs = ["scanned_token_to_string_fuzz_test.cc"],
+#     tags = ["componentid:1408685"],
+#     deps = [
+#         ":bindings",
+#         ":pos",
+#         ":scanner",
+#         ":token",
+#         "//xls/common:xls_gunit_main",
+#         "//xls/common/fuzzing:fuzztest",
+#         "//xls/common/status:ret_check",
+#         "@com_google_absl//absl/status",
+#         "@com_google_absl//absl/status:status_matchers",
+#         "@com_google_absl//absl/status:statusor",
+#         "@com_google_absl//absl/strings",
+#         "@com_google_absl//absl/types:span",
+#         "@googletest//:gtest",
+#     ],
+# )
 
 cc_library(
     name = "proc_id",

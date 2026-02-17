@@ -4,17 +4,17 @@ module(
 )
 
 # Compiler toolchain
-bazel_dep(name = "toolchains_llvm", version = "1.4.0")
+# bazel_dep(name = "toolchains_llvm", version = "1.4.0")
 
 # Configure and register the toolchain.
-llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
-llvm.toolchain(
-    llvm_version = "19.1.7",
-    cxx_standard = {"": "c++20"},
-)
-use_repo(llvm, "llvm_toolchain")
-
-register_toolchains("@llvm_toolchain//:all")
+# llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
+# llvm.toolchain(
+#     llvm_version = "19.1.7",
+#     cxx_standard = {"": "c++20"},
+# )
+# use_repo(llvm, "llvm_toolchain")
+#
+# register_toolchains("@llvm_toolchain//:all")
 
 # Python toolchain
 # TODO: https://github.com/google/xls/issues/2941 - revisit versioning once we're on bazel 8.
