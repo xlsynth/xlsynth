@@ -47,9 +47,9 @@
 #include "xls/common/status/status_macros.h"
 #include "xls/data_structures/binary_search.h"
 #include "xls/estimators/delay_model/delay_estimator.h"
-#include "xls/fdo/delay_manager.h"
-#include "xls/fdo/iterative_sdc_scheduler.h"
-#include "xls/fdo/synthesizer.h"
+//#include "xls/fdo/delay_manager.h"
+//#include "xls/fdo/iterative_sdc_scheduler.h"
+//#include "xls/fdo/synthesizer.h"
 #include "xls/ir/channel.h"
 #include "xls/ir/channel_ops.h"
 #include "xls/ir/function.h"
@@ -409,6 +409,7 @@ absl::Status HandleScheduleFailure(
   return schedule_status;
 }
 
+#if 0
 absl::StatusOr<PipelineSchedule> RunIterativeSDCSchedule(
     FunctionBase* f, const SchedulingOptions& options, int64_t clock_period_ps,
     const DelayEstimator& delay_estimator,
@@ -449,6 +450,7 @@ absl::StatusOr<PipelineSchedule> RunIterativeSDCSchedule(
   XLS_VLOG_LINES(3, "Schedule\n" + schedule.ToString());
   return schedule;
 }
+#endif
 
 // NB For backwards compatibility reasons the flag options for worst case
 // throughput/II are rather confusing. Specifically, a value of 0 means that
@@ -847,6 +849,8 @@ absl::StatusOr<PipelineSchedule> RunPipelineScheduleInternal(
 
   // TODO(allight): Rewrite FDO into the scheduler API.
   if (options.use_fdo() && options.strategy() == SchedulingStrategy::SDC) {
+    LOG(FATAL) << "Iterative SDC (FDO) is not supported in this release.";
+#if 0
     if (f->IsProc()) {
       XLS_RET_CHECK_EQ(f->AsProcOrDie()->GetInitiationInterval().has_value(),
                        worst_case_throughput.has_value())
@@ -859,6 +863,7 @@ absl::StatusOr<PipelineSchedule> RunPipelineScheduleInternal(
     }
     return RunIterativeSDCSchedule(f, options, clock_period_ps, delay_estimator,
                                    synthesizer);
+#endif
   } else if (options.use_fdo()) {
     return absl::InvalidArgumentError(
         "FDO is only supported with SDC strategy.");
