@@ -1,0 +1,211 @@
+diff --git a/crosstool/osx_cc_configure.bzl b/crosstool/osx_cc_configure.bzl
+index 1307b53..a963578 100644
+--- a/crosstool/osx_cc_configure.bzl
++++ b/crosstool/osx_cc_configure.bzl
+@@ -102,7 +102,6 @@ def _compile_cc_file(repository_ctx, src_name, out_name):
+         "arm64",
+         "-arch",
+         "x86_64",
+         "-Wl,-no_adhoc_codesign",
+-        "-Wl,-no_uuid",
+         "-O3",
+         "-o",
+         out_name,
+
+diff --git a/crosstool/cc_toolchain_config.bzl b/crosstool/cc_toolchain_config.bzl
+--- a/crosstool/cc_toolchain_config.bzl
++++ b/crosstool/cc_toolchain_config.bzl
+@@ -1498,25 +1498,26 @@
+                     ACTION_NAMES.cpp_link_static_library,
+                     ACTION_NAMES.linkstamp_compile,
+                 ],
+-                env_entries = [
+-                    env_entry(
+-                        key = "XCODE_VERSION_OVERRIDE",
+-                        value = str(xcode_config.xcode_version()),
+-                    ),
+-                    # TODO: Remove once we drop bazel 7.x support
+-                    env_entry(
+-                        key = "APPLE_SDK_VERSION_OVERRIDE",
+-                        value = str(sdk_version),
+-                    ),
+-                    env_entry(
+-                        key = "APPLE_SDK_PLATFORM",
+-                        value = _sdk_name(platform_type, is_simulator),
+-                    ),
+-                    env_entry(
+-                        key = "ZERO_AR_DATE",
+-                        value = "1",
+-                    ),
+-                ] + [env_entry(key = key, value = value) for key, value in ctx.attr.extra_env.items()],
++                env_entries = (
++                    ([env_entry(
++                        key = "XCODE_VERSION_OVERRIDE",
++                        value = str(xcode_config.xcode_version()),
++                    )] if xcode_config.xcode_version() else []) +
++                    # TODO: Remove once we drop bazel 7.x support
++                    ([env_entry(
++                        key = "APPLE_SDK_VERSION_OVERRIDE",
++                        value = str(sdk_version),
++                    )] if xcode_config.xcode_version() and sdk_version else []) + [
++                        env_entry(
++                            key = "APPLE_SDK_PLATFORM",
++                            value = _sdk_name(platform_type, is_simulator),
++                        ),
++                        env_entry(
++                            key = "ZERO_AR_DATE",
++                            value = "1",
++                        ),
++                    ] + [env_entry(key = key, value = value) for key, value in ctx.attr.extra_env.items()]
++                ),
+             ),
+         ],
+     )
+
+diff --git a/crosstool/libtool.sh b/crosstool/libtool.sh
+--- a/crosstool/libtool.sh
++++ b/crosstool/libtool.sh
+@@ -33,12 +33,22 @@
+ fi
+
+ function invoke_libtool() {
+-  # Just invoke libtool via xcrunwrapper
+-  "${MY_LOCATION}/xcrunwrapper.sh" libtool "$@" \
+-  2> >(grep -v "the table of contents is empty (no object file members in the"`
+-              `" library define global symbols)$" >&2)
+-  # ^ Filtering a warning that's unlikely to indicate a real issue
+-  # ...and not silencable via a flag.
++  local stderr_file
++  stderr_file="$(mktemp "${TMPDIR:-/tmp}/libtool.stderr.XXXXXXXX")"
++  local status=0
++
++  # Just invoke libtool via xcrunwrapper.
++  "${MY_LOCATION}/xcrunwrapper.sh" libtool "$@" 2>"${stderr_file}" || status=$?
++
++  # Filter a warning that's unlikely to indicate a real issue and is not
++  # silencable via a flag, without relying on bash process substitution.
++  if [[ -s "${stderr_file}" ]]; then
++    grep -v "the table of contents is empty (no object file members in the library define global symbols)$" \
++      "${stderr_file}" >&2 || true
++  fi
++
++  rm -f "${stderr_file}"
++  return "${status}"
+ }
+
+ if [ ! -f "${MY_LOCATION}"/libtool_check_unique ] ; then
+diff --git a/crosstool/wrapped_clang.cc b/crosstool/wrapped_clang.cc
+--- a/crosstool/wrapped_clang.cc
++++ b/crosstool/wrapped_clang.cc
+@@ -168,13 +168,11 @@
+   return false;
+ }
+ 
+-// Returns the DEVELOPER_DIR environment variable in the current process
+-// environment. Aborts if this variable is unset.
+-std::string GetMandatoryEnvVar(const std::string &var_name) {
++// Returns the requested environment variable or an empty string if it is unset.
++std::string GetEnvVar(const std::string &var_name) {
+   char *env_value = getenv(var_name.c_str());
+   if (env_value == nullptr) {
+-    std::cerr << "Error: " << var_name << " not set.\n";
+-    exit(EXIT_FAILURE);
++    return "";
+   }
+   return env_value;
+ }
+@@ -309,6 +307,14 @@
+       result += buffer.data();
+     }
+     return result;
++}
++
++std::string TrimTrailingNewlines(std::string value) {
++  while (!value.empty() &&
++         (value.back() == '\n' || value.back() == '\r')) {
++    value.pop_back();
++  }
++  return value;
+ }
+ 
+ std::string GetToolchainPath(const std::string &toolchain_id) {
+@@ -421,8 +427,32 @@
+     toolchain_path = GetToolchainPath(toolchain_id);
+   }
+ 
+-  std::string developer_dir = GetMandatoryEnvVar("DEVELOPER_DIR");
+-  std::string sdk_root = GetMandatoryEnvVar("SDKROOT");
++  std::string developer_dir = GetEnvVar("DEVELOPER_DIR");
++  if (developer_dir.empty()) {
++    developer_dir = TrimTrailingNewlines(exec("/usr/bin/xcode-select -p"));
++    if (developer_dir.empty()) {
++      std::cerr << "Error: failed to determine DEVELOPER_DIR via xcode-select.\n";
++      exit(EXIT_FAILURE);
++    }
++  }
++  std::string sdk_root = GetEnvVar("SDKROOT");
++  if (sdk_root.empty() || !std::filesystem::exists(sdk_root)) {
++    std::string previous_developer_dir = GetEnvVar("DEVELOPER_DIR");
++    setenv("DEVELOPER_DIR", developer_dir.c_str(), 1);
++    sdk_root =
++        TrimTrailingNewlines(exec("/usr/bin/xcrun --sdk macosx --show-sdk-path"));
++    if (previous_developer_dir.empty()) {
++      unsetenv("DEVELOPER_DIR");
++    } else {
++      setenv("DEVELOPER_DIR", previous_developer_dir.c_str(), 1);
++    }
++    if (sdk_root.empty()) {
++      std::cerr << "Error: failed to determine SDKROOT via xcrun.\n";
++      exit(EXIT_FAILURE);
++    }
++  }
++  setenv("DEVELOPER_DIR", developer_dir.c_str(), 1);
++  setenv("SDKROOT", sdk_root.c_str(), 1);
+   std::string linked_binary, dsym_path;
+ 
+   const std::string cwd = GetCurrentDirectory();
+diff --git a/crosstool/xcrunwrapper.sh b/crosstool/xcrunwrapper.sh
+--- a/crosstool/xcrunwrapper.sh
++++ b/crosstool/xcrunwrapper.sh
+@@ -32,12 +32,18 @@
+ if [[ -z "${WRAPPER_DEVDIR}" ]] ; then
+   WRAPPER_DEVDIR="$(xcode-select -p)"
+ fi
++WRAPPER_SDKROOT="${SDKROOT:-}"
++if [[ -z "${WRAPPER_SDKROOT}" || ! -d "${WRAPPER_SDKROOT}" ]] ; then
++  WRAPPER_SDKROOT="$(DEVELOPER_DIR="${WRAPPER_DEVDIR}" /usr/bin/xcrun --sdk macosx --show-sdk-path)"
++fi
++export DEVELOPER_DIR="${WRAPPER_DEVDIR}"
++export SDKROOT="${WRAPPER_SDKROOT}"
+ 
+ # Substitute toolkit path placeholders.
+ UPDATEDARGS=()
+ for ARG in "$@" ; do
+   ARG="${ARG//__BAZEL_XCODE_DEVELOPER_DIR__/${WRAPPER_DEVDIR}}"
+-  ARG="${ARG//__BAZEL_XCODE_SDKROOT__/${SDKROOT}}"
++  ARG="${ARG//__BAZEL_XCODE_SDKROOT__/${WRAPPER_SDKROOT}}"
+   UPDATEDARGS+=("${ARG}")
+ done
+ 
+diff --git a/lib/apple_support.bzl b/lib/apple_support.bzl
+--- a/lib/apple_support.bzl
++++ b/lib/apple_support.bzl
+@@ -188,10 +188,14 @@
+ 
+     # Add the environment variables required for DEVELOPER_DIR and SDKROOT last to avoid clients
+     # overriding these values.
+-    merged_env.update(apple_common.apple_host_system_env(xcode_config))
+-    merged_env.update(
+-        apple_common.target_apple_env(xcode_config, apple_fragment.single_arch_platform),
+-    )
++    host_env = apple_common.apple_host_system_env(xcode_config)
++    merged_env.update(host_env)
++    if host_env:
++        merged_env.update(
++            apple_common.target_apple_env(xcode_config, apple_fragment.single_arch_platform),
++        )
++    else:
++        merged_env["APPLE_SDK_PLATFORM"] = apple_fragment.single_arch_platform.name_in_plist
+ 
+     merged_execution_requirements = {}
+     original_execution_requirements = processed_args.get("execution_requirements")

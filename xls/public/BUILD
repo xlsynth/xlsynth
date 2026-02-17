@@ -463,6 +463,8 @@ cc_binary(
         ":exported_symbols_map",
         ":generate_linker_params",
     ],
+    # Preserve the historical no-SONAME contract for versioned release artifacts.
+    features = ["-_soname_flags"],
     linkopts = [
         "-Wl,--version-script=$(location :exported_symbols_map)",
         "@$(location :generate_linker_params)",
