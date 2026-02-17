@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+
+# Copyright 2026 The XLS Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Packages the non-system Linux runtime closure for a released libxls shared library."""
+
+import argparse
+from enum import Enum
+import gzip
+import io
+import json
+import os
+from pathlib import Path
+import subprocess
+import tarfile
+
+_SYSTEM_LIBRARY_PREFIXES = (
+    "/lib/",
+    "/lib64/",
+    "/usr/lib64/",
+    "/usr/lib/x86_64-linux-gnu/",
+)
+
+
+class ReleaseTarget(Enum):
+    MACOS_ARM64 = ("macos-arm64", "arm64", None)
+    ROCKY8 = ("rocky8", "rocky8", "rocky8")
+    UBUNTU2004 = ("ubuntu2004", "ubuntu2004", "ubuntu2004")
+
+    def __init__(self, cli_name, artifact_suffix, runtime_platform):
+        self.cli_name = cli_name
+        self.artifact_suffix = artifact_suffix
+        self.runtime_platform = runtime_platform
+
+    @property
+    def is_linux(self):
+        return self.runtime_platform is not None
+
+
+RELEASE_TARGETS_BY_NAME = {
+    release_target.cli_name: release_target for release_target in ReleaseTarget
+}
+SUPPORTED_RELEASE_TARGETS = tuple(
+    release_target.cli_name for release_target in ReleaseTarget
+)
+SUPPORTED_LINUX_RELEASE_TARGETS = tuple(
+    release_target.cli_name
+    for release_target in ReleaseTarget
+    if release_target.is_linux
+)
+
+
+def parse_release_target(release_target_name):
+    release_target = RELEASE_TARGETS_BY_NAME.get(release_target_name)
+    if release_target is None:
+        raise ValueError(
+            "Unsupported release target {}. Expected one of: {}".format(
+                release_target_name,
+                ", ".join(SUPPORTED_RELEASE_TARGETS),
+            )
+        )
+    else:
+        return release_target
+
+
+def validate_linux_release_target(release_target_name):
+    release_target = parse_release_target(release_target_name)
+    if release_target.is_linux:
+        return release_target
+    else:
+        raise ValueError(
+            "Release target {} does not package a Linux runtime closure. Expected one of: {}".format(
+                release_target.cli_name,
+                ", ".join(SUPPORTED_LINUX_RELEASE_TARGETS),
+            )
+        )
+
+
+def coerce_linux_release_target(release_target):
+    if isinstance(release_target, ReleaseTarget):
+        if release_target.is_linux:
+            return release_target
+        else:
+            raise ValueError(
+                "Release target {} does not package a Linux runtime closure. Expected one of: {}".format(
+                    release_target.cli_name,
+                    ", ".join(SUPPORTED_LINUX_RELEASE_TARGETS),
+                )
+            )
+    else:
+        return validate_linux_release_target(release_target)
+
+
+def build_runtime_archive_filename(release_target):
+    linux_release_target = coerce_linux_release_target(release_target)
+    return f"libxls-runtime-{linux_release_target.artifact_suffix}.tar.gz"
+
+
+def build_runtime_manifest_filename(release_target):
+    linux_release_target = coerce_linux_release_target(release_target)
+    return f"libxls-runtime-{linux_release_target.artifact_suffix}-manifest.json"
+
+
+def detect_linux_release_target(os_release_path = Path("/etc/os-release")):
+    if not os_release_path.exists():
+        raise RuntimeError(
+            "Cannot detect Linux release target from missing {}".format(os_release_path)
+        )
+    release_fields = {}
+    for raw_line in os_release_path.read_text(encoding = "utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        release_fields[key] = value.strip().strip('"').strip("'").lower()
+    release_id = release_fields.get("ID", "")
+    version_id = release_fields.get("VERSION_ID", "")
+    if release_id == "ubuntu" and version_id == "20.04":
+        return ReleaseTarget.UBUNTU2004
+    elif release_id in {"rocky", "rhel", "almalinux", "centos"} and version_id.startswith("8"):
+        return ReleaseTarget.ROCKY8
+    else:
+        raise RuntimeError(
+            "Unsupported Linux release for auto-detected packaging: ID={} VERSION_ID={}".format(
+                release_id or "<missing>",
+                version_id or "<missing>",
+            )
+        )
+
+
+def detect_linux_release_platform(os_release_path = Path("/etc/os-release")):
+    return detect_linux_release_target(os_release_path).runtime_platform
+
+
+def validate_matching_linux_release_target(
+    release_target,
+    allow_release_target_mismatch = False,
+    os_release_path = Path("/etc/os-release"),
+):
+    linux_release_target = coerce_linux_release_target(release_target)
+    if allow_release_target_mismatch:
+        return linux_release_target
+    try:
+        detected_release_target = detect_linux_release_target(os_release_path)
+    except RuntimeError as e:
+        raise RuntimeError(
+            "{}. Re-run with --allow-release-target-mismatch to skip host release validation if you intentionally need cross-target naming.".format(
+                e
+            )
+        ) from e
+    if detected_release_target == linux_release_target:
+        return linux_release_target
+    else:
+        raise RuntimeError(
+            "Requested Linux release target {} does not match detected host {} from {}. "
+            "Re-run with --allow-release-target-mismatch to skip host release validation if you intentionally need cross-target naming.".format(
+                linux_release_target.cli_name,
+                detected_release_target.cli_name,
+                os_release_path,
+            )
+        )
+
+
+def run_text_command(args):
+    return subprocess.run(
+        args,
+        check = False,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        universal_newlines = True,
+    )
+
+
+def parse_ldd_output(stdout, subject_path):
+    resolved = {}
+    missing = []
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line or "=>" not in line:
+            continue
+        name, remainder = [piece.strip() for piece in line.split("=>", 1)]
+        target = remainder.split("(", 1)[0].strip()
+        if target == "not found":
+            missing.append(name)
+        elif target:
+            resolved[name] = Path(target)
+    if missing:
+        raise RuntimeError(
+            "Missing runtime dependencies for {}: {}".format(
+                subject_path,
+                ", ".join(sorted(missing)),
+            )
+        )
+    return resolved
+
+
+def resolve_direct_dependencies(shared_library_path):
+    result = run_text_command(["ldd", str(shared_library_path)])
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Failed to inspect dynamic dependencies for {}\nstdout:\n{}\nstderr:\n{}".format(
+                shared_library_path,
+                result.stdout,
+                result.stderr,
+            )
+        )
+    return parse_ldd_output(result.stdout, shared_library_path)
+
+
+def should_bundle_runtime_dependency(dependency_path):
+    normalized_path = os.path.realpath(str(dependency_path))
+    return not any(
+        normalized_path == prefix[:-1] or normalized_path.startswith(prefix)
+        for prefix in _SYSTEM_LIBRARY_PREFIXES
+    )
+
+
+def collect_runtime_closure(primary_dso_path, dependency_resolver = resolve_direct_dependencies):
+    primary_path = Path(primary_dso_path)
+    pending = [primary_path]
+    bundled = {}
+    visited = set()
+
+    while pending:
+        current = pending.pop()
+        current_key = str(current.resolve())
+        if current_key in visited:
+            continue
+        visited.add(current_key)
+
+        for dependency_name, dependency_path in dependency_resolver(current).items():
+            if not should_bundle_runtime_dependency(dependency_path):
+                continue
+            bundled_path = bundled.get(dependency_name)
+            if bundled_path is not None:
+                if bundled_path.resolve() != dependency_path.resolve():
+                    raise RuntimeError(
+                        "Dependency {} resolved to two different paths: {} and {}".format(
+                            dependency_name,
+                            bundled_path,
+                            dependency_path,
+                        )
+                    )
+                continue
+            bundled[dependency_name] = dependency_path
+            pending.append(dependency_path)
+
+    return [bundled[name] for name in sorted(bundled)]
+
+
+def build_runtime_manifest(primary_dso_name, runtime_files):
+    return {
+        "primary_dso": primary_dso_name,
+        "runtime_files": [path.name for path in runtime_files],
+    }
+
+
+def add_file_to_archive(archive, source_path):
+    resolved_path = source_path.resolve()
+    tar_info = tarfile.TarInfo(name = source_path.name)
+    tar_info.mode = 0o644
+    tar_info.mtime = 0
+    tar_info.uid = 0
+    tar_info.gid = 0
+    tar_info.uname = ""
+    tar_info.gname = ""
+    file_bytes = resolved_path.read_bytes()
+    tar_info.size = len(file_bytes)
+    archive.addfile(tar_info, io.BytesIO(file_bytes))
+
+
+def create_runtime_archive(archive_path, runtime_files):
+    with open(archive_path, "wb") as raw_file:
+        with gzip.GzipFile(filename = "", mode = "wb", fileobj = raw_file, mtime = 0) as gzip_file:
+            with tarfile.open(fileobj = gzip_file, mode = "w", format = tarfile.PAX_FORMAT) as archive:
+                for runtime_file in sorted(runtime_files, key = lambda path: path.name):
+                    add_file_to_archive(archive, runtime_file)
+
+
+def write_runtime_manifest(manifest_path, manifest):
+    manifest_path.write_text(
+        json.dumps(manifest, indent = 2, sort_keys = True) + "\n",
+        encoding = "utf-8",
+    )
+
+
+def package_runtime_closure(
+    primary_dso_path,
+    output_dir,
+    release_target,
+    allow_release_target_mismatch = False,
+    os_release_path = Path("/etc/os-release"),
+):
+    primary_path = Path(primary_dso_path)
+    target_dir = Path(output_dir)
+    target_dir.mkdir(parents = True, exist_ok = True)
+    linux_release_target = validate_matching_linux_release_target(
+        release_target,
+        allow_release_target_mismatch = allow_release_target_mismatch,
+        os_release_path = os_release_path,
+    )
+
+    runtime_files = collect_runtime_closure(primary_path)
+    manifest = build_runtime_manifest(primary_path.name, runtime_files)
+
+    archive_path = target_dir / build_runtime_archive_filename(linux_release_target)
+    manifest_path = target_dir / build_runtime_manifest_filename(linux_release_target)
+
+    create_runtime_archive(archive_path, runtime_files)
+    write_runtime_manifest(manifest_path, manifest)
+    return {
+        "archive_path": archive_path,
+        "manifest_path": manifest_path,
+        "runtime_files": runtime_files,
+    }
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--libxls", required = True)
+    parser.add_argument("--output-dir", required = True)
+    parser.add_argument("--release-target", required = True)
+    parser.add_argument(
+        "--allow-release-target-mismatch",
+        action = "store_true",
+        help = "allow Linux artifact naming that does not match the detected host release target",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv):
+    args = parse_args(argv)
+    release_target = validate_linux_release_target(args.release_target)
+    result = package_runtime_closure(
+        primary_dso_path = args.libxls,
+        output_dir = args.output_dir,
+        release_target = release_target,
+        allow_release_target_mismatch = args.allow_release_target_mismatch,
+    )
+    print("Packaged runtime closure:")
+    print("  archive: {}".format(result["archive_path"]))
+    print("  manifest: {}".format(result["manifest_path"]))
+    print("  runtime files: {}".format(", ".join(path.name for path in result["runtime_files"])))
+
+
+if __name__ == "__main__":
+    import sys
+
+    main(sys.argv[1:])

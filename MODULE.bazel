@@ -168,6 +168,14 @@ maven.artifact(
 bazel_dep(name = "eigen", version = "4.0.0-20241125.bcr.2")
 bazel_dep(name = "rules_pkg", version = "1.2.0")
 
+# Bazel's generated macOS wrapped_clang currently fails dyld without LC_UUID.
+single_version_override(
+    module_name = "apple_support",
+    patch_strip = 1,
+    patches = ["//dependency_support:apple_support_no_uuid.patch"],
+    version = "1.17.1",
+)
+
 # rules_hdl deps with bzlmod support.
 bazel_dep(name = "rules_bison", version = "0.3")
 bazel_dep(name = "rules_flex", version = "0.3")
