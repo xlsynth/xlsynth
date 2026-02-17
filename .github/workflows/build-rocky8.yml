@@ -1,0 +1,78 @@
+# For experimenting with the Rocky8 linux build.
+#
+# We can alter this file to trigger the workflow, note that we can't get the UI
+# element to manually trigger since it lives on a non-default branch.
+
+name: Rocky8 Build
+
+# Only allow manual triggers or every time we rebase this file will trigger the build action.
+on:
+  workflow_dispatch:
+  # push:
+  #   branches:
+  #     - cdleary/release-dylib-workflow
+  #   paths:
+  #     - .github/workflows/build-rocky8.yml  # Only trigger on changes to this specific file
+
+jobs:
+  build-rocky8:
+    runs-on: ubuntu-latest  # Use a GitHub-hosted runner
+    container: rockylinux:8.9 # Specify the Docker container
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Cache Bazel output
+      uses: actions/cache@v2
+      id: cache-bazel
+      with:
+        path: |
+          ~/.cache/bazel
+          bazel-out
+        key: ${{ runner.os }}-bazel-${{ hashFiles('**/BUILD') }}
+        restore-keys: |
+          ${{ runner.os }}-bazel-
+
+    - name: Install bazelisk
+      run: |
+        dnf install -y curl unzip wget
+        curl -Lo bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
+        chmod +x bazelisk
+        mv bazelisk /usr/local/bin/
+        bazelisk version
+
+    - name: Install Clang
+      run: |
+        dnf install -y llvm-toolset
+
+    - name: Note Clang version
+      run: clang --version
+
+    - name: Install build essentials
+      run: |
+        dnf groupinstall -y "Development Tools"
+        dnf install -y libstdc++-devel
+        dnf install -y python3
+        dnf install -y sudo
+
+    - name: Create non-root user to build as
+      run: |
+        useradd -m build-user
+        usermod -aG wheel build-user
+
+    - name: Fix workspace permissions
+      run: |
+        chown -R build-user:wheel $GITHUB_WORKSPACE
+
+    - name: Build Bazel target (preserving PATH)
+      run: |
+        #sudo -u build-user env PATH=$PATH CC=clang CXX=clang++ bazelisk build -c opt //xls/public:libxls.so //xls/public:c_api //xls/dslx:interpreter_main //xls/dslx/lsp:dslx_ls //xls/tools:opt_main //xls/tools:codegen_main //xls/dslx/ir_convert:ir_converter_main //xls/visualization/ir_viz:app --build_python_zip
+        sudo -u build-user env PATH=$PATH CC=clang CXX=clang++ bazelisk build -c opt //xls/dslx:dslx_fmt
+
+    - name: Make artifact directory
+      run: |
+        mkdir -p rocky8-artifacts
+
+    - name: Copy artifacts to artifact directory
+      run: |
+        cp bazel-bin/xls/dslx/dslx_fmt rocky8-artifacts/
