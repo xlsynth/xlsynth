@@ -43,11 +43,11 @@ def area_model(
         outs = ["{}.cc".format(name)],
         cmd = ("$(location //xls/estimators/area_model:generate_area_lookup) " +
                "--model_name={model_name} $< " +
-               "| $(location @llvm//tools:clang-format)" +
+               # "| $(location @llvm//tools:clang-format)" +
                " > $(OUTS)").format(model_name = model_name),
         tools = [
             "//xls/estimators/area_model:generate_area_lookup",
-            "@llvm//tools:clang-format",
+            # "@llvm//tools:clang-format",
         ],
         **kwargs
     )
