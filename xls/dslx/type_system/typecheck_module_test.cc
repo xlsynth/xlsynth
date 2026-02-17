@@ -5008,15 +5008,13 @@ const_assert!(W == imported::WIDTH);
   XLS_ASSERT_OK(Typecheck(kProgram, "main", &import_data));
 }
 
-TEST_F(TypecheckV2Test,
-       TypeParametricInvocationWithImportedTypeAliasArgument) {
+TEST_F(TypecheckV2Test, ElementCountImportedTypeAlias) {
   constexpr std::string_view kImported = R"(
-pub type Word = u6;
+pub type Packet = u8[3];
 )";
   constexpr std::string_view kProgram = R"(
 import imported;
-fn width_of<T: type>() -> u32 { bit_count<T>() }
-const_assert!(width_of<imported::Word>() == u32:6);
+const_assert!(element_count<imported::Packet>() == u32:3);
 )";
   ImportData import_data = CreateImportDataForTest();
   XLS_EXPECT_OK(Typecheck(kImported, "imported", &import_data));

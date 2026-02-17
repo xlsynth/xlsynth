@@ -1024,6 +1024,16 @@ dslx_lang_test(
 )
 
 xls_dslx_library(
+    name = "mod_bit_count_type_targets_dslx",
+    srcs = ["mod_bit_count_type_targets.x"],
+)
+
+dslx_lang_test(
+    name = "bit_count_imported_qualified_types",
+    dslx_deps = [":mod_bit_count_type_targets_dslx"],
+)
+
+xls_dslx_library(
     name = "mod_simple_const_dslx",
     srcs = ["mod_simple_const.x"],
 )
