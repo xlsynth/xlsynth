@@ -153,6 +153,8 @@ absl::Status ValueFormatDescriptor::Accept(ValueFormatVisitor& v) const {
     case ValueFormatDescriptorKind::kSum:
       return v.HandleSum(*this);
   }
+  return absl::InvalidArgumentError(absl::StrFormat(
+      "Out of bounds ValueFormatDescriptorKind: %d", static_cast<int>(kind())));
 }
 
 }  // namespace xls::dslx

@@ -1,8 +1,110 @@
 # Releasing
 
+## xlsynth release branches
+
+`release-base` points to **one fork-specific commit** whose parent is an exact
+`google/xls` upstream commit. That fork-specific commit collects the changes
+needed by xlsynth that will not be submitted upstream. `release-candidate`
+builds on `release-base`, keeping changes intended for upstream submission as
+separate commits.
+
+When adding a fork-only change without advancing the upstream base:
+
+1. Open a PR targeting `release-base` and squash-merge it after review.
+2. Fold the resulting commit into the existing fork-specific commit. Preserve
+   its upstream parent and the combined file contents, leaving one fork-specific
+   commit on `release-base`.
+3. Rebase the pending commits on `release-candidate` from the `release-base`
+   commit they previously used onto the updated `release-base`. Preserve their
+   changes and order.
+4. Push the rewritten `release-base` and `release-candidate` branches, using
+   `--force-with-lease` with explicit expected remote tips.
+
+After the squash merge and before rewriting, record both remote branch tips and
+the base used by `release-candidate`, and preserve rollback refs. Use those
+recorded remote tips as the expected values for `--force-with-lease`. Before
+pushing, verify the upstream parent, the combined file contents on
+`release-base`, and the changes and order of the rebased candidate commits.
+
+A squash merge alone temporarily leaves two fork-specific commits on
+`release-base`; folding them together restores the convention. For example,
+suppose upstream commit `U` has fork commit `B` above it, and a PR adds commit
+`D`. Combine `B` and `D` into `B'`, whose parent is still `U`. A pending
+candidate commit `C` then moves from above `B` to above `B'` and remains
+a separate commit.
+
+### Maintaining release-candidate
+
+The commits above `release-base` correspond one-to-one with the open Google XLS
+PRs carried by this fork: one candidate commit per PR, and one PR per candidate
+commit. Each candidate commit represents its PR's complete change, even if that
+PR contains multiple commits. Ancestry and commit IDs may differ; the changes
+should match as closely as those ancestry differences allow. Recently merged
+PRs have the temporary exception described below.
+
+- Identify the corresponding Google XLS PR in each candidate commit message.
+- Keep candidate commits in dependency order, with each PR's implementation,
+  tests, and required exported symbols together.
+- Keep permanent fork-only changes in the single `release-base` commit.
+- When an upstream PR changes during review, fold the changes into its
+  corresponding candidate commit. Update affected dependent commits, branches,
+  and PRs so they stay consistent.
+- Before publishing rewritten history, verify the PR-to-commit mapping, the
+  matching changes, and dependency order. Run the relevant tests and use the
+  rollback and push safeguards above.
+
+When a PR merges upstream, retain its candidate commit until the upstream
+revision underlying `release-base` contains the change. Advance that upstream
+base as soon as possible to include the merged PR, rebuild the single
+fork-specific commit on it, and rebase `release-candidate`. Remove the duplicate
+candidate commit once the updated upstream base contains its change. This
+temporary exception preserves the change and its dependents until the base
+catches up. Follow the [release version convention](#xlsynth-release-versions)
+when advancing the upstream base.
+
+For example, parser PR `P` and typechecker PR `T` correspond to candidate
+commits `P` and `T`. If review changes `T`, update candidate commit `T` to
+match. Adding a separate candidate commit for that fix would leave two
+candidate commits for one upstream PR. If `P` then merges upstream, retain
+candidate commit `P` until the upstream base includes it. Update that base
+as soon as possible, then remove candidate commit `P` and keep `T` above
+`release-base`.
+
+## xlsynth release versions
+
+This convention applies to `vX.Y.Z` release tags in
+[`xlsynth/xlsynth`](https://github.com/xlsynth/xlsynth), including `libxls` and
+the accompanying tools. Here, `Y` is the minor version and `Z` is the patch
+version.
+
+The **upstream base** of a release is the exact `google/xls` commit on which its
+fork-specific changes are based. Compare the upstream base of the release line
+being updated with that of the proposed release. The tips of `release-base` and
+`release-candidate` can change without changing this upstream base.
+
+- When advancing the upstream base, increment the minor version and reset the
+  patch version to zero: `vX.Y.Z` becomes `vX.(Y+1).0`.
+- Use a patch-version bump only for a small patch to an existing minor release
+  line while keeping its upstream base unchanged: `vX.Y.Z` becomes `vX.Y.(Z+1)`.
+  This also applies when patching an older minor release line.
+
+Keeping the upstream base fixed is necessary for a patch release; it does not
+make every change suitable for one. Patch releases are for small changes that
+keep the release line stable.
+
+For example, starting from `v0.55.2` based on upstream commit `A`:
+
+| Proposed release                      | Version   |
+| ------------------------------------- | --------- |
+| Small patch, still based on `A`       | `v0.55.3` |
+| Sync the upstream base forward to `B` | `v0.56.0` |
+
+These are the fork's release conventions. The following sections describe the
+upstream Google XLS release process.
+
 ## Versioning
 
-The project use the following versioning scheme:
+Upstream Google XLS uses the following versioning scheme:
 `v${SEM_VER}-${COMMITS_COUNT_SINCE_LAST_ANNOTATED_TAG}-g${GIT_HASH)`
 
 > The [v0.0.0](https://github.com/google/xls/tree/v0.0.0) annotated tag points

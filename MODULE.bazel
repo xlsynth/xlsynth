@@ -8,6 +8,20 @@ bazel_dep(name = "llvm", version = "0.8.21", dev_dependency = True)
 
 register_toolchains("@llvm//toolchain:all")
 
+# m4's gnulib links CoreServices, which reexports CFNetwork. An explicit
+# framework list replaces the hermetic macOS SDK defaults, so include them too.
+osx = use_extension("@llvm//extensions:osx.bzl", "osx", dev_dependency = True)
+osx.frameworks(names = [
+    "CFNetwork",
+    "CoreFoundation",
+    "CoreServices",
+    "Foundation",
+    "Kernel",
+    "OSLog",
+    "Security",
+    "SystemConfiguration",
+])
+
 # Python toolchain
 bazel_dep(name = "rules_python", version = "1.9.0")
 
@@ -172,6 +186,14 @@ maven.artifact(
 # Used both by XLS and rules_hdl.
 bazel_dep(name = "eigen", version = "4.0.0-20241125.bcr.2")
 bazel_dep(name = "rules_pkg", version = "1.2.0")
+
+# Bazel's generated macOS wrapped_clang currently fails dyld without LC_UUID.
+single_version_override(
+    module_name = "apple_support",
+    patch_strip = 1,
+    patches = ["//dependency_support:apple_support_no_uuid.patch"],
+    version = "1.17.1",
+)
 
 # rules_hdl deps with bzlmod support.
 bazel_dep(name = "rules_bison", version = "0.4")

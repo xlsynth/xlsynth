@@ -21,6 +21,17 @@ This module is intended to be loaded by the xls/public/BUILD file.
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_python//python:py_test.bzl", "py_test")
 
+# Estimator model rules use alwayslink to preserve the static initializers
+# that register these models in libxls.dylib.
+ESTIMATOR_TARGETS = [
+    "//xls/estimators/delay_model/models:model_unit",
+    "//xls/estimators/delay_model/models:model_asap7",
+    "//xls/estimators/delay_model/models:model_sky130",
+    "//xls/estimators/area_model/models:area_model_unit",
+    "//xls/estimators/area_model/models:area_model_asap7",
+    "//xls/estimators/area_model/models:area_model_sky130",
+]
+
 def libxls_dylib_binary(name = "libxls.dylib"):
     # Create a variant of the c_api_symbols.txt file that has leading
     # underscores on each symbol, as those are the OS X symbols.
@@ -50,8 +61,13 @@ def libxls_dylib_binary(name = "libxls.dylib"):
             "//conditions:default": ["@platforms//:incompatible"],
         }),
         deps = [
-            ":c_api",
-        ],
+                   ":c_api",
+                   "@abseil-cpp//absl/base",
+                   "@abseil-cpp//absl/status",
+                   "@abseil-cpp//absl/log",
+                   "@abseil-cpp//absl/log:check",
+               ] +
+               ESTIMATOR_TARGETS,
     )
 
 def py_test_c_api_symbols(name = "test_c_api_symbols"):
