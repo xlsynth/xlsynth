@@ -4993,6 +4993,54 @@ fn main() -> u64 {
 })"));
 }
 
+TEST_F(TypecheckV2Test, BitCountImportedTypeAlias) {
+  constexpr std::string_view kImported = R"(
+pub type Word = u3;
+pub const WIDTH = u32:3;
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+const W = bit_count<imported::Word>();
+const_assert!(W == imported::WIDTH);
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(Typecheck(kImported, "imported", &import_data));
+  XLS_ASSERT_OK(Typecheck(kProgram, "main", &import_data));
+}
+
+TEST_F(TypecheckV2Test,
+       TypeParametricInvocationWithImportedTypeAliasArgument) {
+  constexpr std::string_view kImported = R"(
+pub type Word = u6;
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+fn width_of<T: type>() -> u32 { bit_count<T>() }
+const_assert!(width_of<imported::Word>() == u32:6);
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(Typecheck(kImported, "imported", &import_data));
+  XLS_ASSERT_OK(Typecheck(kProgram, "main", &import_data));
+}
+
+TEST_F(TypecheckV2Test, BitCountImportedConstIsStillRejected) {
+  constexpr std::string_view kImported = R"(
+pub const WIDTH = u32:7;
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+const W = bit_count<imported::WIDTH>();
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(Typecheck(kImported, "imported", &import_data));
+  EXPECT_THAT(
+      Typecheck(kProgram, "main", &import_data),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstrInV2(GetParam(),
+                             "Expected parametric type, saw "
+                             "`imported::WIDTH`")));
+}
+
 TEST_F(TypecheckV2Test, BitCountWithNoTypeArgument) {
   EXPECT_THAT(
       Typecheck(R"(
