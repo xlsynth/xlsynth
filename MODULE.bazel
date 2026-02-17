@@ -86,7 +86,7 @@ bazel_dep(name = "mpfr", version = "4.2.2")
 bazel_dep(name = "gmp", version = "6.3.0.bcr.1")
 bazel_dep(name = "re2", version = "2024-07-02.bcr.1")
 bazel_dep(name = "riegeli", version = "0.0.0-20250822-9f2744d")
-bazel_dep(name = "rules_cc", version = "0.2.18")
+bazel_dep(name = "rules_cc", version = "0.2.25")
 bazel_dep(name = "rules_closure", version = "0.15.0")
 bazel_dep(name = "rules_license", version = "1.0.0")
 bazel_dep(name = "rules_proto", version = "7.1.0")
@@ -170,6 +170,14 @@ maven.artifact(
 # Used both by XLS and rules_hdl.
 bazel_dep(name = "eigen", version = "4.0.0-20241125.bcr.2")
 bazel_dep(name = "rules_pkg", version = "1.2.0")
+
+# Bazel's generated macOS wrapped_clang currently fails dyld without LC_UUID.
+single_version_override(
+    module_name = "apple_support",
+    patch_strip = 1,
+    patches = ["//dependency_support:apple_support_no_uuid.patch"],
+    version = "1.17.1",
+)
 
 # rules_hdl deps with bzlmod support.
 bazel_dep(name = "rules_bison", version = "0.3")
