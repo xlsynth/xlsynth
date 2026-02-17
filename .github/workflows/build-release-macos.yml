@@ -1,0 +1,113 @@
+name: Build macOS arm64 Release Artifacts
+
+on:
+  push:
+    branches:
+      - 'release-preflight/**'
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build-osx-arm64:
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: 11.0
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Cache Bazel output
+      uses: actions/cache@v4
+      id: cache-bazel
+      with:
+        path: |
+          ~/.cache/bazel
+          bazel-out
+        key: ${{ runner.os }}-bazel-${{ hashFiles('**/BUILD') }}
+        restore-keys: |
+          ${{ runner.os }}-bazel-
+
+    - name: Create artifact directory
+      run: mkdir -p osx-artifacts-arm64
+
+    - name: Build for arm64
+      run: |
+        BAZEL_VERSION="$(cat .bazelversion)"
+        wget -q "https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-darwin-arm64"
+        mv "bazel-${BAZEL_VERSION}-darwin-arm64" bazel-arm64
+        chmod +x bazel-arm64
+        ./bazel-arm64 info
+        ./bazel-arm64 test -c opt --host_cpu=darwin_arm64 --action_env=MACOSX_DEPLOYMENT_TARGET --macos_minimum_os=11.0 --cxxopt="-std=c++20" --host_cxxopt="-std=c++20" //xls/public:test_c_api_symbols
+        ./bazel-arm64 build -c opt --host_cpu=darwin_arm64 --action_env=MACOSX_DEPLOYMENT_TARGET --macos_minimum_os=11.0 --cxxopt="-std=c++20" --host_cxxopt="-std=c++20" \
+          //xls/public:libxls.dylib \
+          //xls/dslx:interpreter_main \
+          //xls/dslx/lsp:dslx_ls \
+          //xls/tools:opt_main \
+          //xls/tools:codegen_main \
+          //xls/tools:eval_proc_main \
+          //xls/dslx/ir_convert:ir_converter_main \
+          //xls/tools:delay_info_main \
+          //xls/dslx:dslx_fmt \
+          //xls/dslx:prove_quickcheck_main \
+          //xls/dslx/type_system:typecheck_main \
+          //xls/dslx:highlight_main \
+          //xls/dev_tools:check_ir_equivalence_main \
+          //xls/tools:block_to_verilog_main
+
+    - name: Verify arm64 binaries
+      run: |
+        lipo -info bazel-bin/xls/public/libxls.dylib
+
+    - name: Collect arm64 artifacts
+      run: |
+        gzip -c bazel-bin/xls/public/libxls.dylib > osx-artifacts-arm64/libxls-arm64.dylib.gz
+        shasum -a 256 osx-artifacts-arm64/libxls-arm64.dylib.gz > osx-artifacts-arm64/libxls-arm64.dylib.gz.sha256
+        shasum -a 256 bazel-bin/xls/public/libxls.dylib > osx-artifacts-arm64/libxls-arm64.dylib.sha256
+        cp bazel-bin/xls/dslx/interpreter_main              osx-artifacts-arm64/dslx_interpreter_main-arm64
+        shasum -a 256 osx-artifacts-arm64/dslx_interpreter_main-arm64 > osx-artifacts-arm64/dslx_interpreter_main-arm64.sha256
+
+        cp bazel-bin/xls/dslx/lsp/dslx_ls                   osx-artifacts-arm64/dslx_ls-arm64
+        shasum -a 256 osx-artifacts-arm64/dslx_ls-arm64 > osx-artifacts-arm64/dslx_ls-arm64.sha256
+
+        cp bazel-bin/xls/tools/opt_main                     osx-artifacts-arm64/opt_main-arm64
+        shasum -a 256 osx-artifacts-arm64/opt_main-arm64 > osx-artifacts-arm64/opt_main-arm64.sha256
+
+        cp bazel-bin/xls/tools/delay_info_main              osx-artifacts-arm64/delay_info_main-arm64
+        shasum -a 256 osx-artifacts-arm64/delay_info_main-arm64 > osx-artifacts-arm64/delay_info_main-arm64.sha256
+
+        cp bazel-bin/xls/dslx/dslx_fmt                      osx-artifacts-arm64/dslx_fmt-arm64
+        shasum -a 256 osx-artifacts-arm64/dslx_fmt-arm64 > osx-artifacts-arm64/dslx_fmt-arm64.sha256
+
+        cp bazel-bin/xls/dslx/prove_quickcheck_main         osx-artifacts-arm64/prove_quickcheck_main-arm64
+        shasum -a 256 osx-artifacts-arm64/prove_quickcheck_main-arm64 > osx-artifacts-arm64/prove_quickcheck_main-arm64.sha256
+
+        cp bazel-bin/xls/tools/codegen_main                 osx-artifacts-arm64/codegen_main-arm64
+        shasum -a 256 osx-artifacts-arm64/codegen_main-arm64 > osx-artifacts-arm64/codegen_main-arm64.sha256
+
+        cp bazel-bin/xls/tools/eval_proc_main               osx-artifacts-arm64/eval_proc_main-arm64
+        shasum -a 256 osx-artifacts-arm64/eval_proc_main-arm64 > osx-artifacts-arm64/eval_proc_main-arm64.sha256
+
+        cp bazel-bin/xls/dslx/ir_convert/ir_converter_main  osx-artifacts-arm64/ir_converter_main-arm64
+        shasum -a 256 osx-artifacts-arm64/ir_converter_main-arm64 > osx-artifacts-arm64/ir_converter_main-arm64.sha256
+
+        cp bazel-bin/xls/dslx/type_system/typecheck_main    osx-artifacts-arm64/typecheck_main-arm64
+        shasum -a 256 osx-artifacts-arm64/typecheck_main-arm64 > osx-artifacts-arm64/typecheck_main-arm64.sha256
+
+        cp bazel-bin/xls/dslx/highlight_main              osx-artifacts-arm64/highlight_main-arm64
+        shasum -a 256 osx-artifacts-arm64/highlight_main-arm64 > osx-artifacts-arm64/highlight_main-arm64.sha256
+
+        cp bazel-bin/xls/dev_tools/check_ir_equivalence_main osx-artifacts-arm64/check_ir_equivalence_main-arm64
+        shasum -a 256 osx-artifacts-arm64/check_ir_equivalence_main-arm64 > osx-artifacts-arm64/check_ir_equivalence_main-arm64.sha256
+
+        cp bazel-bin/xls/tools/block_to_verilog_main        osx-artifacts-arm64/block_to_verilog_main-arm64
+        shasum -a 256 osx-artifacts-arm64/block_to_verilog_main-arm64 > osx-artifacts-arm64/block_to_verilog_main-arm64.sha256
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: osx-artifacts-arm64
+        path: osx-artifacts-arm64/
