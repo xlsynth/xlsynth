@@ -173,7 +173,7 @@ class FifoModel {
   // register state map unconditionally.
   static constexpr std::string_view kOutputValidRegisterName = "output_valid";
   static Value OutputValidRegisterInitialValue() { return Value(UBits(0, 1)); }
-  static constexpr std::vector<std::string_view> kRegisterNames() {
+  static std::vector<std::string_view> kRegisterNames() {
     return {kElementsRegisterName, kOutputValidRegisterName};
   }
   static std::vector<std::pair<std::string_view, Value>>
