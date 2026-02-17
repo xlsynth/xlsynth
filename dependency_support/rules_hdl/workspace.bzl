@@ -17,6 +17,7 @@ XLS uses."""
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
+load("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
 
 def repo():
     # See MODULE.bazel for the bzlmod-enabled deps.
@@ -42,6 +43,7 @@ def repo():
         ],
         patches = [
             Label("@//dependency_support/rules_hdl:rules_hdl_deps.patch"),
+            Label("@//dependency_support/rules_hdl:rules_hdl.patch"),
             Label("@//dependency_support/rules_hdl:rename_eigen.patch"),
             Label("@//dependency_support/rules_hdl:rename_swig.patch"),
         ],

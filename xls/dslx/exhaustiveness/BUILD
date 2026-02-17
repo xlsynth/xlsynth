@@ -66,8 +66,9 @@ cc_test(
         ":interp_value_interval",
         ":nd_region",
         "//xls/common:xls_gunit_main",
-        "//xls/dslx:interp_value",
-        "@com_google_absl//absl/types:span",
+        #"//xls/common/fuzzing:fuzztest",
+        "//xls/common/status:matchers",
+        "//xls/common/status:status_macros",
         "@googletest//:gtest",
     ],
 )

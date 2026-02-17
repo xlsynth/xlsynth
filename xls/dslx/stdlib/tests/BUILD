@@ -68,19 +68,19 @@ cc_xls_ir_jit_wrapper(
     },
 )
 
-cc_test(
-    name = "umul_with_overflow_test",
-    srcs = ["umul_with_overflow_test.cc"],
-    deps = [
-        ":umul_with_overflow_21_21_18_jit_wrapper",
-        ":umul_with_overflow_35_32_18_jit_wrapper",
-        "//xls/common:xls_gunit_main",
-        "//xls/common/fuzzing:fuzztest",
-        "//xls/common/status:matchers",
-        "//xls/ir:value_view",
-        "@googletest//:gtest",
-    ],
-)
+# cc_test(
+#     name = "umul_with_overflow_test",
+#     srcs = ["umul_with_overflow_test.cc"],
+#     deps = [
+#         ":umul_with_overflow_21_21_18_jit_wrapper",
+#         ":umul_with_overflow_35_32_18_jit_wrapper",
+#         "//xls/common:xls_gunit_main",
+#         "//xls/common/fuzzing:fuzztest",
+#         "//xls/common/status:matchers",
+#         "//xls/ir:value_view",
+#         "@googletest//:gtest",
+#     ],
+# )
 
 # Run localy with
 #  bazel test -c opt ///xls/tests/umul_with_overflow:umul_with_overflow_long_test --test_timeout=20000

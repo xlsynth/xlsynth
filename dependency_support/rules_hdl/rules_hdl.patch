@@ -1,0 +1,14 @@
+diff --git dependency_support/com_icarus_iverilog/bundled.BUILD.bazel dependency_support/com_icarus_iverilog/bundled.BUILD.bazel
+index 4e215..4a9dbe4 100644
+--- dependency_support/com_icarus_iverilog/bundled.BUILD.bazel
++++ dependency_support/com_icarus_iverilog/bundled.BUILD.bazel
+@@ -363,6 +363,9 @@ vpi_binary(
+         ".",
+         "vpi",
+     ],
++    linkopts = [
++        "-lpthread",
++    ],
+     # The code has atrocious const hygiene. Produces mounds of warnings.
+     deps = [
+         ":vpi_user",
