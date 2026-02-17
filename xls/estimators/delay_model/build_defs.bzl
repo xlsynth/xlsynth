@@ -48,11 +48,11 @@ def delay_model(
         outs = ["{}.cc".format(name)],
         cmd = ("$(location //xls/estimators/delay_model:generate_delay_lookup) " +
                "--model_name={model_name} --precedence={precedence} $< " +
-               "| $(location @llvm//tools:clang-format)" +
+               # "| $(location @llvm//tools:clang-format)" +
                " > $(OUTS)").format(model_name = model_name, precedence = precedence),
         tools = [
             "//xls/estimators/delay_model:generate_delay_lookup",
-            "@llvm//tools:clang-format",
+            # "@llvm//tools:clang-format",
         ],
         **kwargs
     )
