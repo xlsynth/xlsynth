@@ -485,6 +485,7 @@ cc_library(
     srcs = ["jit_emulated_tls.cc"],
     hdrs = ["jit_emulated_tls.h"],
     deps = [
+        "@abseil-cpp//absl/base",
         "@abseil-cpp//absl/log",
     ],
 )
