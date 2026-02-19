@@ -538,6 +538,28 @@ bool xls_function_jit_run(struct xls_function_jit* jit, size_t argc,
                           size_t* assert_messages_count_out,
                           struct xls_value** result_out);
 
+// Returns the packed size (in bytes) for the argument at `arg_index`.
+bool xls_function_jit_get_packed_arg_size(struct xls_function_jit* jit,
+                                          size_t arg_index, char** error_out,
+                                          size_t* size_out);
+
+// Returns the packed size (in bytes) for the function return value.
+bool xls_function_jit_get_packed_return_size(struct xls_function_jit* jit,
+                                             char** error_out,
+                                             size_t* size_out);
+
+// Runs `jit` using packed argument/result buffers (bytes in / bytes out).
+//
+// `args` and `arg_sizes` are arrays of size `argc`.
+// `result_buffer` must contain at least `result_buffer_size` bytes.
+//
+// Note: this fast path does not export trace/assert messages.
+bool xls_function_jit_run_packed(struct xls_function_jit* jit, size_t argc,
+                                 const uint8_t* const* args,
+                                 const size_t* arg_sizes,
+                                 size_t result_buffer_size,
+                                 uint8_t* result_buffer, char** error_out);
+
 // frees the array of  `xls_function` pointers -- the function should have been
 // allocated by the XLS library where ownership was passed back to the caller.
 void xls_function_ptr_array_free(struct xls_function** function_pointer_array);

@@ -93,6 +93,12 @@ class FunctionJit {
                             absl::Span<uint8_t> result_buffer,
                             InterpreterEvents* events);
 
+  // Similar to RunWithViews(), but uses packed argument/result buffers (no
+  // padding bits/bytes between fields). This avoids Value packing/unpacking.
+  absl::Status RunWithPackedViews(absl::Span<const uint8_t* const> args,
+                                  absl::Span<uint8_t> result_buffer,
+                                  InterpreterEvents* events);
+
   // Similar to RunWithViews(), except the arguments here are _packed_views_ -
   // views whose data elements are tightly packed, with no padding bits or bytes
   // between them. The function return value is specified as the last arg - its

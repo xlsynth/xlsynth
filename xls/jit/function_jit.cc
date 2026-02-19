@@ -226,6 +226,37 @@ absl::Status FunctionJit::RunWithViews(absl::Span<uint8_t* const> args,
   return absl::OkStatus();
 }
 
+absl::Status FunctionJit::RunWithPackedViews(
+    absl::Span<const uint8_t* const> args, absl::Span<uint8_t> result_buffer,
+    InterpreterEvents* events) {
+  if (!jitted_function_base_.HasPackedFunction()) {
+    return absl::UnimplementedError(
+        "Packed JIT entrypoint is unavailable for this function.");
+  }
+  if (args.size() != metadata_.ParamCount()) {
+    return absl::InvalidArgumentError(
+        absl::StrFormat("Arg list has the wrong size: %d vs expected %d.",
+                        args.size(), metadata_.ParamCount()));
+  }
+  int64_t packed_return_size_bytes = (GetPackedReturnTypeSize() + 7) / 8;
+  if (result_buffer.size() < packed_return_size_bytes) {
+    return absl::InvalidArgumentError(
+        absl::StrFormat("Result buffer too small - must be at least %d bytes!",
+                        packed_return_size_bytes));
+  }
+  uint8_t* output_buffers[1] = {result_buffer.data()};
+  std::optional<int64_t> continuation =
+      jitted_function_base_.RunPackedJittedFunction(
+          args.data(), output_buffers, temp_buffer_.get_base_pointer(), events,
+          /*instance_context=*/&callbacks_, runtime(),
+          /*continuation_point=*/0);
+  if (!continuation.has_value()) {
+    return absl::UnimplementedError(
+        "Packed JIT entrypoint is unavailable for this function.");
+  }
+  return absl::OkStatus();
+}
+
 template absl::Status FunctionJit::RunWithViews</*kForceZeroCopy=*/true>(
     absl::Span<uint8_t* const> args, absl::Span<uint8_t> result_buffer,
     InterpreterEvents* events);

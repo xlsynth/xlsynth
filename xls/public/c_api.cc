@@ -1373,6 +1373,104 @@ bool xls_function_jit_run(struct xls_function_jit* jit, size_t argc,
   return true;
 }
 
+bool xls_function_jit_get_packed_arg_size(struct xls_function_jit* jit,
+                                          size_t arg_index, char** error_out,
+                                          size_t* size_out) {
+  CHECK(jit != nullptr);
+  CHECK(error_out != nullptr);
+  CHECK(size_out != nullptr);
+
+  xls::FunctionJit* xls_jit = reinterpret_cast<xls::FunctionJit*>(jit);
+  const size_t arg_count =
+      xls_jit->jitted_function_base().GetInputBufferMetadata().size();
+  if (arg_index >= arg_count) {
+    *error_out = xls::ToOwnedCString(absl::InvalidArgumentError(absl::StrFormat(
+                                      "Packed arg index %zu out of range; arg_count: %zu",
+                                      arg_index, arg_count))
+                                      .ToString());
+    return false;
+  }
+  *size_out = static_cast<size_t>(
+      (xls_jit->GetPackedArgTypeSize(arg_index) + 7) / 8);
+  *error_out = nullptr;
+  return true;
+}
+
+bool xls_function_jit_get_packed_return_size(struct xls_function_jit* jit,
+                                             char** error_out,
+                                             size_t* size_out) {
+  CHECK(jit != nullptr);
+  CHECK(error_out != nullptr);
+  CHECK(size_out != nullptr);
+
+  xls::FunctionJit* xls_jit = reinterpret_cast<xls::FunctionJit*>(jit);
+  *size_out =
+      static_cast<size_t>((xls_jit->GetPackedReturnTypeSize() + 7) / 8);
+  *error_out = nullptr;
+  return true;
+}
+
+bool xls_function_jit_run_packed(struct xls_function_jit* jit, size_t argc,
+                                 const uint8_t* const* args,
+                                 const size_t* arg_sizes,
+                                 size_t result_buffer_size,
+                                 uint8_t* result_buffer, char** error_out) {
+  CHECK(jit != nullptr);
+  CHECK(error_out != nullptr);
+  CHECK(args != nullptr);
+  CHECK(arg_sizes != nullptr);
+  CHECK(result_buffer != nullptr);
+
+  xls::FunctionJit* xls_jit = reinterpret_cast<xls::FunctionJit*>(jit);
+  const size_t arg_count =
+      xls_jit->jitted_function_base().GetInputBufferMetadata().size();
+  if (argc != arg_count) {
+    *error_out = xls::ToOwnedCString(absl::InvalidArgumentError(absl::StrFormat(
+                                      "Arg list has the wrong size: %zu vs expected %zu.",
+                                      argc, arg_count))
+                                      .ToString());
+    return false;
+  }
+  for (size_t i = 0; i < argc; ++i) {
+    if (args[i] == nullptr) {
+      *error_out = xls::ToOwnedCString(absl::InvalidArgumentError(
+                                           absl::StrFormat("args[%zu] was null", i))
+                                           .ToString());
+      return false;
+    }
+    const size_t packed_size = static_cast<size_t>(
+        (xls_jit->GetPackedArgTypeSize(i) + 7) / 8);
+    if (arg_sizes[i] < packed_size) {
+      *error_out = xls::ToOwnedCString(absl::InvalidArgumentError(
+                                           absl::StrFormat(
+                                               "Arg buffer %zu too small: got %zu, expected at least %zu",
+                                               i, arg_sizes[i], packed_size))
+                                           .ToString());
+      return false;
+    }
+  }
+  const size_t packed_return_size =
+      static_cast<size_t>((xls_jit->GetPackedReturnTypeSize() + 7) / 8);
+  if (result_buffer_size < packed_return_size) {
+    *error_out = xls::ToOwnedCString(absl::InvalidArgumentError(absl::StrFormat(
+                                      "Result buffer too small: got %zu, expected at least %zu",
+                                      result_buffer_size, packed_return_size))
+                                      .ToString());
+    return false;
+  }
+
+  xls::InterpreterEvents events;
+  absl::Status status = xls_jit->RunWithPackedViews(
+      absl::MakeConstSpan(args, argc),
+      absl::MakeSpan(result_buffer, result_buffer_size), &events);
+  if (!status.ok()) {
+    *error_out = xls::ToOwnedCString(status.ToString());
+    return false;
+  }
+  *error_out = nullptr;
+  return true;
+}
+
 void xls_trace_messages_free(struct xls_trace_message* trace_messages,
                              size_t count) {
   if (trace_messages == nullptr) {

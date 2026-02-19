@@ -1744,6 +1744,51 @@ top fn add_one(tok: token, x: bits[32]) -> bits[32] {
   EXPECT_EQ(std::string_view{result_str}, "bits[32]:43");
 }
 
+TEST(XlsCApiTest, FunctionJitPackedBytes) {
+  const std::string_view kIr = R"(package my_package
+
+top fn add_one(x: bits[32]) -> bits[32] {
+  one: bits[32] = literal(value=1)
+  ret result: bits[32] = add(x, one)
+}
+)";
+  char* error = nullptr;
+  xls_package* package = nullptr;
+  ASSERT_TRUE(xls_parse_ir_package(kIr.data(), "test.ir", &error, &package))
+      << "error: " << error;
+  ASSERT_NE(package, nullptr);
+  absl::Cleanup free_package([=] { xls_package_free(package); });
+
+  xls_function* function = nullptr;
+  ASSERT_TRUE(xls_package_get_function(package, "add_one", &error, &function));
+  ASSERT_NE(function, nullptr);
+
+  xls_function_jit* fn_jit = nullptr;
+  ASSERT_TRUE(xls_make_function_jit(function, &error, &fn_jit));
+  ASSERT_NE(fn_jit, nullptr);
+  absl::Cleanup free_fn_jit([=] { xls_function_jit_free(fn_jit); });
+
+  size_t arg0_size = 0;
+  ASSERT_TRUE(xls_function_jit_get_packed_arg_size(fn_jit, 0, &error, &arg0_size));
+  EXPECT_EQ(arg0_size, 4);
+
+  size_t return_size = 0;
+  ASSERT_TRUE(xls_function_jit_get_packed_return_size(fn_jit, &error, &return_size));
+  EXPECT_EQ(return_size, 4);
+
+  uint8_t input0[4] = {42, 0, 0, 0};
+  const uint8_t* args[1] = {input0};
+  size_t arg_sizes[1] = {sizeof(input0)};
+  uint8_t result[4] = {0xff, 0xff, 0xff, 0xff};
+  ASSERT_TRUE(xls_function_jit_run_packed(fn_jit, 1, args, arg_sizes,
+                                          sizeof(result), result, &error));
+  uint32_t result_value = static_cast<uint32_t>(result[0]) |
+                          (static_cast<uint32_t>(result[1]) << 8) |
+                          (static_cast<uint32_t>(result[2]) << 16) |
+                          (static_cast<uint32_t>(result[3]) << 24);
+  EXPECT_EQ(result_value, 43);
+}
+
 // Tests that we can build a simple sample function. For fun we make one that
 // corresponds to an AOI21 gate.
 //
