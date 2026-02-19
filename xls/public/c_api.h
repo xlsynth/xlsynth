@@ -561,6 +561,27 @@ bool xls_function_jit_run_packed(struct xls_function_jit* jit, size_t argc,
                                  size_t result_buffer_size,
                                  uint8_t* result_buffer, char** error_out);
 
+// Validates packed call buffer sizes for `jit` without executing the function.
+//
+// `arg_sizes` is an array of size `argc`.
+bool xls_function_jit_validate_packed_call(struct xls_function_jit* jit,
+                                           size_t argc,
+                                           const size_t* arg_sizes,
+                                           size_t result_buffer_size,
+                                           char** error_out);
+
+// Runs `jit` using packed buffers under a trusted contract:
+// - argument count and packed buffer sizes were validated beforehand;
+// - this entrypoint skips packed size validation in the C API.
+//
+// `args` is an array of size `argc`.
+bool xls_function_jit_run_packed_trusted(struct xls_function_jit* jit,
+                                         size_t argc,
+                                         const uint8_t* const* args,
+                                         size_t result_buffer_size,
+                                         uint8_t* result_buffer,
+                                         char** error_out);
+
 // frees the array of  `xls_function` pointers -- the function should have been
 // allocated by the XLS library where ownership was passed back to the caller.
 void xls_function_ptr_array_free(struct xls_function** function_pointer_array);

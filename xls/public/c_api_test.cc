@@ -1787,6 +1787,19 @@ top fn add_one(x: bits[32]) -> bits[32] {
                           (static_cast<uint32_t>(result[2]) << 16) |
                           (static_cast<uint32_t>(result[3]) << 24);
   EXPECT_EQ(result_value, 43);
+
+  ASSERT_TRUE(xls_function_jit_validate_packed_call(
+      fn_jit, 1, arg_sizes, sizeof(result), &error));
+  for (uint8_t& byte : result) {
+    byte = 0xff;
+  }
+  ASSERT_TRUE(xls_function_jit_run_packed_trusted(
+      fn_jit, 1, args, sizeof(result), result, &error));
+  result_value = static_cast<uint32_t>(result[0]) |
+                 (static_cast<uint32_t>(result[1]) << 8) |
+                 (static_cast<uint32_t>(result[2]) << 16) |
+                 (static_cast<uint32_t>(result[3]) << 24);
+  EXPECT_EQ(result_value, 43);
 }
 
 // Tests that we can build a simple sample function. For fun we make one that

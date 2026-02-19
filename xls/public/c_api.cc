@@ -1410,18 +1410,10 @@ bool xls_function_jit_get_packed_return_size(struct xls_function_jit* jit,
   return true;
 }
 
-bool xls_function_jit_run_packed(struct xls_function_jit* jit, size_t argc,
-                                 const uint8_t* const* args,
-                                 const size_t* arg_sizes,
-                                 size_t result_buffer_size,
-                                 uint8_t* result_buffer, char** error_out) {
-  CHECK(jit != nullptr);
-  CHECK(error_out != nullptr);
-  CHECK(args != nullptr);
-  CHECK(arg_sizes != nullptr);
-  CHECK(result_buffer != nullptr);
-
-  xls::FunctionJit* xls_jit = reinterpret_cast<xls::FunctionJit*>(jit);
+static bool ValidatePackedCallContract(xls::FunctionJit* xls_jit, size_t argc,
+                                       const size_t* arg_sizes,
+                                       size_t result_buffer_size,
+                                       char** error_out) {
   const size_t arg_count =
       xls_jit->jitted_function_base().GetInputBufferMetadata().size();
   if (argc != arg_count) {
@@ -1432,12 +1424,6 @@ bool xls_function_jit_run_packed(struct xls_function_jit* jit, size_t argc,
     return false;
   }
   for (size_t i = 0; i < argc; ++i) {
-    if (args[i] == nullptr) {
-      *error_out = xls::ToOwnedCString(absl::InvalidArgumentError(
-                                           absl::StrFormat("args[%zu] was null", i))
-                                           .ToString());
-      return false;
-    }
     const size_t packed_size = static_cast<size_t>(
         (xls_jit->GetPackedArgTypeSize(i) + 7) / 8);
     if (arg_sizes[i] < packed_size) {
@@ -1458,7 +1444,74 @@ bool xls_function_jit_run_packed(struct xls_function_jit* jit, size_t argc,
                                       .ToString());
     return false;
   }
+  *error_out = nullptr;
+  return true;
+}
 
+bool xls_function_jit_run_packed_trusted(struct xls_function_jit* jit,
+                                         size_t argc,
+                                         const uint8_t* const* args,
+                                         size_t result_buffer_size,
+                                         uint8_t* result_buffer,
+                                         char** error_out);
+
+bool xls_function_jit_run_packed(struct xls_function_jit* jit, size_t argc,
+                                 const uint8_t* const* args,
+                                 const size_t* arg_sizes,
+                                 size_t result_buffer_size,
+                                 uint8_t* result_buffer, char** error_out) {
+  CHECK(jit != nullptr);
+  CHECK(error_out != nullptr);
+  CHECK(args != nullptr);
+  CHECK(arg_sizes != nullptr);
+  CHECK(result_buffer != nullptr);
+
+  xls::FunctionJit* xls_jit = reinterpret_cast<xls::FunctionJit*>(jit);
+  for (size_t i = 0; i < argc; ++i) {
+    if (args[i] == nullptr) {
+      *error_out = xls::ToOwnedCString(absl::InvalidArgumentError(
+                                           absl::StrFormat("args[%zu] was null", i))
+                                           .ToString());
+      return false;
+    }
+  }
+  if (!ValidatePackedCallContract(xls_jit, argc, arg_sizes, result_buffer_size,
+                                  error_out)) {
+    return false;
+  }
+  return xls_function_jit_run_packed_trusted(jit, argc, args, result_buffer_size,
+                                             result_buffer, error_out);
+}
+
+bool xls_function_jit_validate_packed_call(struct xls_function_jit* jit,
+                                           size_t argc,
+                                           const size_t* arg_sizes,
+                                           size_t result_buffer_size,
+                                           char** error_out) {
+  CHECK(jit != nullptr);
+  CHECK(error_out != nullptr);
+  CHECK(arg_sizes != nullptr);
+
+  xls::FunctionJit* xls_jit = reinterpret_cast<xls::FunctionJit*>(jit);
+  return ValidatePackedCallContract(xls_jit, argc, arg_sizes,
+                                    result_buffer_size, error_out);
+}
+
+bool xls_function_jit_run_packed_trusted(struct xls_function_jit* jit,
+                                         size_t argc,
+                                         const uint8_t* const* args,
+                                         size_t result_buffer_size,
+                                         uint8_t* result_buffer,
+                                         char** error_out) {
+  CHECK(jit != nullptr);
+  CHECK(error_out != nullptr);
+  CHECK(args != nullptr);
+  CHECK(result_buffer != nullptr);
+  for (size_t i = 0; i < argc; ++i) {
+    CHECK(args[i] != nullptr);
+  }
+
+  xls::FunctionJit* xls_jit = reinterpret_cast<xls::FunctionJit*>(jit);
   // Packed C API does not expose trace/assert payloads to callers; skip event
   // collection entirely for this hot path.
   absl::Status status = xls_jit->RunWithPackedViews(
