@@ -95,6 +95,8 @@ class FunctionJit {
 
   // Similar to RunWithViews(), but uses packed argument/result buffers (no
   // padding bits/bytes between fields). This avoids Value packing/unpacking.
+  // `events` may be null when the caller intentionally wants to skip
+  // trace/assert collection overhead.
   absl::Status RunWithPackedViews(absl::Span<const uint8_t* const> args,
                                   absl::Span<uint8_t> result_buffer,
                                   InterpreterEvents* events);

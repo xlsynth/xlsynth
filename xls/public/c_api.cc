@@ -1459,10 +1459,12 @@ bool xls_function_jit_run_packed(struct xls_function_jit* jit, size_t argc,
     return false;
   }
 
-  xls::InterpreterEvents events;
+  // Packed C API does not expose trace/assert payloads to callers; skip event
+  // collection entirely for this hot path.
   absl::Status status = xls_jit->RunWithPackedViews(
       absl::MakeConstSpan(args, argc),
-      absl::MakeSpan(result_buffer, result_buffer_size), &events);
+      absl::MakeSpan(result_buffer, result_buffer_size),
+      /*events=*/static_cast<xls::InterpreterEvents*>(nullptr));
   if (!status.ok()) {
     *error_out = xls::ToOwnedCString(status.ToString());
     return false;

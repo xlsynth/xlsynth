@@ -553,7 +553,8 @@ bool xls_function_jit_get_packed_return_size(struct xls_function_jit* jit,
 // `args` and `arg_sizes` are arrays of size `argc`.
 // `result_buffer` must contain at least `result_buffer_size` bytes.
 //
-// Note: this fast path does not export trace/assert messages.
+// Note: this fast path does not export trace/assert messages and skips event
+// collection overhead.
 bool xls_function_jit_run_packed(struct xls_function_jit* jit, size_t argc,
                                  const uint8_t* const* args,
                                  const size_t* arg_sizes,
