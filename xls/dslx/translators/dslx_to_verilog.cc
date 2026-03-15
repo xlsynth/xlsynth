@@ -113,6 +113,9 @@ std::optional<std::string_view> TypeDefinitionIdentifier(
           [](EnumDef* enum_def) -> std::optional<std::string_view> {
             return enum_def->name_def()->identifier();
           },
+          [](SumDef* sum_def) -> std::optional<std::string_view> {
+            return sum_def->name_def()->identifier();
+          },
       },
       resolved_type_definition.definition);
 }

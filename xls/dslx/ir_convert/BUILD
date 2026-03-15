@@ -161,6 +161,7 @@ cc_library(
     deps = [
         "//xls/common/status:status_macros",
         "//xls/dslx:interp_value",
+        "//xls/dslx:interp_value_utils",
         "//xls/dslx/type_system:parametric_env",
         "//xls/dslx/type_system:type",
         "//xls/ir",
@@ -353,6 +354,7 @@ cc_library(
         "//xls/dslx/type_system:parametric_env",
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info",
+        "//xls/dslx/type_system_v2:import_utils",
         "//xls/ir",
         "//xls/ir:bits",
         "//xls/ir:channel",

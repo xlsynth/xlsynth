@@ -4429,7 +4429,7 @@ fn foo<T: type>(a: T) -> T { a }
 
 type MyInt = u34;
 
-enum MyEnum { A = 0 }
+enum MyEnum : u1 { A = 0 }
 
 fn main() {
   const C = foo<u32>(5);
@@ -8310,6 +8310,71 @@ proc main {
   XLS_ASSERT_OK_AND_ASSIGN(std::string converted,
                            ConvertModuleForTest(program));
   ExpectIr(converted);
+}
+
+TEST_F(IrConverterTest, SemanticSumConstructorsCompareWithInterpreter) {
+  constexpr std::string_view program = R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn unwrap_or_sum(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    Option::Pair { lhs, rhs } => lhs + rhs,
+    Option::None => u32:0,
+  }
+}
+
+#[test]
+fn option_test() {
+  assert_eq(unwrap_or_sum(Option::Some(u32:7)), u32:7);
+  assert_eq(unwrap_or_sum(Option::Pair { lhs: u32:3, rhs: u32:4 }), u32:7);
+  assert_eq(unwrap_or_sum(Option::None), u32:0);
+  assert_eq(Option::Some(u32:5) == Option::Some(u32:5), true);
+  assert_eq(Option::Some(u32:5) != Option::Pair { lhs: u32:5, rhs: u32:0 },
+            true);
+}
+)";
+  RunComparator run_comparator(CompareMode::kInterpreter);
+  XLS_ASSERT_OK(ParseAndTest(program, "", "test_module.x",
+                             ParseAndTestOptions{
+                                 .run_comparator = &run_comparator,
+                             }));
+}
+
+TEST_F(IrConverterTest, ImportedSumReturningFunctionWithoutConstructorDispatch) {
+  constexpr std::string_view kImported = R"(
+pub enum Option {
+  None,
+  Some(u32),
+}
+
+pub fn make_some(x: u32) -> Option {
+  Option::Some(x)
+}
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn f(x: u32) -> u32 {
+  match imported::make_some(x) {
+    imported::Option::Some(v) => v,
+    imported::Option::None => u32:0,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(
+      ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(std::string converted,
+                           ConvertOneFunctionForTest(kProgram, "f",
+                                                     import_data));
+  EXPECT_THAT(converted, HasSubstr("__imported__make_some"));
+  EXPECT_THAT(converted, HasSubstr("__test_module__f"));
 }
 
 }  // namespace

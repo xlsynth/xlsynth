@@ -14,6 +14,8 @@
 #ifndef XLS_DSLX_EXHAUSTIVENESS_MATCH_EXHAUSTIVENESS_CHECKER_H_
 #define XLS_DSLX_EXHAUSTIVENESS_MATCH_EXHAUSTIVENESS_CHECKER_H_
 
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -27,6 +29,16 @@
 #include "xls/dslx/type_system/type_info.h"
 
 namespace xls::dslx {
+
+struct FlattenedLeafType {
+  const Type* type;
+  std::optional<int64_t> dense_max_value;
+};
+
+struct FlattenedLeafTypes {
+  std::vector<std::unique_ptr<Type>> owned;
+  std::vector<FlattenedLeafType> flat;
+};
 
 // Object that we can incrementally feed match arms/patterns to and ask whether
 // we've reached a point where the patterns are exhaustive. This is useful for
@@ -62,9 +74,9 @@ class MatchExhaustivenessChecker {
   const TypeInfo& type_info_;
   const Type& matched_type_;
 
-  // Flattened version of the pattern tuple, each element of this vector is a
-  // dimension in the NdRegion below.
-  std::vector<const Type*> leaf_types_;
+  // Flattened version of the matched type. The owned storage is for
+  // synthesized leaves such as dense sum tags.
+  FlattenedLeafTypes leaf_types_;
 
   // The remaining region of the value space that we need to test.
   NdRegion remaining_;

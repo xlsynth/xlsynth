@@ -72,6 +72,7 @@ class Formatter {
   DocRef Format(const ProcMember& n);
   DocRef Format(const QuickCheck& n);
   DocRef Format(const StructDef& n);
+  DocRef Format(const SumDef& n);
   DocRef Format(const TestFunction& n);
   DocRef Format(const TestProc& n);
   DocRef Format(const Trait& n);

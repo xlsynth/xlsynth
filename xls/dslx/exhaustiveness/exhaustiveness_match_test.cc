@@ -227,6 +227,40 @@ TEST(ExhaustivenessMatchTest, MatchOnSparseEnum) {
   CheckExhaustiveOnlyAfterLastPattern(kMatch);
 }
 
+TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn main(x: MaybeU32) -> u32 {
+  match x {
+    MaybeU32::Some(v) => v,
+    MaybeU32::None => u32:0,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnSemanticStructVariantConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum MaybePoint {
+  None,
+  Point { x: u32, y: u32 },
+}
+
+fn main(x: MaybePoint) -> u32 {
+  match x {
+    MaybePoint::Point { x: px, y: py } => px + py,
+    MaybePoint::None => u32:0,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
 TEST(ExhaustivenessMatchTest, MatchWithNestedTuplesAndRestOfTupleSprinkled) {
   constexpr std::string_view kMatch =
       R"(fn main(t: (u32, (u32, u32, u32), u32, u32)) -> u32 {

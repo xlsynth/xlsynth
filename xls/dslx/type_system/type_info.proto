@@ -97,6 +97,9 @@ enum AstNodeKindProto {
   AST_NODE_KIND_PROC_ALIAS = 72;
   AST_NODE_KIND_TRAIT = 73;
   AST_NODE_KIND_ATTRIBUTE = 74;
+  AST_NODE_KIND_CONSTRUCTOR_PATTERN = 75;
+  AST_NODE_KIND_SUM_DEF = 76;
+  AST_NODE_KIND_SUM_VARIANT = 77;
 }
 
 message BitsValueProto {
@@ -229,6 +232,36 @@ message EnumTypeProto {
   repeated InterpValueProto members = 4;
 }
 
+enum SumVariantKindProto {
+  SUM_VARIANT_KIND_INVALID = 0;
+  SUM_VARIANT_KIND_UNIT = 1;
+  SUM_VARIANT_KIND_TUPLE = 2;
+  SUM_VARIANT_KIND_STRUCT = 3;
+}
+
+message SumVariantDefProto {
+  optional string identifier = 1;
+  SumVariantKindProto kind = 2;
+  repeated string member_names = 3;
+}
+
+message SumDefProto {
+  optional SpanProto span = 1;
+  optional string identifier = 2;
+  repeated SumVariantDefProto variants = 3;
+  optional bool is_public = 4;
+}
+
+message SumTypeVariantProto {
+  optional SumVariantDefProto variant = 1;
+  repeated TypeProto payload_members = 2;
+}
+
+message SumTypeProto {
+  optional SumDefProto sum_def = 1;
+  repeated SumTypeVariantProto variants = 2;
+}
+
 message MetaTypeProto {
   optional TypeProto wrapped = 1;
 }
@@ -266,6 +299,7 @@ message TypeProto {
     BitsConstructorTypeProto bits_constructor_type = 10;
     ProcTypeProto proc_type = 11;
     ModuleTypeProto module_type = 12;
+    SumTypeProto sum_type = 13;
   }
 }
 

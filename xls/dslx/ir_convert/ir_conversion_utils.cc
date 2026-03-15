@@ -23,6 +23,7 @@
 #include "absl/strings/str_cat.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/interp_value_utils.h"
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/ir/package.h"
@@ -86,6 +87,20 @@ absl::StatusOr<xls::Type*> TypeToIr(Package* package, const Type& type,
         members.push_back(type);
       }
       retval_ = package_->GetTupleType(members);
+      return absl::OkStatus();
+    }
+    absl::Status HandleSum(const SumType& t) override {
+      XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count,
+                           t.tag_bit_count().GetAsInt64());
+      std::vector<xls::Type*> payload_members;
+      for (const Type* member : GetSumPayloadSlotTypes(t)) {
+        XLS_ASSIGN_OR_RETURN(xls::Type * type,
+                             TypeToIr(package_, *member, bindings_));
+        payload_members.push_back(type);
+      }
+      retval_ = package_->GetTupleType(
+          {package_->GetBitsType(tag_bit_count),
+           package_->GetTupleType(payload_members)});
       return absl::OkStatus();
     }
     absl::Status HandleProc(const ProcType& t) override {

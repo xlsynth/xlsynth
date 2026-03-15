@@ -37,8 +37,9 @@ namespace xls::dslx {
 namespace {
 
 // Recursive visitor that unwraps a possible chain of type aliasing leading to a
-// struct, impl-style proc, or enum def. After visiting a subtree, the result
-// can be obtained by calling `GetStructOrProcRef` or `GetEnumDef`.
+// struct, impl-style proc, sum, or enum def. After visiting a subtree, the
+// result can be obtained by calling `GetStructOrProcRef`, `GetSumRef`, or
+// `GetEnumDef`.
 class TypeRefUnwrapper : public AstNodeVisitorWithDefault {
  public:
   explicit TypeRefUnwrapper(const ImportData& import_data)
@@ -101,6 +102,11 @@ class TypeRefUnwrapper : public AstNodeVisitorWithDefault {
     return absl::OkStatus();
   }
 
+  absl::Status HandleSumDef(const SumDef* def) override {
+    type_def_ = const_cast<SumDef*>(def);
+    return absl::OkStatus();
+  }
+
   absl::Status HandleNameDef(const NameDef* name_def) override {
     return name_def->definer()->Accept(this);
   }
@@ -128,6 +134,16 @@ class TypeRefUnwrapper : public AstNodeVisitorWithDefault {
                : std::nullopt;
   }
 
+  std::optional<SumRef> GetSumRef() {
+    if (!type_def_.has_value() || !std::holds_alternative<SumDef*>(*type_def_)) {
+      return std::nullopt;
+    }
+    return SumRef{
+        .def = std::get<SumDef*>(*type_def_),
+        .parametrics = parametrics_,
+        .type_ref_type_annotation = type_ref_type_annotation_};
+  }
+
  private:
   const ImportData& import_data_;
 
@@ -150,11 +166,28 @@ absl::StatusOr<std::optional<StructOrProcRef>> GetStructOrProcRef(
   return unwrapper.GetStructOrProcRef();
 }
 
+absl::StatusOr<std::optional<SumRef>> GetSumRef(
+    const TypeAnnotation* annotation, const ImportData& import_data) {
+  if (!annotation->IsAnnotation<TypeRefTypeAnnotation>()) {
+    return std::nullopt;
+  }
+  TypeRefUnwrapper unwrapper(import_data);
+  XLS_RETURN_IF_ERROR(annotation->Accept(&unwrapper));
+  return unwrapper.GetSumRef();
+}
+
 absl::StatusOr<std::optional<StructOrProcRef>> GetStructOrProcRefForSubject(
     const ColonRef* ref, const ImportData& import_data) {
   TypeRefUnwrapper unwrapper(import_data);
   XLS_RETURN_IF_ERROR(ToAstNode(ref->subject())->Accept(&unwrapper));
   return unwrapper.GetStructOrProcRef();
+}
+
+absl::StatusOr<std::optional<SumRef>> GetSumRefForSubject(
+    const ColonRef* ref, const ImportData& import_data) {
+  TypeRefUnwrapper unwrapper(import_data);
+  XLS_RETURN_IF_ERROR(ToAstNode(ref->subject())->Accept(&unwrapper));
+  return unwrapper.GetSumRef();
 }
 
 absl::StatusOr<std::optional<ModuleInfo*>> GetImportedModuleInfo(
@@ -197,6 +230,13 @@ absl::StatusOr<std::optional<StructOrProcRef>> GetStructOrProcRef(
   return unwrapper.GetStructOrProcRef();
 }
 
+absl::StatusOr<std::optional<SumRef>> GetSumRef(
+    const ColonRef* colon_ref, const ImportData& import_data) {
+  TypeRefUnwrapper unwrapper(import_data);
+  XLS_RETURN_IF_ERROR(colon_ref->Accept(&unwrapper));
+  return unwrapper.GetSumRef();
+}
+
 absl::StatusOr<std::optional<const StructDefBase*>> GetStructOrProcDef(
     const TypeAnnotation* annotation, const ImportData& import_data) {
   XLS_ASSIGN_OR_RETURN(std::optional<StructOrProcRef> ref,
@@ -212,6 +252,13 @@ absl::StatusOr<std::optional<const EnumDef*>> GetEnumDef(
   TypeRefUnwrapper unwrapper(import_data);
   XLS_RETURN_IF_ERROR(annotation->Accept(&unwrapper));
   return unwrapper.GetEnumDef();
+}
+
+absl::StatusOr<std::optional<const SumDef*>> GetSumDef(
+    const TypeAnnotation* annotation, const ImportData& import_data) {
+  XLS_ASSIGN_OR_RETURN(std::optional<SumRef> sum_ref,
+                       GetSumRef(annotation, import_data));
+  return sum_ref.has_value() ? std::make_optional(sum_ref->def) : std::nullopt;
 }
 
 bool IsImport(const ColonRef* colon_ref) {

@@ -110,6 +110,10 @@ absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
                            MakeStructFormatDescriptor(t, field_preference_));
       return absl::OkStatus();
     }
+    absl::Status HandleSum(const SumType& t) override {
+      return absl::InvalidArgumentError("Cannot format a sum type; got: " +
+                                        t.ToString());
+    }
     absl::Status HandleProc(const ProcType& t) override {
       XLS_ASSIGN_OR_RETURN(result_,
                            MakeStructFormatDescriptor(t, field_preference_));

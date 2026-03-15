@@ -202,6 +202,7 @@ absl::StatusOr<StructDef*> ResolveLocalStructDef(TypeDefinition td) {
           [&](StructDef* n) -> absl::StatusOr<StructDef*> { return n; },
           [&](ProcDef* n) -> absl::StatusOr<StructDef*> { return error(n); },
           [&](EnumDef* n) -> absl::StatusOr<StructDef*> { return error(n); },
+          [&](SumDef* n) -> absl::StatusOr<StructDef*> { return error(n); },
           [&](ColonRef* n) -> absl::StatusOr<StructDef*> { return error(n); },
           [&](UseTreeEntry* n) -> absl::StatusOr<StructDef*> {
             return error(n);
@@ -238,6 +239,9 @@ absl::Status VerifyParentage(const Module* module) {
     }
     if (std::holds_alternative<EnumDef*>(member)) {
       return VerifyParentage(std::get<EnumDef*>(member));
+    }
+    if (std::holds_alternative<SumDef*>(member)) {
+      return VerifyParentage(std::get<SumDef*>(member));
     }
     if (std::holds_alternative<Import*>(member)) {
       return VerifyParentage(std::get<Import*>(member));

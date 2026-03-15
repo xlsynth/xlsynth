@@ -32,6 +32,12 @@
 
 namespace xls::dslx {
 
+struct SumTypeVariantLayout {
+  int64_t variant_index;
+  int64_t payload_start;
+  int64_t payload_size;
+};
+
 // Converts the given (Bits-typed) InterpValue to an array of equal- or
 // smaller-sized Bits-typed values.
 absl::StatusOr<InterpValue> CastBitsToArray(const InterpValue& bits_value,
@@ -46,6 +52,21 @@ absl::StatusOr<InterpValue> CreateZeroValue(const InterpValue& value);
 
 // Creates a zero-valued InterpValue from the given Type.
 absl::StatusOr<InterpValue> CreateZeroValueFromType(const Type& type);
+
+// Returns the flattened payload-slot types for a Phase 1 sum in declaration
+// order across all variants.
+std::vector<const Type*> GetSumPayloadSlotTypes(const SumType& type);
+
+// Returns the dense tag index and flattened payload span for the given sum
+// variant.
+absl::StatusOr<SumTypeVariantLayout> GetSumTypeVariantLayout(
+    const SumType& type, std::string_view variant_name);
+
+// Creates the canonical Phase 1 tuple-product encoding for a sum value:
+// `(tag, payload_slots)`, where inactive payload slots are zero-filled.
+absl::StatusOr<InterpValue> CreateSumValue(
+    const SumType& type, std::string_view variant_name,
+    absl::Span<const InterpValue> payload_values);
 
 // Finds the first index in the LHS and RHS sequences at which values differ or
 // nullopt if the two are equal.

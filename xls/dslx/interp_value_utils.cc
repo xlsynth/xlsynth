@@ -167,6 +167,71 @@ absl::StatusOr<InterpValue> CreateZeroValueFromType(const Type& type) {
                                   type.ToString());
 }
 
+std::vector<const Type*> GetSumPayloadSlotTypes(const SumType& type) {
+  std::vector<const Type*> results;
+  for (const SumTypeVariant& variant : type.variants()) {
+    for (const std::unique_ptr<Type>& member : variant.payload_members()) {
+      results.push_back(member.get());
+    }
+  }
+  return results;
+}
+
+absl::StatusOr<SumTypeVariantLayout> GetSumTypeVariantLayout(
+    const SumType& type, std::string_view variant_name) {
+  int64_t payload_start = 0;
+  for (int64_t variant_index = 0; variant_index < type.variants().size();
+       ++variant_index) {
+    const SumTypeVariant& variant = type.variants().at(variant_index);
+    if (variant.variant().identifier() == variant_name) {
+      return SumTypeVariantLayout{
+          .variant_index = variant_index,
+          .payload_start = payload_start,
+          .payload_size = variant.size(),
+      };
+    }
+    payload_start += variant.size();
+  }
+  return absl::NotFoundError(
+      absl::StrCat("No variant `", variant_name, "` in sum `",
+                   type.nominal_type().identifier(), "`."));
+}
+
+absl::StatusOr<InterpValue> CreateSumValue(
+    const SumType& type, std::string_view variant_name,
+    absl::Span<const InterpValue> payload_values) {
+  XLS_ASSIGN_OR_RETURN(SumTypeVariantLayout layout,
+                       GetSumTypeVariantLayout(type, variant_name));
+  if (payload_values.size() != layout.payload_size) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Sum constructor `%s` expected %d payload values; got %d.",
+        variant_name, layout.payload_size, payload_values.size()));
+  }
+
+  std::vector<InterpValue> payload_slots;
+  payload_slots.reserve(GetSumPayloadSlotTypes(type).size());
+  int64_t global_index = 0;
+  int64_t active_index = 0;
+  for (const SumTypeVariant& variant : type.variants()) {
+    for (const std::unique_ptr<Type>& member : variant.payload_members()) {
+      if (global_index >= layout.payload_start &&
+          global_index < layout.payload_start + layout.payload_size) {
+        payload_slots.push_back(payload_values[active_index++]);
+      } else {
+        XLS_ASSIGN_OR_RETURN(InterpValue zero, CreateZeroValueFromType(*member));
+        payload_slots.push_back(zero);
+      }
+      ++global_index;
+    }
+  }
+
+  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count,
+                       type.tag_bit_count().GetAsInt64());
+  return InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(tag_bit_count, layout.variant_index),
+       InterpValue::MakeTuple(std::move(payload_slots))});
+}
+
 absl::StatusOr<InterpValue> CreateZeroValue(const InterpValue& value) {
   switch (value.tag()) {
     case InterpValueTag::kSBits: {
@@ -226,6 +291,29 @@ absl::StatusOr<std::optional<int64_t>> FindFirstDifferingIndex(
 
 absl::StatusOr<InterpValue> SignConvertValue(const Type& type,
                                              const InterpValue& value) {
+  if (auto* sum_type = dynamic_cast<const SumType*>(&type)) {
+    XLS_RET_CHECK(value.IsTuple()) << value.ToString();
+    XLS_RET_CHECK_EQ(value.GetValuesOrDie().size(), 2);
+    const InterpValue& payload = value.GetValuesOrDie().at(1);
+    XLS_RET_CHECK(payload.IsTuple()) << payload.ToString();
+    const std::vector<const Type*> payload_slot_types =
+        GetSumPayloadSlotTypes(*sum_type);
+    XLS_RET_CHECK_EQ(payload.GetValuesOrDie().size(), payload_slot_types.size());
+
+    std::vector<InterpValue> converted_payload;
+    converted_payload.reserve(payload_slot_types.size());
+    for (int64_t i = 0; i < payload_slot_types.size(); ++i) {
+      XLS_ASSIGN_OR_RETURN(
+          InterpValue converted,
+          SignConvertValue(*payload_slot_types.at(i),
+                           payload.GetValuesOrDie().at(i)));
+      converted_payload.push_back(converted);
+    }
+    return InterpValue::MakeTuple(
+        {value.GetValuesOrDie().at(0),
+         InterpValue::MakeTuple(std::move(converted_payload))});
+  }
+
   if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
     XLS_RET_CHECK(value.IsTuple()) << value.ToString();
     const int64_t tuple_size = value.GetValuesOrDie().size();
@@ -292,6 +380,28 @@ absl::StatusOr<std::vector<InterpValue>> SignConvertArgs(
 
 absl::StatusOr<InterpValue> ValueToInterpValue(const Value& v,
                                                const Type* type) {
+  if (type != nullptr && type->IsSum() && v.kind() == ValueKind::kTuple) {
+    const SumType& sum_type = type->AsSum();
+    XLS_RET_CHECK_EQ(v.elements().size(), 2);
+    XLS_ASSIGN_OR_RETURN(InterpValue tag,
+                         ValueToInterpValue(v.elements().at(0), nullptr));
+    const std::vector<const Type*> payload_slot_types =
+        GetSumPayloadSlotTypes(sum_type);
+    XLS_RET_CHECK_EQ(v.elements().at(1).elements().size(),
+                     payload_slot_types.size());
+    std::vector<InterpValue> payload_members;
+    payload_members.reserve(payload_slot_types.size());
+    for (int64_t i = 0; i < payload_slot_types.size(); ++i) {
+      XLS_ASSIGN_OR_RETURN(
+          InterpValue member,
+          ValueToInterpValue(v.elements().at(1).elements().at(i),
+                             payload_slot_types.at(i)));
+      payload_members.push_back(member);
+    }
+    return InterpValue::MakeTuple(
+        {tag, InterpValue::MakeTuple(std::move(payload_members))});
+  }
+
   switch (v.kind()) {
     case ValueKind::kToken:
       return InterpValue::MakeToken();

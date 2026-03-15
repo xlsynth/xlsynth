@@ -551,6 +551,63 @@ class StatefulResolver : public TypeAnnotationResolver {
                                     file_table_);
   }
 
+  struct SumConstructorTypeRef {
+    SumRef sum_ref;
+    const SumVariant* variant;
+  };
+
+  absl::StatusOr<std::optional<SumConstructorTypeRef>> GetSumConstructorTypeRef(
+      const TypeAnnotation* annotation) {
+    if (!annotation->IsAnnotation<TypeRefTypeAnnotation>()) {
+      return std::nullopt;
+    }
+    const auto* type_ref_annotation =
+        annotation->AsAnnotation<TypeRefTypeAnnotation>();
+    if (!std::holds_alternative<ColonRef*>(
+            type_ref_annotation->type_ref()->type_definition())) {
+      return std::nullopt;
+    }
+    const auto* constructor_ref = std::get<ColonRef*>(
+        type_ref_annotation->type_ref()->type_definition());
+    absl::StatusOr<std::optional<SumRef>> sum_ref = [&]() {
+      if (std::holds_alternative<TypeRefTypeAnnotation*>(
+              constructor_ref->subject())) {
+        return GetSumRef(
+            std::get<TypeRefTypeAnnotation*>(constructor_ref->subject()),
+            import_data_);
+      }
+      return GetSumRefForSubject(constructor_ref, import_data_);
+    }();
+    XLS_RETURN_IF_ERROR(sum_ref.status());
+    if (!sum_ref->has_value()) {
+      return std::nullopt;
+    }
+    const SumVariant* variant = (*sum_ref)->def->GetVariant(constructor_ref->attr());
+    if (variant == nullptr) {
+      return TypeInferenceErrorStatus(
+          constructor_ref->span(), nullptr,
+          absl::Substitute("Sum '$0' has no constructor '$1'.",
+                           (*sum_ref)->def->identifier(), constructor_ref->attr()),
+          file_table_);
+    }
+    return SumConstructorTypeRef{.sum_ref = **sum_ref, .variant = variant};
+  }
+
+  absl::StatusOr<const TypeAnnotation*> CreateSumConstructorTypeAnnotation(
+      const TypeAnnotation* sum_type, std::string_view constructor_name) {
+    XLS_RET_CHECK(sum_type->IsAnnotation<TypeRefTypeAnnotation>());
+    XLS_ASSIGN_OR_RETURN(
+        AstNode * cloned_sum_type,
+        table_.Clone(sum_type, &NoopCloneReplacer, &module_));
+    auto* constructor_ref = module_.Make<ColonRef>(
+        sum_type->span(),
+        absl::down_cast<TypeRefTypeAnnotation*>(cloned_sum_type),
+        std::string(constructor_name));
+    return module_.Make<TypeRefTypeAnnotation>(
+        sum_type->span(), module_.Make<TypeRef>(sum_type->span(), constructor_ref),
+        std::vector<ExprOrType>{}, std::nullopt);
+  }
+
   // Converts `member_type` into a regular `TypeAnnotation` that expresses the
   // type of the given struct member independently of the struct type. For
   // example, if `member_type` refers to `SomeStruct.foo`, and the type
@@ -596,6 +653,56 @@ class StatefulResolver : public TypeAnnotationResolver {
                          GetEnumDef(object_type, import_data_));
     if (enum_def.has_value()) {
       return object_type;
+    }
+    XLS_ASSIGN_OR_RETURN(
+        std::optional<SumConstructorTypeRef> sum_constructor_type_ref,
+        GetSumConstructorTypeRef(object_type));
+    if (sum_constructor_type_ref.has_value()) {
+      if (!sum_constructor_type_ref->variant->is_struct()) {
+        return TypeInferenceErrorStatus(
+            member_type->span(), nullptr,
+            absl::Substitute("No member `$0` in constructor `$1`.",
+                             member_type->member_name(),
+                             sum_constructor_type_ref->variant->identifier()),
+            file_table_);
+      }
+      for (const StructMemberNode* member :
+           sum_constructor_type_ref->variant->struct_members()) {
+        if (member->name() == member_type->member_name()) {
+          return member->type();
+        }
+      }
+      return TypeInferenceErrorStatus(
+          member_type->span(), nullptr,
+          absl::Substitute("No member `$0` in constructor `$1`.",
+                           member_type->member_name(),
+                           sum_constructor_type_ref->variant->identifier()),
+          file_table_);
+    }
+    XLS_ASSIGN_OR_RETURN(std::optional<SumRef> sum_ref,
+                         GetSumRef(object_type, import_data_));
+    if (sum_ref.has_value()) {
+      const SumVariant* variant = sum_ref->def->GetVariant(
+          member_type->member_name());
+      if (variant == nullptr) {
+        return TypeInferenceErrorStatus(
+            member_type->span(), nullptr,
+            absl::Substitute("No constructor `$0` in sum `$1`.",
+                             member_type->member_name(),
+                             sum_ref->def->identifier()),
+            file_table_);
+      }
+      if (variant->is_unit()) {
+        return object_type;
+      }
+      if (variant->is_tuple()) {
+        std::vector<const TypeAnnotation*> param_types(
+            variant->tuple_members().begin(), variant->tuple_members().end());
+        return module_.Make<FunctionTypeAnnotation>(
+            param_types, const_cast<TypeAnnotation*>(object_type));
+      }
+      return CreateSumConstructorTypeAnnotation(object_type,
+                                                variant->identifier());
     }
     // It must be a struct then.
     XLS_ASSIGN_OR_RETURN(std::optional<StructOrProcRef> struct_or_proc_ref,

@@ -2281,7 +2281,7 @@ fn doomed() {
 
 TEST_F(BytecodeInterpreterTest, AssertEqEnums) {
   constexpr std::string_view kProgram = R"(
-enum Flowers {
+enum Flowers : u24 {
     ROSES = u24:0xFF007F,
     VIOLETS = u24:0xEE82EE,
 }
@@ -2820,6 +2820,72 @@ fn main() -> bits[bit_count<Foo>()] {
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
   XLS_ASSERT_OK_AND_ASSIGN(Bits bits, result.GetBits());
   EXPECT_EQ(bits, UBits(0x5a4ad1, 24));
+}
+
+TEST_F(BytecodeInterpreterTest, SemanticSumConstructorsAndEquality) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn unwrap_or_sum(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    Option::Pair { lhs, rhs } => lhs + rhs,
+    Option::None => u32:0,
+  }
+}
+
+fn main() -> (u32, u32, bool, bool) {
+  (
+    unwrap_or_sum(Option::Some(u32:7)),
+    unwrap_or_sum(Option::Pair { lhs: u32:3, rhs: u32:4 }),
+    Option::Some(u32:5) == Option::Some(u32:5),
+    Option::Some(u32:5) != Option::Pair { lhs: u32:5, rhs: u32:0 }
+  )
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
+  XLS_ASSERT_OK_AND_ASSIGN(const std::vector<InterpValue>* values,
+                           result.GetValues());
+  EXPECT_THAT(*values,
+              ElementsAre(InterpValue::MakeU32(7), InterpValue::MakeU32(7),
+                          InterpValue::MakeBool(true),
+                          InterpValue::MakeBool(true)));
+}
+
+TEST_F(BytecodeInterpreterTest, ImportedSumReturningFunctionCall) {
+  constexpr std::string_view kImported = R"(
+pub enum Option {
+  None,
+  Some(u32),
+}
+
+pub fn make_some(x: u32) -> Option {
+  Option::Some(x)
+}
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn main(x: u32) -> u32 {
+  match imported::make_some(x) {
+    imported::Option::Some(v) => v,
+    imported::Option::None => u32:0,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(
+      ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue result,
+      Interpret(kProgram, "main", {InterpValue::MakeU32(7)},
+                BytecodeInterpreterOptions(), &import_data));
+  EXPECT_EQ(result, InterpValue::MakeU32(7));
 }
 
 }  // namespace

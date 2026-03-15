@@ -115,6 +115,7 @@ cc_library(
         "//xls/dslx/type_system:parametric_env",
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info",
+        "//xls/dslx/type_system_v2:import_utils",
         "//xls/ir:bits",
         "//xls/ir:format_preference",
         "//xls/ir:format_strings",

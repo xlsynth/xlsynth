@@ -90,7 +90,8 @@ namespace {
 bool NeedsMetaType(const InferenceTable& table, const AstNode* node) {
   static const absl::NoDestructor<absl::flat_hash_set<AstNodeKind>>
       kMetaTypeKinds({AstNodeKind::kTypeAnnotation, AstNodeKind::kTypeAlias,
-                      AstNodeKind::kEnumDef, AstNodeKind::kStructDef,
+                      AstNodeKind::kEnumDef, AstNodeKind::kSumDef,
+                      AstNodeKind::kStructDef,
                       AstNodeKind::kProcDef});
   return kMetaTypeKinds->contains(node->kind()) ||
          (node->kind() == AstNodeKind::kColonRef &&
@@ -507,6 +508,17 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
             << " with module: " << invocation->callee()->owner()->name()
             << " in module: " << module_.name()
             << " in context: " << ToString(caller_context);
+    if (invocation->callee()->kind() == AstNodeKind::kColonRef) {
+      const auto* colon_ref =
+          absl::down_cast<const ColonRef*>(invocation->callee());
+      std::optional<const AstNode*> callee_target =
+          table_.GetColonRefTarget(colon_ref);
+      if (callee_target.has_value() &&
+          (*callee_target)->kind() == AstNodeKind::kSumVariant) {
+        return ConvertSumConstructorInvocation(invocation, caller_context,
+                                               caller);
+      }
+    }
     XLS_ASSIGN_OR_RETURN(
         const FunctionAndTargetObject function_and_target_object,
         function_resolver_->ResolveFunction(invocation->callee(), caller,
@@ -902,6 +914,42 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
     return absl::OkStatus();
   }
 
+  absl::Status ConvertSumConstructorInvocation(
+      const Invocation* invocation,
+      std::optional<const ParametricContext*> caller_context,
+      std::optional<const Function*> caller) {
+    XLS_ASSIGN_OR_RETURN(
+        std::optional<const TypeAnnotation*> signature,
+        resolver_->ResolveAndUnifyTypeAnnotationsForNode(
+            caller_context, invocation->callee()));
+    XLS_RET_CHECK(signature.has_value());
+    if (!(*signature)->IsAnnotation<FunctionTypeAnnotation>()) {
+      return TypeInferenceErrorStatus(
+          invocation->span(), nullptr,
+          absl::Substitute("Constructor `$0` is not callable here.",
+                           invocation->callee()->ToString()),
+          file_table_);
+    }
+    const auto* function_type =
+        (*signature)->AsAnnotation<FunctionTypeAnnotation>();
+    XLS_RETURN_IF_ERROR(table_.AddTypeAnnotationToVariableForParametricContext(
+        caller_context, *table_.GetTypeVariable(invocation->callee()),
+        function_type));
+    XLS_RETURN_IF_ERROR(table_.AddTypeAnnotationToVariableForParametricContext(
+        caller_context, *table_.GetTypeVariable(invocation),
+        function_type->return_type()));
+    for (int i = 0; i < function_type->param_types().size(); ++i) {
+      const Expr* actual_param = invocation->args()[i];
+      XLS_RETURN_IF_ERROR(
+          table_.AddTypeAnnotationToVariableForParametricContext(
+              caller_context, *table_.GetTypeVariable(actual_param),
+              function_type->param_types()[i]));
+      XLS_RETURN_IF_ERROR(ConvertSubtree(actual_param, caller, caller_context));
+    }
+    return GenerateTypeInfo(caller_context, invocation,
+                            function_type->return_type());
+  }
+
   // Gets the output `TypeInfo` corresponding to the given
   // `parametric_context`, which may be `nullopt`, in which case it returns
   // the base type info. If the proposed type info doesn't belong to the
@@ -1098,6 +1146,13 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       // The caller may have passed a node that is in the AST but not in the
       // table, and it may not be needed in the table.
       VLOG(5) << "No type information for: " << node->ToString();
+      return absl::OkStatus();
+    }
+    XLS_ASSIGN_OR_RETURN(
+        bool is_sum_constructor_type,
+        IsSumConstructorTypeAnnotation(parametric_context, node, *annotation,
+                                       type_annotation_filter));
+    if (is_sum_constructor_type) {
       return absl::OkStatus();
     }
 
@@ -1458,6 +1513,76 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       XLS_RETURN_IF_ERROR(AddCachedType(*enum_def, std::nullopt, *type));
       return type;
     }
+    XLS_ASSIGN_OR_RETURN(std::optional<SumRef> sum_ref,
+                         GetSumRef(annotation, import_data_));
+    if (sum_ref.has_value()) {
+      const SumDef* sum_def = sum_ref->def;
+      if (!sum_def->IsParametric()) {
+        std::unique_ptr<Type> cached_type = GetCachedType(sum_def, std::nullopt);
+        if (cached_type) {
+          return cached_type;
+        }
+      }
+      if (sum_def->IsParametric() &&
+          sum_ref->parametrics.size() != sum_def->parametric_bindings().size()) {
+        return TypeInferenceErrorStatusForAnnotation(
+            annotation->span(), annotation,
+            absl::Substitute("Reference to parametric sum type `$0` must have "
+                             "all parametrics specified in this context.",
+                             sum_def->identifier()),
+            file_table_);
+      }
+      absl::flat_hash_map<const NameDef*, ExprOrType> resolved_parametrics;
+      for (int i = 0; i < sum_ref->parametrics.size(); ++i) {
+        resolved_parametrics.emplace(
+            sum_def->parametric_bindings()[i]->name_def(),
+            sum_ref->parametrics[i]);
+      }
+
+      std::vector<SumTypeVariant> variants;
+      variants.reserve(sum_def->variants().size());
+      for (const SumVariant* variant : sum_def->variants()) {
+        std::vector<std::unique_ptr<Type>> payload_members;
+        if (variant->is_tuple()) {
+          payload_members.reserve(variant->tuple_members().size());
+          for (const TypeAnnotation* member : variant->tuple_members()) {
+            const TypeAnnotation* member_type = member;
+            if (sum_def->IsParametric()) {
+              XLS_ASSIGN_OR_RETURN(
+                  member_type,
+                  GetParametricFreeType(member, resolved_parametrics,
+                                        /*real_self_type=*/std::nullopt,
+                                        /*clone_if_no_parametrics=*/false));
+            }
+            XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> concrete_member_type,
+                                 Concretize(member_type, parametric_context));
+            payload_members.push_back(std::move(concrete_member_type));
+          }
+        } else if (variant->is_struct()) {
+          payload_members.reserve(variant->struct_members().size());
+          for (const StructMemberNode* member : variant->struct_members()) {
+            const TypeAnnotation* member_type = member->type();
+            if (sum_def->IsParametric()) {
+              XLS_ASSIGN_OR_RETURN(
+                  member_type,
+                  GetParametricFreeType(member->type(), resolved_parametrics,
+                                        /*real_self_type=*/std::nullopt,
+                                        /*clone_if_no_parametrics=*/false));
+            }
+            XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> concrete_member_type,
+                                 Concretize(member_type, parametric_context));
+            payload_members.push_back(std::move(concrete_member_type));
+          }
+        }
+        variants.push_back(SumTypeVariant(*variant, std::move(payload_members)));
+      }
+      std::unique_ptr<Type> type =
+          std::make_unique<SumType>(*sum_def, std::move(variants));
+      if (!sum_def->IsParametric()) {
+        XLS_RETURN_IF_ERROR(AddCachedType(sum_def, std::nullopt, *type));
+      }
+      return type;
+    }
     XLS_ASSIGN_OR_RETURN(std::optional<StructOrProcRef> struct_or_proc,
                          GetStructOrProcRef(annotation, import_data_));
     if (struct_or_proc.has_value()) {
@@ -1573,6 +1698,41 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       std::optional<const ParametricContext*> parametric_context) {
     return Concretize(annotation, parametric_context,
                       /*needs_conversion_before_eval=*/false, std::nullopt);
+  }
+
+  absl::StatusOr<bool> IsSumConstructorTypeAnnotation(
+      std::optional<const ParametricContext*> parametric_context,
+      const AstNode* context_node, const TypeAnnotation* annotation,
+      TypeAnnotationFilter filter) {
+    const TypeAnnotation* candidate = annotation;
+    if (candidate->IsAnnotation<MemberTypeAnnotation>()) {
+      XLS_ASSIGN_OR_RETURN(candidate,
+                           resolver_->ResolveIndirectTypeAnnotations(
+                               parametric_context, context_node, candidate,
+                               filter));
+    }
+    if (!candidate->IsAnnotation<TypeRefTypeAnnotation>()) {
+      return false;
+    }
+    const auto* type_ref_annotation =
+        candidate->AsAnnotation<TypeRefTypeAnnotation>();
+    if (!std::holds_alternative<ColonRef*>(
+            type_ref_annotation->type_ref()->type_definition())) {
+      return false;
+    }
+    const auto* constructor_ref = std::get<ColonRef*>(
+        type_ref_annotation->type_ref()->type_definition());
+    absl::StatusOr<std::optional<SumRef>> sum_ref = [&]() {
+      if (std::holds_alternative<TypeRefTypeAnnotation*>(
+              constructor_ref->subject())) {
+        return GetSumRef(
+            std::get<TypeRefTypeAnnotation*>(constructor_ref->subject()),
+            import_data_);
+      }
+      return GetSumRefForSubject(constructor_ref, import_data_);
+    }();
+    XLS_RETURN_IF_ERROR(sum_ref.status());
+    return sum_ref->has_value();
   }
 
   // Given an invocation of the `map` builtin, creates a FunctionTypeAnnotation

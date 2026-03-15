@@ -290,12 +290,18 @@ std::string_view AstNodeKindToString(AstNodeKind kind) {
       return "all-ones macro";
     case AstNodeKind::kSlice:
       return "slice";
+    case AstNodeKind::kConstructorPattern:
+      return "constructor-pattern";
     case AstNodeKind::kEnumDef:
       return "enum definition";
     case AstNodeKind::kStructDef:
       return "struct definition";
     case AstNodeKind::kStructMember:
       return "struct member";
+    case AstNodeKind::kSumDef:
+      return "sum definition";
+    case AstNodeKind::kSumVariant:
+      return "sum variant";
     case AstNodeKind::kProcDef:
       return "proc definition";
     case AstNodeKind::kQuickCheck:
@@ -345,6 +351,7 @@ AnyNameDef TypeDefinitionGetNameDef(const TypeDefinition& td) {
           [](StructDef* n) -> AnyNameDef { return n->name_def(); },
           [](ProcDef* n) -> AnyNameDef { return n->name_def(); },
           [](EnumDef* n) -> AnyNameDef { return n->name_def(); },
+          [](SumDef* n) -> AnyNameDef { return n->name_def(); },
           [](ColonRef* n) -> AnyNameDef {
             return GetSubjectNameDef(n->subject());
           },
@@ -361,6 +368,7 @@ AstNode* TypeDefinitionToAstNode(const TypeDefinition& td) {
                          [](StructDef* n) -> AstNode* { return n; },
                          [](ProcDef* n) -> AstNode* { return n; },
                          [](EnumDef* n) -> AstNode* { return n; },
+                         [](SumDef* n) -> AstNode* { return n; },
                          [](ColonRef* n) -> AstNode* { return n; },
                          [](UseTreeEntry* n) -> AstNode* { return n; },
                      },
@@ -379,6 +387,9 @@ absl::StatusOr<TypeDefinition> ToTypeDefinition(AstNode* node) {
   }
   if (node->kind() == AstNodeKind::kEnumDef) {
     return absl::down_cast<EnumDef*>(node);
+  }
+  if (node->kind() == AstNodeKind::kSumDef) {
+    return absl::down_cast<SumDef*>(node);
   }
   if (node->kind() == AstNodeKind::kColonRef) {
     return absl::down_cast<ColonRef*>(node);
@@ -1500,6 +1511,131 @@ std::string EnumDef::ToString() const {
     absl::StrAppendFormat(&result, "%s%s = %s,\n", kRustOneIndent,
                           item.name_def->identifier(),
                           value_to_string(item.value));
+  }
+  absl::StrAppend(&result, "}");
+  return result;
+}
+
+// -- class SumVariant
+
+SumVariant::SumVariant(Module* owner, Span span, NameDef* name_def,
+                       std::vector<TypeAnnotation*> tuple_members,
+                       std::vector<StructMemberNode*> struct_members)
+    : AstNode(owner),
+      span_(std::move(span)),
+      name_def_(name_def),
+      tuple_members_(std::move(tuple_members)),
+      struct_members_(std::move(struct_members)) {}
+
+SumVariant::~SumVariant() = default;
+
+std::vector<AstNode*> SumVariant::GetChildren(bool want_types) const {
+  std::vector<AstNode*> results = {name_def_};
+  if (!want_types) {
+    return results;
+  }
+  if (is_tuple()) {
+    for (TypeAnnotation* member : tuple_members_) {
+      results.push_back(member);
+    }
+  } else if (is_struct()) {
+    for (StructMemberNode* member : struct_members_) {
+      results.push_back(member);
+    }
+  }
+  return results;
+}
+
+std::string SumVariant::ToString() const {
+  if (is_unit()) {
+    return identifier();
+  }
+  if (is_tuple()) {
+    return absl::StrCat(
+        identifier(), "(",
+        absl::StrJoin(tuple_members_, ", ",
+                      [](std::string* out, TypeAnnotation* member) {
+                        absl::StrAppend(out, member->ToString());
+                      }),
+        ")");
+  }
+  return absl::StrCat(
+      identifier(), " { ",
+      absl::StrJoin(struct_members_, ", ",
+                    [](std::string* out, StructMemberNode* member) {
+                      absl::StrAppend(out, member->ToString());
+                    }),
+      " }");
+}
+
+// -- class SumDef
+
+SumDef::SumDef(Module* owner, Span span, NameDef* name_def,
+               std::vector<ParametricBinding*> parametric_bindings,
+               std::vector<SumVariant*> variants, bool is_public)
+    : AstNode(owner),
+      span_(std::move(span)),
+      name_def_(name_def),
+      parametric_bindings_(std::move(parametric_bindings)),
+      variants_(std::move(variants)),
+      is_public_(is_public) {}
+
+SumDef::~SumDef() = default;
+
+std::vector<AstNode*> SumDef::GetChildren(bool want_types) const {
+  std::vector<AstNode*> results = {name_def_};
+  for (ParametricBinding* binding : parametric_bindings_) {
+    results.push_back(binding);
+  }
+  for (SumVariant* variant : variants_) {
+    results.push_back(variant);
+  }
+  return results;
+}
+
+bool SumDef::HasVariant(std::string_view target) const {
+  return std::any_of(variants_.begin(), variants_.end(),
+                     [&](const SumVariant* variant) {
+                       return variant->identifier() == target;
+                     });
+}
+
+SumVariant* SumDef::GetVariant(std::string_view target) {
+  for (SumVariant* variant : variants_) {
+    if (variant->identifier() == target) {
+      return variant;
+    }
+  }
+  LOG(FATAL) << "SumDef::GetVariant; no variant: " << target;
+}
+
+const SumVariant* SumDef::GetVariant(std::string_view target) const {
+  for (const SumVariant* variant : variants_) {
+    if (variant->identifier() == target) {
+      return variant;
+    }
+  }
+  LOG(FATAL) << "SumDef::GetVariant; no variant: " << target;
+}
+
+std::string SumDef::ToString() const {
+  std::string parametric_str;
+  if (!parametric_bindings_.empty()) {
+    parametric_str = absl::StrCat(
+        "<",
+        absl::StrJoin(parametric_bindings_, ", ",
+                      [](std::string* out, ParametricBinding* binding) {
+                        absl::StrAppend(out, binding->ToString());
+                      }),
+        ">");
+  }
+  std::string result = absl::StrFormat("%s%senum %s%s {\n",
+                                       MakeExternTypeAttr(extern_type_name_),
+                                       is_public_ ? "pub " : "", identifier(),
+                                       parametric_str);
+  for (const SumVariant* variant : variants_) {
+    absl::StrAppendFormat(&result, "%s%s,\n", kRustOneIndent,
+                          variant->ToString());
   }
   absl::StrAppend(&result, "}");
   return result;
@@ -2680,6 +2816,51 @@ std::string XlsTuple::ToStringInternal() const {
   }
   absl::StrAppend(&result, ")");
   return result;
+}
+
+// -- class ConstructorPattern
+
+ConstructorPattern::ConstructorPattern(
+    Module* owner, Span span, ColonRef* constructor,
+    std::vector<NameDefTree*> positional_patterns,
+    std::vector<NamedPattern> named_patterns)
+    : AstNode(owner),
+      span_(std::move(span)),
+      constructor_(constructor),
+      positional_patterns_(std::move(positional_patterns)),
+      named_patterns_(std::move(named_patterns)) {}
+
+ConstructorPattern::~ConstructorPattern() = default;
+
+std::vector<AstNode*> ConstructorPattern::GetChildren(bool want_types) const {
+  std::vector<AstNode*> results = {constructor_};
+  for (NameDefTree* pattern : positional_patterns_) {
+    results.push_back(pattern);
+  }
+  for (const auto& [_, pattern] : named_patterns_) {
+    results.push_back(pattern);
+  }
+  return results;
+}
+
+std::string ConstructorPattern::ToString() const {
+  if (is_tuple()) {
+    return absl::StrCat(
+        constructor_->ToString(), "(",
+        absl::StrJoin(positional_patterns_, ", ",
+                      [](std::string* out, NameDefTree* pattern) {
+                        absl::StrAppend(out, pattern->ToString());
+                      }),
+        ")");
+  }
+  return absl::StrCat(
+      constructor_->ToString(), " { ",
+      absl::StrJoin(named_patterns_, ", ",
+                    [](std::string* out, const NamedPattern& pattern) {
+                      absl::StrAppendFormat(out, "%s: %s", pattern.first,
+                                            pattern.second->ToString());
+                    }),
+      " }");
 }
 
 // -- class NameDefTree

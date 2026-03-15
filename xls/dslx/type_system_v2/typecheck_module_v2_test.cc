@@ -3282,6 +3282,53 @@ const Z = f(u32:1);
               TypecheckSucceeds(HasNodeWithType("Z", "uN[32]")));
 }
 
+TEST(TypecheckV2Test, SemanticSumTupleConstructor) {
+  EXPECT_THAT(
+      R"(
+enum MaybeU32 {
+  None,
+  Some(u32),
+}
+const X = MaybeU32::Some(u32:7);
+)",
+      TypecheckSucceeds(
+          HasNodeWithType("X", "MaybeU32 { None | Some(uN[32]) }")));
+}
+
+TEST(TypecheckV2Test, SemanticSumStructConstructor) {
+  EXPECT_THAT(
+      R"(
+enum MaybePoint {
+  None,
+  Point { x: u32, y: u32 },
+}
+const X = MaybePoint::Point { x: u32:1, y: u32:2 };
+)",
+      TypecheckSucceeds(
+          HasNodeWithType("X", "MaybePoint { None | Point { x: uN[32], y: uN[32] } }")));
+}
+
+TEST(TypecheckV2Test, MatchWithSemanticSumConstructors) {
+  EXPECT_THAT(
+      R"(
+enum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn unwrap_or_zero(x: MaybeU32) -> u32 {
+  match x {
+    MaybeU32::Some(v) => v,
+    MaybeU32::None => u32:0,
+  }
+}
+
+const X = unwrap_or_zero(MaybeU32::Some(u32:7));
+)",
+      TypecheckSucceeds(
+          AllOf(HasNodeWithType("v", "uN[32]"), HasNodeWithType("X", "uN[32]"))));
+}
+
 TEST(TypecheckV2Test, MatchArmTupleType) {
   EXPECT_THAT(R"(
 const X = u32:1;
@@ -3842,6 +3889,19 @@ struct S { a: u32, b: u32, }
 const Y = zero!<S>();
 )",
       TypecheckSucceeds(HasNodeWithType("Y", "S { a: uN[32], b: uN[32] }")));
+}
+
+TEST(TypecheckV2Test, ZeroMacroSumFails) {
+  EXPECT_THAT(
+      R"(
+enum MaybeU32 {
+  None,
+  Some(u32),
+}
+const Y = zero!<MaybeU32>();
+)",
+      TypecheckFails(HasSubstr("Cannot use `zero!<MaybeU32>()` with sum type "
+                               "`MaybeU32`.")));
 }
 
 TEST(TypecheckV2Test, ZeroMacroParametricStruct) {
@@ -6763,7 +6823,7 @@ const_assert!(Y == 24);
 TEST(TypecheckV2Test, EnumBool) {
   EXPECT_THAT(
       R"(
-enum MyEnum {
+enum MyEnum : u1 {
   A = false,
   B = true,
 }
@@ -6782,7 +6842,7 @@ const_assert!(MyEnum::B as u1 == u1:1);
 TEST(TypecheckV2Test, EnumInt) {
   EXPECT_THAT(
       R"(
-enum MyEnum {
+enum MyEnum : s8 {
   A = s8:0,
   B = -128,
   C = 127,
@@ -6817,7 +6877,7 @@ TEST(TypecheckV2Test, EnumMixedConstLiterals) {
       R"(
 const X = u8:42;
 const Y = u8:10;
-enum MyEnum {
+enum MyEnum : u8 {
   A = 64,
   B = X,
   C = Y + Y,
@@ -6846,7 +6906,7 @@ enum MyEnum : u8 {
 TEST(TypecheckV2Test, EnumValueTypeMismatch) {
   EXPECT_THAT(
       R"(
-enum MyEnum {
+enum MyEnum : u8 {
   A = u8:1,
   B = u16:2,
 }
@@ -6875,13 +6935,13 @@ enum MyEnum : u8 {
       TypecheckFails(HasTypeMismatch("u8[u32:1]", "u8")));
 }
 
-TEST(TypecheckV2Test, EnumNoTypeOrValue) {
+TEST(TypecheckV2Test, EmptySumTypeDefinition) {
   EXPECT_THAT(
       R"(
 enum MyEnum {
 }
 )",
-      TypecheckFails(HasSubstr("has no type annotation and no value")));
+      TypecheckSucceeds(::testing::_));
 }
 
 TEST(TypecheckV2Test, EnumTypeAlias) {
@@ -8764,7 +8824,7 @@ fn f() -> IntAlias { IntAlias:0 }
 
 TEST(TypecheckV2Test, ImportedEnum) {
   constexpr std::string_view kImported = R"(
-pub enum MyEnum {
+pub enum MyEnum : s8 {
   A = s8:0,
   B = -128,
   C = 127,
@@ -8789,7 +8849,7 @@ const_assert!(imported::MyEnum::C as s8 == 127);
 
 TEST(TypecheckV2Test, ImportedEnumAsType) {
   constexpr std::string_view kImported = R"(
-pub enum MyEnum {
+pub enum MyEnum : s8 {
   A = s8:0,
   B = -128,
   C = 127,
@@ -8817,7 +8877,7 @@ fn f(x: A) -> A {
 
 TEST(TypecheckV2Test, ImportedEnumAsTypeTwoLevel) {
   constexpr std::string_view kFirst = R"(
-pub enum MyEnum {
+pub enum MyEnum : s8 {
   A = s8:0,
   B = -128,
   C = 127,
@@ -8850,7 +8910,7 @@ fn f(x: A) -> A {
 
 TEST(TypecheckV2Test, ImportedEnumInFunction) {
   constexpr std::string_view kImported = R"(
-pub enum MyEnum {
+pub enum MyEnum : s8 {
   A = s8:0,
   B = -128,
   C = 127,

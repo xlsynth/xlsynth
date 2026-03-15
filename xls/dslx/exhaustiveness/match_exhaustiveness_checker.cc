@@ -14,6 +14,7 @@
 
 #include "xls/dslx/exhaustiveness/match_exhaustiveness_checker.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -38,28 +39,60 @@
 namespace xls::dslx {
 namespace {
 
-std::vector<const Type*> GetLeafTypesInternal(const Type& type) {
+int64_t GetLeafTypeCount(const Type& type) {
   if (type.IsTuple()) {
-    std::vector<const Type*> result;
+    int64_t result = 0;
     for (const std::unique_ptr<Type>& member : type.AsTuple().members()) {
-      std::vector<const Type*> member_leaf_types =
-          GetLeafTypesInternal(*member);
-      result.insert(result.end(), member_leaf_types.begin(),
-                    member_leaf_types.end());
+      result += GetLeafTypeCount(*member);
     }
     return result;
   }
-  return {&type};
+  if (type.IsSum()) {
+    int64_t result = 1;
+    for (const SumTypeVariant& variant : type.AsSum().variants()) {
+      for (const std::unique_ptr<Type>& member : variant.payload_members()) {
+        result += GetLeafTypeCount(*member);
+      }
+    }
+    return result;
+  }
+  return 1;
 }
 
-std::vector<const Type*> GetLeafTypes(const Type& type, const Span& span,
-                                      const FileTable& file_table) {
-  std::vector<const Type*> result = GetLeafTypesInternal(type);
+void AppendLeafTypes(const Type& type, FlattenedLeafTypes* result) {
+  if (type.IsTuple()) {
+    for (const std::unique_ptr<Type>& member : type.AsTuple().members()) {
+      AppendLeafTypes(*member, result);
+    }
+    return;
+  }
+  if (type.IsSum()) {
+    const SumType& sum_type = type.AsSum();
+    result->owned.push_back(
+        std::make_unique<BitsType>(/*is_signed=*/false, sum_type.tag_bit_count()));
+    result->flat.push_back(FlattenedLeafType{
+        .type = result->owned.back().get(),
+        .dense_max_value = sum_type.variant_count() - 1});
+    for (const SumTypeVariant& variant : sum_type.variants()) {
+      for (const std::unique_ptr<Type>& member : variant.payload_members()) {
+        AppendLeafTypes(*member, result);
+      }
+    }
+    return;
+  }
+  result->flat.push_back(
+      FlattenedLeafType{.type = &type, .dense_max_value = std::nullopt});
+}
+
+FlattenedLeafTypes GetLeafTypes(const Type& type, const Span& span,
+                                const FileTable& file_table) {
+  FlattenedLeafTypes result;
+  AppendLeafTypes(type, &result);
   // Validate that all the matched-upon types are either bits or enums.
-  for (const Type* leaf_type : result) {
-    CHECK(GetBitsLike(*leaf_type).has_value() || leaf_type->IsEnum())
+  for (const FlattenedLeafType& leaf_type : result.flat) {
+    CHECK(GetBitsLike(*leaf_type.type).has_value() || leaf_type.type->IsEnum())
         << "Non-bits or non-enum type in matched-upon tuple: "
-        << leaf_type->ToString() << " @ " << span.ToString(file_table);
+        << leaf_type.type->ToString() << " @ " << span.ToString(file_table);
   }
   return result;
 }
@@ -71,21 +104,33 @@ struct SomeWildcard {};
 
 // NameDefTree::Leaf but where RestOfTuple has been resolved.
 using PatternLeaf =
-    std::variant<SomeWildcard, NameRef*, Range*, ColonRef*, Number*>;
+    std::variant<SomeWildcard, InterpValue, NameRef*, Range*, ColonRef*,
+                 Number*>;
 
-InterpValueInterval MakeFullIntervalForType(const Type& type) {
-  if (type.IsEnum()) {
-    return MakeFullIntervalForEnumType(type.AsEnum());
+InterpValueInterval MakeFullIntervalForLeafType(const FlattenedLeafType& type) {
+  if (type.dense_max_value.has_value()) {
+    std::optional<BitsLikeProperties> bits_like = GetBitsLike(*type.type);
+    CHECK(bits_like.has_value())
+        << "MakeFullIntervalForLeafType; got non-bits dense leaf type: "
+        << type.type->ToString();
+    int64_t bit_count = bits_like->size.GetAsInt64().value();
+    return InterpValueInterval(InterpValue::MakeUBits(bit_count, 0),
+                               InterpValue::MakeUBits(
+                                   bit_count, *type.dense_max_value));
   }
-  std::optional<BitsLikeProperties> bits_like = GetBitsLike(type);
+  if (type.type->IsEnum()) {
+    return MakeFullIntervalForEnumType(type.type->AsEnum());
+  }
+  std::optional<BitsLikeProperties> bits_like = GetBitsLike(*type.type);
   CHECK(bits_like.has_value())
-      << "MakeFullIntervalForType; got non-bits type: " << type.ToString();
+      << "MakeFullIntervalForLeafType; got non-bits type: "
+      << type.type->ToString();
   int64_t bit_count = bits_like->size.GetAsInt64().value();
   bool is_signed = bits_like->is_signed.GetAsBool().value();
   InterpValue min = InterpValue::MakeMinValue(is_signed, bit_count);
   InterpValue max = InterpValue::MakeMaxValue(is_signed, bit_count);
   InterpValueInterval result(min, max);
-  VLOG(5) << "MakeFullIntervalForType; type: `" << type.ToString()
+  VLOG(5) << "MakeFullIntervalForLeafType; type: `" << type.type->ToString()
           << "` result: " << result.ToString(/*show_types=*/false);
   return result;
 }
@@ -93,10 +138,10 @@ InterpValueInterval MakeFullIntervalForType(const Type& type) {
 // Returns the "full" intervals that can be used to represent the "no values
 // have been exhausted" initial state.
 std::vector<InterpValueInterval> GetFullIntervals(
-    absl::Span<const Type* const> leaf_types) {
+    absl::Span<const FlattenedLeafType> leaf_types) {
   std::vector<InterpValueInterval> result;
-  for (const Type* leaf_type : leaf_types) {
-    result.push_back(MakeFullIntervalForType(*leaf_type));
+  for (const FlattenedLeafType& leaf_type : leaf_types) {
+    result.push_back(MakeFullIntervalForLeafType(leaf_type));
   }
   return result;
 }
@@ -125,21 +170,25 @@ InterpValueInterval MakeIntervalForType(const Type& type,
 }
 
 std::optional<InterpValueInterval> PatternToIntervalInternal(
-    const PatternLeaf& leaf, const Type& leaf_type, const TypeInfo& type_info,
+    const PatternLeaf& leaf, const FlattenedLeafType& leaf_type,
+    const TypeInfo& type_info,
     const ImportData& import_data) {
   std::optional<InterpValueInterval> result = absl::visit(
       Visitor{
           [&](SomeWildcard /*unused*/) -> std::optional<InterpValueInterval> {
-            return MakeFullIntervalForType(leaf_type);
+            return MakeFullIntervalForLeafType(leaf_type);
+          },
+          [&](const InterpValue& value) -> std::optional<InterpValueInterval> {
+            return MakePointIntervalForType(*leaf_type.type, value, import_data);
           },
           [&](NameRef* name_ref) -> std::optional<InterpValueInterval> {
             std::optional<InterpValue> value =
                 type_info.GetConstExprOption(name_ref);
             if (value.has_value()) {
-              return MakePointIntervalForType(leaf_type, value.value(),
+              return MakePointIntervalForType(*leaf_type.type, value.value(),
                                               import_data);
             }
-            return MakeFullIntervalForType(leaf_type);
+            return MakeFullIntervalForLeafType(leaf_type);
           },
           [&](Range* range) -> std::optional<InterpValueInterval> {
             std::optional<InterpValue> start =
@@ -163,7 +212,7 @@ std::optional<InterpValueInterval> PatternToIntervalInternal(
                 return std::nullopt;
               }
             }
-            return MakeIntervalForType(leaf_type, *start, *limit);
+            return MakeIntervalForType(*leaf_type.type, *start, *limit);
           },
           [&](ColonRef* colon_ref) -> std::optional<InterpValueInterval> {
             std::optional<InterpValue> value =
@@ -172,19 +221,20 @@ std::optional<InterpValueInterval> PatternToIntervalInternal(
             VLOG(5) << "PatternToIntervalInternal; colon_ref: `"
                     << colon_ref->ToString() << "` value: `"
                     << value.value().ToString() << "`" << " leaf_type: `"
-                    << leaf_type.ToString() << "`";
-            return MakePointIntervalForType(leaf_type, value.value(),
+                    << leaf_type.type->ToString() << "`";
+            return MakePointIntervalForType(*leaf_type.type, value.value(),
                                             import_data);
           },
           [&](Number* number) -> std::optional<InterpValueInterval> {
             std::optional<InterpValue> value =
                 type_info.GetConstExprOption(number);
             CHECK(value.has_value());
-            return MakePointIntervalForType(leaf_type, value.value(),
+            return MakePointIntervalForType(*leaf_type.type, value.value(),
                                             import_data);
           }},
       leaf);
-  VLOG(5) << "PatternToIntervalInternal; leaf_type: `" << leaf_type.ToString()
+  VLOG(5) << "PatternToIntervalInternal; leaf_type: `"
+          << leaf_type.type->ToString()
           << "` result: "
           << (result.has_value() ? result->ToString(/*show_types=*/false)
                                  : "nullopt");
@@ -202,8 +252,121 @@ PatternLeaf ToPatternLeaf(const NameDefTree::Leaf& leaf) {
             return SomeWildcard();
           },
           [&](Number* number) -> PatternLeaf { return number; },
+          [&](ConstructorPattern* /*constructor_pattern*/) -> PatternLeaf {
+            LOG(FATAL) << "ConstructorPattern not yet supported in "
+                          "MatchExhaustivenessChecker";
+          },
           [&](RestOfTuple* rest_of_tuple) -> PatternLeaf {
             LOG(FATAL) << "RestOfTuple not valid for conversion to PatternLeaf";
+          }},
+      leaf);
+}
+
+int64_t GetSumVariantIndex(const SumType& sum_type,
+                           std::string_view constructor_name) {
+  for (int64_t i = 0; i < sum_type.variant_count(); ++i) {
+    if (sum_type.variants()[i].variant().identifier() == constructor_name) {
+      return i;
+    }
+  }
+  LOG(FATAL) << "Unknown sum constructor `" << constructor_name
+             << "` for type `" << sum_type.ToString() << "`";
+  return 0;
+}
+
+InterpValue MakeSumTagValue(const SumType& sum_type, int64_t variant_index) {
+  int64_t bit_count = sum_type.tag_bit_count().GetAsInt64().value();
+  return InterpValue::MakeUBits(bit_count, variant_index);
+}
+
+void AppendWildcardLeavesForType(const Type& type,
+                                 std::vector<PatternLeaf>* result) {
+  result->insert(result->end(), GetLeafTypeCount(type), SomeWildcard());
+}
+
+std::vector<PatternLeaf> ExpandPatternLeaves(const NameDefTree& pattern,
+                                             const Type& type,
+                                             const FileTable& file_table);
+
+std::vector<PatternLeaf> ExpandSumPatternLeaves(const NameDefTree::Leaf& leaf,
+                                                const SumType& type,
+                                                const FileTable& file_table) {
+  auto make_variant_pattern_leaves =
+      [&](int64_t active_variant_index,
+          const ConstructorPattern* constructor_pattern)
+      -> std::vector<PatternLeaf> {
+    std::vector<PatternLeaf> result;
+    result.push_back(MakeSumTagValue(type, active_variant_index));
+    for (int64_t i = 0; i < type.variant_count(); ++i) {
+      const SumTypeVariant& variant = type.variants()[i];
+      if (i != active_variant_index) {
+        for (const std::unique_ptr<Type>& member : variant.payload_members()) {
+          AppendWildcardLeavesForType(*member, &result);
+        }
+        continue;
+      }
+      if (constructor_pattern == nullptr) {
+        CHECK(variant.is_unit());
+        continue;
+      }
+      if (variant.is_tuple()) {
+        CHECK(constructor_pattern->is_tuple());
+        CHECK_EQ(constructor_pattern->positional_patterns().size(),
+                 variant.size());
+        for (int64_t member_index = 0; member_index < variant.size();
+             ++member_index) {
+          std::vector<PatternLeaf> member_leaves =
+              ExpandPatternLeaves(
+                  *constructor_pattern->positional_patterns()[member_index],
+                  variant.GetMemberType(member_index), file_table);
+          result.insert(result.end(), member_leaves.begin(),
+                        member_leaves.end());
+        }
+        continue;
+      }
+      CHECK(variant.is_struct());
+      CHECK(constructor_pattern->is_struct());
+      CHECK_EQ(constructor_pattern->named_patterns().size(), variant.size());
+      for (int64_t member_index = 0; member_index < variant.size();
+           ++member_index) {
+        const std::string_view member_name = variant.GetMemberName(member_index);
+        auto it = std::find_if(
+            constructor_pattern->named_patterns().begin(),
+            constructor_pattern->named_patterns().end(),
+            [&](const ConstructorPattern::NamedPattern& named_pattern) {
+              return named_pattern.first == member_name;
+            });
+        CHECK(it != constructor_pattern->named_patterns().end())
+            << "Missing named pattern for member `" << member_name << "`";
+        std::vector<PatternLeaf> member_leaves =
+            ExpandPatternLeaves(*it->second, variant.GetMemberType(member_index),
+                                file_table);
+        result.insert(result.end(), member_leaves.begin(), member_leaves.end());
+      }
+    }
+    return result;
+  };
+
+  return absl::visit(
+      Visitor{
+          [&](ConstructorPattern* constructor_pattern)
+              -> std::vector<PatternLeaf> {
+            int64_t variant_index = GetSumVariantIndex(
+                type, constructor_pattern->constructor()->attr());
+            return make_variant_pattern_leaves(variant_index,
+                                              constructor_pattern);
+          },
+          [&](ColonRef* colon_ref) -> std::vector<PatternLeaf> {
+            int64_t variant_index =
+                GetSumVariantIndex(type, colon_ref->attr());
+            CHECK(type.variants()[variant_index].is_unit());
+            return make_variant_pattern_leaves(variant_index,
+                                              /*constructor_pattern=*/nullptr);
+          },
+          [&](const auto&) -> std::vector<PatternLeaf> {
+            LOG(FATAL) << "Unsupported pattern for sum type `" << type.ToString()
+                       << "`";
+            return {};
           }},
       leaf);
 }
@@ -215,9 +378,13 @@ std::vector<PatternLeaf> ExpandPatternLeaves(const NameDefTree& pattern,
           << "` type: `" << type.ToString() << "`";
   // For an irrefutable pattern, simply return wildcards for every leaf.
   if (pattern.IsIrrefutable()) {
-    std::vector<const Type*> leaf_types =
-        GetLeafTypes(type, pattern.span(), file_table);
-    return std::vector<PatternLeaf>(leaf_types.size(), SomeWildcard());
+    return std::vector<PatternLeaf>(GetLeafTypeCount(type), SomeWildcard());
+  }
+  if (type.IsSum()) {
+    CHECK(pattern.is_leaf())
+        << "Expected a leaf pattern for sum type, got `" << pattern.ToString()
+        << "`";
+    return ExpandSumPatternLeaves(pattern.leaf(), type.AsSum(), file_table);
   }
   // If the type is not a tuple then we expect the pattern to be a single leaf.
   if (!type.IsTuple()) {
@@ -275,23 +442,27 @@ std::vector<PatternLeaf> ExpandPatternLeaves(const NameDefTree& pattern,
       continue;
     }
     const NameDefTree::Leaf& leaf = std::get<NameDefTree::Leaf>(node);
+    auto append_non_rest_leaf = [&]() {
+      CHECK_LT(types_index, tuple_members.size());
+      const Type& type_at_index = *tuple_members[types_index];
+      if (type_at_index.IsSum()) {
+        std::vector<PatternLeaf> sum_pattern_leaves =
+            ExpandSumPatternLeaves(leaf, type_at_index.AsSum(), file_table);
+        result.insert(result.end(), sum_pattern_leaves.begin(),
+                      sum_pattern_leaves.end());
+      } else {
+        result.push_back(ToPatternLeaf(leaf));
+      }
+      types_index += 1;
+    };
     absl::visit(
         Visitor{
-            [&](const NameRef* n) {
-              result.push_back(ToPatternLeaf(leaf));
-              types_index += 1;
-            },
-            [&](const Range* r) {
-              result.push_back(ToPatternLeaf(leaf));
-              types_index += 1;
-            },
-            [&](const ColonRef* c) {
-              result.push_back(ToPatternLeaf(leaf));
-              types_index += 1;
-            },
-            [&](const Number* n) {
-              result.push_back(ToPatternLeaf(leaf));
-              types_index += 1;
+            [&](const NameRef* /*unused*/) { append_non_rest_leaf(); },
+            [&](const Range* /*unused*/) { append_non_rest_leaf(); },
+            [&](const ColonRef* /*unused*/) { append_non_rest_leaf(); },
+            [&](const Number* /*unused*/) { append_non_rest_leaf(); },
+            [&](const ConstructorPattern* /*unused*/) {
+              append_non_rest_leaf();
             },
             [&](const RestOfTuple* /*unused*/) {
               // Instead of using flattened_index here, use types_index (the
@@ -309,12 +480,7 @@ std::vector<PatternLeaf> ExpandPatternLeaves(const NameDefTree& pattern,
                 // We have to push wildcard data corresponding to the type.
                 CHECK_LT(types_index, tuple_members.size());
                 const Type& type_at_index = *tuple_members[types_index];
-                for (int64_t i = 0;
-                     i < GetLeafTypes(type_at_index, pattern.span(), file_table)
-                             .size();
-                     ++i) {
-                  result.push_back(SomeWildcard());
-                }
+                AppendWildcardLeavesForType(type_at_index, &result);
                 types_index += 1;
               }
               VLOG(5) << "ExpandPatternLeaves; after RestOfTuple at "
@@ -326,12 +492,7 @@ std::vector<PatternLeaf> ExpandPatternLeaves(const NameDefTree& pattern,
               // Push back wildcards of the right size for the type.
               CHECK_LT(types_index, tuple_members.size());
               const Type& type_at_index = *tuple_members[types_index];
-              for (int64_t i = 0;
-                   i < GetLeafTypes(type_at_index, pattern.span(), file_table)
-                           .size();
-                   ++i) {
-                result.push_back(SomeWildcard());
-              }
+              AppendWildcardLeavesForType(type_at_index, &result);
               types_index += 1;
             }},
         leaf);
@@ -339,14 +500,14 @@ std::vector<PatternLeaf> ExpandPatternLeaves(const NameDefTree& pattern,
 
   // Check that we got a consistent count between the razed tuple types and the
   // PatternLeaf vector.
-  CHECK_EQ(result.size(), GetLeafTypes(type, pattern.span(), file_table).size())
+  CHECK_EQ(result.size(), GetLeafTypeCount(type))
       << "Sub-pattern leaves and tuple type must be the same size.";
   return result;
 }
 
 NdIntervalWithEmpty PatternToInterval(const NameDefTree& pattern,
                                       const Type& matched_type,
-                                      absl::Span<const Type* const> leaf_types,
+                                      absl::Span<const FlattenedLeafType> leaf_types,
                                       const TypeInfo& type_info,
                                       const ImportData& import_data) {
   std::vector<PatternLeaf> pattern_leaves =
@@ -360,7 +521,7 @@ NdIntervalWithEmpty PatternToInterval(const NameDefTree& pattern,
   intervals.reserve(pattern_leaves.size());
   for (int64_t i = 0; i < pattern_leaves.size(); ++i) {
     intervals.push_back(PatternToIntervalInternal(
-        pattern_leaves[i], *leaf_types[i], type_info, import_data));
+        pattern_leaves[i], leaf_types[i], type_info, import_data));
   }
   NdIntervalWithEmpty result(intervals);
   VLOG(5) << "PatternToInterval; pattern: `" << pattern.ToString()
@@ -369,7 +530,7 @@ NdIntervalWithEmpty PatternToInterval(const NameDefTree& pattern,
   return result;
 }
 
-NdRegion MakeFullNdRegion(absl::Span<const Type* const> leaf_types) {
+NdRegion MakeFullNdRegion(absl::Span<const FlattenedLeafType> leaf_types) {
   std::vector<InterpValueInterval> intervals = GetFullIntervals(leaf_types);
   std::vector<InterpValue> dim_extents;
   dim_extents.reserve(intervals.size());
@@ -392,7 +553,7 @@ MatchExhaustivenessChecker::MatchExhaustivenessChecker(
       type_info_(type_info),
       matched_type_(matched_type),
       leaf_types_(GetLeafTypes(matched_type, matched_expr_span, file_table())),
-      remaining_(MakeFullNdRegion(leaf_types_)) {}
+      remaining_(MakeFullNdRegion(leaf_types_.flat)) {}
 
 bool MatchExhaustivenessChecker::IsExhaustive() const {
   return remaining_.IsEmpty();
@@ -404,7 +565,7 @@ bool MatchExhaustivenessChecker::AddPattern(const NameDefTree& pattern) {
           << pattern.span().ToString(file_table());
 
   NdIntervalWithEmpty this_pattern_interval = PatternToInterval(
-      pattern, matched_type_, leaf_types_, type_info_, import_data_);
+      pattern, matched_type_, leaf_types_.flat, type_info_, import_data_);
   remaining_ = remaining_.SubtractInterval(this_pattern_interval);
   return IsExhaustive();
 }
@@ -423,7 +584,7 @@ MatchExhaustivenessChecker::SampleSimplestUncoveredValue() const {
   // For each dimension of the region, grab the lower bound (i.e. the simplest
   // value in that interval).
   for (int64_t i = 0; i < nd_interval.dims().size(); ++i) {
-    const Type& type = *leaf_types_[i];
+    const Type& type = *leaf_types_.flat[i].type;
     const InterpValueInterval& interval = nd_interval.dims()[i];
     const InterpValue& min = interval.min();
     if (type.IsEnum()) {
