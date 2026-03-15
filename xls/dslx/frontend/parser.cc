@@ -1549,11 +1549,18 @@ absl::StatusOr<Expr*> Parser::ParseCastOrEnumRefOrStructInstanceOrToken(
                        PeekTokenIs(TokenKind::kDoubleColon));
   if (peek_is_double_colon) {
     XLS_ASSIGN_OR_RETURN(NameRef * subject, ParseNameRef(bindings, &tok));
-    // TODO: google/xls#1030 - This assumes it is calling an imported function,
-    // (e.g., `lib::function();`) not instantiating an imported struct (e.g.,
-    // `lib::my_struct{};`). Instantiating both locally-defined and imported
-    // structs really should be unified in this method.
-    return ParseColonRef(bindings, subject, subject->span());
+    XLS_ASSIGN_OR_RETURN(ColonRef * colon_ref,
+                         ParseColonRef(bindings, subject, subject->span()));
+    XLS_ASSIGN_OR_RETURN(bool peek_is_obrace, PeekTokenIs(TokenKind::kOBrace));
+    if (peek_is_obrace) {
+      auto* type_ref = module_->Make<TypeRef>(colon_ref->span(), colon_ref);
+      XLS_ASSIGN_OR_RETURN(
+          TypeAnnotation * type,
+          MakeTypeRefTypeAnnotation(colon_ref->span(), type_ref,
+                                    /*dims=*/{}, /*parametrics=*/{}));
+      return ParseStructInstance(bindings, type);
+    }
+    return colon_ref;
   }
 
   XLS_ASSIGN_OR_RETURN(TypeAnnotation * type,
@@ -4043,9 +4050,21 @@ absl::StatusOr<SumDef*> Parser::ParseSumDef(const Pos& start_pos, bool is_public
         Span(colon_start_pos, colon_end_pos), type);
   };
 
-  auto parse_variant = [this, &sum_bindings]() -> absl::StatusOr<SumVariant*> {
+  auto parse_variant =
+      [this, &sum_bindings,
+       name_def]() -> absl::StatusOr<SumVariant*> {
     Pos variant_start = GetPos();
     XLS_ASSIGN_OR_RETURN(NameDef * variant_name, ParseNameDefNoBind());
+
+    XLS_ASSIGN_OR_RETURN(bool saw_equals, PeekTokenIs(TokenKind::kEquals));
+    if (saw_equals) {
+      return ParseErrorStatus(
+          variant_name->span(),
+          absl::StrFormat(
+              "Numeric enums now require an explicit underlying type; use "
+              "`enum %s : uN { ... }` for numeric members.",
+              name_def->identifier()));
+    }
 
     XLS_ASSIGN_OR_RETURN(bool dropped_oparen, TryDropToken(TokenKind::kOParen));
     if (dropped_oparen) {

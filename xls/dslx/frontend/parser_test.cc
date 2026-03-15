@@ -2404,6 +2404,24 @@ fn f(x: u32) {
       "`..` patterns are not allowed outside of a tuple pattern");
 }
 
+TEST_F(ParserTest, MatchWithSemanticSumConstructors) {
+  std::unique_ptr<Module> module = RoundTrip(R"(enum Option<T: type> {
+    None,
+    Some(T),
+    Point { x: u32, y: u32 },
+}
+fn f(x: Option<u32>) -> Option<u32> {
+    match x {
+        Option::Some(v) => Option::Some(v),
+        Option::Point { x: px, y: py } => Option::Point { x: px, y: py },
+        Option<u32>::None => Option<u32>::None,
+    }
+})");
+  std::optional<ModuleMember*> maybe_member = module->FindMemberWithName("Option");
+  ASSERT_TRUE(maybe_member.has_value());
+  EXPECT_TRUE(std::holds_alternative<SumDef*>(*maybe_member.value()));
+}
+
 TEST_F(ParserTest, ArrayTypeAnnotation) {
   std::string s = "u8[2]";
   scanner_.emplace(file_table_, Fileno(0), s);
@@ -2775,12 +2793,16 @@ const A = MyEnum[2]:[MyEnum::FOO, MyEnum::BAR];)");
 }
 
 TEST_F(ParserTest, ImplicitWidthEnum) {
-  RoundTrip(R"(const A = u32:42;
+  constexpr std::string_view kProgram = R"(const A = u32:42;
 const B = u32:64;
 enum ImplicitWidthEnum {
     FOO = A,
     BAR = B,
-})");
+})";
+  EXPECT_THAT(Parse(kProgram),
+              IsPosError("ParseError",
+                         HasSubstr("Numeric enums now require an explicit "
+                                   "underlying type")));
 }
 
 TEST_F(ParserTest, ConstWithTypeAnnotation) {
