@@ -398,6 +398,7 @@ class FunctionConverterVisitor : public AstNodeVisitor {
   // from their parent nodes).
   // keep-sorted start
   INVALID(Attribute)
+  INVALID(ConstructorPattern)
   INVALID(FunctionRef)
   INVALID(MatchArm)
   INVALID(NameDef)
@@ -447,6 +448,8 @@ class FunctionConverterVisitor : public AstNodeVisitor {
   INVALID(QuickCheck)
   INVALID(StructDef)
   INVALID(StructMemberNode)
+  INVALID(SumDef)
+  INVALID(SumVariant)
   INVALID(Trait)
   INVALID(TypeAlias)
   INVALID(Use)

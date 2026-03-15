@@ -527,6 +527,10 @@ class Parser : public TokenParser {
 
   absl::StatusOr<NameDefTree*> ParseTuplePattern(const Pos& start_pos,
                                                  Bindings& bindings);
+  absl::StatusOr<ConstructorPattern*> ParseTupleConstructorPattern(
+      Bindings& bindings, ColonRef* constructor);
+  absl::StatusOr<ConstructorPattern*> ParseStructConstructorPattern(
+      Bindings& bindings, ColonRef* constructor);
 
   // Returns a parsed pattern; e.g. one that would guard a match arm.
   //
@@ -557,14 +561,17 @@ class Parser : public TokenParser {
   // ultimately the loop terminates and the final accum value is returned.
   absl::StatusOr<ForLoopBase*> ParseFor(Bindings& bindings);
 
-  // Parses an enum definition; e.g.
+  // Parses either a numeric enum definition or a semantic sum definition; e.g.
   //
   //  enum Foo : u2 {
   //    A = 0,
   //    B = 1,
   //  }
-  absl::StatusOr<EnumDef*> ParseEnumDef(const Pos& start_pos, bool is_public,
-                                        Bindings& bindings);
+  absl::StatusOr<ModuleMember> ParseEnumDef(const Pos& start_pos,
+                                            bool is_public,
+                                            Bindings& bindings);
+  absl::StatusOr<SumDef*> ParseSumDef(const Pos& start_pos, bool is_public,
+                                      NameDef* name_def, Bindings& bindings);
 
   absl::StatusOr<StructDef*> ParseStruct(const Pos& start_pos, bool is_public,
                                          Bindings& bindings);
