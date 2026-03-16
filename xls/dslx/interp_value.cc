@@ -14,6 +14,7 @@
 
 #include "xls/dslx/interp_value.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -25,7 +26,6 @@
 #include <variant>
 #include <vector>
 
-#include "absl/algorithm/container.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -417,9 +417,10 @@ absl::StatusOr<std::string> InterpValue::ToSumString(
                 payload_formats[i], include_type_prefix, indentation + 1));
         payload_pieces.push_back(std::move(payload_piece));
       }
-      if (absl::c_all_of(payload_pieces, [](const std::string& piece) {
+      if (std::all_of(payload_pieces.begin(), payload_pieces.end(),
+                      [](const std::string& piece) {
             return IsSingleLine(piece);
-          })) {
+                      })) {
         return absl::StrCat(prefix, "(", absl::StrJoin(payload_pieces, ", "),
                             ")");
       }

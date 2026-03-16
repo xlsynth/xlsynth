@@ -23,7 +23,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
-#include "absl/strings/str_format.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/format_preference.h"
@@ -126,8 +126,8 @@ absl::Status ValueFormatDescriptor::Accept(ValueFormatVisitor& v) const {
     case ValueFormatDescriptorKind::kSum:
       return v.HandleSum(*this);
   }
-  return absl::InvalidArgumentError(absl::StrFormat(
-      "Out of bounds ValueFormatDescriptorKind: %d", static_cast<int>(kind())));
+  return absl::InvalidArgumentError(absl::StrCat(
+      "Out of bounds ValueFormatDescriptorKind: ", static_cast<int>(kind())));
 }
 
 }  // namespace xls::dslx
