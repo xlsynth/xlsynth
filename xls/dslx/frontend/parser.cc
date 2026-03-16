@@ -203,6 +203,12 @@ ExprRestrictions MakeRestrictions(
   return ExprRestrictions(value);
 }
 
+ExprRestrictions ClearRestriction(ExprRestrictions restrictions,
+                                  ExprRestriction restriction) {
+  return ExprRestrictions(static_cast<uint64_t>(restrictions) &
+                          ~static_cast<uint64_t>(restriction));
+}
+
 bool IsExprRestrictionEnabled(ExprRestrictions restrictions,
                               ExprRestriction target) {
   uint64_t target_u64 = static_cast<uint64_t>(target);
@@ -2010,7 +2016,13 @@ absl::StatusOr<Expr*> Parser::ParseComparisonExpression(
     Token op = PopTokenOrDie();
     XLS_ASSIGN_OR_RETURN(BinopKind kind,
                          BinopKindFromString(TokenKindToString(op.kind())));
-    XLS_ASSIGN_OR_RETURN(Expr * rhs, ParseOrExpression(bindings, restrictions));
+    ExprRestrictions rhs_restrictions = restrictions;
+    if (GetBinopComparisonKinds().contains(kind)) {
+      rhs_restrictions = ClearRestriction(
+          rhs_restrictions, ExprRestriction::kNoStructLiteral);
+    }
+    XLS_ASSIGN_OR_RETURN(Expr * rhs,
+                         ParseOrExpression(bindings, rhs_restrictions));
     if (!lhs->in_parens() && IsComparisonBinopKind(lhs) &&
         GetBinopComparisonKinds().contains(kind)) {
       return ParseErrorStatus(op.span(),

@@ -1851,15 +1851,16 @@ DocRef Fmt(const ConstructorPattern& n, Comments& comments, DocArena& arena) {
   pieces.push_back(arena.ocurl());
   if (!n.named_patterns().empty()) {
     pieces.push_back(arena.break1());
-    std::vector<DocRef> fields;
-    fields.reserve(n.named_patterns().size());
-    for (const auto& [name, pattern] : n.named_patterns()) {
-      fields.push_back(ConcatNGroup(
-          arena, {arena.MakeText(name), arena.colon(), arena.space(),
-                  Fmt(*pattern, comments, arena)}));
-    }
-    pieces.push_back(arena.MakeNest(JoinDocs(arena, fields, arena.comma(),
-                                             arena.break1())));
+    pieces.push_back(FmtJoin<ConstructorPattern::NamedPattern>(
+        n.named_patterns(), Joiner::kCommaBreak1AsGroupTrailingCommaOnBreak,
+        [&](const ConstructorPattern::NamedPattern& field, Comments& comments,
+            DocArena& arena) {
+          const auto& [name, pattern] = field;
+          return ConcatNGroup(
+              arena, {arena.MakeText(name), arena.colon(), arena.space(),
+                      Fmt(*pattern, comments, arena)});
+        },
+        comments, arena));
     pieces.push_back(arena.break1());
   } else {
     pieces.push_back(arena.space());
@@ -2947,16 +2948,16 @@ DocRef Formatter::Format(const SumDef& n) {
       variant_pieces.push_back(arena_.ocurl());
       if (!variant->struct_members().empty()) {
         variant_pieces.push_back(arena_.break1());
-        std::vector<DocRef> field_docs;
-        field_docs.reserve(variant->struct_members().size());
-        for (const StructMemberNode* member : variant->struct_members()) {
-          field_docs.push_back(ConcatNGroup(
-              arena_, {arena_.MakeText(member->name()), arena_.colon(),
-                       arena_.space(),
-                       Fmt(*member->type(), comments_, arena_)}));
-        }
-        variant_pieces.push_back(arena_.MakeNest(JoinDocs(
-            arena_, field_docs, arena_.comma(), arena_.break1())));
+        variant_pieces.push_back(FmtJoin<const StructMemberNode*>(
+            variant->struct_members(),
+            Joiner::kCommaBreak1AsGroupTrailingCommaOnBreak,
+            [&](const StructMemberNode* member, Comments& comments,
+                DocArena& arena) {
+              return ConcatNGroup(
+                  arena, {arena.MakeText(member->name()), arena.colon(),
+                          arena.space(), Fmt(*member->type(), comments, arena)});
+            },
+            comments_, arena_));
         variant_pieces.push_back(arena_.break1());
       } else {
         variant_pieces.push_back(arena_.space());

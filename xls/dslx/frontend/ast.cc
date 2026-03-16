@@ -2142,6 +2142,10 @@ std::vector<AstNode*> StructInstance::GetChildren(bool want_types) const {
 std::string StructInstance::ToStringInternal() const {
   std::string type_name = ToAstNode(struct_ref())->ToString();
 
+  if (GetUnorderedMembers().empty()) {
+    return absl::StrFormat("%s { }", type_name);
+  }
+
   std::string members_str = absl::StrJoin(
       GetUnorderedMembers(), ", ",
       [](std::string* out, const std::pair<std::string, Expr*>& member) {

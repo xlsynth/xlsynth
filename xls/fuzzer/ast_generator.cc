@@ -2126,6 +2126,7 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
   variants.reserve(2);
   variants.push_back(
       module_->Make<SumVariant>(fake_span_, unit_variant_name_def,
+                                SumVariant::PayloadKind::kUnit,
                                 std::vector<TypeAnnotation*>{},
                                 std::vector<StructMemberNode*>{}));
 
@@ -2139,11 +2140,13 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
         payload_width, /*use_xn=*/RandomBool(0.05));
     variants.push_back(module_->Make<SumVariant>(
         fake_span_, active_variant_name_def,
+        SumVariant::PayloadKind::kTuple,
         std::vector<TypeAnnotation*>{*payload_type},
         std::vector<StructMemberNode*>{}));
   } else {
     variants.push_back(
         module_->Make<SumVariant>(fake_span_, active_variant_name_def,
+                                  SumVariant::PayloadKind::kUnit,
                                   std::vector<TypeAnnotation*>{},
                                   std::vector<StructMemberNode*>{}));
   }
