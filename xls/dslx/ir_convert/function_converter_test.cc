@@ -675,5 +675,43 @@ fn f(x: Option, y: Option) -> bool {
   EXPECT_FALSE(has_direct_param_eq);
 }
 
+TEST(FunctionConverterTest,
+     ConvertsSemanticSumConstructorWithInactiveEmptySumPayload) {
+  constexpr std::string_view kProgram = R"(
+enum Empty {
+}
+
+enum Outer {
+  Wrapped(Empty),
+  Nothing,
+}
+
+fn f() -> Outer {
+  Outer::Nothing
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+
+  EXPECT_EQ(package_data.ir_to_dslx.size(), 1);
+}
+
 }  // namespace
 }  // namespace xls::dslx

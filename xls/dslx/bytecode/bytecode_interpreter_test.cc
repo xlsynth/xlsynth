@@ -2856,6 +2856,31 @@ fn main() -> (u32, u32, bool, bool) {
                           InterpValue::MakeBool(true)));
 }
 
+TEST_F(BytecodeInterpreterTest, SemanticSumConstructorsWithNestedSumPayloads) {
+  constexpr std::string_view kProgram = R"(
+enum Inner {
+  None,
+  Some(u32),
+}
+
+enum Outer {
+  Wrapped(Inner),
+  Nothing,
+}
+
+fn main() -> bool {
+  let x = Outer::Nothing;
+  let y = Outer::Nothing;
+  match x {
+    Outer::Nothing => x == y,
+    Outer::Wrapped(_) => false,
+  }
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
+  EXPECT_EQ(result, InterpValue::MakeBool(true));
+}
+
 TEST_F(BytecodeInterpreterTest, ImportedSumReturningFunctionCall) {
   constexpr std::string_view kImported = R"(
 pub enum Option {

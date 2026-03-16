@@ -172,6 +172,90 @@ TEST(InterpValueHelpersTest, CreateZeroStructValue) {
   EXPECT_TRUE(InterpValue::MakeTuple({u8_zero, u1_zero}).Eq(struct_zero));
 }
 
+TEST(InterpValueHelpersTest, CreateZeroSumValueUsesFirstVariantRecursively) {
+  const Span kFakeSpan = Span::Fake();
+
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+
+  auto* inner_name = module.Make<NameDef>(kFakeSpan, "Inner", nullptr);
+  auto* inner_none_name = module.Make<NameDef>(kFakeSpan, "None", nullptr);
+  auto* inner_some_name = module.Make<NameDef>(kFakeSpan, "Some", nullptr);
+  auto* u32_type = module.Make<BuiltinTypeAnnotation>(
+      kFakeSpan, BuiltinType::kU32,
+      module.GetOrCreateBuiltinNameDef(dslx::BuiltinType::kU32));
+  auto* inner_none =
+      module.Make<SumVariant>(kFakeSpan, inner_none_name,
+                              std::vector<TypeAnnotation*>{},
+                              std::vector<StructMemberNode*>{});
+  auto* inner_some =
+      module.Make<SumVariant>(kFakeSpan, inner_some_name,
+                              std::vector<TypeAnnotation*>{u32_type},
+                              std::vector<StructMemberNode*>{});
+  auto* inner_def = module.Make<SumDef>(
+      kFakeSpan, inner_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{inner_none, inner_some}, /*is_public=*/false);
+  inner_name->set_definer(inner_def);
+
+  std::vector<SumTypeVariant> inner_variants;
+  inner_variants.emplace_back(*inner_none, std::vector<std::unique_ptr<Type>>{});
+  std::vector<std::unique_ptr<Type>> inner_some_members;
+  inner_some_members.push_back(BitsType::MakeU32());
+  inner_variants.emplace_back(*inner_some, std::move(inner_some_members));
+  SumType inner_type(*inner_def, std::move(inner_variants));
+
+  auto* outer_name = module.Make<NameDef>(kFakeSpan, "Outer", nullptr);
+  auto* outer_wrap_name = module.Make<NameDef>(kFakeSpan, "Wrap", nullptr);
+  auto* outer_none_name = module.Make<NameDef>(kFakeSpan, "Nothing", nullptr);
+  auto* outer_wrap =
+      module.Make<SumVariant>(kFakeSpan, outer_wrap_name,
+                              std::vector<TypeAnnotation*>{u32_type},
+                              std::vector<StructMemberNode*>{});
+  auto* outer_none =
+      module.Make<SumVariant>(kFakeSpan, outer_none_name,
+                              std::vector<TypeAnnotation*>{},
+                              std::vector<StructMemberNode*>{});
+  auto* outer_def = module.Make<SumDef>(
+      kFakeSpan, outer_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{outer_wrap, outer_none}, /*is_public=*/false);
+  outer_name->set_definer(outer_def);
+
+  std::vector<SumTypeVariant> outer_variants;
+  std::vector<std::unique_ptr<Type>> outer_wrap_members;
+  outer_wrap_members.push_back(inner_type.CloneToUnique());
+  outer_variants.emplace_back(*outer_wrap, std::move(outer_wrap_members));
+  outer_variants.emplace_back(*outer_none, std::vector<std::unique_ptr<Type>>{});
+  SumType outer_type(*outer_def, std::move(outer_variants));
+
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue zero, CreateZeroValueFromType(outer_type));
+  EXPECT_TRUE(InterpValue::MakeTuple(
+                  {InterpValue::MakeUBits(1, 0),
+                   InterpValue::MakeTuple(
+                       {InterpValue::MakeTuple({InterpValue::MakeUBits(1, 0),
+                                               InterpValue::MakeTuple(
+                                                   {InterpValue::MakeU32(0)})})})})
+                  .Eq(zero));
+}
+
+TEST(InterpValueHelpersTest, CreateZeroEmptySumValueUsesZeroTag) {
+  const Span kFakeSpan = Span::Fake();
+
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+
+  auto* empty_name = module.Make<NameDef>(kFakeSpan, "Empty", nullptr);
+  auto* empty_def = module.Make<SumDef>(
+      kFakeSpan, empty_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{}, /*is_public=*/false);
+  empty_name->set_definer(empty_def);
+  SumType empty_type(*empty_def, std::vector<SumTypeVariant>{});
+
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue zero, CreateZeroValueFromType(empty_type));
+  EXPECT_TRUE(InterpValue::MakeTuple(
+                  {InterpValue::MakeUBits(1, 0), InterpValue::MakeTuple({})})
+                  .Eq(zero));
+}
+
 TEST(InterpValueHelpersTest, InterpValueAsStringWorks) {
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue hello_world_u8_array,
                            InterpValue::MakeArray({

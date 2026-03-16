@@ -50,6 +50,8 @@ absl::StatusOr<InterpValue> InterpValueFromString(std::string_view s) {
   return dslx::ValueToInterpValue(value);
 }
 
+absl::StatusOr<InterpValue> CreateCanonicalZeroValueForSum(const SumType& type);
+
 }  // namespace
 
 absl::StatusOr<InterpValue> CastBitsToArray(const InterpValue& bits_value,
@@ -163,6 +165,10 @@ absl::StatusOr<InterpValue> CreateZeroValueFromType(const Type& type) {
     }
   }
 
+  if (auto* sum_type = dynamic_cast<const SumType*>(&type)) {
+    return CreateCanonicalZeroValueForSum(*sum_type);
+  }
+
   return absl::UnimplementedError("Cannot create zero value for type type: " +
                                   type.ToString());
 }
@@ -230,6 +236,23 @@ absl::StatusOr<InterpValue> CreateSumValue(
   return InterpValue::MakeTuple(
       {InterpValue::MakeUBits(tag_bit_count, layout.variant_index),
        InterpValue::MakeTuple(std::move(payload_slots))});
+}
+
+absl::StatusOr<InterpValue> CreateCanonicalZeroValueForSum(const SumType& type) {
+  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, type.tag_bit_count().GetAsInt64());
+  if (type.variant_count() == 0) {
+    return InterpValue::MakeTuple(
+        {InterpValue::MakeUBits(tag_bit_count, 0), InterpValue::MakeTuple({})});
+  }
+
+  const SumTypeVariant& variant = type.variants().front();
+  std::vector<InterpValue> payload_values;
+  payload_values.reserve(variant.size());
+  for (const std::unique_ptr<Type>& member : variant.payload_members()) {
+    XLS_ASSIGN_OR_RETURN(InterpValue zero, CreateZeroValueFromType(*member));
+    payload_values.push_back(std::move(zero));
+  }
+  return CreateSumValue(type, variant.variant().identifier(), payload_values);
 }
 
 absl::StatusOr<InterpValue> CreateZeroValue(const InterpValue& value) {
