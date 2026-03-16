@@ -50,11 +50,30 @@ absl::StatusOr<InterpValue> InterpValueFromString(std::string_view s) {
   return dslx::ValueToInterpValue(value);
 }
 
-absl::StatusOr<InterpValue> CreateCanonicalZeroValueForSum(const SumType& type) {
+absl::StatusOr<InterpValue> CreateInternalPlaceholderValueForSum(
+    const SumType& type) {
   XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, type.tag_bit_count().GetAsInt64());
   if (type.variant_count() == 0) {
     return InterpValue::MakeTuple(
         {InterpValue::MakeUBits(tag_bit_count, 0), InterpValue::MakeTuple({})});
+  }
+
+  const SumTypeVariant& variant = type.variants().front();
+  std::vector<InterpValue> payload_values;
+  payload_values.reserve(variant.size());
+  for (const std::unique_ptr<Type>& member : variant.payload_members()) {
+    XLS_ASSIGN_OR_RETURN(InterpValue zero,
+                         CreateInternalPlaceholderValueFromType(*member));
+    payload_values.push_back(std::move(zero));
+  }
+  return CreateSumValue(type, variant.variant().identifier(), payload_values);
+}
+
+absl::StatusOr<InterpValue> CreateCanonicalZeroValueForSum(const SumType& type) {
+  if (type.variant_count() == 0) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Cannot create zero value for uninhabited sum type `",
+        type.nominal_type().identifier(), "`."));
   }
 
   const SumTypeVariant& variant = type.variants().front();
@@ -188,6 +207,81 @@ absl::StatusOr<InterpValue> CreateZeroValueFromType(const Type& type) {
                                   type.ToString());
 }
 
+absl::StatusOr<InterpValue> CreateInternalPlaceholderValueFromType(
+    const Type& type) {
+  if (std::optional<BitsLikeProperties> bits_like = GetBitsLike(type);
+      bits_like.has_value()) {
+    XLS_ASSIGN_OR_RETURN(int64_t bit_count, bits_like->size.GetAsInt64());
+    XLS_ASSIGN_OR_RETURN(bool is_signed, bits_like->is_signed.GetAsBool());
+
+    if (is_signed) {
+      return InterpValue::MakeSBits(bit_count, /*value=*/0);
+    }
+
+    return InterpValue::MakeUBits(bit_count, /*value=*/0);
+  }
+
+  if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
+    const int64_t tuple_size = tuple_type->size();
+
+    std::vector<InterpValue> zero_elements;
+    zero_elements.reserve(tuple_size);
+
+    for (int64_t i = 0; i < tuple_size; ++i) {
+      XLS_ASSIGN_OR_RETURN(
+          InterpValue zero_element,
+          CreateInternalPlaceholderValueFromType(tuple_type->GetMemberType(i)));
+      zero_elements.push_back(zero_element);
+    }
+
+    return InterpValue::MakeTuple(zero_elements);
+  }
+
+  if (auto* struct_type = dynamic_cast<const StructType*>(&type)) {
+    const int64_t struct_size = struct_type->size();
+
+    std::vector<InterpValue> zero_elements;
+    zero_elements.reserve(struct_size);
+
+    for (int64_t i = 0; i < struct_size; ++i) {
+      XLS_ASSIGN_OR_RETURN(InterpValue zero_element,
+                           CreateInternalPlaceholderValueFromType(
+                               struct_type->GetMemberType(i)));
+      zero_elements.push_back(zero_element);
+    }
+
+    return InterpValue::MakeTuple(zero_elements);
+  }
+
+  if (auto* array_type = dynamic_cast<const ArrayType*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(const int64_t array_size,
+                         array_type->size().GetAsInt64());
+
+    if (array_size == 0) {
+      return InterpValue::MakeArray({});
+    }
+
+    XLS_ASSIGN_OR_RETURN(
+        InterpValue zero_element,
+        CreateInternalPlaceholderValueFromType(array_type->element_type()));
+    std::vector<InterpValue> zero_elements(array_size, zero_element);
+    return InterpValue::MakeArray(zero_elements);
+  }
+
+  if (auto* enum_type = dynamic_cast<const EnumType*>(&type)) {
+    if (!enum_type->members().empty()) {
+      return enum_type->members().at(0);
+    }
+  }
+
+  if (auto* sum_type = dynamic_cast<const SumType*>(&type)) {
+    return CreateInternalPlaceholderValueForSum(*sum_type);
+  }
+
+  return absl::UnimplementedError(
+      "Cannot create internal placeholder value for type: " + type.ToString());
+}
+
 std::vector<const Type*> GetSumPayloadSlotTypes(const SumType& type) {
   std::vector<const Type*> results;
   for (const SumTypeVariant& variant : type.variants()) {
@@ -239,7 +333,8 @@ absl::StatusOr<InterpValue> CreateSumValue(
           global_index < layout.payload_start + layout.payload_size) {
         payload_slots.push_back(payload_values[active_index++]);
       } else {
-        XLS_ASSIGN_OR_RETURN(InterpValue zero, CreateZeroValueFromType(*member));
+        XLS_ASSIGN_OR_RETURN(InterpValue zero,
+                             CreateInternalPlaceholderValueFromType(*member));
         payload_slots.push_back(zero);
       }
       ++global_index;

@@ -565,7 +565,8 @@ absl::Status BytecodeEmitter::HandleBuiltinRecv(const Invocation* node) {
   // true. Required because the Recv bytecode has a predicate and default value
   // operand.
   XLS_ASSIGN_OR_RETURN(InterpValue default_value,
-                       CreateZeroValueFromType(channel_data.payload_type()));
+                       CreateInternalPlaceholderValueFromType(
+                           channel_data.payload_type()));
   Add(Bytecode::MakeLiteral(node->span(), default_value));
   Add(Bytecode::MakeRecv(node->span(), std::move(channel_data)));
   return absl::OkStatus();
@@ -1160,7 +1161,8 @@ absl::Status BytecodeEmitter::HandleSumConstructorInvocation(
     } else {
       XLS_ASSIGN_OR_RETURN(
           InterpValue zero,
-          CreateZeroValueFromType(*payload_slot_types.at(slot_index)));
+          CreateInternalPlaceholderValueFromType(
+              *payload_slot_types.at(slot_index)));
       Add(Bytecode::MakeLiteral(node->span(), zero));
     }
   }
@@ -1747,7 +1749,8 @@ absl::Status BytecodeEmitter::HandleSumStructInstance(
     } else {
       XLS_ASSIGN_OR_RETURN(
           InterpValue zero,
-          CreateZeroValueFromType(*payload_slot_types.at(slot_index)));
+          CreateInternalPlaceholderValueFromType(
+              *payload_slot_types.at(slot_index)));
       Add(Bytecode::MakeLiteral(node->span(), zero));
     }
   }
