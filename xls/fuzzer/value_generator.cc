@@ -38,6 +38,7 @@
 #include "xls/data_structures/inline_bitmap.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/ast_utils.h"
+#include "xls/dslx/interp_value_utils.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/interp_value.h"
@@ -417,6 +418,30 @@ static absl::StatusOr<InterpValue> GenerateBitsLikeInterpValue(
   return InterpValue::MakeBits(tag, Bits::FromBitmap(std::move(bitmap)));
 }
 
+static absl::StatusOr<InterpValue> GenerateSumInterpValue(
+    absl::BitGenRef bit_gen, const dslx::SumType& sum_type,
+    absl::Span<const InterpValue> prior) {
+  if (sum_type.variants().empty()) {
+    return absl::InvalidArgumentError(
+        "Cannot generate an InterpValue for an empty sum type.");
+  }
+
+  int64_t variant_index =
+      absl::Uniform(bit_gen, size_t{0}, sum_type.variants().size());
+  const dslx::SumTypeVariant& variant = sum_type.variants().at(variant_index);
+
+  std::vector<InterpValue> payload_values;
+  payload_values.reserve(variant.size());
+  for (const std::unique_ptr<dslx::Type>& member : variant.payload_members()) {
+    XLS_ASSIGN_OR_RETURN(InterpValue member_value,
+                         GenerateInterpValue(bit_gen, *member, prior));
+    payload_values.push_back(std::move(member_value));
+  }
+
+  return dslx::CreateSumValue(sum_type, variant.variant().identifier(),
+                              payload_values);
+}
+
 absl::StatusOr<InterpValue> GenerateInterpValue(
     absl::BitGenRef bit_gen, const dslx::Type& arg_type,
     absl::Span<const InterpValue> prior) {
@@ -437,6 +462,9 @@ absl::StatusOr<InterpValue> GenerateInterpValue(
       members.push_back(member);
     }
     return InterpValue::MakeTuple(members);
+  }
+  if (auto* sum_type = dynamic_cast<const dslx::SumType*>(&arg_type)) {
+    return GenerateSumInterpValue(bit_gen, *sum_type, prior);
   }
 
   // Note: we have to test for BitsLike before ArrayType because
