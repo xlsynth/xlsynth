@@ -3367,6 +3367,68 @@ const X = unwrap_or_zero(MaybeU32::Some(u32:7));
           AllOf(HasNodeWithType("v", "uN[32]"), HasNodeWithType("X", "uN[32]"))));
 }
 
+TEST(TypecheckV2Test, MatchWithSemanticSumConstructorsNonExhaustive) {
+  EXPECT_THAT(
+      R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn unwrap_or_zero(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    Option::None => u32:0,
+  }
+}
+)",
+      TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+}
+
+TEST(TypecheckV2Test, MatchWithSemanticSumConstructorsWildcardCompletes) {
+  EXPECT_THAT(
+      R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn unwrap_or_zero(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    _ => u32:0,
+  }
+}
+
+const X = unwrap_or_zero(Option::Pair { lhs: u32:3, rhs: u32:4 });
+)",
+      TypecheckSucceeds(
+          AllOf(HasNodeWithType("v", "uN[32]"), HasNodeWithType("X", "uN[32]"))));
+}
+
+TEST(TypecheckV2Test, MatchWithSemanticSumConstructorsAlreadyExhaustive) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn unwrap_or_zero(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    _ => u32:0,
+    Option::None => u32:1,
+  }
+}
+)"));
+  ASSERT_THAT(result.tm.warnings.warnings().size(), 1);
+  EXPECT_EQ(result.tm.warnings.warnings()[0].message,
+            "Match is already exhaustive before this pattern");
+}
+
 TEST(TypecheckV2Test, MatchArmTupleType) {
   EXPECT_THAT(R"(
 const X = u32:1;

@@ -257,8 +257,64 @@ fn main(x: MaybePoint) -> u32 {
     MaybePoint::Point { x: px, y: py } => px + py,
     MaybePoint::None => u32:0,
   }
+  })";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructorsNonExhaustive) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn main(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    Option::None => u32:0,
+  }
+})";
+  CheckNonExhaustive(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructorsWildcardCompletes) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn main(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    _ => u32:0,
+  }
 })";
   CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest,
+     MatchOnSemanticSumConstructorsRedundantAfterWildcard) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn main(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    _ => u32:0,
+    Option::None => u32:1,
+  }
+})";
+  CheckExhaustiveWithRedundantPattern(kMatch);
 }
 
 TEST(ExhaustivenessMatchTest, MatchWithNestedTuplesAndRestOfTupleSprinkled) {
