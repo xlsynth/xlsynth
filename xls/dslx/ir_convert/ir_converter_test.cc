@@ -8362,6 +8362,51 @@ fn option_test() {
                              }));
 }
 
+TEST_F(IrConverterTest,
+       SemanticSumEqualityInsideAggregatesCompareWithInterpreter) {
+  constexpr std::string_view program = R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+struct Holder {
+  left: Option,
+  right: Option,
+}
+
+#[test]
+fn aggregate_eq_test() {
+  let some = Option::Some(u32:5);
+  let same = Option::Some(u32:5);
+  let other = Option::Pair { lhs: u32:5, rhs: u32:0 };
+  let none = Option::None;
+  let array_lhs = Option[2]:[some, none];
+  let array_rhs = Option[2]:[same, none];
+  let array_other = Option[2]:[other, none];
+  let tuple_lhs = (some, none);
+  let tuple_rhs = (same, none);
+  let tuple_other = (other, none);
+  let struct_lhs = Holder { left: some, right: none };
+  let struct_rhs = Holder { left: same, right: none };
+  let struct_other = Holder { left: other, right: none };
+
+  assert_eq(array_lhs == array_rhs, true);
+  assert_eq(array_lhs != array_other, true);
+  assert_eq(tuple_lhs == tuple_rhs, true);
+  assert_eq(tuple_lhs != tuple_other, true);
+  assert_eq(struct_lhs == struct_rhs, true);
+  assert_eq(struct_lhs != struct_other, true);
+}
+)";
+  RunComparator run_comparator(CompareMode::kInterpreter);
+  XLS_ASSERT_OK(ParseAndTest(program, "", "test_module.x",
+                             ParseAndTestOptions{
+                                 .run_comparator = &run_comparator,
+                             }));
+}
+
 TEST_F(IrConverterTest, ImportedSumReturningFunctionWithoutConstructorDispatch) {
   constexpr std::string_view kImported = R"(
 pub enum Option {

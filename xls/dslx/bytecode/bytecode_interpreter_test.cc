@@ -2879,6 +2879,55 @@ fn main() -> (u32, u32, bool, bool) {
                           InterpValue::MakeBool(true)));
 }
 
+TEST_F(BytecodeInterpreterTest, SemanticSumEqualityInsideAggregates) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+struct Holder {
+  left: Option,
+  right: Option,
+}
+
+fn main() -> (bool, bool, bool, bool, bool, bool) {
+  let some = Option::Some(u32:5);
+  let same = Option::Some(u32:5);
+  let other = Option::Pair { lhs: u32:5, rhs: u32:0 };
+  let none = Option::None;
+  let array_lhs = Option[2]:[some, none];
+  let array_rhs = Option[2]:[same, none];
+  let array_other = Option[2]:[other, none];
+  let tuple_lhs = (some, none);
+  let tuple_rhs = (same, none);
+  let tuple_other = (other, none);
+  let struct_lhs = Holder { left: some, right: none };
+  let struct_rhs = Holder { left: same, right: none };
+  let struct_other = Holder { left: other, right: none };
+  (
+    array_lhs == array_rhs,
+    array_lhs != array_other,
+    tuple_lhs == tuple_rhs,
+    tuple_lhs != tuple_other,
+    struct_lhs == struct_rhs,
+    struct_lhs != struct_other
+  )
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
+  XLS_ASSERT_OK_AND_ASSIGN(const std::vector<InterpValue>* values,
+                           result.GetValues());
+  EXPECT_THAT(*values,
+              ElementsAre(InterpValue::MakeBool(true),
+                          InterpValue::MakeBool(true),
+                          InterpValue::MakeBool(true),
+                          InterpValue::MakeBool(true),
+                          InterpValue::MakeBool(true),
+                          InterpValue::MakeBool(true)));
+}
+
 TEST_F(BytecodeInterpreterTest,
        SemanticSumConstructorsRejectNestedSumPayloadsInPhase1) {
   constexpr std::string_view kProgram = R"(
