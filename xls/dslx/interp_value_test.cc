@@ -391,7 +391,8 @@ TEST(InterpValueTest, FormatSemanticSum) {
   };
   std::vector<ValueFormatDescriptor> payload_formats = {leaf, leaf, leaf};
   ValueFormatDescriptor fmt_desc =
-      ValueFormatDescriptor::MakeSum("Option", variants, payload_formats);
+      ValueFormatDescriptor::MakeSum("Option", variants, payload_formats,
+                                     FormatPreference::kDefault);
 
   InterpValue none = InterpValue::MakeTuple(
       {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/0),

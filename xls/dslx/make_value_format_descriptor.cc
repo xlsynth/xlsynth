@@ -115,7 +115,8 @@ absl::StatusOr<ValueFormatDescriptor> MakeSumFormatDescriptor(
     variants.push_back(std::move(variant_desc));
   }
   return ValueFormatDescriptor::MakeSum(type.nominal_type().identifier(),
-                                        variants, payload_formats);
+                                        variants, payload_formats,
+                                        field_preference);
 }
 
 }  // namespace

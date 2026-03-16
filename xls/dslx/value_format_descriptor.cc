@@ -80,9 +80,11 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeStruct(
 ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
     std::string_view sum_name,
     absl::Span<const ValueFormatSumVariantDescriptor> variants,
-    absl::Span<const ValueFormatDescriptor> payload_formats) {
+    absl::Span<const ValueFormatDescriptor> payload_formats,
+    FormatPreference tag_format) {
   ValueFormatDescriptor vfd(ValueFormatDescriptorKind::kSum);
   vfd.sum_name_ = sum_name;
+  vfd.sum_tag_format_ = tag_format;
   vfd.children_ =
       std::vector<ValueFormatDescriptor>(payload_formats.begin(),
                                          payload_formats.end());

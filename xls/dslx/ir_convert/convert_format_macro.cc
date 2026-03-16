@@ -116,6 +116,25 @@ absl::Status FlattenEnum(const ValueFormatDescriptor& efd, const BValue& v,
   return absl::OkStatus();
 }
 
+absl::Status FlattenSum(const ValueFormatDescriptor& sfd, const BValue& v,
+                        ConvertContext& ctx) {
+  // Trace format steps are static, so the IR path cannot choose a
+  // variant-specific literal name at runtime. Use a stable storage-oriented
+  // rendering instead: sum name, numeric tag, and the flattened payload slots.
+  BValue tag = ctx.fn_builder.TupleIndex(v, 0);
+  BValue payload = ctx.fn_builder.TupleIndex(v, 1);
+  ValueFormatDescriptor payload_descriptor =
+      ValueFormatDescriptor::MakeTuple(sfd.sum_payload_formats());
+
+  ctx.fmt_steps.push_back(absl::StrCat(sfd.sum_name(), "(tag="));
+  ctx.fmt_steps.push_back(sfd.sum_tag_format());
+  ctx.ir_args.push_back(tag);
+  ctx.fmt_steps.push_back(", payload=");
+  XLS_RETURN_IF_ERROR(FlattenTuple(payload_descriptor, payload, ctx));
+  ctx.fmt_steps.push_back(")");
+  return absl::OkStatus();
+}
+
 class FlattenVisitor : public ValueFormatVisitor {
  public:
   FlattenVisitor(BValue ir_value, ConvertContext& ctx)
@@ -132,10 +151,8 @@ class FlattenVisitor : public ValueFormatVisitor {
   absl::Status HandleEnum(const ValueFormatDescriptor& d) override {
     return FlattenEnum(d, ir_value_, ctx_);
   }
-  absl::Status HandleSum(const ValueFormatDescriptor&) override {
-    return absl::UnimplementedError(
-        "Tracing and format-macro support for semantic sums is not yet "
-        "implemented.");
+  absl::Status HandleSum(const ValueFormatDescriptor& d) override {
+    return FlattenSum(d, ir_value_, ctx_);
   }
   absl::Status HandleTuple(const ValueFormatDescriptor& d) override {
     return FlattenTuple(d, ir_value_, ctx_);

@@ -103,7 +103,8 @@ class ValueFormatDescriptor {
   static ValueFormatDescriptor MakeSum(
       std::string_view sum_name,
       absl::Span<const ValueFormatSumVariantDescriptor> variants,
-      absl::Span<const ValueFormatDescriptor> payload_formats);
+      absl::Span<const ValueFormatDescriptor> payload_formats,
+      FormatPreference tag_format);
 
   ValueFormatDescriptorKind kind() const { return kind_; }
 
@@ -194,6 +195,14 @@ class ValueFormatDescriptor {
     return absl::MakeConstSpan(children_).subspan(sum_variant_payload_start(i),
                                                   sum_variant_payload_size(i));
   }
+  absl::Span<const ValueFormatDescriptor> sum_payload_formats() const {
+    CHECK(IsSum());
+    return children_;
+  }
+  FormatPreference sum_tag_format() const {
+    CHECK(IsSum());
+    return sum_tag_format_;
+  }
   size_t sum_payload_count() const {
     CHECK(IsSum());
     return children_.size();
@@ -234,6 +243,7 @@ class ValueFormatDescriptor {
   std::vector<size_t> sum_variant_payload_starts_;
   std::vector<size_t> sum_variant_payload_sizes_;
   std::vector<std::vector<std::string>> sum_variant_field_names_;
+  FormatPreference sum_tag_format_ = FormatPreference::kDefault;
 };
 
 }  // namespace xls::dslx
