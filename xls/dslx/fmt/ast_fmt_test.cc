@@ -1627,7 +1627,7 @@ fn f(x:Option)->Option{match x{Option::EmptyTuple()=>Option::EmptyTuple(),Option
 fn f(x: Option) -> Option {
     match x {
         Option::EmptyTuple() => Option::EmptyTuple(),
-        Option::EmptyStruct { } => Option::EmptyStruct { },
+        Option::EmptyStruct { } => Option::EmptyStruct {},
         Option::Some(v) => Option::Some(v),
         Option::Point { x: px } => Option::Point { x: px },
         Option::None => Option::None,
