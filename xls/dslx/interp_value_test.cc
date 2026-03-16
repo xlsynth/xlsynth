@@ -375,23 +375,21 @@ TEST(InterpValueTest, FormatSemanticSum) {
       ValueFormatSumVariantDescriptor{
           .name = "None",
           .kind = ValueFormatSumVariantKind::kUnit,
-          .payload_size = 0,
       },
       ValueFormatSumVariantDescriptor{
           .name = "Some",
           .kind = ValueFormatSumVariantKind::kTuple,
-          .payload_size = 1,
+          .payload_formats = {leaf},
       },
       ValueFormatSumVariantDescriptor{
           .name = "Pair",
           .kind = ValueFormatSumVariantKind::kStruct,
-          .payload_size = 2,
           .field_names = {"lhs", "rhs"},
+          .payload_formats = {leaf, leaf},
       },
   };
-  std::vector<ValueFormatDescriptor> payload_formats = {leaf, leaf, leaf};
   ValueFormatDescriptor fmt_desc =
-      ValueFormatDescriptor::MakeSum("Option", variants, payload_formats,
+      ValueFormatDescriptor::MakeSum("Option", variants,
                                      FormatPreference::kDefault);
 
   InterpValue none = InterpValue::MakeTuple(
@@ -430,10 +428,9 @@ TEST(InterpValueTest, FormatSemanticSumEmptyStruct) {
       {ValueFormatSumVariantDescriptor{
           .name = "EmptyStruct",
           .kind = ValueFormatSumVariantKind::kStruct,
-          .payload_size = 0,
           .field_names = {},
       }},
-      {}, FormatPreference::kDefault);
+      FormatPreference::kDefault);
 
   InterpValue empty_struct = InterpValue::MakeTuple(
       {InterpValue::MakeUBits(/*bit_count=*/1, /*value=*/0),
@@ -449,17 +446,14 @@ TEST(InterpValueTest, FormatSemanticSumEmptyStructVariant) {
       ValueFormatSumVariantDescriptor{
           .name = "None",
           .kind = ValueFormatSumVariantKind::kUnit,
-          .payload_size = 0,
       },
       ValueFormatSumVariantDescriptor{
           .name = "EmptyStruct",
           .kind = ValueFormatSumVariantKind::kStruct,
-          .payload_size = 0,
       },
   };
-  std::vector<ValueFormatDescriptor> payload_formats;
   ValueFormatDescriptor fmt_desc =
-      ValueFormatDescriptor::MakeSum("Option", variants, payload_formats,
+      ValueFormatDescriptor::MakeSum("Option", variants,
                                      FormatPreference::kDefault);
 
   InterpValue empty_struct = InterpValue::MakeTuple(

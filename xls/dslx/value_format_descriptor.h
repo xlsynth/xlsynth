@@ -32,22 +32,12 @@ namespace xls::dslx {
 
 class ValueFormatDescriptor;
 
+struct ValueFormatSumVariantDescriptor;
+
 enum class ValueFormatSumVariantKind : int8_t {
   kUnit,
   kTuple,
   kStruct,
-};
-
-// Describes one constructor inside a sum formatting descriptor.
-//
-// The containing `ValueFormatDescriptor` stores variants in canonical sum
-// order and flattens payload formats by concatenating each variant's payload
-// members in that same order.
-struct ValueFormatSumVariantDescriptor {
-  std::string name;
-  ValueFormatSumVariantKind kind;
-  size_t payload_size;
-  std::vector<std::string> field_names;
 };
 
 // Visits concrete types in the ValueFormatDescriptor hierarchy.
@@ -103,7 +93,6 @@ class ValueFormatDescriptor {
   static ValueFormatDescriptor MakeSum(
       std::string_view sum_name,
       absl::Span<const ValueFormatSumVariantDescriptor> variants,
-      absl::Span<const ValueFormatDescriptor> payload_formats,
       FormatPreference tag_format);
 
   ValueFormatDescriptorKind kind() const { return kind_; }
@@ -244,6 +233,19 @@ class ValueFormatDescriptor {
   std::vector<size_t> sum_variant_payload_sizes_;
   std::vector<std::vector<std::string>> sum_variant_field_names_;
   FormatPreference sum_tag_format_ = FormatPreference::kDefault;
+};
+
+// Describes one constructor inside a sum formatting descriptor.
+//
+// Callers describe each variant in canonical sum order and attach the payload
+// formats owned by that variant. `ValueFormatDescriptor` flattens those payload
+// descriptors internally into the canonical `(tag, payload_slots...)` layout
+// used by runtime sum values.
+struct ValueFormatSumVariantDescriptor {
+  std::string name;
+  ValueFormatSumVariantKind kind;
+  std::vector<std::string> field_names;
+  std::vector<ValueFormatDescriptor> payload_formats;
 };
 
 }  // namespace xls::dslx

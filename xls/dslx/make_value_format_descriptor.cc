@@ -90,7 +90,6 @@ absl::StatusOr<ValueFormatDescriptor> MakeEnumFormatDescriptor(
 absl::StatusOr<ValueFormatDescriptor> MakeSumFormatDescriptor(
     const SumType& type, FormatPreference field_preference) {
   std::vector<ValueFormatSumVariantDescriptor> variants;
-  std::vector<ValueFormatDescriptor> payload_formats;
   variants.reserve(type.variant_count());
   for (const SumTypeVariant& variant : type.variants()) {
     ValueFormatSumVariantDescriptor variant_desc{
@@ -98,8 +97,8 @@ absl::StatusOr<ValueFormatDescriptor> MakeSumFormatDescriptor(
         .kind = variant.is_unit()   ? ValueFormatSumVariantKind::kUnit
                 : variant.is_tuple() ? ValueFormatSumVariantKind::kTuple
                                      : ValueFormatSumVariantKind::kStruct,
-        .payload_size = static_cast<size_t>(variant.size()),
     };
+    variant_desc.payload_formats.reserve(variant.size());
     if (variant.is_struct()) {
       variant_desc.field_names.reserve(variant.size());
       for (int64_t i = 0; i < variant.size(); ++i) {
@@ -110,12 +109,11 @@ absl::StatusOr<ValueFormatDescriptor> MakeSumFormatDescriptor(
     for (const std::unique_ptr<Type>& member : variant.payload_members()) {
       XLS_ASSIGN_OR_RETURN(ValueFormatDescriptor payload_format,
                            MakeValueFormatDescriptor(*member, field_preference));
-      payload_formats.push_back(std::move(payload_format));
+      variant_desc.payload_formats.push_back(std::move(payload_format));
     }
     variants.push_back(std::move(variant_desc));
   }
-  return ValueFormatDescriptor::MakeSum(type.nominal_type().identifier(),
-                                        variants, payload_formats,
+  return ValueFormatDescriptor::MakeSum(type.nominal_type().identifier(), variants,
                                         field_preference);
 }
 

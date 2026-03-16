@@ -80,36 +80,39 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeStruct(
 ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
     std::string_view sum_name,
     absl::Span<const ValueFormatSumVariantDescriptor> variants,
-    absl::Span<const ValueFormatDescriptor> payload_formats,
     FormatPreference tag_format) {
   ValueFormatDescriptor vfd(ValueFormatDescriptorKind::kSum);
   vfd.sum_name_ = sum_name;
   vfd.sum_tag_format_ = tag_format;
-  vfd.children_ =
-      std::vector<ValueFormatDescriptor>(payload_formats.begin(),
-                                         payload_formats.end());
 
   size_t payload_start = 0;
+  for (const ValueFormatSumVariantDescriptor& variant : variants) {
+    payload_start += variant.payload_formats.size();
+  }
+  vfd.children_.reserve(payload_start);
+  payload_start = 0;
   vfd.sum_variant_names_.reserve(variants.size());
   vfd.sum_variant_kinds_.reserve(variants.size());
   vfd.sum_variant_payload_starts_.reserve(variants.size());
   vfd.sum_variant_payload_sizes_.reserve(variants.size());
   vfd.sum_variant_field_names_.reserve(variants.size());
   for (const ValueFormatSumVariantDescriptor& variant : variants) {
+    const size_t payload_size = variant.payload_formats.size();
     CHECK(variant.kind == ValueFormatSumVariantKind::kStruct ||
           variant.field_names.empty());
     CHECK_EQ(variant.kind == ValueFormatSumVariantKind::kStruct
                  ? variant.field_names.size()
-                 : variant.payload_size,
-             variant.payload_size);
+                 : payload_size,
+             payload_size);
     vfd.sum_variant_names_.push_back(variant.name);
     vfd.sum_variant_kinds_.push_back(variant.kind);
     vfd.sum_variant_payload_starts_.push_back(payload_start);
-    vfd.sum_variant_payload_sizes_.push_back(variant.payload_size);
+    vfd.sum_variant_payload_sizes_.push_back(payload_size);
     vfd.sum_variant_field_names_.push_back(variant.field_names);
-    payload_start += variant.payload_size;
+    vfd.children_.insert(vfd.children_.end(), variant.payload_formats.begin(),
+                         variant.payload_formats.end());
+    payload_start += payload_size;
   }
-  CHECK_EQ(payload_start, payload_formats.size());
   return vfd;
 }
 
