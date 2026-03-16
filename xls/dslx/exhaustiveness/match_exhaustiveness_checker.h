@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "xls/dslx/exhaustiveness/interp_value_interval.h"
@@ -66,6 +67,12 @@ class MatchExhaustivenessChecker {
   std::optional<InterpValue> SampleSimplestUncoveredValue() const;
 
  private:
+  struct SumVariantState {
+    std::string variant_name;
+    FlattenedLeafTypes leaf_types;
+    NdRegion remaining;
+  };
+
   const FileTable& file_table() const { return type_info_.file_table(); }
 
   const Span matched_expr_span_;
@@ -73,10 +80,16 @@ class MatchExhaustivenessChecker {
   const ImportData& import_data_;
   const TypeInfo& type_info_;
   const Type& matched_type_;
+  const SumType* matched_sum_type_ = nullptr;
 
-  // Flattened version of the matched type. The owned storage is for
-  // synthesized leaves such as dense sum tags.
+  // Flattened version of the matched type for non-sum matches. The owned
+  // storage is for synthesized leaves such as dense sum tags.
   FlattenedLeafTypes leaf_types_;
+
+  // For top-level sum matches, we track the remaining payload space per active
+  // constructor instead of flattening every inactive variant payload into one
+  // global ND region.
+  std::vector<SumVariantState> sum_variant_states_;
 
   // The remaining region of the value space that we need to test.
   NdRegion remaining_;

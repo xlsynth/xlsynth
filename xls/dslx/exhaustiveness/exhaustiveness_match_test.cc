@@ -244,6 +244,40 @@ fn main(x: MaybeU32) -> u32 {
   CheckExhaustiveOnlyAfterLastPattern(kMatch);
 }
 
+TEST(ExhaustivenessMatchTest, NonExhaustiveMatchOnSemanticSumConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn main(x: MaybeU32) -> u32 {
+  match x {
+    MaybeU32::Some(v) => v,
+  }
+})";
+  CheckNonExhaustive(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructorsWithWildcard) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn main(x: MaybeU32) -> u32 {
+  match x {
+    MaybeU32::Some(v) => v,
+    _ => u32:0,
+    MaybeU32::None => u32:1,
+  }
+})";
+  CheckExhaustiveWithRedundantPattern(kMatch);
+}
+
 TEST(ExhaustivenessMatchTest, MatchOnSemanticStructVariantConstructors) {
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
 
