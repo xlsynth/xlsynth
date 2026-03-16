@@ -256,18 +256,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
                            ResolveSumConstructor(node, import_data_));
       if (sum_constructor_ref.has_value()) {
-        table_.SetColonRefTarget(node, sum_constructor_ref->variant);
-        if (sum_constructor_ref->variant->is_unit()) {
-          return table_.SetTypeAnnotation(
-              node, CreateSumConstructorValueAnnotation(
-                        sum_constructor_ref->sum_ref));
-        }
-        return table_.SetTypeAnnotation(
-            node, module_.Make<MemberTypeAnnotation>(
-                      AttrSpan(node),
-                      CreateSumConstructorValueAnnotation(
-                          sum_constructor_ref->sum_ref),
-                      node->attr()));
+        return SetSumConstructorTypeAnnotation(node, *sum_constructor_ref);
       }
 
       // `imported_module::SomeStruct` case.
@@ -363,18 +352,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
                            ResolveSumConstructor(node, import_data_));
       if (sum_constructor_ref.has_value()) {
-        table_.SetColonRefTarget(node, sum_constructor_ref->variant);
-        if (sum_constructor_ref->variant->is_unit()) {
-          return table_.SetTypeAnnotation(
-              node, CreateSumConstructorValueAnnotation(
-                        sum_constructor_ref->sum_ref));
-        }
-        return table_.SetTypeAnnotation(
-            node, module_.Make<MemberTypeAnnotation>(
-                      AttrSpan(node),
-                      CreateSumConstructorValueAnnotation(
-                          sum_constructor_ref->sum_ref),
-                      node->attr()));
+        return SetSumConstructorTypeAnnotation(node, *sum_constructor_ref);
       }
       XLS_ASSIGN_OR_RETURN(ModuleMember member,
                            GetPublicModuleMember((*import_module)->module(),
@@ -392,12 +370,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
                            ResolveSumConstructor(node, import_data_));
       if (sum_constructor_ref.has_value()) {
-        table_.SetColonRefTarget(node, sum_constructor_ref->variant);
-        if (sum_constructor_ref->variant->is_unit()) {
-          return table_.SetTypeAnnotation(
-              node, CreateSumConstructorValueAnnotation(
-                        sum_constructor_ref->sum_ref));
-        }
+        return SetSumConstructorTypeAnnotation(node, *sum_constructor_ref);
       }
       XLS_ASSIGN_OR_RETURN(std::optional<StructOrProcRef> struct_or_proc_ref,
                            GetStructOrProcRef(annotation, import_data_));
@@ -667,10 +640,12 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     return DefaultHandler(node);
   }
 
-  absl::Status HandleConstructorPattern(const ConstructorPattern* node) override {
+  absl::Status HandleConstructorPattern(
+      const ConstructorPattern* node) override {
     VLOG(5) << "HandleConstructorPattern: " << node->ToString();
-    XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
-                         ResolveSumConstructor(node->constructor(), import_data_));
+    XLS_ASSIGN_OR_RETURN(
+        std::optional<SumConstructorRef> sum_constructor_ref,
+        ResolveSumConstructor(node->constructor(), import_data_));
     if (!sum_constructor_ref.has_value()) {
       return TypeInferenceErrorStatus(
           node->span(), nullptr,
@@ -679,15 +654,21 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
                            node->constructor()->ToString()),
           file_table_);
     }
-    XLS_RETURN_IF_ERROR(
-        table_.SetTypeAnnotation(
-            node, CreateSumConstructorValueAnnotation(
-                      sum_constructor_ref->sum_ref)));
+    XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(
+        node,
+        CreateSumConstructorValueAnnotation(sum_constructor_ref->sum_ref)));
     XLS_RETURN_IF_ERROR(node->constructor()->Accept(this));
 
     const SumVariant* variant = sum_constructor_ref->variant;
+    const NameRef* matched_type_variable = *table_.GetTypeVariable(node);
+    const TypeAnnotation* sum_value_type =
+        module_.Make<TypeVariableTypeAnnotation>(matched_type_variable);
+    const TypeAnnotation* constructor_type = module_.Make<MemberTypeAnnotation>(
+        node->constructor()->span(),
+        const_cast<TypeAnnotation*>(sum_value_type), variant->identifier());
     if (variant->is_unit()) {
-      if (!node->positional_patterns().empty() || !node->named_patterns().empty()) {
+      if (!node->positional_patterns().empty() ||
+          !node->named_patterns().empty()) {
         return TypeInferenceErrorStatus(
             node->span(), nullptr,
             absl::Substitute("Unit constructor `$0` does not take payload "
@@ -707,7 +688,8 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
                              node->constructor()->ToString()),
             file_table_);
       }
-      if (node->positional_patterns().size() != variant->tuple_members().size()) {
+      if (node->positional_patterns().size() !=
+          variant->tuple_members().size()) {
         return ArgCountMismatchErrorStatus(
             node->span(),
             absl::Substitute("Constructor pattern `$0` expects $1 payload "
@@ -718,8 +700,10 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
             file_table_);
       }
       for (int64_t i = 0; i < node->positional_patterns().size(); ++i) {
-        XLS_RETURN_IF_ERROR(BindPatternToType(node->positional_patterns()[i],
-                                              variant->tuple_members()[i]));
+        const TypeAnnotation* payload_type = module_.Make<ParamTypeAnnotation>(
+            const_cast<TypeAnnotation*>(constructor_type), i);
+        XLS_RETURN_IF_ERROR(
+            BindPatternToType(node->positional_patterns()[i], payload_type));
       }
       return absl::OkStatus();
     }
@@ -727,9 +711,10 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     if (!node->positional_patterns().empty()) {
       return TypeInferenceErrorStatus(
           node->span(), nullptr,
-          absl::Substitute("Struct constructor `$0` does not support positional "
-                           "payload patterns.",
-                           node->constructor()->ToString()),
+          absl::Substitute(
+              "Struct constructor `$0` does not support positional "
+              "payload patterns.",
+              node->constructor()->ToString()),
           file_table_);
     }
     XLS_RETURN_IF_ERROR(
@@ -739,7 +724,11 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       member_map.emplace(member->name(), member);
     }
     for (const auto& [name, pattern] : node->named_patterns()) {
-      XLS_RETURN_IF_ERROR(BindPatternToType(pattern, member_map.at(name)->type()));
+      const StructMemberNode* member = member_map.at(name);
+      const TypeAnnotation* payload_type = module_.Make<MemberTypeAnnotation>(
+          member->name_def()->span(),
+          const_cast<TypeAnnotation*>(constructor_type), member->name());
+      XLS_RETURN_IF_ERROR(BindPatternToType(pattern, payload_type));
     }
     return absl::OkStatus();
   }
@@ -1094,7 +1083,8 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
 
     XLS_ASSIGN_OR_RETURN(std::optional<StructOrProcRef> struct_or_proc_ref,
                          GetStructOrProcRef(node, import_data_));
-    if (struct_or_proc_ref.has_value() && !struct_or_proc_ref->parametrics.empty()) {
+    if (struct_or_proc_ref.has_value() &&
+        !struct_or_proc_ref->parametrics.empty()) {
       const StructDefBase* struct_def = struct_or_proc_ref->def;
       if (struct_or_proc_ref->parametrics.size() >
           struct_def->parametric_bindings().size()) {
@@ -1117,8 +1107,8 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
               std::get<Expr*>(struct_or_proc_ref->parametrics[i]);
           XLS_RETURN_IF_ERROR(
               DefineAndSetTypeVariable(actual_expr, "actual_expr"));
-          XLS_RETURN_IF_ERROR(
-              table_.SetTypeAnnotation(actual_expr, binding->type_annotation()));
+          XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(
+              actual_expr, binding->type_annotation()));
         } else if (binding->expr() == nullptr) {
           return ArgCountMismatchErrorStatus(
               node->span(),
@@ -1133,7 +1123,8 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     XLS_ASSIGN_OR_RETURN(std::optional<SumRef> sum_ref,
                          GetSumRef(node, import_data_));
     if (sum_ref.has_value() && !sum_ref->parametrics.empty()) {
-      if (sum_ref->parametrics.size() > sum_ref->def->parametric_bindings().size()) {
+      if (sum_ref->parametrics.size() >
+          sum_ref->def->parametric_bindings().size()) {
         return ArgCountMismatchErrorStatus(
             node->span(),
             absl::Substitute(
@@ -1143,21 +1134,24 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
             file_table_);
       }
       for (int i = 0; i < sum_ref->def->parametric_bindings().size(); ++i) {
-        const ParametricBinding* binding = sum_ref->def->parametric_bindings()[i];
+        const ParametricBinding* binding =
+            sum_ref->def->parametric_bindings()[i];
         if (i < sum_ref->parametrics.size()) {
-          if (std::holds_alternative<TypeAnnotation*>(sum_ref->parametrics[i])) {
+          if (std::holds_alternative<TypeAnnotation*>(
+                  sum_ref->parametrics[i])) {
             continue;
           }
           const Expr* actual_expr = std::get<Expr*>(sum_ref->parametrics[i]);
           XLS_RETURN_IF_ERROR(
               DefineAndSetTypeVariable(actual_expr, "actual_expr"));
-          XLS_RETURN_IF_ERROR(
-              table_.SetTypeAnnotation(actual_expr, binding->type_annotation()));
+          XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(
+              actual_expr, binding->type_annotation()));
         } else if (binding->expr() == nullptr) {
           return ArgCountMismatchErrorStatus(
               node->span(),
               absl::Substitute("No parametric value provided for `$0` in `$1`",
-                               binding->identifier(), sum_ref->def->identifier()),
+                               binding->identifier(),
+                               sum_ref->def->identifier()),
               file_table_);
         }
       }
@@ -2148,6 +2142,43 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     return CreateSumAnnotation(module_, sum_ref);
   }
 
+  absl::Status SetSumConstructorTypeAnnotation(
+      const ColonRef* node, const SumConstructorRef& sum_constructor_ref) {
+    table_.SetColonRefTarget(node, sum_constructor_ref.variant);
+    TypeAnnotation* syntax_sum_type =
+        CreateSumConstructorValueAnnotation(sum_constructor_ref.sum_ref);
+    if (sum_constructor_ref.variant->is_unit()) {
+      return table_.SetTypeAnnotation(node, syntax_sum_type);
+    }
+
+    if (std::optional<const NameRef*> type_variable =
+            table_.GetTypeVariable(node);
+        type_variable.has_value()) {
+      XLS_ASSIGN_OR_RETURN(std::vector<const TypeAnnotation*> annotations,
+                           table_.GetTypeAnnotationsForTypeVariable(
+                               std::nullopt, *type_variable));
+      for (const TypeAnnotation* annotation : annotations) {
+        if (!annotation->IsAnnotation<FunctionTypeAnnotation>()) {
+          continue;
+        }
+        const auto* function_type =
+            annotation->AsAnnotation<FunctionTypeAnnotation>();
+        // Immediate constructor invocations add a contextual function type
+        // before visiting the callee; reuse its return type so omitted sum
+        // actuals flow into the constructor payload types.
+        XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(
+            node, module_.Make<MemberTypeAnnotation>(
+                      AttrSpan(node),
+                      const_cast<TypeAnnotation*>(function_type->return_type()),
+                      node->attr())));
+      }
+    }
+
+    return table_.SetTypeAnnotation(
+        node, module_.Make<MemberTypeAnnotation>(
+                  AttrSpan(node), syntax_sum_type, node->attr()));
+  }
+
   absl::Status ValidateStructPatternNames(const ConstructorPattern& pattern,
                                           const SumVariant& variant,
                                           const ColonRef* constructor) {
@@ -2180,13 +2211,13 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       std::vector<std::string> missing(missing_set.begin(), missing_set.end());
       return TypeInferenceErrorStatus(
           pattern.span(), nullptr,
-          absl::Substitute("Constructor pattern `$0` is missing member(s): $1",
-                           constructor->ToString(),
-                           absl::StrJoin(
-                               missing, ", ",
-                               [](std::string* out, const std::string& piece) {
-                                 absl::StrAppendFormat(out, "`%s`", piece);
-                               })),
+          absl::Substitute(
+              "Constructor pattern `$0` is missing member(s): $1",
+              constructor->ToString(),
+              absl::StrJoin(missing, ", ",
+                            [](std::string* out, const std::string& piece) {
+                              absl::StrAppendFormat(out, "`%s`", piece);
+                            })),
           file_table_);
     }
     return absl::OkStatus();
@@ -2211,8 +2242,9 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       if (!actual_names.insert(name).second) {
         return TypeInferenceErrorStatus(
             expr->span(), nullptr,
-            absl::Substitute("Duplicate value seen for `$0` in constructor `$1`.",
-                             name, variant.identifier()),
+            absl::Substitute(
+                "Duplicate value seen for `$0` in constructor `$1`.", name,
+                variant.identifier()),
             file_table_);
       }
     }
@@ -2450,9 +2482,11 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
           *node, *sum_constructor_ref->variant));
       const TypeAnnotation* sum_value_type =
           module_.Make<TypeVariableTypeAnnotation>(type_variable);
-      const TypeAnnotation* constructor_type = module_.Make<MemberTypeAnnotation>(
-          node->struct_ref()->span(), const_cast<TypeAnnotation*>(sum_value_type),
-          sum_constructor_ref->variant->identifier());
+      const TypeAnnotation* constructor_type =
+          module_.Make<MemberTypeAnnotation>(
+              node->struct_ref()->span(),
+              const_cast<TypeAnnotation*>(sum_value_type),
+              sum_constructor_ref->variant->identifier());
       absl::flat_hash_map<std::string, const StructMemberNode*>
           formal_member_map;
       for (const StructMemberNode* formal_member :

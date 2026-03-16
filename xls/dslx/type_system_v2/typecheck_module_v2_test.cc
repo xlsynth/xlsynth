@@ -18,11 +18,11 @@
 #include <string_view>
 #include <utility>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/import_data.h"
@@ -3304,8 +3304,8 @@ enum MaybePoint {
 }
 const X = MaybePoint::Point { x: u32:1, y: u32:2 };
 )",
-      TypecheckSucceeds(
-          HasNodeWithType("X", "MaybePoint { None | Point { x: uN[32], y: uN[32] } }")));
+      TypecheckSucceeds(HasNodeWithType(
+          "X", "MaybePoint { None | Point { x: uN[32], y: uN[32] } }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumTuplePayloadAggregateRejectedInPhase1) {
@@ -3326,8 +3326,7 @@ const X = MaybePoint::None;
       TypecheckFails(AllOf(
           HasSubstr("Phase 1 semantic sum payload members must be bits-like or "
                     "enum typed"),
-          HasSubstr("constructor `Some`"),
-          HasSubstr("Point"))));
+          HasSubstr("constructor `Some`"), HasSubstr("Point"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumStructPayloadAggregateRejectedInPhase1) {
@@ -3342,8 +3341,7 @@ const X = PairBox::Pair { xy: (u32:1, u32:2) };
       TypecheckFails(AllOf(
           HasSubstr("Phase 1 semantic sum payload members must be bits-like or "
                     "enum typed"),
-          HasSubstr("constructor `Pair`"),
-          HasSubstr("(uN[32], uN[32])"))));
+          HasSubstr("constructor `Pair`"), HasSubstr("(uN[32], uN[32])"))));
 }
 
 TEST(TypecheckV2Test, MatchWithSemanticSumConstructors) {
@@ -3363,8 +3361,65 @@ fn unwrap_or_zero(x: MaybeU32) -> u32 {
 
 const X = unwrap_or_zero(MaybeU32::Some(u32:7));
 )",
-      TypecheckSucceeds(
-          AllOf(HasNodeWithType("v", "uN[32]"), HasNodeWithType("X", "uN[32]"))));
+      TypecheckSucceeds(AllOf(HasNodeWithType("v", "uN[32]"),
+                              HasNodeWithType("X", "uN[32]"))));
+}
+
+TEST(TypecheckV2Test,
+     ParametricSemanticTupleConstructorUsesContextualPayloadType) {
+  EXPECT_THAT(
+      R"(#![feature(generics)]
+enum OptionN<N: u32> {
+  None,
+  Some(uN[N]),
+}
+
+fn make(x: u16) -> OptionN<u32:8> {
+  OptionN::Some(x)
+}
+)",
+      TypecheckFails(HasSizeMismatch("u16", "u8")));
+}
+
+TEST(TypecheckV2Test,
+     ParametricSemanticStructConstructorUsesContextualPayloadType) {
+  EXPECT_THAT(
+      R"(#![feature(generics)]
+enum BoxN<N: u32> {
+  None,
+  Pair { value: uN[N] },
+}
+
+fn make(x: u16) -> BoxN<u32:8> {
+  BoxN::Pair { value: x }
+}
+)",
+      TypecheckFails(HasSizeMismatch("u16", "u8")));
+}
+
+TEST(TypecheckV2Test, ParametricSemanticSumPatternsBindPayloadTypes) {
+  EXPECT_THAT(
+      R"(#![feature(generics)]
+enum OptionN<N: u32> {
+  None,
+  Some(uN[N]),
+  Pair { value: uN[N] },
+}
+
+fn unwrap_or_zero(x: OptionN<u32:8>) -> u8 {
+  match x {
+    OptionN::Some(v) => v,
+    OptionN::Pair { value } => value,
+    OptionN<u32:8>::None => u8:0,
+  }
+}
+
+const X = unwrap_or_zero(OptionN<u32:8>::Some(u8:7));
+const Y = unwrap_or_zero(OptionN<u32:8>::Pair { value: u8:9 });
+)",
+      TypecheckSucceeds(AllOf(
+          HasNodeWithType("v", "uN[8]"), HasNodeWithType("value", "uN[8]"),
+          HasNodeWithType("X", "uN[8]"), HasNodeWithType("Y", "uN[8]"))));
 }
 
 TEST(TypecheckV2Test, MatchArmTupleType) {

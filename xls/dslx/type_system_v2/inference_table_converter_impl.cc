@@ -91,8 +91,7 @@ bool NeedsMetaType(const InferenceTable& table, const AstNode* node) {
   static const absl::NoDestructor<absl::flat_hash_set<AstNodeKind>>
       kMetaTypeKinds({AstNodeKind::kTypeAnnotation, AstNodeKind::kTypeAlias,
                       AstNodeKind::kEnumDef, AstNodeKind::kSumDef,
-                      AstNodeKind::kStructDef,
-                      AstNodeKind::kProcDef});
+                      AstNodeKind::kStructDef, AstNodeKind::kProcDef});
   return kMetaTypeKinds->contains(node->kind()) ||
          (node->kind() == AstNodeKind::kColonRef &&
           IsColonRefWithTypeTarget(table,
@@ -938,10 +937,9 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       const Invocation* invocation,
       std::optional<const ParametricContext*> caller_context,
       std::optional<const Function*> caller) {
-    XLS_ASSIGN_OR_RETURN(
-        std::optional<const TypeAnnotation*> signature,
-        resolver_->ResolveAndUnifyTypeAnnotationsForNode(
-            caller_context, invocation->callee()));
+    XLS_ASSIGN_OR_RETURN(std::optional<const TypeAnnotation*> signature,
+                         resolver_->ResolveAndUnifyTypeAnnotationsForNode(
+                             caller_context, invocation->callee()));
     XLS_RET_CHECK(signature.has_value());
     if (!(*signature)->IsAnnotation<FunctionTypeAnnotation>()) {
       return TypeInferenceErrorStatus(
@@ -1538,13 +1536,15 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
     if (sum_ref.has_value()) {
       const SumDef* sum_def = sum_ref->def;
       if (!sum_def->IsParametric()) {
-        std::unique_ptr<Type> cached_type = GetCachedType(sum_def, std::nullopt);
+        std::unique_ptr<Type> cached_type =
+            GetCachedType(sum_def, std::nullopt);
         if (cached_type) {
           return cached_type;
         }
       }
       if (sum_def->IsParametric() &&
-          sum_ref->parametrics.size() != sum_def->parametric_bindings().size()) {
+          sum_ref->parametrics.size() !=
+              sum_def->parametric_bindings().size()) {
         return TypeInferenceErrorStatusForAnnotation(
             annotation->span(), annotation,
             absl::Substitute("Reference to parametric sum type `$0` must have "
@@ -1600,7 +1600,8 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
             payload_members.push_back(std::move(concrete_member_type));
           }
         }
-        variants.push_back(SumTypeVariant(*variant, std::move(payload_members)));
+        variants.push_back(
+            SumTypeVariant(*variant, std::move(payload_members)));
       }
       std::unique_ptr<Type> type =
           std::make_unique<SumType>(*sum_def, std::move(variants));
@@ -1732,10 +1733,9 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       TypeAnnotationFilter filter) {
     const TypeAnnotation* candidate = annotation;
     if (candidate->IsAnnotation<MemberTypeAnnotation>()) {
-      XLS_ASSIGN_OR_RETURN(candidate,
-                           resolver_->ResolveIndirectTypeAnnotations(
-                               parametric_context, context_node, candidate,
-                               filter));
+      XLS_ASSIGN_OR_RETURN(
+          candidate, resolver_->ResolveIndirectTypeAnnotations(
+                         parametric_context, context_node, candidate, filter));
     }
     if (!candidate->IsAnnotation<TypeRefTypeAnnotation>()) {
       return false;
@@ -1746,8 +1746,8 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
             type_ref_annotation->type_ref()->type_definition())) {
       return false;
     }
-    const auto* constructor_ref = std::get<ColonRef*>(
-        type_ref_annotation->type_ref()->type_definition());
+    const auto* constructor_ref =
+        std::get<ColonRef*>(type_ref_annotation->type_ref()->type_definition());
     absl::StatusOr<std::optional<SumRef>> sum_ref = [&]() {
       if (std::holds_alternative<TypeRefTypeAnnotation*>(
               constructor_ref->subject())) {
@@ -2593,85 +2593,9 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       const absl::flat_hash_map<const NameDef*, ExprOrType> actual_values,
       std::optional<const TypeAnnotation*> real_self_type = std::nullopt,
       bool clone_if_no_parametrics = true) {
-    if (!clone_if_no_parametrics) {
-      std::vector<std::pair<const NameRef*, const NameDef*>> refs;
-      XLS_ASSIGN_OR_RETURN(refs, CollectReferencedUnder(type));
-      const bool any_parametrics = absl::c_any_of(refs, [&](const auto& pair) {
-        return pair.second->parent()->kind() == AstNodeKind::kParametricBinding;
-      });
-      if (!any_parametrics) {
-        return type;
-      }
-    }
-
-    CloneReplacer replacer = ChainCloneReplacers(
-        &PreserveTypeDefinitionsReplacer,
-        ChainCloneReplacers(
-            NameRefMapper(table_, actual_values, type->owner(),
-                          /*add_parametric_binding_type_annotation=*/true),
-            [&](const AstNode* node, Module*,
-                const absl::flat_hash_map<const AstNode*, AstNode*>&)
-                -> absl::StatusOr<std::optional<AstNode*>> {
-              // Explicitly leave attrs alone in an example like
-              // `uN[STRUCT_CONST.n]`. With the current grammar, there is no way
-              // these nodes need parametric replacement. Trying to clone them
-              // across modules can make them fail to evaluate.
-              if (node->kind() == AstNodeKind::kAttr) {
-                return const_cast<AstNode*>(node);
-              }
-              return std::nullopt;
-            }));
-
-    replacer = ChainCloneReplacers(
-        std::move(replacer),
-        [&](const AstNode* node, Module*,
-            const absl::flat_hash_map<const AstNode*, AstNode*>&)
-            -> absl::StatusOr<std::optional<AstNode*>> {
-          if (node->kind() != AstNodeKind::kTypeAnnotation) {
-            return std::nullopt;
-          }
-
-          const auto* annotation = absl::down_cast<const TypeAnnotation*>(node);
-          if (real_self_type.has_value() &&
-              annotation->IsAnnotation<SelfTypeAnnotation>()) {
-            return table_.Clone(*real_self_type, &NoopCloneReplacer,
-                                type->owner());
-          }
-
-          // Generics can't rely on the `NameRefMapper` above because we
-          // want to replace the enclosing TVTA that contains the NameRef.
-          if (annotation->IsAnnotation<TypeVariableTypeAnnotation>()) {
-            const auto* tvta =
-                absl::down_cast<const TypeVariableTypeAnnotation*>(annotation);
-            const auto it = actual_values.find(
-                std::get<const NameDef*>(tvta->type_variable()->name_def()));
-            if (it != actual_values.end()) {
-              return ToAstNode(it->second);
-            }
-          }
-          return std::nullopt;
-        });
-
-    XLS_ASSIGN_OR_RETURN(
-        (absl::flat_hash_map<const AstNode*, AstNode*> clones),
-        CloneAstAndGetAllPairs(type, type->owner(), std::move(replacer)));
-    AstNode* clone = clones.at(type);
-    std::unique_ptr<PopulateTableVisitor> visitor =
-        CreatePopulateTableVisitor(type->owner(), &table_, &import_data_,
-                                   /*typecheck_imported_module=*/nullptr);
-
-    // The replacement type annotation may not have fully valid table data at
-    // this point. For example, if we have replaced a `T::FOO` with
-    // `SomeActualType::FOO`, we will have cloned just `SomeActualType` from
-    // `actual_values` and not the whole new ColonRef; therefore the new
-    // ColonRef will not have an accurate target in the table. Its declaration
-    // type will also not have propagated to affected nodes. To ensure the table
-    // data is correct, we repopulate the table for the subtree under the new
-    // type annotation.
-    XLS_RETURN_IF_ERROR(visitor->PopulateFromTypeAnnotation(
-        absl::down_cast<TypeAnnotation*>(clone)));
-
-    return absl::down_cast<const TypeAnnotation*>(clone);
+    return ::xls::dslx::GetParametricFreeType(type, actual_values, table_,
+                                              import_data_, real_self_type,
+                                              clone_if_no_parametrics);
   }
 
   // Cache a concretized type for a (node, parametric_context) pair to be
