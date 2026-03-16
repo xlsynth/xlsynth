@@ -3398,7 +3398,7 @@ fn main() {
 
   XLS_ASSERT_OK_AND_ASSIGN(std::string converted, ConvertModuleForTest(program));
   EXPECT_THAT(converted,
-              HasSubstr(R"(format="sum = Option(tag={}, payload=({}, {}))")"));
+              HasSubstr("format=\"sum = Option(tag={}, payload=({}, {}))\""));
 }
 
 TEST_F(IrConverterTest, AssertFmt) {
