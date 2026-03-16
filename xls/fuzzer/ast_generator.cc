@@ -2888,6 +2888,19 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateBody(int64_t call_depth,
       call_depth == 0) {
     XLS_ASSIGN_OR_RETURN(required_sum_predicate,
                          GenerateRequiredSumPredicate(ctx, &statements));
+    if (options_.max_width_bits_types == 0) {
+      // The required-sum predicate already exercises the unit-only sum path in
+      // this configuration, so avoid generating extra expressions that may
+      // require bits-typed intermediates.
+      statements.push_back(module_->Make<Statement>(required_sum_predicate->expr));
+      auto* block = module_->Make<StatementBlock>(fake_span_, statements,
+                                                  /*trailing_semi=*/false);
+      return TypedExpr{.expr = block,
+                       .type = required_sum_predicate->type,
+                       .last_delaying_op =
+                           required_sum_predicate->last_delaying_op,
+                       .min_stage = required_sum_predicate->min_stage};
+    }
   }
   for (int64_t i = 0; i < body_size; ++i) {
     XLS_ASSIGN_OR_RETURN(TypedExpr rhs, GenerateExpr(call_depth, ctx));
