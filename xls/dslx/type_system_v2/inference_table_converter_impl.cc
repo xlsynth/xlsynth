@@ -101,6 +101,26 @@ bool NeedsMetaType(const InferenceTable& table, const AstNode* node) {
           node->parent()->kind() == AstNodeKind::kTypeAlias);
 }
 
+absl::Status ValidatePhase1SumPayloadMemberType(
+    const SumDef& sum_def, const SumVariant& variant,
+    const TypeAnnotation* member_annotation, const Type& member_type,
+    const FileTable& file_table) {
+  if (GetBitsLike(member_type).has_value() || member_type.IsEnum()) {
+    return absl::OkStatus();
+  }
+  // TODO: Phase 2 should remove this restriction by extending the
+  // exhaustiveness flattener to recurse through the supported aggregate payload
+  // forms instead of rejecting them during sum-type concretization.
+  return TypeInferenceErrorStatusForAnnotation(
+      member_annotation->span(), member_annotation,
+      absl::Substitute(
+          "Phase 1 semantic sum payload members must be bits-like or enum "
+          "typed; sum `$0` constructor `$1` has unsupported payload member "
+          "type `$2`.",
+          sum_def.identifier(), variant.identifier(), member_type.ToString()),
+      file_table);
+}
+
 // RAII guard for a frame on the proc type info stack.
 class ProcTypeInfoFrame {
  public:
@@ -1556,6 +1576,9 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
             }
             XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> concrete_member_type,
                                  Concretize(member_type, parametric_context));
+            XLS_RETURN_IF_ERROR(ValidatePhase1SumPayloadMemberType(
+                *sum_def, *variant, member_type, *concrete_member_type,
+                file_table_));
             payload_members.push_back(std::move(concrete_member_type));
           }
         } else if (variant->is_struct()) {
@@ -1571,6 +1594,9 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
             }
             XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> concrete_member_type,
                                  Concretize(member_type, parametric_context));
+            XLS_RETURN_IF_ERROR(ValidatePhase1SumPayloadMemberType(
+                *sum_def, *variant, member_type, *concrete_member_type,
+                file_table_));
             payload_members.push_back(std::move(concrete_member_type));
           }
         }

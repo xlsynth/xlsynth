@@ -3308,6 +3308,44 @@ const X = MaybePoint::Point { x: u32:1, y: u32:2 };
           HasNodeWithType("X", "MaybePoint { None | Point { x: uN[32], y: uN[32] } }")));
 }
 
+TEST(TypecheckV2Test, SemanticSumTuplePayloadAggregateRejectedInPhase1) {
+  EXPECT_THAT(
+      R"(
+struct Point {
+  x: u32,
+  y: u32,
+}
+
+enum MaybePoint {
+  None,
+  Some(Point),
+}
+
+const X = MaybePoint::None;
+)",
+      TypecheckFails(AllOf(
+          HasSubstr("Phase 1 semantic sum payload members must be bits-like or "
+                    "enum typed"),
+          HasSubstr("constructor `Some`"),
+          HasSubstr("Point"))));
+}
+
+TEST(TypecheckV2Test, SemanticSumStructPayloadAggregateRejectedInPhase1) {
+  EXPECT_THAT(
+      R"(
+enum PairBox {
+  Pair { xy: (u32, u32) },
+}
+
+const X = PairBox::Pair { xy: (u32:1, u32:2) };
+)",
+      TypecheckFails(AllOf(
+          HasSubstr("Phase 1 semantic sum payload members must be bits-like or "
+                    "enum typed"),
+          HasSubstr("constructor `Pair`"),
+          HasSubstr("(uN[32], uN[32])"))));
+}
+
 TEST(TypecheckV2Test, MatchWithSemanticSumConstructors) {
   EXPECT_THAT(
       R"(
