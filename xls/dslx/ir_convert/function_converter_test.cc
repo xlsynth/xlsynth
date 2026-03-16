@@ -676,7 +676,7 @@ fn f(x: Option, y: Option) -> bool {
 }
 
 TEST(FunctionConverterTest,
-     ConvertsSemanticSumConstructorWithInactiveEmptySumPayload) {
+     RejectsSemanticSumConstructorWithInactiveEmptySumPayloadInPhase1) {
   constexpr std::string_view kProgram = R"(
 enum Empty {
 }
@@ -689,28 +689,20 @@ enum Outer {
 fn f() -> Outer {
   Outer::Nothing
 }
-)";
+  )";
 
   ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
+  EXPECT_THAT(
       ParseAndTypecheck(kProgram, "test_module.x", "test_module",
-                        &import_data));
-
-  Function* f = tm.module->GetFunction("f").value();
-  ASSERT_NE(f, nullptr);
-
-  const ConvertOptions convert_options;
-  PackageConversionData package = MakeConversionData("test_module_package");
-  PackageData package_data{.conversion_info = &package};
-  FunctionConverter converter(package_data, tm.module, &import_data,
-                              convert_options, /*proc_data=*/nullptr,
-                              /*channel_scope=*/nullptr,
-                              /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
-
-  EXPECT_EQ(package_data.ir_to_dslx.size(), 1);
+                        &import_data),
+      ::absl_testing::StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          testing::AllOf(
+              testing::HasSubstr(
+                  "Phase 1 semantic sum payload members must be bits-like or "
+                  "enum typed"),
+              testing::HasSubstr("constructor `Wrapped`"),
+              testing::HasSubstr("Empty"))));
 }
 
 }  // namespace

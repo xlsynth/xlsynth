@@ -2879,7 +2879,8 @@ fn main() -> (u32, u32, bool, bool) {
                           InterpValue::MakeBool(true)));
 }
 
-TEST_F(BytecodeInterpreterTest, SemanticSumConstructorsWithNestedSumPayloads) {
+TEST_F(BytecodeInterpreterTest,
+       SemanticSumConstructorsRejectNestedSumPayloadsInPhase1) {
   constexpr std::string_view kProgram = R"(
 enum Inner {
   None,
@@ -2900,8 +2901,14 @@ fn main() -> bool {
   }
 }
 )";
-  XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
-  EXPECT_EQ(result, InterpValue::MakeBool(true));
+  EXPECT_THAT(
+      Interpret(kProgram, "main", {}),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               testing::AllOf(
+                   HasSubstr("Phase 1 semantic sum payload members must be "
+                             "bits-like or enum typed"),
+                   HasSubstr("constructor `Wrapped`"),
+                   HasSubstr("Inner"))));
 }
 
 TEST_F(BytecodeInterpreterTest, ImportedSumReturningFunctionCall) {
