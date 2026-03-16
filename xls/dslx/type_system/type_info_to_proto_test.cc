@@ -21,7 +21,6 @@
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
@@ -185,7 +184,7 @@ fn f() -> Option { Option::None }
   ASSERT_GT(mutated_nodes, 0);
 
   EXPECT_THAT(ToHumanString(tip, import_data, import_data.file_table()),
-              StatusIs(absl::StatusCode::kInvalidArgument));
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
