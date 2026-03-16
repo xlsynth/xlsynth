@@ -2456,6 +2456,19 @@ fn f(x: u32) -> Option<u32> {
                        HasSubstr("ParseError")));
 }
 
+TEST_F(ParserTest, RejectsDuplicateSemanticSumConstructors) {
+  constexpr std::string_view kProgram = R"(enum Option {
+    Some,
+    Some(u32),
+  })";
+  EXPECT_THAT(
+      Parse(kProgram),
+      StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          HasSubstr(
+              "Sum variant `Some` is defined more than once in sum `Option`")));
+}
+
 TEST_F(ParserTest, ArrayTypeAnnotation) {
   std::string s = "u8[2]";
   scanner_.emplace(file_table_, Fileno(0), s);

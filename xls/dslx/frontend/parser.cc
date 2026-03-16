@@ -4133,6 +4133,16 @@ absl::StatusOr<SumDef*> Parser::ParseSumDef(const Pos& start_pos, bool is_public
   XLS_ASSIGN_OR_RETURN(std::vector<SumVariant*> variants,
                        ParseCommaSeq<SumVariant*>(parse_variant,
                                                   TokenKind::kCBrace));
+  absl::flat_hash_set<std::string> seen_variant_names;
+  for (SumVariant* variant : variants) {
+    if (!seen_variant_names.insert(variant->identifier()).second) {
+      return ParseErrorStatus(
+          variant->name_def()->span(),
+          absl::StrFormat(
+              "Sum variant `%s` is defined more than once in sum `%s`",
+              variant->identifier(), name_def->identifier()));
+    }
+  }
 
   auto* sum_def = module_->Make<SumDef>(Span(start_pos, GetPos()), name_def,
                                         std::move(parametric_bindings),
