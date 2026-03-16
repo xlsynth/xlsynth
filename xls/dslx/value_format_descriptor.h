@@ -32,6 +32,19 @@ namespace xls::dslx {
 
 class ValueFormatDescriptor;
 
+enum class ValueFormatSumVariantKind : int8_t {
+  kUnit,
+  kTuple,
+  kStruct,
+};
+
+struct ValueFormatSumVariantDescriptor {
+  std::string name;
+  ValueFormatSumVariantKind kind;
+  size_t payload_size;
+  std::vector<std::string> field_names;
+};
+
 // Visits concrete types in the ValueFormatDescriptor hierarchy.
 class ValueFormatVisitor {
  public:
@@ -40,6 +53,7 @@ class ValueFormatVisitor {
   virtual absl::Status HandleArray(const ValueFormatDescriptor& d) = 0;
   virtual absl::Status HandleEnum(const ValueFormatDescriptor& d) = 0;
   virtual absl::Status HandleLeafValue(const ValueFormatDescriptor& d) = 0;
+  virtual absl::Status HandleSum(const ValueFormatDescriptor& d) = 0;
   virtual absl::Status HandleStruct(const ValueFormatDescriptor& d) = 0;
   virtual absl::Status HandleTuple(const ValueFormatDescriptor& d) = 0;
 };
@@ -50,6 +64,7 @@ enum class ValueFormatDescriptorKind : int8_t {
   kArray,
   kTuple,
   kStruct,
+  kSum,
 };
 
 // Class for the description of how to format values (according to the structure
@@ -76,6 +91,10 @@ class ValueFormatDescriptor {
   static ValueFormatDescriptor MakeStruct(
       std::string_view struct_name, absl::Span<const std::string> field_names,
       absl::Span<const ValueFormatDescriptor> field_formats);
+  static ValueFormatDescriptor MakeSum(
+      std::string_view sum_name,
+      absl::Span<const ValueFormatSumVariantDescriptor> variants,
+      absl::Span<const ValueFormatDescriptor> payload_formats);
 
   ValueFormatDescriptorKind kind() const { return kind_; }
 
@@ -88,6 +107,7 @@ class ValueFormatDescriptor {
     return kind() == ValueFormatDescriptorKind::kStruct;
   };
   bool IsEnum() const { return kind() == ValueFormatDescriptorKind::kEnum; };
+  bool IsSum() const { return kind() == ValueFormatDescriptorKind::kSum; }
 
   // Leaf methods.
   FormatPreference leaf_format() const {
@@ -130,6 +150,46 @@ class ValueFormatDescriptor {
     return children_;
   }
 
+  // Sum methods.
+  std::string_view sum_name() const {
+    CHECK(IsSum());
+    return sum_name_;
+  }
+  size_t sum_variant_count() const {
+    CHECK(IsSum());
+    return sum_variant_names_.size();
+  }
+  std::string_view sum_variant_name(size_t i) const {
+    CHECK(IsSum());
+    return sum_variant_names_.at(i);
+  }
+  ValueFormatSumVariantKind sum_variant_kind(size_t i) const {
+    CHECK(IsSum());
+    return sum_variant_kinds_.at(i);
+  }
+  size_t sum_variant_payload_start(size_t i) const {
+    CHECK(IsSum());
+    return sum_variant_payload_starts_.at(i);
+  }
+  size_t sum_variant_payload_size(size_t i) const {
+    CHECK(IsSum());
+    return sum_variant_payload_sizes_.at(i);
+  }
+  absl::Span<const std::string> sum_variant_field_names(size_t i) const {
+    CHECK(IsSum());
+    return sum_variant_field_names_.at(i);
+  }
+  absl::Span<const ValueFormatDescriptor> sum_variant_payload_formats(
+      size_t i) const {
+    CHECK(IsSum());
+    return absl::MakeConstSpan(children_).subspan(sum_variant_payload_start(i),
+                                                  sum_variant_payload_size(i));
+  }
+  size_t sum_payload_count() const {
+    CHECK(IsSum());
+    return children_.size();
+  }
+
   // Methods for aggregate kinds.
   size_t size() const {
     CHECK(IsTuple() || IsArray() || IsStruct());
@@ -157,6 +217,14 @@ class ValueFormatDescriptor {
 
   std::string struct_name_;
   std::vector<std::string> struct_field_names_;
+
+  // Sum data members.
+  std::string sum_name_;
+  std::vector<std::string> sum_variant_names_;
+  std::vector<ValueFormatSumVariantKind> sum_variant_kinds_;
+  std::vector<size_t> sum_variant_payload_starts_;
+  std::vector<size_t> sum_variant_payload_sizes_;
+  std::vector<std::vector<std::string>> sum_variant_field_names_;
 };
 
 }  // namespace xls::dslx

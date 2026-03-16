@@ -23,6 +23,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_format.h"
 #include "absl/types/span.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/format_preference.h"
@@ -76,6 +77,40 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeStruct(
   return vfd;
 }
 
+ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
+    std::string_view sum_name,
+    absl::Span<const ValueFormatSumVariantDescriptor> variants,
+    absl::Span<const ValueFormatDescriptor> payload_formats) {
+  ValueFormatDescriptor vfd(ValueFormatDescriptorKind::kSum);
+  vfd.sum_name_ = sum_name;
+  vfd.children_ =
+      std::vector<ValueFormatDescriptor>(payload_formats.begin(),
+                                         payload_formats.end());
+
+  size_t payload_start = 0;
+  vfd.sum_variant_names_.reserve(variants.size());
+  vfd.sum_variant_kinds_.reserve(variants.size());
+  vfd.sum_variant_payload_starts_.reserve(variants.size());
+  vfd.sum_variant_payload_sizes_.reserve(variants.size());
+  vfd.sum_variant_field_names_.reserve(variants.size());
+  for (const ValueFormatSumVariantDescriptor& variant : variants) {
+    CHECK(variant.kind == ValueFormatSumVariantKind::kStruct ||
+          variant.field_names.empty());
+    CHECK_EQ(variant.kind == ValueFormatSumVariantKind::kStruct
+                 ? variant.field_names.size()
+                 : variant.payload_size,
+             variant.payload_size);
+    vfd.sum_variant_names_.push_back(variant.name);
+    vfd.sum_variant_kinds_.push_back(variant.kind);
+    vfd.sum_variant_payload_starts_.push_back(payload_start);
+    vfd.sum_variant_payload_sizes_.push_back(variant.payload_size);
+    vfd.sum_variant_field_names_.push_back(variant.field_names);
+    payload_start += variant.payload_size;
+  }
+  CHECK_EQ(payload_start, payload_formats.size());
+  return vfd;
+}
+
 absl::Status ValueFormatDescriptor::Accept(ValueFormatVisitor& v) const {
   switch (kind()) {
     case ValueFormatDescriptorKind::kLeafValue:
@@ -88,6 +123,8 @@ absl::Status ValueFormatDescriptor::Accept(ValueFormatVisitor& v) const {
       return v.HandleTuple(*this);
     case ValueFormatDescriptorKind::kStruct:
       return v.HandleStruct(*this);
+    case ValueFormatDescriptorKind::kSum:
+      return v.HandleSum(*this);
   }
   return absl::InvalidArgumentError(absl::StrFormat(
       "Out of bounds ValueFormatDescriptorKind: %d", static_cast<int>(kind())));

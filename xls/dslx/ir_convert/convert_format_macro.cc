@@ -132,6 +132,11 @@ class FlattenVisitor : public ValueFormatVisitor {
   absl::Status HandleEnum(const ValueFormatDescriptor& d) override {
     return FlattenEnum(d, ir_value_, ctx_);
   }
+  absl::Status HandleSum(const ValueFormatDescriptor&) override {
+    return absl::UnimplementedError(
+        "Tracing and format-macro support for semantic sums is not yet "
+        "implemented.");
+  }
   absl::Status HandleTuple(const ValueFormatDescriptor& d) override {
     return FlattenTuple(d, ir_value_, ctx_);
   }

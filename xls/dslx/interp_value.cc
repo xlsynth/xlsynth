@@ -25,6 +25,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -32,6 +33,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
+#include "absl/strings/match.h"
 #include "absl/types/span.h"
 #include "xls/common/math_util.h"
 #include "xls/common/status/ret_check.h"
@@ -254,6 +256,10 @@ static std::string IndentString(std::string_view s, int64_t n) {
   return absl::StrFormat("%s%s", std::string(n * kIndentAmount, ' '), s);
 }
 
+static bool IsSingleLine(std::string_view s) {
+  return !absl::StrContains(s, '\n');
+}
+
 absl::StatusOr<std::string> InterpValue::ToArrayString(
     const ValueFormatDescriptor& fmt_desc, bool include_type_prefix,
     int64_t indentation) const {
@@ -352,6 +358,106 @@ absl::StatusOr<std::string> InterpValue::ToEnumString(
                          underlying.ToString());
 }
 
+absl::StatusOr<std::string> InterpValue::ToSumString(
+    const ValueFormatDescriptor& fmt_desc, bool include_type_prefix,
+    int64_t indentation) const {
+  if (!IsTuple()) {
+    return absl::FailedPreconditionError(
+        "Can only format a tuple InterpValue as a sum");
+  }
+  const std::vector<InterpValue>& sum_elements = GetValuesOrDie();
+  if (sum_elements.size() != 2) {
+    return absl::InvalidArgumentError(
+        absl::StrFormat("Expected sum InterpValue to have 2 elements; got %d",
+                        static_cast<int64_t>(sum_elements.size())));
+  }
+  const InterpValue& tag_value = sum_elements[0];
+  const InterpValue& payload_slots = sum_elements[1];
+  if (!tag_value.HasBits()) {
+    return absl::InvalidArgumentError("Expected sum tag to be bits-valued.");
+  }
+  if (!payload_slots.IsTuple()) {
+    return absl::InvalidArgumentError(
+        "Expected sum payload slots to be tuple-valued.");
+  }
+  XLS_ASSIGN_OR_RETURN(uint64_t variant_index, tag_value.GetBitValueUnsigned());
+  if (variant_index >= fmt_desc.sum_variant_count()) {
+    return absl::InvalidArgumentError(
+        absl::StrFormat("Sum tag %d is out of bounds for `%s` with %d variants",
+                        static_cast<int64_t>(variant_index), fmt_desc.sum_name(),
+                        static_cast<int64_t>(fmt_desc.sum_variant_count())));
+  }
+  const std::vector<InterpValue>& payload_values = payload_slots.GetValuesOrDie();
+  if (payload_values.size() != fmt_desc.sum_payload_count()) {
+    return absl::InvalidArgumentError(
+        absl::StrFormat("Sum `%s` expected %d payload slots; got %d",
+                        fmt_desc.sum_name(),
+                        static_cast<int64_t>(fmt_desc.sum_payload_count()),
+                        static_cast<int64_t>(payload_values.size())));
+  }
+
+  const std::string prefix = absl::StrFormat(
+      "%s::%s", fmt_desc.sum_name(), fmt_desc.sum_variant_name(variant_index));
+  const size_t payload_start = fmt_desc.sum_variant_payload_start(variant_index);
+  const size_t payload_size = fmt_desc.sum_variant_payload_size(variant_index);
+  const absl::Span<const ValueFormatDescriptor> payload_formats =
+      fmt_desc.sum_variant_payload_formats(variant_index);
+  XLS_RET_CHECK_EQ(payload_size, payload_formats.size());
+
+  switch (fmt_desc.sum_variant_kind(variant_index)) {
+    case ValueFormatSumVariantKind::kUnit:
+      return prefix;
+    case ValueFormatSumVariantKind::kTuple: {
+      std::vector<std::string> payload_pieces;
+      payload_pieces.reserve(payload_size);
+      for (size_t i = 0; i < payload_size; ++i) {
+        XLS_ASSIGN_OR_RETURN(
+            std::string payload_piece,
+            payload_values[payload_start + i].ToFormattedString(
+                payload_formats[i], include_type_prefix, indentation + 1));
+        payload_pieces.push_back(std::move(payload_piece));
+      }
+      if (absl::c_all_of(payload_pieces, [](const std::string& piece) {
+            return IsSingleLine(piece);
+          })) {
+        return absl::StrCat(prefix, "(", absl::StrJoin(payload_pieces, ", "),
+                            ")");
+      }
+      std::vector<std::string> pieces = {absl::StrCat(prefix, "(")};
+      for (size_t i = 0; i < payload_pieces.size(); ++i) {
+        std::string piece =
+            IndentString(payload_pieces[i], indentation + 1);
+        if (i + 1 != payload_pieces.size()) {
+          absl::StrAppend(&piece, ",");
+        }
+        pieces.push_back(std::move(piece));
+      }
+      pieces.push_back(IndentString(")", indentation));
+      return absl::StrJoin(pieces, "\n");
+    }
+    case ValueFormatSumVariantKind::kStruct: {
+      const absl::Span<const std::string> field_names =
+          fmt_desc.sum_variant_field_names(variant_index);
+      XLS_RET_CHECK_EQ(payload_size, field_names.size());
+      std::vector<std::string> pieces;
+      for (size_t i = 0; i < payload_size; ++i) {
+        XLS_ASSIGN_OR_RETURN(
+            std::string payload_piece,
+            payload_values[payload_start + i].ToFormattedString(
+                payload_formats[i], include_type_prefix, indentation + 1));
+        pieces.push_back(IndentString(
+            absl::StrFormat("%s: %s", field_names[i], payload_piece),
+            indentation + 1));
+      }
+      std::string body = absl::StrJoin(pieces, ",\n");
+      return absl::StrJoin(
+          {absl::StrCat(prefix, " {"), body, IndentString("}", indentation)},
+          "\n");
+    }
+  }
+  return absl::InternalError("Unhandled ValueFormatSumVariantKind.");
+}
+
 absl::StatusOr<std::string> InterpValue::ToFormattedString(
     const ValueFormatDescriptor& fmt_desc, bool include_type_prefix,
     int64_t indentation) const {
@@ -375,6 +481,11 @@ absl::StatusOr<std::string> InterpValue::ToFormattedString(
     }
     absl::Status HandleEnum(const ValueFormatDescriptor& d) override {
       XLS_ASSIGN_OR_RETURN(result_, v_.ToEnumString(d));
+      return absl::OkStatus();
+    }
+    absl::Status HandleSum(const ValueFormatDescriptor& d) override {
+      XLS_ASSIGN_OR_RETURN(
+          result_, v_.ToSumString(d, include_type_prefix_, indentation_));
       return absl::OkStatus();
     }
     absl::Status HandleTuple(const ValueFormatDescriptor& d) override {

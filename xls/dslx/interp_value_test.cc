@@ -368,6 +368,61 @@ TEST(InterpValueTest, FormatEnum) {
   EXPECT_EQ(bar.ToFormattedString(fmt_desc).value(), "MyEnum::BAR  // u32:1");
 }
 
+TEST(InterpValueTest, FormatSemanticSum) {
+  ValueFormatDescriptor leaf =
+      ValueFormatDescriptor::MakeLeafValue(FormatPreference::kDefault);
+  std::vector<ValueFormatSumVariantDescriptor> variants = {
+      ValueFormatSumVariantDescriptor{
+          .name = "None",
+          .kind = ValueFormatSumVariantKind::kUnit,
+          .payload_size = 0,
+      },
+      ValueFormatSumVariantDescriptor{
+          .name = "Some",
+          .kind = ValueFormatSumVariantKind::kTuple,
+          .payload_size = 1,
+      },
+      ValueFormatSumVariantDescriptor{
+          .name = "Pair",
+          .kind = ValueFormatSumVariantKind::kStruct,
+          .payload_size = 2,
+          .field_names = {"lhs", "rhs"},
+      },
+  };
+  std::vector<ValueFormatDescriptor> payload_formats = {leaf, leaf, leaf};
+  ValueFormatDescriptor fmt_desc =
+      ValueFormatDescriptor::MakeSum("Option", variants, payload_formats);
+
+  InterpValue none = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/0),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeU32(0), InterpValue::MakeU32(0),
+            InterpValue::MakeU32(0)})});
+  InterpValue some = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/1),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeU32(7), InterpValue::MakeU32(0),
+            InterpValue::MakeU32(0)})});
+  InterpValue pair = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/2),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeU32(0), InterpValue::MakeU32(3),
+            InterpValue::MakeU32(4)})});
+
+  EXPECT_EQ(none.ToFormattedString(fmt_desc, /*include_type_prefix=*/true)
+                .value(),
+            "Option::None");
+  EXPECT_EQ(some.ToFormattedString(fmt_desc, /*include_type_prefix=*/true)
+                .value(),
+            "Option::Some(u32:7)");
+  EXPECT_EQ(pair.ToFormattedString(fmt_desc, /*include_type_prefix=*/true)
+                .value(),
+            R"(Option::Pair {
+    lhs: u32:3,
+    rhs: u32:4
+})");
+}
+
 TEST(InterpValueTest, AsProtoBits) {
   InterpValue iv = InterpValue::MakeU32(0xdeadbeef);
   XLS_ASSERT_OK_AND_ASSIGN(xls::ValueProto proto, iv.AsProto());

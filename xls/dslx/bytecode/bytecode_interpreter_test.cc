@@ -2299,6 +2299,29 @@ fn doomed() {
                              HasSubstr("Flowers::VIOLETS  // u24:15631086"))));
 }
 
+TEST_F(BytecodeInterpreterTest, AssertEqSemanticSums) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn doomed() {
+  let a = Option::Pair { lhs: u32:1, rhs: u32:2 };
+  let b = Option::Pair { lhs: u32:1, rhs: u32:3 };
+  assert_eq(a, b)
+})";
+
+  absl::StatusOr<InterpValue> value = Interpret(kProgram, "doomed");
+  EXPECT_THAT(value.status(),
+              StatusIs(absl::StatusCode::kInternal,
+                       AllOf(HasSubstr("were not equal"),
+                             HasSubstr("Option::Pair {"),
+                             HasSubstr("<     rhs: u32:2"),
+                             HasSubstr(">     rhs: u32:3"))));
+}
+
 TEST_F(BytecodeInterpreterTest, CheckedCastSnToSn) {
   constexpr std::string_view kProgram = R"(
 fn main(x: s32) -> s4 {
