@@ -22,7 +22,6 @@
 #include <variant>
 #include <vector>
 
-#include "absl/container/flat_hash_map.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -32,9 +31,6 @@
 #include "xls/dslx/interp_value.h"
 
 namespace xls::dslx {
-
-class ImportData;
-class InferenceTable;
 
 struct StructOrProcRef {
   const StructDefBase* def;
@@ -123,22 +119,6 @@ TypeAnnotation* CreateSumAnnotation(Module& module, SumDef* def,
 
 // Variant that converts a `SumRef` into an annotation.
 TypeAnnotation* CreateSumAnnotation(Module& module, const SumRef& ref);
-
-// Returns `type` with parametrics replaced by their values from
-// `actual_values`. Any references to `Self` in `type` are replaced with
-// `real_self_type` if it is provided.
-absl::StatusOr<const TypeAnnotation*> GetParametricFreeType(
-    const TypeAnnotation* type,
-    const absl::flat_hash_map<const NameDef*, ExprOrType>& actual_values,
-    InferenceTable& table, ImportData& import_data,
-    std::optional<const TypeAnnotation*> real_self_type = std::nullopt,
-    bool clone_if_no_parametrics = true);
-
-// Converts a sum payload annotation into a form with any explicit sum
-// parametrics replaced by their values.
-absl::StatusOr<const TypeAnnotation*> GetParametricFreeSumMemberType(
-    const TypeAnnotation* member_type, const SumRef& sum_ref,
-    InferenceTable& table, ImportData& import_data);
 
 // Returns the element channel type of the given channel array type.
 ChannelTypeAnnotation* GetChannelArrayElementType(
