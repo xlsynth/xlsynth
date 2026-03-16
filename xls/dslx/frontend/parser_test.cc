@@ -597,6 +597,13 @@ impl Foo {
 }
 fn foo() -> Foo {
     Foo {  }
+})",
+            /*target=*/R"(proc Foo {
+}
+impl Foo {
+}
+fn foo() -> Foo {
+    Foo { }
 })");
 }
 

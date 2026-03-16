@@ -203,12 +203,6 @@ ExprRestrictions MakeRestrictions(
   return ExprRestrictions(value);
 }
 
-ExprRestrictions ClearRestriction(ExprRestrictions restrictions,
-                                  ExprRestriction restriction) {
-  return ExprRestrictions(static_cast<uint64_t>(restrictions) &
-                          ~static_cast<uint64_t>(restriction));
-}
-
 bool IsExprRestrictionEnabled(ExprRestrictions restrictions,
                               ExprRestriction target) {
   uint64_t target_u64 = static_cast<uint64_t>(target);
@@ -1604,10 +1598,27 @@ absl::StatusOr<Expr*> Parser::ParseCastOrEnumRefOrStructInstanceOrToken(
     return ParseColonRef(bindings, type_ref, type->span());
   }
   XLS_ASSIGN_OR_RETURN(bool peek_is_obrace, PeekTokenIs(TokenKind::kOBrace));
-  if (peek_is_obrace &&
-      !IsExprRestrictionEnabled(restrictions,
-                                ExprRestriction::kNoStructLiteral)) {
-    return ParseStructInstance(bindings, type);
+  if (peek_is_obrace) {
+    if (!IsExprRestrictionEnabled(restrictions,
+                                  ExprRestriction::kNoStructLiteral)) {
+      return ParseStructInstance(bindings, type);
+    }
+
+    Transaction parse_struct_txn(this, &bindings);
+    absl::Cleanup rollback_by_default([&parse_struct_txn] {
+      if (!parse_struct_txn.completed()) {
+        parse_struct_txn.Rollback();
+      }
+    });
+    absl::StatusOr<Expr*> struct_instance =
+        ParseStructInstance(*parse_struct_txn.bindings(), type);
+    if (struct_instance.ok()) {
+      XLS_ASSIGN_OR_RETURN(bool peek_is_dot, PeekTokenIs(TokenKind::kDot));
+      if (peek_is_dot) {
+        parse_struct_txn.Commit();
+        return *struct_instance;
+      }
+    }
   }
   XLS_ASSIGN_OR_RETURN(bool peek_is_oparen, PeekTokenIs(TokenKind::kOParen));
   if (peek_is_oparen) {
@@ -2016,13 +2027,7 @@ absl::StatusOr<Expr*> Parser::ParseComparisonExpression(
     Token op = PopTokenOrDie();
     XLS_ASSIGN_OR_RETURN(BinopKind kind,
                          BinopKindFromString(TokenKindToString(op.kind())));
-    ExprRestrictions rhs_restrictions = restrictions;
-    if (GetBinopComparisonKinds().contains(kind)) {
-      rhs_restrictions = ClearRestriction(
-          rhs_restrictions, ExprRestriction::kNoStructLiteral);
-    }
-    XLS_ASSIGN_OR_RETURN(Expr * rhs,
-                         ParseOrExpression(bindings, rhs_restrictions));
+    XLS_ASSIGN_OR_RETURN(Expr * rhs, ParseOrExpression(bindings, restrictions));
     if (!lhs->in_parens() && IsComparisonBinopKind(lhs) &&
         GetBinopComparisonKinds().contains(kind)) {
       return ParseErrorStatus(op.span(),
