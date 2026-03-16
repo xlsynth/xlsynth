@@ -433,7 +433,7 @@ TEST(InterpValueTest, FormatSemanticSumEmptyStruct) {
           .payload_size = 0,
           .field_names = {},
       }},
-      {});
+      {}, FormatPreference::kDefault);
 
   InterpValue empty_struct = InterpValue::MakeTuple(
       {InterpValue::MakeUBits(/*bit_count=*/1, /*value=*/0),
@@ -459,7 +459,8 @@ TEST(InterpValueTest, FormatSemanticSumEmptyStructVariant) {
   };
   std::vector<ValueFormatDescriptor> payload_formats;
   ValueFormatDescriptor fmt_desc =
-      ValueFormatDescriptor::MakeSum("Option", variants, payload_formats);
+      ValueFormatDescriptor::MakeSum("Option", variants, payload_formats,
+                                     FormatPreference::kDefault);
 
   InterpValue empty_struct = InterpValue::MakeTuple(
       {InterpValue::MakeUBits(/*bit_count=*/1, /*value=*/1),
