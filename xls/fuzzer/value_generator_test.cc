@@ -21,12 +21,14 @@
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/type_system/type.h"
 
 namespace xls {
@@ -239,6 +241,72 @@ TEST(ValueGeneratorTest, GenerateDslxConstantTuple) {
   ASSERT_NE(expr, nullptr);
   constexpr const char* kWantPattern = R"(\(u32:[0-9]+, s32:[-0-9]+\))";
   EXPECT_THAT(expr->ToString(), MatchesRegex(kWantPattern));
+}
+
+TEST(ValueGeneratorTest, GenerateDslxConstantSemanticSums) {
+  dslx::FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<dslx::Module> module,
+      dslx::ParseModule(R"(
+enum UnitOnly {
+  Only,
+}
+
+enum TupleOnly {
+  Only(u32),
+}
+
+enum StructOnly {
+  Only { x: u32 },
+}
+
+enum Empty {}
+)",
+                        "test.x", "test", file_table));
+
+  auto make_type_annotation =
+      [&](std::string_view name) -> dslx::TypeRefTypeAnnotation* {
+    XLS_ASSERT_OK_AND_ASSIGN(dslx::TypeDefinition type_definition,
+                             module->GetTypeDefinition(name));
+    auto* type_ref =
+        module->Make<dslx::TypeRef>(dslx::FakeSpan(), type_definition);
+    return module->Make<dslx::TypeRefTypeAnnotation>(
+        dslx::FakeSpan(), type_ref, std::vector<dslx::ExprOrType>{});
+  };
+
+  dslx::TypeRefTypeAnnotation* unit_type = make_type_annotation("UnitOnly");
+  dslx::TypeRefTypeAnnotation* tuple_type = make_type_annotation("TupleOnly");
+  dslx::TypeRefTypeAnnotation* struct_type =
+      make_type_annotation("StructOnly");
+  dslx::TypeRefTypeAnnotation* empty_type = make_type_annotation("Empty");
+
+  std::mt19937_64 unit_rng{0};
+  XLS_ASSERT_OK_AND_ASSIGN(dslx::Expr * unit_expr,
+                           GenerateDslxConstant(unit_rng, module.get(),
+                                                unit_type));
+  EXPECT_NE(dynamic_cast<dslx::ColonRef*>(unit_expr), nullptr);
+  EXPECT_EQ(unit_expr->ToString(), "UnitOnly::Only");
+
+  std::mt19937_64 tuple_rng{1};
+  XLS_ASSERT_OK_AND_ASSIGN(dslx::Expr * tuple_expr,
+                           GenerateDslxConstant(tuple_rng, module.get(),
+                                                tuple_type));
+  EXPECT_NE(dynamic_cast<dslx::Invocation*>(tuple_expr), nullptr);
+  EXPECT_THAT(tuple_expr->ToString(), HasSubstr("TupleOnly::Only("));
+  EXPECT_THAT(tuple_expr->ToString(), HasSubstr("u32:"));
+
+  std::mt19937_64 struct_rng{2};
+  XLS_ASSERT_OK_AND_ASSIGN(dslx::Expr * struct_expr,
+                           GenerateDslxConstant(struct_rng, module.get(),
+                                                struct_type));
+  EXPECT_NE(dynamic_cast<dslx::StructInstance*>(struct_expr), nullptr);
+  EXPECT_THAT(struct_expr->ToString(), HasSubstr("StructOnly::Only {"));
+  EXPECT_THAT(struct_expr->ToString(), HasSubstr("x: u32:"));
+
+  std::mt19937_64 empty_rng{3};
+  EXPECT_THAT(GenerateDslxConstant(empty_rng, module.get(), empty_type),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("empty sum type")));
 }
 
 }  // namespace

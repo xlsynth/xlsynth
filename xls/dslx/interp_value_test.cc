@@ -444,6 +444,33 @@ TEST(InterpValueTest, FormatSemanticSumEmptyStruct) {
             "Option::EmptyStruct { }");
 }
 
+TEST(InterpValueTest, FormatSemanticSumEmptyStructVariant) {
+  std::vector<ValueFormatSumVariantDescriptor> variants = {
+      ValueFormatSumVariantDescriptor{
+          .name = "None",
+          .kind = ValueFormatSumVariantKind::kUnit,
+          .payload_size = 0,
+      },
+      ValueFormatSumVariantDescriptor{
+          .name = "EmptyStruct",
+          .kind = ValueFormatSumVariantKind::kStruct,
+          .payload_size = 0,
+      },
+  };
+  std::vector<ValueFormatDescriptor> payload_formats;
+  ValueFormatDescriptor fmt_desc =
+      ValueFormatDescriptor::MakeSum("Option", variants, payload_formats);
+
+  InterpValue empty_struct = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/1, /*value=*/1),
+       InterpValue::MakeTuple({})});
+
+  EXPECT_EQ(empty_struct.ToFormattedString(fmt_desc,
+                                           /*include_type_prefix=*/true)
+                .value(),
+            "Option::EmptyStruct { }");
+}
+
 TEST(InterpValueTest, AsProtoBits) {
   InterpValue iv = InterpValue::MakeU32(0xdeadbeef);
   XLS_ASSERT_OK_AND_ASSIGN(xls::ValueProto proto, iv.AsProto());

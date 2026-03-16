@@ -21,6 +21,7 @@
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
@@ -152,6 +153,39 @@ enum Option {
 fn f() -> Option { Option::None }
 )";
   DoRun(program);
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       RejectsReorderedSumVariantsInToHumanString) {
+  std::string program = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+fn f() -> Option { Option::None }
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  TypeInfoProto tip;
+  DoRun(program, &tip, &import_data);
+
+  int mutated_nodes = 0;
+  for (AstNodeTypeInfoProto& node : *tip.mutable_nodes()) {
+    if (!node.has_type() || !node.type().has_sum_type()) {
+      continue;
+    }
+    SumTypeProto* sum_type = node.mutable_type()->mutable_sum_type();
+    if (!sum_type->has_sum_def() || sum_type->sum_def().identifier() != "Option") {
+      continue;
+    }
+    ASSERT_EQ(sum_type->variants_size(), 2);
+    sum_type->mutable_variants()->SwapElements(0, 1);
+    ++mutated_nodes;
+  }
+  ASSERT_GT(mutated_nodes, 0);
+
+  EXPECT_THAT(ToHumanString(tip, import_data, import_data.file_table()),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
