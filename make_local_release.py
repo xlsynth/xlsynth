@@ -103,6 +103,58 @@ def copy_flattened_protos(output_dir, root_proto):
             dst.write(content)
         print(f"Copied {proto_path} to {destination}")
 
+
+def get_release_targets(is_macos, override_targets=None):
+    """Returns the Bazel targets to build for the requested release mode."""
+    if override_targets:
+        return list(override_targets)
+    elif is_macos:
+        return MACOS_TARGETS
+    else:
+        return LINUX_TARGETS
+
+
+def get_run_tests_default(is_macos, override_targets=None):
+    """Returns whether smoke tests should run for the requested build."""
+    if is_macos:
+        return False
+    elif override_targets:
+        return False
+    else:
+        return True
+
+
+def get_default_compiler_env(environ=None, which=shutil.which):
+    """Returns compiler env defaults when the generic clang names exist."""
+    environment = dict(os.environ if environ is None else environ)
+    if "CC" in environment or "CXX" in environment:
+        return {}
+
+    clang = which("clang")
+    clangxx = which("clang++")
+    if clang and clangxx:
+        return {"CC": "clang", "CXX": "clang++"}
+    else:
+        return {}
+
+
+def add_cxx20_flags(command):
+    """Inserts the repo's C++20 flags after the Bazel mode selection."""
+    return command[:4] + CXX20_FLAGS + command[4:]
+
+
+def get_bazel_command(subcommand, mode, targets):
+    """Returns the Bazel command for the requested subcommand and targets."""
+    if mode == "dbg-asan":
+        command = ["bazel", subcommand, "-c", "dbg", "--config=asan"]
+    elif mode == "dbg":
+        command = ["bazel", subcommand, "-c", "dbg"]
+    elif mode == "opt":
+        command = ["bazel", subcommand, "-c", "opt"]
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+    return add_cxx20_flags(command) + list(targets)
+
 # Function to get the current git hash and cleanliness status
 def get_git_info():
     try:
@@ -128,52 +180,22 @@ def make_local_release(output_dir, targets, run_tests=True, mode="opt"):
 
     # Build the targets using Bazel; adjust flags based on the mode.
     # Include the smoke test targets in the build to ensure they compile with the rest.
-    build_targets = targets
-    if mode == "dbg-asan":
-        build_command = [
-            "bazel", "build", "-c", "dbg", "--config=asan"
-        ] + build_targets
-    elif mode == "dbg":
-        build_command = [
-            "bazel", "build", "-c", "dbg"
-        ] + build_targets
-    elif mode == "opt":
-        build_command = [
-            "bazel", "build", "-c", "opt"
-        ] + build_targets
-    else:
-        print(f"Unsupported mode: {mode}")
-        sys.exit(1)
-
-    build_command = build_command[:4] + CXX20_FLAGS + build_command[4:]
-    build_command = ["CC=clang", "CXX=clang++"] + build_command
+    build_targets = list(targets)
+    build_command = get_bazel_command("build", mode, build_targets)
+    build_env = os.environ.copy()
+    build_env.update(get_default_compiler_env(build_env))
 
     try:
-        subprocess.run(" ".join(build_command), shell=True, check=True)
+        subprocess.run(build_command, check=True, env=build_env)
     except subprocess.CalledProcessError as e:
         print(f"Build failed: {e}")
         sys.exit(1)
 
     if run_tests:
-        # Run smoke tests with the same compilation mode.
-        if mode == "dbg-asan":
-            test_command = [
-                "bazel", "test", "-c", "dbg", "--config=asan",
-            ] + SMOKE_TEST_TARGETS
-        elif mode == "dbg":
-            test_command = [
-                "bazel", "test", "-c", "dbg",
-            ] + SMOKE_TEST_TARGETS
-        elif mode == "opt":
-            test_command = [
-                "bazel", "test", "-c", "opt",
-            ] + SMOKE_TEST_TARGETS
-
-        test_command = test_command[:4] + CXX20_FLAGS + test_command[4:]
-        test_command = ["CC=clang", "CXX=clang++"] + test_command
+        test_command = get_bazel_command("test", mode, SMOKE_TEST_TARGETS)
 
         try:
-            subprocess.run(" ".join(test_command), shell=True, check=True)
+            subprocess.run(test_command, check=True, env=build_env)
         except subprocess.CalledProcessError as e:
             print(f"Smoke test failed: {e}")
             sys.exit(1)
@@ -265,18 +287,26 @@ def main():
     parser.add_option("-m", "--mode", dest="mode", default="opt", choices=["opt", "dbg-asan", "dbg"],
                       help="Build mode: opt (default) or dbg-asan")
     parser.add_option("--macos", action="store_true", default=False, help="Build for macOS")
+    parser.add_option(
+        "-t",
+        "--target",
+        action="append",
+        dest="targets",
+        default=[],
+        help=(
+            "Override the default release target set. May be repeated. When "
+            "used, smoke tests are skipped."
+        ),
+    )
     options, args = parser.parse_args()
 
     if len(args) != 1:
         parser.error("You must specify exactly one output directory")
     output_dir = args[0]
 
-    if options.macos:
-        # Tests do not work on MacOS because static initializers of the estimators are
-        # stripped out which breaks the build.
-        make_local_release(output_dir, MACOS_TARGETS, run_tests=False, mode=options.mode)
-    else:
-        make_local_release(output_dir, LINUX_TARGETS, run_tests=True, mode=options.mode)
+    targets = get_release_targets(options.macos, options.targets)
+    run_tests = get_run_tests_default(options.macos, options.targets)
+    make_local_release(output_dir, targets, run_tests=run_tests, mode=options.mode)
 
 if __name__ == "__main__":
     main()
