@@ -423,6 +423,26 @@ TEST(InterpValueTest, FormatSemanticSum) {
 })");
 }
 
+TEST(InterpValueTest, FormatSemanticSumEmptyStruct) {
+  ValueFormatDescriptor fmt_desc = ValueFormatDescriptor::MakeSum(
+      "Option",
+      {ValueFormatSumVariantDescriptor{
+          .name = "EmptyStruct",
+          .kind = ValueFormatSumVariantKind::kStruct,
+          .payload_size = 0,
+          .field_names = {},
+      }},
+      {});
+
+  InterpValue empty_struct = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/1, /*value=*/0),
+       InterpValue::MakeTuple({})});
+
+  EXPECT_EQ(empty_struct.ToFormattedString(fmt_desc, /*include_type_prefix=*/true)
+                .value(),
+            "Option::EmptyStruct { }");
+}
+
 TEST(InterpValueTest, AsProtoBits) {
   InterpValue iv = InterpValue::MakeU32(0xdeadbeef);
   XLS_ASSERT_OK_AND_ASSIGN(xls::ValueProto proto, iv.AsProto());

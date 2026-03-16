@@ -440,6 +440,9 @@ absl::StatusOr<std::string> InterpValue::ToSumString(
       const absl::Span<const std::string> field_names =
           fmt_desc.sum_variant_field_names(variant_index);
       XLS_RET_CHECK_EQ(payload_size, field_names.size());
+      if (payload_size == 0) {
+        return absl::StrCat(prefix, " { }");
+      }
       std::vector<std::string> pieces;
       for (size_t i = 0; i < payload_size; ++i) {
         XLS_ASSIGN_OR_RETURN(
