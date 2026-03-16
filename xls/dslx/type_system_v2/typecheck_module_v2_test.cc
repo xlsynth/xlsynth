@@ -3367,6 +3367,24 @@ const X = unwrap_or_zero(MaybeU32::Some(u32:7));
           AllOf(HasNodeWithType("v", "uN[32]"), HasNodeWithType("X", "uN[32]"))));
 }
 
+TEST(TypecheckV2Test, NonUnitSemanticSumConstructorCannotBeUsedAsValue) {
+  EXPECT_THAT(
+      R"(
+enum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn f() -> () {
+  let make = MaybeU32::Some;
+  ()
+}
+)",
+      TypecheckFails(AllOf(
+          HasSubstr("MaybeU32::Some"),
+          HasSubstr("cannot be used as a value in Phase 1"))));
+}
+
 TEST(TypecheckV2Test, MatchArmTupleType) {
   EXPECT_THAT(R"(
 const X = u32:1;

@@ -256,18 +256,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
                            ResolveSumConstructor(node, import_data_));
       if (sum_constructor_ref.has_value()) {
-        table_.SetColonRefTarget(node, sum_constructor_ref->variant);
-        if (sum_constructor_ref->variant->is_unit()) {
-          return table_.SetTypeAnnotation(
-              node, CreateSumConstructorValueAnnotation(
-                        sum_constructor_ref->sum_ref));
-        }
-        return table_.SetTypeAnnotation(
-            node, module_.Make<MemberTypeAnnotation>(
-                      AttrSpan(node),
-                      CreateSumConstructorValueAnnotation(
-                          sum_constructor_ref->sum_ref),
-                      node->attr()));
+        return SetSumConstructorType(node, *sum_constructor_ref);
       }
 
       // `imported_module::SomeStruct` case.
@@ -363,18 +352,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
                            ResolveSumConstructor(node, import_data_));
       if (sum_constructor_ref.has_value()) {
-        table_.SetColonRefTarget(node, sum_constructor_ref->variant);
-        if (sum_constructor_ref->variant->is_unit()) {
-          return table_.SetTypeAnnotation(
-              node, CreateSumConstructorValueAnnotation(
-                        sum_constructor_ref->sum_ref));
-        }
-        return table_.SetTypeAnnotation(
-            node, module_.Make<MemberTypeAnnotation>(
-                      AttrSpan(node),
-                      CreateSumConstructorValueAnnotation(
-                          sum_constructor_ref->sum_ref),
-                      node->attr()));
+        return SetSumConstructorType(node, *sum_constructor_ref);
       }
       XLS_ASSIGN_OR_RETURN(ModuleMember member,
                            GetPublicModuleMember((*import_module)->module(),
@@ -392,12 +370,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
                            ResolveSumConstructor(node, import_data_));
       if (sum_constructor_ref.has_value()) {
-        table_.SetColonRefTarget(node, sum_constructor_ref->variant);
-        if (sum_constructor_ref->variant->is_unit()) {
-          return table_.SetTypeAnnotation(
-              node, CreateSumConstructorValueAnnotation(
-                        sum_constructor_ref->sum_ref));
-        }
+        return SetSumConstructorType(node, *sum_constructor_ref);
       }
       XLS_ASSIGN_OR_RETURN(std::optional<StructOrProcRef> struct_or_proc_ref,
                            GetStructOrProcRef(annotation, import_data_));
@@ -683,7 +656,10 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
         table_.SetTypeAnnotation(
             node, CreateSumConstructorValueAnnotation(
                       sum_constructor_ref->sum_ref)));
-    XLS_RETURN_IF_ERROR(node->constructor()->Accept(this));
+    ++allow_non_unit_sum_constructor_depth_;
+    absl::Status constructor_status = node->constructor()->Accept(this);
+    --allow_non_unit_sum_constructor_depth_;
+    XLS_RETURN_IF_ERROR(constructor_status);
 
     const SumVariant* variant = sum_constructor_ref->variant;
     if (variant->is_unit()) {
@@ -2148,6 +2124,52 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     return CreateSumAnnotation(module_, sum_ref);
   }
 
+  absl::Status SetSumConstructorType(const ColonRef* node,
+                                     const SumConstructorRef& ref) {
+    table_.SetColonRefTarget(node, ref.variant);
+    if (ref.variant->is_unit()) {
+      return table_.SetTypeAnnotation(
+          node, CreateSumConstructorValueAnnotation(ref.sum_ref));
+    }
+    if (!IsSupportedNonUnitSumConstructorContext(node)) {
+      return TypeInferenceErrorStatus(
+          node->span(), nullptr,
+          absl::Substitute(
+              "Non-unit constructor `$0` cannot be used as a value in "
+              "Phase 1; invoke it instead.",
+              node->ToString()),
+          file_table_);
+    }
+    return table_.SetTypeAnnotation(
+        node,
+        module_.Make<MemberTypeAnnotation>(
+            AttrSpan(node), CreateSumConstructorValueAnnotation(ref.sum_ref),
+            node->attr()));
+  }
+
+  bool IsSupportedNonUnitSumConstructorContext(const ColonRef* node) const {
+    if (allow_non_unit_sum_constructor_depth_ > 0) {
+      return true;
+    }
+    for (const AstNode* current = node->parent(); current != nullptr;
+         current = current->parent()) {
+      if (const auto* invocation = dynamic_cast<const Invocation*>(current);
+          invocation != nullptr) {
+        return invocation->callee() == node;
+      }
+      if (dynamic_cast<const ConstructorPattern*>(current) != nullptr ||
+          dynamic_cast<const StructInstanceBase*>(current) != nullptr) {
+        return true;
+      }
+      if (dynamic_cast<const TypeRef*>(current) != nullptr ||
+          dynamic_cast<const TypeRefTypeAnnotation*>(current) != nullptr) {
+        continue;
+      }
+      return false;
+    }
+    return false;
+  }
+
   absl::Status ValidateStructPatternNames(const ConstructorPattern& pattern,
                                           const SumVariant& variant,
                                           const ColonRef* constructor) {
@@ -2433,7 +2455,10 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     // named arguments instead of parallel ordering. The naming of arguments
     // creates additional pitfalls, like erroneously naming two different
     // arguments the same thing.
-    XLS_RETURN_IF_ERROR(node->struct_ref()->Accept(this));
+    ++allow_non_unit_sum_constructor_depth_;
+    absl::Status struct_ref_status = node->struct_ref()->Accept(this);
+    --allow_non_unit_sum_constructor_depth_;
+    XLS_RETURN_IF_ERROR(struct_ref_status);
     XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
                          GetSumStructConstructorRef(node->struct_ref()));
     if (sum_constructor_ref.has_value()) {
@@ -2534,6 +2559,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
   const FileTable& file_table_;
   ImportData& import_data_;
   TypecheckModuleFn typecheck_imported_module_;
+  int allow_non_unit_sum_constructor_depth_ = 0;
   bool handle_proc_functions_ = false;
 };
 
