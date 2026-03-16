@@ -1003,6 +1003,7 @@ cc_test(
         "//xls/common/status:matchers",
         "//xls/dslx:interp_value",
         "//xls/dslx:interp_value_utils",
+        "//xls/dslx:parse_and_typecheck",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:pos",
