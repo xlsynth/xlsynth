@@ -138,25 +138,6 @@ absl::StatusOr<const ColonRef*> GetConstructorRef(
   return std::get<ColonRef*>(type_definition);
 }
 
-absl::StatusOr<std::optional<SumRef>> GetSumRefForConstructor(
-    const ColonRef* constructor_ref, const ImportData& import_data) {
-  if (std::holds_alternative<TypeRefTypeAnnotation*>(
-          constructor_ref->subject())) {
-    return GetSumRef(
-        std::get<TypeRefTypeAnnotation*>(constructor_ref->subject()),
-        import_data);
-  }
-  return GetSumRefForSubject(constructor_ref, import_data);
-}
-
-absl::StatusOr<bool> IsSumConstructorRef(const ColonRef* constructor_ref,
-                                        const ImportData& import_data) {
-  XLS_ASSIGN_OR_RETURN(
-      std::optional<SumRef> sum_ref,
-      GetSumRefForConstructor(constructor_ref, import_data));
-  return sum_ref.has_value();
-}
-
 bool TypeContainsSum(const Type& type) {
   if (dynamic_cast<const SumType*>(&type) != nullptr) {
     return true;
@@ -2992,9 +2973,9 @@ absl::Status FunctionConverter::HandleSumConstructorInvocation(
 absl::Status FunctionConverter::HandleInvocation(const Invocation* node) {
   VLOG(5) << "FunctionConverter::HandleInvocation: " << node->ToString();
   if (auto* callee = dynamic_cast<ColonRef*>(node->callee())) {
-    XLS_ASSIGN_OR_RETURN(bool is_constructor,
-                         IsSumConstructorRef(callee, *import_data_));
-    if (is_constructor) {
+    XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
+                         ResolveSumConstructor(callee, *import_data_));
+    if (sum_constructor_ref.has_value()) {
       std::optional<const Type*> node_type = current_type_info_->GetItem(node);
       XLS_RET_CHECK(node_type.has_value());
       XLS_RET_CHECK((*node_type)->IsSum());
@@ -4235,8 +4216,9 @@ absl::Status FunctionConverter::HandleColonRef(const ColonRef* node) {
   // Implementation note: ColonRef "invocations" are handled in Invocation (by
   // resolving the mangled callee name, which should have been IR converted in
   // dependency order).
-  XLS_ASSIGN_OR_RETURN(bool is_constructor, IsSumConstructorRef(node, *import_data_));
-  if (is_constructor) {
+  XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
+                       ResolveSumConstructor(node, *import_data_));
+  if (sum_constructor_ref.has_value()) {
     std::optional<const Type*> type = current_type_info_->GetItem(node);
     XLS_RET_CHECK(type.has_value());
     XLS_RET_CHECK((*type)->IsSum());

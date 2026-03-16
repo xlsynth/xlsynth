@@ -59,6 +59,19 @@ absl::StatusOr<std::optional<SumRef>> GetSumRef(
 absl::StatusOr<std::optional<SumRef>> GetSumRefForSubject(
     const ColonRef* colon_ref, const ImportData& import_data);
 
+struct SumConstructorRef {
+  SumRef sum_ref;
+  const SumVariant* variant;
+};
+
+// Resolves a `ColonRef` that may refer to a sum constructor.
+absl::StatusOr<std::optional<SumConstructorRef>> ResolveSumConstructor(
+    const ColonRef* colon_ref, const ImportData& import_data);
+
+// Resolves a type annotation that may refer to a sum constructor.
+absl::StatusOr<std::optional<SumConstructorRef>> ResolveSumConstructor(
+    const TypeAnnotation* annotation, const ImportData& import_data);
+
 // Resolves the struct base definition for the struct or proc type referred to
 // by `annotation`.
 absl::StatusOr<std::optional<const StructDefBase*>> GetStructOrProcDef(

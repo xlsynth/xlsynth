@@ -190,6 +190,45 @@ absl::StatusOr<std::optional<SumRef>> GetSumRefForSubject(
   return unwrapper.GetSumRef();
 }
 
+absl::StatusOr<std::optional<SumConstructorRef>> ResolveSumConstructor(
+    const ColonRef* colon_ref, const ImportData& import_data) {
+  XLS_ASSIGN_OR_RETURN(std::optional<SumRef> sum_ref, [&]() {
+    if (std::holds_alternative<TypeRefTypeAnnotation*>(colon_ref->subject())) {
+      return GetSumRef(std::get<TypeRefTypeAnnotation*>(colon_ref->subject()),
+                       import_data);
+    }
+    return GetSumRefForSubject(colon_ref, import_data);
+  }());
+  if (!sum_ref.has_value()) {
+    return std::nullopt;
+  }
+  const SumVariant* variant = sum_ref->def->GetVariant(colon_ref->attr());
+  if (variant == nullptr) {
+    return TypeInferenceErrorStatus(
+        colon_ref->span(), nullptr,
+        absl::StrFormat("Sum '%s' has no constructor '%s'.",
+                        sum_ref->def->identifier(), colon_ref->attr()),
+        import_data.file_table());
+  }
+  return SumConstructorRef{.sum_ref = *sum_ref, .variant = variant};
+}
+
+absl::StatusOr<std::optional<SumConstructorRef>> ResolveSumConstructor(
+    const TypeAnnotation* annotation, const ImportData& import_data) {
+  if (!annotation->IsAnnotation<TypeRefTypeAnnotation>()) {
+    return std::nullopt;
+  }
+  const auto* type_ref_annotation =
+      annotation->AsAnnotation<TypeRefTypeAnnotation>();
+  if (!std::holds_alternative<ColonRef*>(
+          type_ref_annotation->type_ref()->type_definition())) {
+    return std::nullopt;
+  }
+  return ResolveSumConstructor(
+      std::get<ColonRef*>(type_ref_annotation->type_ref()->type_definition()),
+      import_data);
+}
+
 absl::StatusOr<std::optional<ModuleInfo*>> GetImportedModuleInfo(
     const ColonRef* colon_ref, const ImportData& import_data) {
   std::optional<ImportSubject> subject = colon_ref->ResolveImportSubject();

@@ -253,21 +253,20 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
         return table_.SetTypeAnnotation(node, type_ref_annotation);
       }
 
-      XLS_ASSIGN_OR_RETURN(std::optional<SumRef> constructor_sum_ref,
-                           GetSumRefForConstructor(node));
-      if (constructor_sum_ref.has_value()) {
-        XLS_ASSIGN_OR_RETURN(const SumVariant* variant,
-                             GetSumVariantForConstructor(node,
-                                                         *constructor_sum_ref->def));
-        table_.SetColonRefTarget(node, variant);
-        if (variant->is_unit()) {
+      XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
+                           ResolveSumConstructor(node, import_data_));
+      if (sum_constructor_ref.has_value()) {
+        table_.SetColonRefTarget(node, sum_constructor_ref->variant);
+        if (sum_constructor_ref->variant->is_unit()) {
           return table_.SetTypeAnnotation(
-              node, CreateSumConstructorValueAnnotation(*constructor_sum_ref));
+              node, CreateSumConstructorValueAnnotation(
+                        sum_constructor_ref->sum_ref));
         }
         return table_.SetTypeAnnotation(
             node, module_.Make<MemberTypeAnnotation>(
                       AttrSpan(node),
-                      CreateSumConstructorValueAnnotation(*constructor_sum_ref),
+                      CreateSumConstructorValueAnnotation(
+                          sum_constructor_ref->sum_ref),
                       node->attr()));
       }
 
@@ -361,21 +360,20 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
         }
         return SetCrossModuleTypeAnnotation(node, *ref);
       }
-      XLS_ASSIGN_OR_RETURN(std::optional<SumRef> constructor_sum_ref,
-                           GetSumRef(sub_col_ref, import_data_));
-      if (constructor_sum_ref.has_value()) {
-        XLS_ASSIGN_OR_RETURN(const SumVariant* variant,
-                             GetSumVariantForConstructor(node,
-                                                         *constructor_sum_ref->def));
-        table_.SetColonRefTarget(node, variant);
-        if (variant->is_unit()) {
+      XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
+                           ResolveSumConstructor(node, import_data_));
+      if (sum_constructor_ref.has_value()) {
+        table_.SetColonRefTarget(node, sum_constructor_ref->variant);
+        if (sum_constructor_ref->variant->is_unit()) {
           return table_.SetTypeAnnotation(
-              node, CreateSumConstructorValueAnnotation(*constructor_sum_ref));
+              node, CreateSumConstructorValueAnnotation(
+                        sum_constructor_ref->sum_ref));
         }
         return table_.SetTypeAnnotation(
             node, module_.Make<MemberTypeAnnotation>(
                       AttrSpan(node),
-                      CreateSumConstructorValueAnnotation(*constructor_sum_ref),
+                      CreateSumConstructorValueAnnotation(
+                          sum_constructor_ref->sum_ref),
                       node->attr()));
       }
       XLS_ASSIGN_OR_RETURN(ModuleMember member,
@@ -391,16 +389,14 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       const auto* annotation =
           std::get<TypeRefTypeAnnotation*>(node->subject());
       XLS_RETURN_IF_ERROR(annotation->Accept(this));
-      XLS_ASSIGN_OR_RETURN(std::optional<SumRef> constructor_sum_ref,
-                           GetSumRefForConstructor(node));
-      if (constructor_sum_ref.has_value()) {
-        XLS_ASSIGN_OR_RETURN(const SumVariant* variant,
-                             GetSumVariantForConstructor(node,
-                                                         *constructor_sum_ref->def));
-        table_.SetColonRefTarget(node, variant);
-        if (variant->is_unit()) {
+      XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
+                           ResolveSumConstructor(node, import_data_));
+      if (sum_constructor_ref.has_value()) {
+        table_.SetColonRefTarget(node, sum_constructor_ref->variant);
+        if (sum_constructor_ref->variant->is_unit()) {
           return table_.SetTypeAnnotation(
-              node, CreateSumConstructorValueAnnotation(*constructor_sum_ref));
+              node, CreateSumConstructorValueAnnotation(
+                        sum_constructor_ref->sum_ref));
         }
       }
       XLS_ASSIGN_OR_RETURN(std::optional<StructOrProcRef> struct_or_proc_ref,
@@ -673,9 +669,9 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
 
   absl::Status HandleConstructorPattern(const ConstructorPattern* node) override {
     VLOG(5) << "HandleConstructorPattern: " << node->ToString();
-    XLS_ASSIGN_OR_RETURN(std::optional<SumRef> sum_ref,
-                         GetSumRefForConstructor(node->constructor()));
-    if (!sum_ref.has_value()) {
+    XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
+                         ResolveSumConstructor(node->constructor(), import_data_));
+    if (!sum_constructor_ref.has_value()) {
       return TypeInferenceErrorStatus(
           node->span(), nullptr,
           absl::Substitute("Constructor pattern `$0` does not refer to a sum "
@@ -683,13 +679,13 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
                            node->constructor()->ToString()),
           file_table_);
     }
-    XLS_ASSIGN_OR_RETURN(const SumVariant* variant,
-                         GetSumVariantForConstructor(node->constructor(),
-                                                     *sum_ref->def));
     XLS_RETURN_IF_ERROR(
-        table_.SetTypeAnnotation(node, CreateSumConstructorValueAnnotation(*sum_ref)));
+        table_.SetTypeAnnotation(
+            node, CreateSumConstructorValueAnnotation(
+                      sum_constructor_ref->sum_ref)));
     XLS_RETURN_IF_ERROR(node->constructor()->Accept(this));
 
+    const SumVariant* variant = sum_constructor_ref->variant;
     if (variant->is_unit()) {
       if (!node->positional_patterns().empty() || !node->named_patterns().empty()) {
         return TypeInferenceErrorStatus(
@@ -2135,58 +2131,17 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     return std::nullopt;
   }
 
-  struct SumConstructorRef {
-    SumRef sum_ref;
-    const SumVariant* variant;
-  };
-
-  absl::StatusOr<const SumVariant*> GetSumVariantForConstructor(
-      const ColonRef* node, const SumDef& sum_def) {
-    const SumVariant* variant = sum_def.GetVariant(node->attr());
-    if (variant == nullptr) {
-      return TypeInferenceErrorStatus(
-          node->span(), nullptr,
-          absl::Substitute("Sum '$0' has no constructor '$1'.",
-                           sum_def.identifier(), node->attr()),
-          file_table_);
-    }
-    return variant;
-  }
-
-  absl::StatusOr<std::optional<SumRef>> GetSumRefForConstructor(
-      const ColonRef* node) {
-    if (std::holds_alternative<TypeRefTypeAnnotation*>(node->subject())) {
-      return GetSumRef(std::get<TypeRefTypeAnnotation*>(node->subject()),
-                       import_data_);
-    }
-    return GetSumRefForSubject(node, import_data_);
-  }
-
   absl::StatusOr<std::optional<SumConstructorRef>> GetSumStructConstructorRef(
       const TypeAnnotation* annotation) {
-    if (!annotation->IsAnnotation<TypeRefTypeAnnotation>()) {
+    XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
+                         ResolveSumConstructor(annotation, import_data_));
+    if (!sum_constructor_ref.has_value()) {
       return std::nullopt;
     }
-    const auto* type_ref_annotation =
-        annotation->AsAnnotation<TypeRefTypeAnnotation>();
-    if (!std::holds_alternative<ColonRef*>(
-            type_ref_annotation->type_ref()->type_definition())) {
+    if (!sum_constructor_ref->variant->is_struct()) {
       return std::nullopt;
     }
-    const auto* constructor_ref = std::get<ColonRef*>(
-        type_ref_annotation->type_ref()->type_definition());
-    XLS_ASSIGN_OR_RETURN(std::optional<SumRef> sum_ref,
-                         GetSumRefForConstructor(constructor_ref));
-    if (!sum_ref.has_value()) {
-      return std::nullopt;
-    }
-    XLS_ASSIGN_OR_RETURN(const SumVariant* variant,
-                         GetSumVariantForConstructor(constructor_ref,
-                                                     *sum_ref->def));
-    if (!variant->is_struct()) {
-      return std::nullopt;
-    }
-    return SumConstructorRef{.sum_ref = *sum_ref, .variant = variant};
+    return sum_constructor_ref;
   }
 
   TypeAnnotation* CreateSumConstructorValueAnnotation(const SumRef& sum_ref) {
