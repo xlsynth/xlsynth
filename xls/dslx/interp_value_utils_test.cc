@@ -241,7 +241,7 @@ TEST(InterpValueHelpersTest, CreateZeroSumValueUsesFirstVariantRecursively) {
                   .Eq(zero));
 }
 
-TEST(InterpValueHelpersTest, CreateZeroEmptySumValueUsesZeroTag) {
+TEST(InterpValueHelpersTest, CreateZeroEmptySumValueFails) {
   const Span kFakeSpan = Span::Fake();
 
   FileTable file_table;
@@ -254,10 +254,80 @@ TEST(InterpValueHelpersTest, CreateZeroEmptySumValueUsesZeroTag) {
   empty_name->set_definer(empty_def);
   SumType empty_type(*empty_def, std::vector<SumTypeVariant>{});
 
-  XLS_ASSERT_OK_AND_ASSIGN(InterpValue zero, CreateZeroValueFromType(empty_type));
+  EXPECT_THAT(CreateZeroValueFromType(empty_type),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("uninhabited sum type `Empty`")));
+}
+
+TEST(InterpValueHelpersTest, CreateInternalPlaceholderEmptySumValueUsesZeroTag) {
+  const Span kFakeSpan = Span::Fake();
+
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+
+  auto* empty_name = module.Make<NameDef>(kFakeSpan, "Empty", nullptr);
+  auto* empty_def = module.Make<SumDef>(
+      kFakeSpan, empty_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{}, /*is_public=*/false);
+  empty_name->set_definer(empty_def);
+  SumType empty_type(*empty_def, std::vector<SumTypeVariant>{});
+
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue zero,
+                           CreateInternalPlaceholderValueFromType(empty_type));
   EXPECT_TRUE(InterpValue::MakeTuple(
                   {InterpValue::MakeUBits(1, 0), InterpValue::MakeTuple({})})
                   .Eq(zero));
+}
+
+TEST(InterpValueHelpersTest,
+     CreateSumValueUsesInternalPlaceholderForInactiveEmptySumPayload) {
+  const Span kFakeSpan = Span::Fake();
+
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+
+  auto* empty_name = module.Make<NameDef>(kFakeSpan, "Empty", nullptr);
+  auto* empty_def = module.Make<SumDef>(
+      kFakeSpan, empty_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{}, /*is_public=*/false);
+  empty_name->set_definer(empty_def);
+  SumType empty_type(*empty_def, std::vector<SumTypeVariant>{});
+
+  auto* outer_name = module.Make<NameDef>(kFakeSpan, "Outer", nullptr);
+  auto* wrapped_name = module.Make<NameDef>(kFakeSpan, "Wrapped", nullptr);
+  auto* nothing_name = module.Make<NameDef>(kFakeSpan, "Nothing", nullptr);
+  auto* wrapped =
+      module.Make<SumVariant>(kFakeSpan, wrapped_name,
+                              SumVariant::PayloadKind::kTuple,
+                              std::vector<TypeAnnotation*>{},
+                              std::vector<StructMemberNode*>{});
+  auto* nothing =
+      module.Make<SumVariant>(kFakeSpan, nothing_name,
+                              SumVariant::PayloadKind::kUnit,
+                              std::vector<TypeAnnotation*>{},
+                              std::vector<StructMemberNode*>{});
+  auto* outer_def = module.Make<SumDef>(
+      kFakeSpan, outer_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{wrapped, nothing}, /*is_public=*/false);
+  outer_name->set_definer(outer_def);
+
+  std::vector<SumTypeVariant> outer_variants;
+  std::vector<std::unique_ptr<Type>> wrapped_members;
+  wrapped_members.push_back(empty_type.CloneToUnique());
+  outer_variants.emplace_back(*wrapped, std::move(wrapped_members));
+  outer_variants.emplace_back(*nothing, std::vector<std::unique_ptr<Type>>{});
+  SumType outer_type(*outer_def, std::move(outer_variants));
+
+  const std::vector<InterpValue> no_payload_values;
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
+                           CreateSumValue(outer_type, "Nothing",
+                                          no_payload_values));
+  EXPECT_TRUE(InterpValue::MakeTuple(
+                  {InterpValue::MakeUBits(1, 1),
+                   InterpValue::MakeTuple({InterpValue::MakeTuple(
+                       {InterpValue::MakeUBits(1, 0),
+                        InterpValue::MakeTuple({})})})})
+                  .Eq(value));
 }
 
 TEST(InterpValueHelpersTest, InterpValueAsStringWorks) {

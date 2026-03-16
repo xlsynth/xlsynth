@@ -2951,7 +2951,8 @@ absl::Status FunctionConverter::HandleSumConstructorInvocation(
     } else {
       XLS_ASSIGN_OR_RETURN(
           InterpValue zero,
-          CreateZeroValueFromType(*payload_slot_types.at(slot_index)));
+          CreateInternalPlaceholderValueFromType(
+              *payload_slot_types.at(slot_index)));
       XLS_ASSIGN_OR_RETURN(Value zero_value, InterpValueToValue(zero));
       payload_slots.push_back(function_builder_->Literal(zero_value));
     }
@@ -4327,7 +4328,8 @@ absl::Status FunctionConverter::HandleSumStructInstance(
     } else {
       XLS_ASSIGN_OR_RETURN(
           InterpValue zero,
-          CreateZeroValueFromType(*payload_slot_types.at(slot_index)));
+          CreateInternalPlaceholderValueFromType(
+              *payload_slot_types.at(slot_index)));
       XLS_ASSIGN_OR_RETURN(Value zero_value, InterpValueToValue(zero));
       payload_slots.push_back(function_builder_->Literal(zero_value));
     }

@@ -53,6 +53,15 @@ absl::StatusOr<InterpValue> CreateZeroValue(const InterpValue& value);
 // Creates a zero-valued InterpValue from the given Type.
 absl::StatusOr<InterpValue> CreateZeroValueFromType(const Type& type);
 
+// Creates an internal placeholder InterpValue from the given Type.
+//
+// This is for shape-correct dead values in the implementation, such as
+// inactive Phase 1 sum payload slots and unused default operands. Unlike
+// `CreateZeroValueFromType`, this may synthesize placeholders for uninhabited
+// sums.
+absl::StatusOr<InterpValue> CreateInternalPlaceholderValueFromType(
+    const Type& type);
+
 // Returns the flattened payload-slot types for a Phase 1 sum in declaration
 // order across all variants.
 std::vector<const Type*> GetSumPayloadSlotTypes(const SumType& type);
@@ -63,7 +72,8 @@ absl::StatusOr<SumTypeVariantLayout> GetSumTypeVariantLayout(
     const SumType& type, std::string_view variant_name);
 
 // Creates the canonical Phase 1 tuple-product encoding for a sum value:
-// `(tag, payload_slots)`, where inactive payload slots are zero-filled.
+// `(tag, payload_slots)`, where inactive payload slots use internal
+// placeholder values.
 absl::StatusOr<InterpValue> CreateSumValue(
     const SumType& type, std::string_view variant_name,
     absl::Span<const InterpValue> payload_values);
