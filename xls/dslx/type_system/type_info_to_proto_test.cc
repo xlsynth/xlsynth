@@ -129,6 +129,17 @@ fn f() -> E { E::A }
   DoRun(program);
 }
 
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest, MakeSumFunction) {
+  std::string program = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+fn f() -> Option { Option::None }
+)";
+  DoRun(program);
+}
+
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        ImportModuleAndTypeAliasAnEnum) {
   std::string imported = R"(
