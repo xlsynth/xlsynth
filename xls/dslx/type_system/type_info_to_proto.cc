@@ -723,15 +723,17 @@ absl::StatusOr<std::unique_ptr<Type>> FromProto(const TypeProto& ctp,
       }
       std::vector<SumTypeVariant> variants;
       variants.reserve(stp.variants_size());
-      for (const SumTypeVariantProto& variant_proto : stp.variants()) {
+      for (int64_t i = 0; i < sum_def->variants().size(); ++i) {
+        const SumVariant* variant = sum_def->variants()[i];
+        const SumTypeVariantProto& variant_proto = stp.variants(i);
         const SumVariantDefProto& variant_def_proto = variant_proto.variant();
-        if (!sum_def->HasVariant(variant_def_proto.identifier())) {
-          return absl::NotFoundError(absl::StrFormat(
-              "Could not find sum variant `%s::%s` while converting type proto",
-              sum_def->identifier(), variant_def_proto.identifier()));
+        if (variant_def_proto.identifier() != variant->identifier()) {
+          return absl::InvalidArgumentError(absl::StrFormat(
+              "Sum variant order mismatch for `%s` at index %d; proto "
+              "identifier=%s AST identifier=%s",
+              sum_def->identifier(), i, variant_def_proto.identifier(),
+              variant->identifier()));
         }
-        const SumVariant* variant =
-            sum_def->GetVariant(variant_def_proto.identifier());
         XLS_RETURN_IF_ERROR(ValidateSumVariantProto(*variant, variant_proto));
         std::vector<std::unique_ptr<Type>> payload_members;
         payload_members.reserve(variant_proto.payload_members_size());
