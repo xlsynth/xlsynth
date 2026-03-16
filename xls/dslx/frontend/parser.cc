@@ -4109,7 +4109,9 @@ absl::StatusOr<SumDef*> Parser::ParseSumDef(const Pos& start_pos, bool is_public
           std::vector<TypeAnnotation*> tuple_members,
           ParseCommaSeq<TypeAnnotation*>(parse_payload, TokenKind::kCParen));
       return module_->Make<SumVariant>(Span(variant_start, GetPos()),
-                                       variant_name, std::move(tuple_members),
+                                       variant_name,
+                                       SumVariant::PayloadKind::kTuple,
+                                       std::move(tuple_members),
                                        std::vector<StructMemberNode*>{});
     }
 
@@ -4121,11 +4123,13 @@ absl::StatusOr<SumDef*> Parser::ParseSumDef(const Pos& start_pos, bool is_public
                                            TokenKind::kCBrace));
       return module_->Make<SumVariant>(Span(variant_start, GetPos()),
                                        variant_name,
+                                       SumVariant::PayloadKind::kStruct,
                                        std::vector<TypeAnnotation*>{},
                                        std::move(struct_members));
     }
 
     return module_->Make<SumVariant>(Span(variant_start, GetPos()), variant_name,
+                                     SumVariant::PayloadKind::kUnit,
                                      std::vector<TypeAnnotation*>{},
                                      std::vector<StructMemberNode*>{});
   };
@@ -4511,6 +4515,7 @@ absl::StatusOr<ConstructorPattern*> Parser::ParseTupleConstructorPattern(
 
   return module_->Make<ConstructorPattern>(
       Span(constructor->span().start(), GetPos()), constructor,
+      ConstructorPattern::PayloadKind::kTuple,
       std::move(positional_patterns),
       std::vector<ConstructorPattern::NamedPattern>{});
 }
@@ -4572,6 +4577,7 @@ absl::StatusOr<ConstructorPattern*> Parser::ParseStructConstructorPattern(
 
   return module_->Make<ConstructorPattern>(
       Span(constructor->span().start(), GetPos()), constructor,
+      ConstructorPattern::PayloadKind::kStruct,
       std::vector<NameDefTree*>{}, std::move(named_patterns));
 }
 

@@ -2945,17 +2945,22 @@ DocRef Formatter::Format(const SumDef& n) {
     } else if (variant->is_struct()) {
       variant_pieces.push_back(arena_.space());
       variant_pieces.push_back(arena_.ocurl());
-      variant_pieces.push_back(arena_.break1());
-      std::vector<DocRef> field_docs;
-      field_docs.reserve(variant->struct_members().size());
-      for (const StructMemberNode* member : variant->struct_members()) {
-        field_docs.push_back(ConcatNGroup(
-            arena_, {arena_.MakeText(member->name()), arena_.colon(),
-                     arena_.space(), Fmt(*member->type(), comments_, arena_)}));
+      if (!variant->struct_members().empty()) {
+        variant_pieces.push_back(arena_.break1());
+        std::vector<DocRef> field_docs;
+        field_docs.reserve(variant->struct_members().size());
+        for (const StructMemberNode* member : variant->struct_members()) {
+          field_docs.push_back(ConcatNGroup(
+              arena_, {arena_.MakeText(member->name()), arena_.colon(),
+                       arena_.space(),
+                       Fmt(*member->type(), comments_, arena_)}));
+        }
+        variant_pieces.push_back(arena_.MakeNest(JoinDocs(
+            arena_, field_docs, arena_.comma(), arena_.break1())));
+        variant_pieces.push_back(arena_.break1());
+      } else {
+        variant_pieces.push_back(arena_.space());
       }
-      variant_pieces.push_back(arena_.MakeNest(JoinDocs(
-          arena_, field_docs, arena_.comma(), arena_.break1())));
-      variant_pieces.push_back(arena_.break1());
       variant_pieces.push_back(arena_.ccurl());
     }
     variant_pieces.push_back(arena_.comma());

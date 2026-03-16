@@ -315,6 +315,7 @@ class AstCloner : public AstNodeVisitor {
 
     old_to_new_[n] = module(n)->Make<ConstructorPattern>(
         n->span(), absl::down_cast<ColonRef*>(old_to_new_.at(n->constructor())),
+        n->payload_kind(),
         std::move(new_positional_patterns), std::move(new_named_patterns));
     return absl::OkStatus();
   }
@@ -369,6 +370,7 @@ class AstCloner : public AstNodeVisitor {
 
     old_to_new_[n] = module(n)->Make<SumVariant>(
         n->span(), absl::down_cast<NameDef*>(old_to_new_.at(n->name_def())),
+        n->payload_kind(),
         std::move(new_tuple_members), std::move(new_struct_members));
     return absl::OkStatus();
   }

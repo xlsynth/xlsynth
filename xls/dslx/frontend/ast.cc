@@ -1519,13 +1519,25 @@ std::string EnumDef::ToString() const {
 // -- class SumVariant
 
 SumVariant::SumVariant(Module* owner, Span span, NameDef* name_def,
+                       PayloadKind payload_kind,
                        std::vector<TypeAnnotation*> tuple_members,
                        std::vector<StructMemberNode*> struct_members)
     : AstNode(owner),
       span_(std::move(span)),
       name_def_(name_def),
+      payload_kind_(payload_kind),
       tuple_members_(std::move(tuple_members)),
-      struct_members_(std::move(struct_members)) {}
+      struct_members_(std::move(struct_members)) {
+  if (payload_kind_ == PayloadKind::kUnit) {
+    CHECK(tuple_members_.empty());
+    CHECK(struct_members_.empty());
+  } else if (payload_kind_ == PayloadKind::kTuple) {
+    CHECK(struct_members_.empty());
+  } else {
+    CHECK_EQ(payload_kind_, PayloadKind::kStruct);
+    CHECK(tuple_members_.empty());
+  }
+}
 
 SumVariant::~SumVariant() = default;
 
@@ -1558,6 +1570,9 @@ std::string SumVariant::ToString() const {
                         absl::StrAppend(out, member->ToString());
                       }),
         ")");
+  }
+  if (struct_members_.empty()) {
+    return absl::StrCat(identifier(), " { }");
   }
   return absl::StrCat(
       identifier(), " { ",
@@ -2822,13 +2837,22 @@ std::string XlsTuple::ToStringInternal() const {
 
 ConstructorPattern::ConstructorPattern(
     Module* owner, Span span, ColonRef* constructor,
+    PayloadKind payload_kind,
     std::vector<NameDefTree*> positional_patterns,
     std::vector<NamedPattern> named_patterns)
     : AstNode(owner),
       span_(std::move(span)),
       constructor_(constructor),
+      payload_kind_(payload_kind),
       positional_patterns_(std::move(positional_patterns)),
-      named_patterns_(std::move(named_patterns)) {}
+      named_patterns_(std::move(named_patterns)) {
+  if (payload_kind_ == PayloadKind::kTuple) {
+    CHECK(named_patterns_.empty());
+  } else {
+    CHECK_EQ(payload_kind_, PayloadKind::kStruct);
+    CHECK(positional_patterns_.empty());
+  }
+}
 
 ConstructorPattern::~ConstructorPattern() = default;
 
@@ -2852,6 +2876,9 @@ std::string ConstructorPattern::ToString() const {
                         absl::StrAppend(out, pattern->ToString());
                       }),
         ")");
+  }
+  if (named_patterns_.empty()) {
+    return absl::StrCat(constructor_->ToString(), " { }");
   }
   return absl::StrCat(
       constructor_->ToString(), " { ",

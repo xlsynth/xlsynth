@@ -704,6 +704,11 @@ std::string SumType::ToStringInternal(FullyQualify fully_qualify,
               }),
           ")");
     } else {
+      if (variant.size() == 0) {
+        absl::StrAppend(&variants_string, variant.variant().identifier(),
+                        " { }");
+        continue;
+      }
       absl::StrAppend(&variants_string, variant.variant().identifier(), " { ");
       for (int64_t member_i = 0; member_i < variant.size(); ++member_i) {
         if (member_i != 0) {

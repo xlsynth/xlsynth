@@ -141,6 +141,48 @@ fn f() -> Option { Option::None }
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       SemanticSumEmptyPayloadKinds) {
+  std::string program = R"(
+enum E {
+  None,
+  EmptyTuple(),
+  EmptyStruct { },
+  Some(u32),
+  Point { x: u32 },
+}
+
+fn f(x: bool) -> E {
+  if x { E::EmptyTuple() } else { E::EmptyStruct { } }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "fake.x", "fake", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto tip, TypeInfoToProto(*tm.type_info));
+
+  const SumTypeProto* sum_type = nullptr;
+  for (const AstNodeTypeInfoProto& node : tip.nodes()) {
+    if (!node.has_type() || !node.type().has_sum_type()) {
+      continue;
+    }
+    const SumTypeProto& candidate = node.type().sum_type();
+    if (candidate.has_sum_def() && candidate.sum_def().identifier() == "E") {
+      sum_type = &candidate;
+      break;
+    }
+  }
+  ASSERT_NE(sum_type, nullptr);
+  ASSERT_TRUE(sum_type->has_sum_def());
+  ASSERT_EQ(sum_type->sum_def().variants_size(), 5);
+  EXPECT_EQ(sum_type->sum_def().variants(1).identifier(), "EmptyTuple");
+  EXPECT_EQ(sum_type->sum_def().variants(1).kind(), SUM_VARIANT_KIND_TUPLE);
+  EXPECT_EQ(sum_type->sum_def().variants(2).identifier(), "EmptyStruct");
+  EXPECT_EQ(sum_type->sum_def().variants(2).kind(), SUM_VARIANT_KIND_STRUCT);
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        ImportModuleAndTypeAliasAnEnum) {
   std::string imported = R"(
 pub enum Foo : u32 {

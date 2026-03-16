@@ -2424,6 +2424,63 @@ fn f(x: Option<u32>) -> Option<u32> {
   EXPECT_TRUE(std::holds_alternative<SumDef*>(*maybe_member.value()));
 }
 
+TEST_F(ParserTest, PreserveEmptySemanticSumPayloadKinds) {
+  std::unique_ptr<Module> module = RoundTrip(R"(enum Option {
+    None,
+    EmptyTuple(),
+    EmptyStruct { },
+    Some(u32),
+    Point { x: u32 },
+}
+fn f(x: Option) -> Option {
+    match x {
+        Option::EmptyTuple() => Option::EmptyTuple(),
+        Option::EmptyStruct { } => Option::EmptyStruct { },
+        Option::Some(v) => Option::Some(v),
+        Option::Point { x: px } => Option::Point { x: px },
+        Option::None => Option::None,
+    }
+})");
+  std::optional<ModuleMember*> maybe_member =
+      module->FindMemberWithName("Option");
+  ASSERT_TRUE(maybe_member.has_value());
+  ASSERT_TRUE(std::holds_alternative<SumDef*>(*maybe_member.value()));
+  auto* sum_def = std::get<SumDef*>(*maybe_member.value());
+
+  EXPECT_TRUE(sum_def->GetVariant("None")->is_unit());
+  EXPECT_TRUE(sum_def->GetVariant("EmptyTuple")->is_tuple());
+  EXPECT_TRUE(sum_def->GetVariant("EmptyTuple")->tuple_members().empty());
+  EXPECT_TRUE(sum_def->GetVariant("EmptyStruct")->is_struct());
+  EXPECT_TRUE(sum_def->GetVariant("EmptyStruct")->struct_members().empty());
+
+  std::optional<Function*> maybe_f = module->GetFunction("f");
+  ASSERT_TRUE(maybe_f.has_value());
+  StatementBlock* body = maybe_f.value()->body();
+  ASSERT_EQ(body->statements().size(), 1);
+  auto* match = dynamic_cast<Match*>(
+      std::get<Expr*>(body->statements().at(0)->wrapped()));
+  ASSERT_NE(match, nullptr);
+
+  ASSERT_EQ(match->arms().size(), 5);
+
+  const NameDefTree* tuple_tree = match->arms().at(0)->patterns().at(0);
+  ASSERT_TRUE(tuple_tree->is_leaf());
+  ASSERT_TRUE(
+      std::holds_alternative<ConstructorPattern*>(tuple_tree->leaf()));
+  const auto* tuple_pattern = std::get<ConstructorPattern*>(tuple_tree->leaf());
+  EXPECT_TRUE(tuple_pattern->is_tuple());
+  EXPECT_TRUE(tuple_pattern->positional_patterns().empty());
+
+  const NameDefTree* struct_tree = match->arms().at(1)->patterns().at(0);
+  ASSERT_TRUE(struct_tree->is_leaf());
+  ASSERT_TRUE(
+      std::holds_alternative<ConstructorPattern*>(struct_tree->leaf()));
+  const auto* struct_pattern =
+      std::get<ConstructorPattern*>(struct_tree->leaf());
+  EXPECT_TRUE(struct_pattern->is_struct());
+  EXPECT_TRUE(struct_pattern->named_patterns().empty());
+}
+
 TEST_F(ParserTest, RejectsConstructorLevelParametricsOnSemanticSums) {
   constexpr std::string_view kExplicitOnConstructor = R"(#![feature(generics)]
 

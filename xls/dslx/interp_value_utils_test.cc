@@ -186,10 +186,12 @@ TEST(InterpValueHelpersTest, CreateZeroSumValueUsesFirstVariantRecursively) {
       module.GetOrCreateBuiltinNameDef(dslx::BuiltinType::kU32));
   auto* inner_none =
       module.Make<SumVariant>(kFakeSpan, inner_none_name,
+                              SumVariant::PayloadKind::kUnit,
                               std::vector<TypeAnnotation*>{},
                               std::vector<StructMemberNode*>{});
   auto* inner_some =
       module.Make<SumVariant>(kFakeSpan, inner_some_name,
+                              SumVariant::PayloadKind::kTuple,
                               std::vector<TypeAnnotation*>{u32_type},
                               std::vector<StructMemberNode*>{});
   auto* inner_def = module.Make<SumDef>(
@@ -209,10 +211,12 @@ TEST(InterpValueHelpersTest, CreateZeroSumValueUsesFirstVariantRecursively) {
   auto* outer_none_name = module.Make<NameDef>(kFakeSpan, "Nothing", nullptr);
   auto* outer_wrap =
       module.Make<SumVariant>(kFakeSpan, outer_wrap_name,
+                              SumVariant::PayloadKind::kTuple,
                               std::vector<TypeAnnotation*>{u32_type},
                               std::vector<StructMemberNode*>{});
   auto* outer_none =
       module.Make<SumVariant>(kFakeSpan, outer_none_name,
+                              SumVariant::PayloadKind::kUnit,
                               std::vector<TypeAnnotation*>{},
                               std::vector<StructMemberNode*>{});
   auto* outer_def = module.Make<SumDef>(

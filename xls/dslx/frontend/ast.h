@@ -2646,9 +2646,15 @@ class MatchArm : public AstNode {
 // either positional (tuple-like) or named (struct-like).
 class ConstructorPattern : public AstNode {
  public:
+  enum class PayloadKind : uint8_t {
+    kTuple,
+    kStruct,
+  };
+
   using NamedPattern = std::pair<std::string, NameDefTree*>;
 
   ConstructorPattern(Module* owner, Span span, ColonRef* constructor,
+                     PayloadKind payload_kind,
                      std::vector<NameDefTree*> positional_patterns,
                      std::vector<NamedPattern> named_patterns);
 
@@ -2675,14 +2681,16 @@ class ConstructorPattern : public AstNode {
   const std::vector<NamedPattern>& named_patterns() const {
     return named_patterns_;
   }
-  bool is_tuple() const { return !positional_patterns_.empty(); }
-  bool is_struct() const { return !named_patterns_.empty(); }
+  PayloadKind payload_kind() const { return payload_kind_; }
+  bool is_tuple() const { return payload_kind_ == PayloadKind::kTuple; }
+  bool is_struct() const { return payload_kind_ == PayloadKind::kStruct; }
   const Span& span() const { return span_; }
   std::optional<Span> GetSpan() const override { return span_; }
 
  private:
   Span span_;
   ColonRef* constructor_;
+  PayloadKind payload_kind_;
   std::vector<NameDefTree*> positional_patterns_;
   std::vector<NamedPattern> named_patterns_;
 };
@@ -3226,7 +3234,14 @@ class EnumDef : public AstNode {
 // Represents a single constructor inside a semantic sum declaration.
 class SumVariant : public AstNode {
  public:
+  enum class PayloadKind : uint8_t {
+    kUnit,
+    kTuple,
+    kStruct,
+  };
+
   SumVariant(Module* owner, Span span, NameDef* name_def,
+             PayloadKind payload_kind,
              std::vector<TypeAnnotation*> tuple_members,
              std::vector<StructMemberNode*> struct_members);
 
@@ -3249,11 +3264,10 @@ class SumVariant : public AstNode {
   const Span& span() const { return span_; }
   std::optional<Span> GetSpan() const override { return span_; }
 
-  bool is_unit() const {
-    return tuple_members_.empty() && struct_members_.empty();
-  }
-  bool is_tuple() const { return !tuple_members_.empty(); }
-  bool is_struct() const { return !struct_members_.empty(); }
+  PayloadKind payload_kind() const { return payload_kind_; }
+  bool is_unit() const { return payload_kind_ == PayloadKind::kUnit; }
+  bool is_tuple() const { return payload_kind_ == PayloadKind::kTuple; }
+  bool is_struct() const { return payload_kind_ == PayloadKind::kStruct; }
 
   const std::vector<TypeAnnotation*>& tuple_members() const {
     return tuple_members_;
@@ -3265,6 +3279,7 @@ class SumVariant : public AstNode {
  private:
   Span span_;
   NameDef* name_def_;
+  PayloadKind payload_kind_;
   std::vector<TypeAnnotation*> tuple_members_;
   std::vector<StructMemberNode*> struct_members_;
 };
