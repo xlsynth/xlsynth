@@ -38,7 +38,7 @@ absl::StatusOr<const TypeAnnotation*> GetParametricFreeType(
     bool clone_if_no_parametrics) {
   if (!clone_if_no_parametrics) {
     XLS_ASSIGN_OR_RETURN(
-        std::vector<std::pair<const NameRef*, const NameDef*>> refs,
+        (std::vector<std::pair<const NameRef*, const NameDef*>> refs),
         CollectReferencedUnder(type));
     bool any_parametrics = false;
     for (const auto& [name_ref, name_def] : refs) {
@@ -99,7 +99,7 @@ absl::StatusOr<const TypeAnnotation*> GetParametricFreeType(
       });
 
   XLS_ASSIGN_OR_RETURN(
-      absl::flat_hash_map<const AstNode*, AstNode*> clones,
+      (absl::flat_hash_map<const AstNode*, AstNode*> clones),
       CloneAstAndGetAllPairs(type, type->owner(), std::move(replacer)));
   AstNode* clone = clones.at(type);
   std::unique_ptr<PopulateTableVisitor> visitor =
