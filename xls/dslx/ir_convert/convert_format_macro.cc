@@ -123,8 +123,7 @@ absl::Status FlattenSum(const ValueFormatDescriptor& sfd, const BValue& v,
   // rendering instead: sum name, numeric tag, and the flattened payload slots.
   BValue tag = ctx.fn_builder.TupleIndex(v, 0);
   BValue payload = ctx.fn_builder.TupleIndex(v, 1);
-  ValueFormatDescriptor payload_descriptor =
-      ValueFormatDescriptor::MakeTuple(sfd.sum_payload_formats());
+  ValueFormatDescriptor payload_descriptor = sfd.sum_payload_tuple_descriptor();
 
   ctx.fmt_steps.push_back(absl::StrCat(sfd.sum_name(), "(tag="));
   ctx.fmt_steps.push_back(sfd.sum_tag_format());

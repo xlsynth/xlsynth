@@ -116,6 +116,17 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
   return vfd;
 }
 
+ValueFormatSumVariantView ValueFormatDescriptor::sum_variant(size_t i) const {
+  CHECK(IsSum());
+  const size_t payload_slot_start = sum_variant_payload_starts_.at(i);
+  const size_t payload_slot_count = sum_variant_payload_sizes_.at(i);
+  return ValueFormatSumVariantView(
+      sum_variant_names_.at(i), sum_variant_kinds_.at(i), payload_slot_start,
+      sum_variant_field_names_.at(i),
+      absl::MakeConstSpan(children_).subspan(payload_slot_start,
+                                             payload_slot_count));
+}
+
 absl::Status ValueFormatDescriptor::Accept(ValueFormatVisitor& v) const {
   switch (kind()) {
     case ValueFormatDescriptorKind::kLeafValue:

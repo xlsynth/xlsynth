@@ -388,23 +388,22 @@ absl::StatusOr<std::string> InterpValue::ToSumString(
                         static_cast<int64_t>(fmt_desc.sum_variant_count())));
   }
   const std::vector<InterpValue>& payload_values = payload_slots.GetValuesOrDie();
-  if (payload_values.size() != fmt_desc.sum_payload_count()) {
+  if (payload_values.size() != fmt_desc.sum_payload_slot_count()) {
     return absl::InvalidArgumentError(
         absl::StrFormat("Sum `%s` expected %d payload slots; got %d",
                         fmt_desc.sum_name(),
-                        static_cast<int64_t>(fmt_desc.sum_payload_count()),
+                        static_cast<int64_t>(fmt_desc.sum_payload_slot_count()),
                         static_cast<int64_t>(payload_values.size())));
   }
 
-  const std::string prefix = absl::StrFormat(
-      "%s::%s", fmt_desc.sum_name(), fmt_desc.sum_variant_name(variant_index));
-  const size_t payload_start = fmt_desc.sum_variant_payload_start(variant_index);
-  const size_t payload_size = fmt_desc.sum_variant_payload_size(variant_index);
+  const ValueFormatSumVariantView variant = fmt_desc.sum_variant(variant_index);
   const absl::Span<const ValueFormatDescriptor> payload_formats =
-      fmt_desc.sum_variant_payload_formats(variant_index);
-  XLS_RET_CHECK_EQ(payload_size, payload_formats.size());
+      variant.payload_formats();
+  const size_t payload_size = variant.payload_slot_count();
+  const std::string prefix =
+      absl::StrFormat("%s::%s", fmt_desc.sum_name(), variant.name());
 
-  switch (fmt_desc.sum_variant_kind(variant_index)) {
+  switch (variant.kind()) {
     case ValueFormatSumVariantKind::kUnit:
       return prefix;
     case ValueFormatSumVariantKind::kTuple: {
@@ -413,7 +412,7 @@ absl::StatusOr<std::string> InterpValue::ToSumString(
       for (size_t i = 0; i < payload_size; ++i) {
         XLS_ASSIGN_OR_RETURN(
             std::string payload_piece,
-            payload_values[payload_start + i].ToFormattedString(
+            payload_values[variant.payload_slot_start() + i].ToFormattedString(
                 payload_formats[i], include_type_prefix, indentation + 1));
         payload_pieces.push_back(std::move(payload_piece));
       }
@@ -437,8 +436,7 @@ absl::StatusOr<std::string> InterpValue::ToSumString(
       return absl::StrJoin(pieces, "\n");
     }
     case ValueFormatSumVariantKind::kStruct: {
-      const absl::Span<const std::string> field_names =
-          fmt_desc.sum_variant_field_names(variant_index);
+      const absl::Span<const std::string> field_names = variant.field_names();
       XLS_RET_CHECK_EQ(payload_size, field_names.size());
       if (payload_size == 0) {
         return absl::StrCat(prefix, " { }");
@@ -447,7 +445,7 @@ absl::StatusOr<std::string> InterpValue::ToSumString(
       for (size_t i = 0; i < payload_size; ++i) {
         XLS_ASSIGN_OR_RETURN(
             std::string payload_piece,
-            payload_values[payload_start + i].ToFormattedString(
+            payload_values[variant.payload_slot_start() + i].ToFormattedString(
                 payload_formats[i], include_type_prefix, indentation + 1));
         pieces.push_back(IndentString(
             absl::StrFormat("%s: %s", field_names[i], payload_piece),

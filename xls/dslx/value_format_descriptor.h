@@ -33,6 +33,7 @@ namespace xls::dslx {
 class ValueFormatDescriptor;
 
 struct ValueFormatSumVariantDescriptor;
+class ValueFormatSumVariantView;
 
 enum class ValueFormatSumVariantKind : int8_t {
   kUnit,
@@ -158,43 +159,18 @@ class ValueFormatDescriptor {
     CHECK(IsSum());
     return sum_variant_names_.size();
   }
-  std::string_view sum_variant_name(size_t i) const {
-    CHECK(IsSum());
-    return sum_variant_names_.at(i);
-  }
-  ValueFormatSumVariantKind sum_variant_kind(size_t i) const {
-    CHECK(IsSum());
-    return sum_variant_kinds_.at(i);
-  }
-  size_t sum_variant_payload_start(size_t i) const {
-    CHECK(IsSum());
-    return sum_variant_payload_starts_.at(i);
-  }
-  size_t sum_variant_payload_size(size_t i) const {
-    CHECK(IsSum());
-    return sum_variant_payload_sizes_.at(i);
-  }
-  absl::Span<const std::string> sum_variant_field_names(size_t i) const {
-    CHECK(IsSum());
-    return sum_variant_field_names_.at(i);
-  }
-  absl::Span<const ValueFormatDescriptor> sum_variant_payload_formats(
-      size_t i) const {
-    CHECK(IsSum());
-    return absl::MakeConstSpan(children_).subspan(sum_variant_payload_start(i),
-                                                  sum_variant_payload_size(i));
-  }
-  absl::Span<const ValueFormatDescriptor> sum_payload_formats() const {
-    CHECK(IsSum());
-    return children_;
-  }
+  ValueFormatSumVariantView sum_variant(size_t i) const;
   FormatPreference sum_tag_format() const {
     CHECK(IsSum());
     return sum_tag_format_;
   }
-  size_t sum_payload_count() const {
+  size_t sum_payload_slot_count() const {
     CHECK(IsSum());
     return children_.size();
+  }
+  ValueFormatDescriptor sum_payload_tuple_descriptor() const {
+    CHECK(IsSum());
+    return MakeTuple(children_);
   }
 
   // Methods for aggregate kinds.
@@ -246,6 +222,42 @@ struct ValueFormatSumVariantDescriptor {
   ValueFormatSumVariantKind kind;
   std::vector<std::string> field_names;
   std::vector<ValueFormatDescriptor> payload_formats;
+};
+
+// Read-only view of one constructor inside a sum formatting descriptor.
+//
+// The payload formats and slot start describe the canonical flattened
+// `(tag, payload_slots...)` storage layout while still letting callers reason
+// about one variant at a time.
+class ValueFormatSumVariantView {
+ public:
+  std::string_view name() const { return name_; }
+  ValueFormatSumVariantKind kind() const { return kind_; }
+  size_t payload_slot_start() const { return payload_slot_start_; }
+  size_t payload_slot_count() const { return payload_formats_.size(); }
+  absl::Span<const std::string> field_names() const { return field_names_; }
+  absl::Span<const ValueFormatDescriptor> payload_formats() const {
+    return payload_formats_;
+  }
+
+ private:
+  friend class ValueFormatDescriptor;
+
+  ValueFormatSumVariantView(
+      std::string_view name, ValueFormatSumVariantKind kind,
+      size_t payload_slot_start, absl::Span<const std::string> field_names,
+      absl::Span<const ValueFormatDescriptor> payload_formats)
+      : name_(name),
+        kind_(kind),
+        payload_slot_start_(payload_slot_start),
+        field_names_(field_names),
+        payload_formats_(payload_formats) {}
+
+  std::string_view name_;
+  ValueFormatSumVariantKind kind_;
+  size_t payload_slot_start_;
+  absl::Span<const std::string> field_names_;
+  absl::Span<const ValueFormatDescriptor> payload_formats_;
 };
 
 }  // namespace xls::dslx

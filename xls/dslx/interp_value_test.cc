@@ -422,6 +422,62 @@ TEST(InterpValueTest, FormatSemanticSum) {
 })");
 }
 
+TEST(InterpValueTest, SemanticSumVariantViewMatchesFlattenedLayout) {
+  ValueFormatDescriptor leaf =
+      ValueFormatDescriptor::MakeLeafValue(FormatPreference::kDefault);
+  std::vector<ValueFormatSumVariantDescriptor> variants = {
+      ValueFormatSumVariantDescriptor{
+          .name = "None",
+          .kind = ValueFormatSumVariantKind::kUnit,
+      },
+      ValueFormatSumVariantDescriptor{
+          .name = "Some",
+          .kind = ValueFormatSumVariantKind::kTuple,
+          .payload_formats = {leaf},
+      },
+      ValueFormatSumVariantDescriptor{
+          .name = "Pair",
+          .kind = ValueFormatSumVariantKind::kStruct,
+          .field_names = {"lhs", "rhs"},
+          .payload_formats = {leaf, leaf},
+      },
+  };
+  ValueFormatDescriptor fmt_desc =
+      ValueFormatDescriptor::MakeSum("Option", variants,
+                                     FormatPreference::kDefault);
+
+  const ValueFormatSumVariantView none = fmt_desc.sum_variant(0);
+  const ValueFormatSumVariantView some = fmt_desc.sum_variant(1);
+  const ValueFormatSumVariantView pair = fmt_desc.sum_variant(2);
+
+  EXPECT_EQ(fmt_desc.sum_payload_slot_count(), 3);
+  EXPECT_EQ(fmt_desc.sum_payload_tuple_descriptor().tuple_elements().size(), 3);
+
+  EXPECT_EQ(none.name(), "None");
+  EXPECT_EQ(none.kind(), ValueFormatSumVariantKind::kUnit);
+  EXPECT_EQ(none.payload_slot_start(), 0);
+  EXPECT_EQ(none.payload_slot_count(), 0);
+  EXPECT_THAT(none.field_names(), ::testing::IsEmpty());
+  EXPECT_THAT(none.payload_formats(), ::testing::IsEmpty());
+
+  EXPECT_EQ(some.name(), "Some");
+  EXPECT_EQ(some.kind(), ValueFormatSumVariantKind::kTuple);
+  EXPECT_EQ(some.payload_slot_start(), 0);
+  EXPECT_EQ(some.payload_slot_count(), 1);
+  EXPECT_THAT(some.field_names(), ::testing::IsEmpty());
+  EXPECT_EQ(some.payload_formats().size(), 1);
+  EXPECT_TRUE(some.payload_formats().front().IsLeafValue());
+
+  EXPECT_EQ(pair.name(), "Pair");
+  EXPECT_EQ(pair.kind(), ValueFormatSumVariantKind::kStruct);
+  EXPECT_EQ(pair.payload_slot_start(), 1);
+  EXPECT_EQ(pair.payload_slot_count(), 2);
+  EXPECT_THAT(pair.field_names(), ::testing::ElementsAre("lhs", "rhs"));
+  EXPECT_EQ(pair.payload_formats().size(), 2);
+  EXPECT_TRUE(pair.payload_formats().front().IsLeafValue());
+  EXPECT_TRUE(pair.payload_formats().back().IsLeafValue());
+}
+
 TEST(InterpValueTest, FormatSemanticSumEmptyStruct) {
   ValueFormatDescriptor fmt_desc = ValueFormatDescriptor::MakeSum(
       "Option",
