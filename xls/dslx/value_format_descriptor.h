@@ -38,6 +38,11 @@ enum class ValueFormatSumVariantKind : int8_t {
   kStruct,
 };
 
+// Describes one constructor inside a sum formatting descriptor.
+//
+// The containing `ValueFormatDescriptor` stores variants in canonical sum
+// order and flattens payload formats by concatenating each variant's payload
+// members in that same order.
 struct ValueFormatSumVariantDescriptor {
   std::string name;
   ValueFormatSumVariantKind kind;
@@ -74,8 +79,12 @@ enum class ValueFormatDescriptorKind : int8_t {
 // inference process so they can be used after IR conversion or in bytecode
 // interpretation, where the types are fully concrete and we only need limited
 // metadata in order to print them out properly. This data structure can be one
-// of several kinds (enum, tuple, array, struct, or leaf) corresponding to the
-// respective DSLX type.
+// of several kinds (enum, tuple, array, struct, sum, or leaf) corresponding to
+// the respective DSLX type.
+//
+// Sum descriptors preserve canonical variant order and enough constructor
+// metadata to recover unit, tuple, and struct spellings when formatting the
+// flattened `(tag, payload_slots...)` runtime representation.
 class ValueFormatDescriptor {
  public:
   ValueFormatDescriptor() : kind_(ValueFormatDescriptorKind::kLeafValue) {}

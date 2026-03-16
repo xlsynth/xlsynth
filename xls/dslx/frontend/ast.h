@@ -2642,8 +2642,11 @@ class MatchArm : public AstNode {
 //   Option::Some(value)
 //   Message::Point { x: px, y: py }
 //
-// The constructor itself is always spelled as a `ColonRef`, and the payload is
-// either positional (tuple-like) or named (struct-like).
+// The constructor itself is always spelled as a `ColonRef`.
+//
+// `payload_kind()` is the source of truth for tuple-vs-struct spelling. Empty
+// child vectors are valid for both `Case()` and `Case { }`, so callers must
+// not recover the shape from vector emptiness alone.
 class ConstructorPattern : public AstNode {
  public:
   enum class PayloadKind : uint8_t {
@@ -3232,6 +3235,10 @@ class EnumDef : public AstNode {
 };
 
 // Represents a single constructor inside a semantic sum declaration.
+//
+// `payload_kind()` is the source of truth for unit-vs-tuple-vs-struct
+// spelling. Empty member vectors are valid for `Case()` and `Case { }`, so
+// callers must not infer unit-ness from vector emptiness alone.
 class SumVariant : public AstNode {
  public:
   enum class PayloadKind : uint8_t {

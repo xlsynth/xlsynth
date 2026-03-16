@@ -744,6 +744,12 @@ class EnumType : public Type {
   std::vector<InterpValue> members_;  // Member values of the enum.
 };
 
+// Represents one constructor inside a fully typed `SumType`.
+//
+// `payload_members()` follows the source member order for that constructor.
+// The containing `SumType` keeps these variants in canonical `SumDef` order, so
+// variant position remains the source of truth for tag numbering and payload
+// slot layout.
 class SumTypeVariant {
  public:
   SumTypeVariant(const SumVariant& variant,
@@ -786,6 +792,12 @@ class SumTypeVariant {
   std::vector<std::unique_ptr<Type>> payload_members_;
 };
 
+// Represents a semantic sum after typechecking.
+//
+// `variants()` is stored in the same order as the defining `SumDef`, and that
+// order is semantic: it determines tag numbering, payload-slot layout, and the
+// behavior of positional consumers such as equality, formatting, and
+// serialization helpers.
 class SumType : public Type {
  public:
   SumType(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
