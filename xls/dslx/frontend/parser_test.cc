@@ -2414,7 +2414,7 @@ fn f(x: u32) {
 TEST_F(ParserTest, MatchWithSemanticSumConstructors) {
   std::unique_ptr<Module> module = RoundTrip(R"(#![feature(generics)]
 
-enum Option<T: type> {
+sum Option<T: type> {
     None,
     Some(T),
     Point { x: u32, y: u32 },
@@ -2431,8 +2431,16 @@ fn f(x: Option<u32>) -> Option<u32> {
   EXPECT_TRUE(std::holds_alternative<SumDef*>(*maybe_member.value()));
 }
 
+TEST_F(ParserTest, SumRemainsValidIdentifierOutsideTypeDeclarations) {
+  std::unique_ptr<Module> module = RoundTrip(R"(fn f(x: u32) -> u32 {
+    let sum = x + u32:1;
+    sum
+})");
+  EXPECT_TRUE(module->GetFunction("f").has_value());
+}
+
 TEST_F(ParserTest, PreserveEmptySemanticSumPayloadKinds) {
-  std::unique_ptr<Module> module = RoundTrip(R"(enum Option {
+  std::unique_ptr<Module> module = RoundTrip(R"(sum Option {
     None,
     EmptyTuple(),
     EmptyStruct { },
@@ -2495,7 +2503,7 @@ fn f(x: Option) -> Option {
 TEST_F(ParserTest, RejectsConstructorLevelParametricsOnSemanticSums) {
   constexpr std::string_view kExplicitOnConstructor = R"(#![feature(generics)]
 
-enum Option<T: type> {
+sum Option<T: type> {
   None,
   Some(T),
 }
@@ -2510,7 +2518,7 @@ fn f(x: u32) -> Option<u32> {
 
   constexpr std::string_view kTurbofishOnConstructor = R"(#![feature(generics)]
 
-enum Option<T: type> {
+sum Option<T: type> {
   None,
   Some(T),
 }
@@ -2525,7 +2533,7 @@ fn f(x: u32) -> Option<u32> {
 }
 
 TEST_F(ParserTest, RejectsDuplicateSemanticSumConstructors) {
-  constexpr std::string_view kProgram = R"(enum Option {
+  constexpr std::string_view kProgram = R"(sum Option {
     Some,
     Some(u32),
   })";
@@ -2908,16 +2916,12 @@ const A = MyEnum[2]:[MyEnum::FOO, MyEnum::BAR];)");
 }
 
 TEST_F(ParserTest, ImplicitWidthEnum) {
-  constexpr std::string_view kProgram = R"(const A = u32:42;
+  RoundTrip(R"(const A = u32:42;
 const B = u32:64;
 enum ImplicitWidthEnum {
     FOO = A,
     BAR = B,
-})";
-  EXPECT_THAT(Parse(kProgram),
-              IsPosError("ParseError",
-                         HasSubstr("Numeric enums now require an explicit "
-                                   "underlying type")));
+})");
 }
 
 TEST_F(ParserTest, ConstWithTypeAnnotation) {
@@ -4018,7 +4022,8 @@ TEST(ParserErrorTest, BadTestTarget) {
   EXPECT_THAT(module.status(),
               IsPosError("ParseError",
                          HasSubstr("Attributes are only supported for a "
-                                   "function, proc, struct, enum, or type.")));
+                                   "function, proc, struct, sum, enum, or "
+                                   "type.")));
 }
 
 TEST(ParserErrorTest, BadAttributeTokenType) {

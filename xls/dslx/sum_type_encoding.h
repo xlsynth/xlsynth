@@ -16,8 +16,10 @@
 #define XLS_DSLX_SUM_TYPE_ENCODING_H_
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "absl/functional/function_ref.h"
@@ -39,9 +41,34 @@ class SumTypeEncoding {
     int64_t payload_size() const { return variant->size(); }
   };
 
-  struct StoredLeafInfo {
-    const Type* type;
-    std::optional<int64_t> dense_max_value;
+  class StoredLeafInfo {
+   public:
+    static StoredLeafInfo MakeDenseTag(BitsType tag_type,
+                                       int64_t dense_max_value) {
+      return StoredLeafInfo(StoredType(tag_type), dense_max_value);
+    }
+
+    static StoredLeafInfo MakePayload(const Type& type) {
+      return StoredLeafInfo(StoredType(std::cref(type)), std::nullopt);
+    }
+
+    const Type& type() const {
+      if (std::holds_alternative<BitsType>(type_)) {
+        return std::get<BitsType>(type_);
+      }
+      return std::get<std::reference_wrapper<const Type>>(type_).get();
+    }
+
+    std::optional<int64_t> dense_max_value() const { return dense_max_value_; }
+
+   private:
+    using StoredType = std::variant<BitsType, std::reference_wrapper<const Type>>;
+
+    StoredLeafInfo(StoredType type, std::optional<int64_t> dense_max_value)
+        : type_(type), dense_max_value_(dense_max_value) {}
+
+    StoredType type_;
+    std::optional<int64_t> dense_max_value_;
   };
 
   explicit SumTypeEncoding(const SumType& type);
@@ -54,7 +81,9 @@ class SumTypeEncoding {
       absl::FunctionRef<absl::Status(const VariantInfo& variant)> visitor)
       const;
   // Visits the stored leaves for the encoded sum value: one dense tag leaf
-  // first, followed by payload slots in canonical storage order.
+  // first, followed by payload slots in canonical storage order. The dense tag
+  // leaf is carried by value inside `StoredLeafInfo`; payload leaves borrow the
+  // underlying stored payload types.
   absl::Status ForEachStoredLeafType(
       absl::FunctionRef<absl::Status(const StoredLeafInfo& leaf)> visitor)
       const;

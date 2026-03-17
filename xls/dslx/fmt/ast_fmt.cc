@@ -2909,7 +2909,7 @@ DocRef Formatter::Format(const SumDef& n) {
     pieces.push_back(arena_.Make(Keyword::kPub));
     pieces.push_back(arena_.space());
   }
-  pieces.push_back(arena_.Make(Keyword::kEnum));
+  pieces.push_back(arena_.MakeText("sum"));
   pieces.push_back(arena_.space());
   pieces.push_back(arena_.MakeText(n.identifier()));
 

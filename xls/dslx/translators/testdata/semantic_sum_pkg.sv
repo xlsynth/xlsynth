@@ -1,6 +1,6 @@
 // verilog_lint: waive-start struct-union-name-style
 package semantic_sum;
-  // DSLX Type: pub enum MaybeWord {
+  // DSLX Type: pub sum MaybeWord {
   //     None,
   //     Some(u32),
   //     Pair { lo: u8, hi: u8 },

@@ -59,13 +59,33 @@ std::vector<std::unique_ptr<Type>> CloneStructMembers(
 }
 
 std::vector<std::unique_ptr<Type>> ClonePayloadMembers(
-    const std::vector<std::unique_ptr<Type>>& members) {
+    absl::Span<const std::unique_ptr<Type>> members) {
   std::vector<std::unique_ptr<Type>> cloned_members;
   cloned_members.reserve(members.size());
   for (const auto& next : members) {
     cloned_members.push_back(next->CloneToUnique());
   }
   return cloned_members;
+}
+
+int64_t ExpectedPayloadMemberCount(const SumVariant& variant) {
+  if (variant.is_unit()) {
+    return 0;
+  }
+  if (variant.is_tuple()) {
+    return variant.tuple_members().size();
+  }
+  CHECK(variant.is_struct());
+  return variant.struct_members().size();
+}
+
+void ValidateSumTypeVariantPayload(
+    const SumVariant& variant,
+    absl::Span<const std::unique_ptr<Type>> payload_members) {
+  CHECK_EQ(payload_members.size(), ExpectedPayloadMemberCount(variant));
+  for (const std::unique_ptr<Type>& member_type : payload_members) {
+    CHECK(!member_type->IsMeta()) << *member_type;
+  }
 }
 
 }  // namespace
@@ -583,17 +603,61 @@ bool StructTypeBase::operator==(const Type& other) const {
 
 // -- SumTypeVariant
 
-SumTypeVariant::SumTypeVariant(
-    const SumVariant& variant, std::vector<std::unique_ptr<Type>> payload_members)
-    : variant_(variant), payload_members_(std::move(payload_members)) {}
+/* static */ SumTypeVariant SumTypeVariant::MakeUnit(const SumVariant& variant) {
+  return SumTypeVariant(variant, std::monostate{});
+}
+
+/* static */ SumTypeVariant SumTypeVariant::MakeTuple(
+    const SumVariant& variant,
+    std::vector<std::unique_ptr<Type>> payload_members) {
+  return SumTypeVariant(variant,
+                        TuplePayload{.members = std::move(payload_members)});
+}
+
+/* static */ SumTypeVariant SumTypeVariant::MakeStruct(
+    const SumVariant& variant,
+    std::vector<std::unique_ptr<Type>> payload_members) {
+  return SumTypeVariant(variant,
+                        StructPayload{.members = std::move(payload_members)});
+}
+
+SumTypeVariant::SumTypeVariant(const SumVariant& variant, Payload payload)
+    : variant_(variant), payload_(std::move(payload)) {
+  if (is_unit()) {
+    CHECK(variant_.is_unit());
+  } else if (is_tuple()) {
+    CHECK(variant_.is_tuple());
+  } else {
+    CHECK(variant_.is_struct());
+  }
+  ValidateSumTypeVariantPayload(variant_, payload_members());
+}
+
+int64_t SumTypeVariant::size() const { return payload_members().size(); }
+
+const Type& SumTypeVariant::GetMemberType(int64_t i) const {
+  return *payload_members()[i];
+}
+
+absl::Span<const std::unique_ptr<Type>> SumTypeVariant::payload_members() const {
+  if (const auto* payload = std::get_if<TuplePayload>(&payload_)) {
+    return payload->members;
+  }
+  if (const auto* payload = std::get_if<StructPayload>(&payload_)) {
+    return payload->members;
+  }
+  return {};
+}
 
 bool SumTypeVariant::operator==(const SumTypeVariant& other) const {
-  if (&variant_ != &other.variant_ ||
-      payload_members_.size() != other.payload_members_.size()) {
+  absl::Span<const std::unique_ptr<Type>> members = payload_members();
+  absl::Span<const std::unique_ptr<Type>> other_members =
+      other.payload_members();
+  if (&variant_ != &other.variant_ || members.size() != other_members.size()) {
     return false;
   }
-  for (int64_t i = 0; i < payload_members_.size(); ++i) {
-    if (*payload_members_[i] != *other.payload_members_[i]) {
+  for (int64_t i = 0; i < members.size(); ++i) {
+    if (*members[i] != *other_members[i]) {
       return false;
     }
   }
@@ -601,7 +665,13 @@ bool SumTypeVariant::operator==(const SumTypeVariant& other) const {
 }
 
 SumTypeVariant SumTypeVariant::Clone() const {
-  return SumTypeVariant(variant_, ClonePayloadMembers(payload_members_));
+  if (is_unit()) {
+    return MakeUnit(variant_);
+  }
+  if (is_tuple()) {
+    return MakeTuple(variant_, ClonePayloadMembers(payload_members()));
+  }
+  return MakeStruct(variant_, ClonePayloadMembers(payload_members()));
 }
 
 bool SumTypeVariant::HasNamedMember(std::string_view target) const {
@@ -631,7 +701,7 @@ std::optional<int64_t> SumTypeVariant::GetMemberIndex(
 
 std::vector<TypeDim> SumTypeVariant::GetAllDims() const {
   std::vector<TypeDim> results;
-  for (const auto& member : payload_members_) {
+  for (const auto& member : payload_members()) {
     std::vector<TypeDim> member_dims = member->GetAllDims();
     for (TypeDim& dim : member_dims) {
       results.push_back(std::move(dim));
@@ -642,7 +712,7 @@ std::vector<TypeDim> SumTypeVariant::GetAllDims() const {
 
 absl::StatusOr<TypeDim> SumTypeVariant::GetTotalBitCount() const {
   TypeDim sum = TypeDim::CreateU32(0);
-  for (const auto& member : payload_members_) {
+  for (const auto& member : payload_members()) {
     XLS_ASSIGN_OR_RETURN(TypeDim member_bits, member->GetTotalBitCount());
     XLS_ASSIGN_OR_RETURN(sum, sum.Add(member_bits));
   }
@@ -650,12 +720,12 @@ absl::StatusOr<TypeDim> SumTypeVariant::GetTotalBitCount() const {
 }
 
 bool SumTypeVariant::HasEnum() const {
-  return absl::c_any_of(payload_members_,
+  return absl::c_any_of(payload_members(),
                         [](const auto& type) { return type->HasEnum(); });
 }
 
 bool SumTypeVariant::HasToken() const {
-  return absl::c_any_of(payload_members_,
+  return absl::c_any_of(payload_members(),
                         [](const auto& type) { return type->HasToken(); });
 }
 
@@ -694,15 +764,16 @@ std::string SumType::ToStringInternal(FullyQualify fully_qualify,
     if (variant.is_unit()) {
       absl::StrAppend(&variants_string, variant.variant().identifier());
     } else if (variant.is_tuple()) {
-      absl::StrAppend(
-          &variants_string, variant.variant().identifier(), "(",
-          absl::StrJoin(
-              variant.payload_members(), ", ",
-              [&](std::string* out, const std::unique_ptr<Type>& member) {
-                absl::StrAppend(out,
-                                member->ToStringInternal(fully_qualify, file_table));
-              }),
-          ")");
+      absl::StrAppend(&variants_string, variant.variant().identifier(), "(");
+      for (int64_t member_i = 0; member_i < variant.size(); ++member_i) {
+        if (member_i != 0) {
+          absl::StrAppend(&variants_string, ", ");
+        }
+        absl::StrAppend(&variants_string,
+                        variant.GetMemberType(member_i).ToStringInternal(
+                            fully_qualify, file_table));
+      }
+      absl::StrAppend(&variants_string, ")");
     } else {
       if (variant.size() == 0) {
         absl::StrAppend(&variants_string, variant.variant().identifier(),

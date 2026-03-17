@@ -1613,10 +1613,10 @@ SECOND = 1,
 }
 
 TEST_F(ModuleFmtTest, SemanticSumEmptyPayloadKinds) {
-  DoFmt(R"(enum Option{None,EmptyTuple(),EmptyStruct{},Some(u32),Point{x:u32}}
+  DoFmt(R"(sum Option{None,EmptyTuple(),EmptyStruct{},Some(u32),Point{x:u32}}
 fn f(x:Option)->Option{match x{Option::EmptyTuple()=>Option::EmptyTuple(),Option::EmptyStruct{}=>Option::EmptyStruct{},Option::Some(v)=>Option::Some(v),Option::Point{x:px}=>Option::Point{x:px},Option::None=>Option::None,}}
 )",
-        R"(enum Option {
+        R"(sum Option {
     None,
     EmptyTuple(),
     EmptyStruct { },

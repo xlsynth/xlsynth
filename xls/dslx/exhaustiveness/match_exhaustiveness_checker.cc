@@ -42,6 +42,16 @@
 namespace xls::dslx {
 namespace {
 
+struct FlattenedLeafType {
+  const Type* type;
+  std::optional<int64_t> dense_max_value;
+};
+
+struct FlattenedLeafTypes {
+  std::vector<std::unique_ptr<Type>> owned;
+  std::vector<FlattenedLeafType> flat;
+};
+
 int64_t GetLeafTypeCount(const Type& type) {
   if (type.IsTuple()) {
     int64_t result = 0;
@@ -55,8 +65,9 @@ int64_t GetLeafTypeCount(const Type& type) {
     const SumTypeEncoding encoding(type.AsSum());
     CHECK_OK(encoding.ForEachStoredLeafType(
         [&](const SumTypeEncoding::StoredLeafInfo& leaf) -> absl::Status {
-          result +=
-              leaf.dense_max_value.has_value() ? 1 : GetLeafTypeCount(*leaf.type);
+          result += leaf.dense_max_value().has_value() ? 1
+                                                       : GetLeafTypeCount(
+                                                             leaf.type());
           return absl::OkStatus();
         }));
     return result;
@@ -75,8 +86,8 @@ void AppendLeafTypes(const Type& type, FlattenedLeafTypes* result) {
     const SumTypeEncoding encoding(type.AsSum());
     CHECK_OK(encoding.ForEachStoredLeafType(
         [&](const SumTypeEncoding::StoredLeafInfo& leaf) -> absl::Status {
-          if (leaf.dense_max_value.has_value()) {
-            std::optional<BitsLikeProperties> bits_like = GetBitsLike(*leaf.type);
+          if (leaf.dense_max_value().has_value()) {
+            std::optional<BitsLikeProperties> bits_like = GetBitsLike(leaf.type());
             CHECK(bits_like.has_value());
             XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count,
                                  bits_like->size.GetAsInt64());
@@ -84,11 +95,11 @@ void AppendLeafTypes(const Type& type, FlattenedLeafTypes* result) {
                 std::make_unique<BitsType>(/*is_signed=*/false, tag_bit_count));
             result->flat.push_back(FlattenedLeafType{
                 .type = result->owned.back().get(),
-                .dense_max_value = leaf.dense_max_value,
+                .dense_max_value = leaf.dense_max_value(),
             });
             return absl::OkStatus();
           }
-          AppendLeafTypes(*leaf.type, result);
+          AppendLeafTypes(leaf.type(), result);
           return absl::OkStatus();
         }));
     return;
@@ -684,99 +695,129 @@ std::optional<std::vector<InterpValue>> SampleSimplestUncoveredLeafValues(
 
 }  // namespace
 
+struct MatchExhaustivenessChecker::Impl {
+  struct SumVariantState {
+    std::string variant_name;
+    FlattenedLeafTypes leaf_types;
+    NdRegion remaining;
+  };
+
+  Impl(const Span& matched_expr_span, const ImportData& import_data,
+       const TypeInfo& type_info, const Type& matched_type)
+      : matched_expr_span_(matched_expr_span),
+        import_data_(import_data),
+        type_info_(type_info),
+        matched_type_(matched_type),
+        remaining_(NdRegion::MakeEmpty({})) {}
+
+  const FileTable& file_table() const { return type_info_.file_table(); }
+
+  const Span matched_expr_span_;
+  const ImportData& import_data_;
+  const TypeInfo& type_info_;
+  const Type& matched_type_;
+  const SumType* matched_sum_type_ = nullptr;
+  FlattenedLeafTypes leaf_types_;
+  std::vector<SumVariantState> sum_variant_states_;
+  NdRegion remaining_;
+};
+
 // -- class MatchExhaustivenessChecker
 
 MatchExhaustivenessChecker::MatchExhaustivenessChecker(
     const Span& matched_expr_span, const ImportData& import_data,
     const TypeInfo& type_info, const Type& matched_type)
-    : matched_expr_span_(matched_expr_span),
-      import_data_(import_data),
-      type_info_(type_info),
-      matched_type_(matched_type),
-      remaining_(NdRegion::MakeEmpty({})) {
-  if (matched_type_.IsSum()) {
-    matched_sum_type_ = &matched_type_.AsSum();
-    sum_variant_states_.reserve(matched_sum_type_->variant_count());
-    for (const SumTypeVariant& variant : matched_sum_type_->variants()) {
+    : impl_(std::make_unique<Impl>(matched_expr_span, import_data, type_info,
+                                   matched_type)) {
+  if (impl_->matched_type_.IsSum()) {
+    impl_->matched_sum_type_ = &impl_->matched_type_.AsSum();
+    impl_->sum_variant_states_.reserve(impl_->matched_sum_type_->variant_count());
+    for (const SumTypeVariant& variant : impl_->matched_sum_type_->variants()) {
       FlattenedLeafTypes variant_leaf_types =
-          GetSumVariantPayloadLeafTypes(*matched_sum_type_,
+          GetSumVariantPayloadLeafTypes(*impl_->matched_sum_type_,
                                         variant.variant().identifier());
       NdRegion variant_remaining = MakeFullNdRegion(variant_leaf_types.flat);
-      sum_variant_states_.push_back(
-          MatchExhaustivenessChecker::SumVariantState{
+      impl_->sum_variant_states_.push_back(Impl::SumVariantState{
               std::string(variant.variant().identifier()),
               std::move(variant_leaf_types), std::move(variant_remaining)});
     }
     return;
   }
-  leaf_types_ = GetLeafTypes(matched_type, matched_expr_span, file_table());
-  remaining_ = MakeFullNdRegion(leaf_types_.flat);
+  impl_->leaf_types_ = GetLeafTypes(matched_type, matched_expr_span, file_table());
+  impl_->remaining_ = MakeFullNdRegion(impl_->leaf_types_.flat);
+}
+
+MatchExhaustivenessChecker::~MatchExhaustivenessChecker() = default;
+
+const FileTable& MatchExhaustivenessChecker::file_table() const {
+  return impl_->file_table();
 }
 
 bool MatchExhaustivenessChecker::IsExhaustive() const {
-  if (matched_sum_type_ != nullptr) {
+  if (impl_->matched_sum_type_ != nullptr) {
     return std::all_of(
-        sum_variant_states_.begin(), sum_variant_states_.end(),
-        [](const SumVariantState& variant_state) {
+        impl_->sum_variant_states_.begin(), impl_->sum_variant_states_.end(),
+        [](const Impl::SumVariantState& variant_state) {
           return variant_state.remaining.IsEmpty();
         });
   }
-  return remaining_.IsEmpty();
+  return impl_->remaining_.IsEmpty();
 }
 
 bool MatchExhaustivenessChecker::AddPattern(const NameDefTree& pattern) {
   VLOG(5) << "MatchExhaustivenessChecker::AddPattern: `" << pattern.ToString()
-          << "` matched_type: `" << matched_type_.ToString() << "` @ "
+          << "` matched_type: `" << impl_->matched_type_.ToString() << "` @ "
           << pattern.span().ToString(file_table());
 
-  if (matched_sum_type_ != nullptr) {
+  if (impl_->matched_sum_type_ != nullptr) {
     if (pattern.IsIrrefutable()) {
-      for (SumVariantState& variant_state : sum_variant_states_) {
+      for (Impl::SumVariantState& variant_state : impl_->sum_variant_states_) {
         std::vector<PatternLeaf> payload_wildcards(
             variant_state.leaf_types.flat.size(), SomeWildcard());
         NdIntervalWithEmpty full_interval = PatternLeavesToInterval(
-            payload_wildcards, variant_state.leaf_types.flat, type_info_,
-            import_data_);
+            payload_wildcards, variant_state.leaf_types.flat, impl_->type_info_,
+            impl_->import_data_);
         variant_state.remaining =
             variant_state.remaining.SubtractInterval(full_interval);
       }
       return IsExhaustive();
     }
     CHECK(pattern.is_leaf())
-        << "Expected a leaf pattern for sum type, got `" << pattern.ToString()
-        << "`";
+        << "Expected a leaf pattern for sum type, got `"
+        << pattern.ToString() << "`";
     SumVariantPayloadPattern variant_pattern =
-        ExpandSumVariantPayloadPatternLeaves(pattern.leaf(), *matched_sum_type_,
+        ExpandSumVariantPayloadPatternLeaves(pattern.leaf(), *impl_->matched_sum_type_,
                                             file_table());
-    SumVariantState& variant_state =
-        sum_variant_states_.at(variant_pattern.variant_index);
+    Impl::SumVariantState& variant_state =
+        impl_->sum_variant_states_.at(variant_pattern.variant_index);
     NdIntervalWithEmpty payload_interval = PatternLeavesToInterval(
-        variant_pattern.leaves, variant_state.leaf_types.flat, type_info_,
-        import_data_);
+        variant_pattern.leaves, variant_state.leaf_types.flat, impl_->type_info_,
+        impl_->import_data_);
     variant_state.remaining =
         variant_state.remaining.SubtractInterval(payload_interval);
     return IsExhaustive();
   }
 
   NdIntervalWithEmpty this_pattern_interval = PatternToInterval(
-      pattern, matched_type_, leaf_types_.flat, type_info_, import_data_);
-  remaining_ = remaining_.SubtractInterval(this_pattern_interval);
+      pattern, impl_->matched_type_, impl_->leaf_types_.flat, impl_->type_info_,
+      impl_->import_data_);
+  impl_->remaining_ = impl_->remaining_.SubtractInterval(this_pattern_interval);
   return IsExhaustive();
 }
 
 std::optional<InterpValue>
 MatchExhaustivenessChecker::SampleSimplestUncoveredValue() const {
-  if (matched_sum_type_ != nullptr) {
-    for (const SumVariantState& variant_state : sum_variant_states_) {
+  if (impl_->matched_sum_type_ != nullptr) {
+    for (const Impl::SumVariantState& variant_state : impl_->sum_variant_states_) {
       std::optional<std::vector<InterpValue>> payload_values =
           SampleSimplestUncoveredLeafValues(variant_state.remaining,
                                             variant_state.leaf_types.flat,
-                                            import_data_);
+                                            impl_->import_data_);
       if (!payload_values.has_value()) {
         continue;
       }
       absl::StatusOr<InterpValue> sample = CreateSumValue(
-          *matched_sum_type_, variant_state.variant_name, *payload_values);
+          *impl_->matched_sum_type_, variant_state.variant_name, *payload_values);
       CHECK_OK(sample.status());
       return sample.value();
     }
@@ -784,8 +825,8 @@ MatchExhaustivenessChecker::SampleSimplestUncoveredValue() const {
   }
 
   std::optional<std::vector<InterpValue>> components =
-      SampleSimplestUncoveredLeafValues(remaining_, leaf_types_.flat,
-                                        import_data_);
+      SampleSimplestUncoveredLeafValues(impl_->remaining_, impl_->leaf_types_.flat,
+                                        impl_->import_data_);
   if (!components.has_value()) {
     return std::nullopt;
   }

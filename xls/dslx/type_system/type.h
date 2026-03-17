@@ -32,6 +32,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/algorithm/container.h"
@@ -746,14 +747,30 @@ class EnumType : public Type {
 
 // Represents one constructor inside a fully typed `SumType`.
 //
-// `payload_members()` follows the source member order for that constructor.
-// The containing `SumType` keeps these variants in canonical `SumDef` order, so
-// variant position remains the source of truth for tag numbering and payload
-// slot layout.
+// The payload shape is part of the typed value itself, so callers construct
+// unit/tuple/struct variants through the matching named factory instead of
+// providing an unchecked parallel payload vector. The containing `SumType`
+// keeps these variants in canonical `SumDef` order, so variant position
+// remains the source of truth for tag numbering and payload-slot layout.
 class SumTypeVariant {
+  struct TuplePayload {
+    std::vector<std::unique_ptr<Type>> members;
+  };
+
+  struct StructPayload {
+    std::vector<std::unique_ptr<Type>> members;
+  };
+
+  using Payload = std::variant<std::monostate, TuplePayload, StructPayload>;
+
  public:
-  SumTypeVariant(const SumVariant& variant,
-                 std::vector<std::unique_ptr<Type>> payload_members);
+  static SumTypeVariant MakeUnit(const SumVariant& variant);
+  static SumTypeVariant MakeTuple(
+      const SumVariant& variant,
+      std::vector<std::unique_ptr<Type>> payload_members);
+  static SumTypeVariant MakeStruct(
+      const SumVariant& variant,
+      std::vector<std::unique_ptr<Type>> payload_members);
 
   SumTypeVariant(const SumTypeVariant&) = delete;
   SumTypeVariant& operator=(const SumTypeVariant&) = delete;
@@ -763,17 +780,20 @@ class SumTypeVariant {
   bool operator==(const SumTypeVariant& other) const;
   SumTypeVariant Clone() const;
 
-  bool is_unit() const { return variant_.is_unit(); }
-  bool is_tuple() const { return variant_.is_tuple(); }
-  bool is_struct() const { return variant_.is_struct(); }
+  bool is_unit() const {
+    return std::holds_alternative<std::monostate>(payload_);
+  }
+  bool is_tuple() const {
+    return std::holds_alternative<TuplePayload>(payload_);
+  }
+  bool is_struct() const {
+    return std::holds_alternative<StructPayload>(payload_);
+  }
 
   const SumVariant& variant() const { return variant_; }
-  int64_t size() const { return payload_members_.size(); }
+  int64_t size() const;
 
-  const Type& GetMemberType(int64_t i) const { return *payload_members_.at(i); }
-  const std::vector<std::unique_ptr<Type>>& payload_members() const {
-    return payload_members_;
-  }
+  const Type& GetMemberType(int64_t i) const;
 
   std::string_view GetMemberName(int64_t i) const {
     CHECK(is_struct());
@@ -788,8 +808,13 @@ class SumTypeVariant {
   bool HasToken() const;
 
  private:
+
+  SumTypeVariant(const SumVariant& variant, Payload payload);
+
+  absl::Span<const std::unique_ptr<Type>> payload_members() const;
+
   const SumVariant& variant_;
-  std::vector<std::unique_ptr<Type>> payload_members_;
+  Payload payload_;
 };
 
 // Represents a semantic sum after typechecking.

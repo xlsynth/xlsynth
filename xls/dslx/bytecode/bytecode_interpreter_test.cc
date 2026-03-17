@@ -2301,7 +2301,7 @@ fn doomed() {
 
 TEST_F(BytecodeInterpreterTest, AssertEqSemanticSums) {
   constexpr std::string_view kProgram = R"(
-enum Option {
+sum Option {
   None,
   Some(u32),
   Pair { lhs: u32, rhs: u32 },
@@ -2847,7 +2847,7 @@ fn main() -> bits[bit_count<Foo>()] {
 
 TEST_F(BytecodeInterpreterTest, SemanticSumConstructorsAndEquality) {
   constexpr std::string_view kProgram = R"(
-enum Option {
+sum Option {
   None,
   Some(u32),
   Pair { lhs: u32, rhs: u32 },
@@ -2881,7 +2881,7 @@ fn main() -> (u32, u32, bool, bool) {
 
 TEST_F(BytecodeInterpreterTest, SemanticSumEqualityInsideAggregates) {
   constexpr std::string_view kProgram = R"(
-enum Option {
+sum Option {
   None,
   Some(u32),
   Pair { lhs: u32, rhs: u32 },
@@ -2931,12 +2931,12 @@ fn main() -> (bool, bool, bool, bool, bool, bool) {
 TEST_F(BytecodeInterpreterTest,
        SemanticSumConstructorsRejectNestedSumPayloadsInPhase1) {
   constexpr std::string_view kProgram = R"(
-enum Inner {
+sum Inner {
   None,
   Some(u32),
 }
 
-enum Outer {
+sum Outer {
   Wrapped(Inner),
   Nothing,
 }
@@ -2962,7 +2962,7 @@ fn main() -> bool {
 
 TEST_F(BytecodeInterpreterTest, ImportedSumReturningFunctionCall) {
   constexpr std::string_view kImported = R"(
-pub enum Option {
+pub sum Option {
   None,
   Some(u32),
 }

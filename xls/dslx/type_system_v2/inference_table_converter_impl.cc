@@ -1601,8 +1601,15 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
             payload_members.push_back(std::move(concrete_member_type));
           }
         }
-        variants.push_back(
-            SumTypeVariant(*variant, std::move(payload_members)));
+        if (variant->is_unit()) {
+          variants.push_back(SumTypeVariant::MakeUnit(*variant));
+        } else if (variant->is_tuple()) {
+          variants.push_back(
+              SumTypeVariant::MakeTuple(*variant, std::move(payload_members)));
+        } else {
+          variants.push_back(
+              SumTypeVariant::MakeStruct(*variant, std::move(payload_members)));
+        }
       }
       std::unique_ptr<Type> type =
           std::make_unique<SumType>(*sum_def, std::move(variants));

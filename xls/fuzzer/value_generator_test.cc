@@ -78,16 +78,18 @@ dslx::SumType MakeTestSumType(dslx::Module& module) {
   sum_name->set_definer(sum_def);
 
   std::vector<dslx::SumTypeVariant> variants;
-  variants.emplace_back(*none_variant, std::vector<std::unique_ptr<dslx::Type>>{});
+  variants.push_back(dslx::SumTypeVariant::MakeUnit(*none_variant));
 
   std::vector<std::unique_ptr<dslx::Type>> byte_members;
   byte_members.push_back(dslx::BitsType::MakeU8());
-  variants.emplace_back(*byte_variant, std::move(byte_members));
+  variants.push_back(
+      dslx::SumTypeVariant::MakeTuple(*byte_variant, std::move(byte_members)));
 
   std::vector<std::unique_ptr<dslx::Type>> pair_members;
   pair_members.push_back(std::make_unique<dslx::BitsType>(false, 16));
   pair_members.push_back(dslx::BitsType::MakeU1());
-  variants.emplace_back(*pair_variant, std::move(pair_members));
+  variants.push_back(
+      dslx::SumTypeVariant::MakeTuple(*pair_variant, std::move(pair_members)));
   return dslx::SumType(*sum_def, std::move(variants));
 }
 
@@ -456,19 +458,19 @@ TEST(ValueGeneratorTest, GenerateDslxConstantSemanticSums) {
   XLS_ASSERT_OK_AND_ASSIGN(
       std::unique_ptr<dslx::Module> module,
       dslx::ParseModule(R"(
-enum UnitOnly {
+sum UnitOnly {
   Only,
 }
 
-enum TupleOnly {
+sum TupleOnly {
   Only(u32),
 }
 
-enum StructOnly {
+sum StructOnly {
   Only { x: u32 },
 }
 
-enum Empty {}
+sum Empty {}
 )",
                         "test.x", "test", file_table));
 

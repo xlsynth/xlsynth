@@ -1,4 +1,4 @@
-1:0-4:1: SUM_DEF :: `enum Option {
+1:0-4:1: SUM_DEF :: `sum Option {
     None,
     Some(u32),
 }` :: typeof(Option { None | Some(uN[32]) })

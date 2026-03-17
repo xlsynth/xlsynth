@@ -1527,8 +1527,11 @@ absl::Status FunctionConverter::HandleMatch(const Match* node) {
       });
 
   // We are guaranteed from exhaustiveness checking that the last arm handles
-  // all of the rest of the values aside from the ones covered by the earlier
-  // match arms, and so can be emitted as the "default" in the selection IR.
+  // all remaining cases in that checker's constructor-space model aside from
+  // the ones covered by the earlier match arms. For sums, this assumes the
+  // matched value is already a well-formed semantic value, not an arbitrary
+  // raw boundary encoding with an undeclared tag, and so can be emitted as the
+  // "default" in the selection IR.
   MatchArm* default_arm = node->arms().back();
   XLS_RETURN_IF_ERROR(
       HandleMatcher(default_arm->patterns()[0], matched, *matched_type)

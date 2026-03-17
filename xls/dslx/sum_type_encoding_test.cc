@@ -82,14 +82,14 @@ SumType MakeTuplePayloadSumType(Module& module) {
   sum_name->set_definer(sum_def);
 
   std::vector<SumTypeVariant> variants;
-  variants.emplace_back(*none, std::vector<std::unique_ptr<Type>>{});
+  variants.push_back(SumTypeVariant::MakeUnit(*none));
   std::vector<std::unique_ptr<Type>> left_members;
   left_members.push_back(BitsType::MakeU8());
-  variants.emplace_back(*left, std::move(left_members));
+  variants.push_back(SumTypeVariant::MakeTuple(*left, std::move(left_members)));
   std::vector<std::unique_ptr<Type>> pair_members;
   pair_members.push_back(std::make_unique<BitsType>(false, 16));
   pair_members.push_back(BitsType::MakeU32());
-  variants.emplace_back(*pair, std::move(pair_members));
+  variants.push_back(SumTypeVariant::MakeTuple(*pair, std::move(pair_members)));
   return SumType(*sum_def, std::move(variants));
 }
 
@@ -167,9 +167,9 @@ TEST(SumTypeEncodingTest, VisitsStoredLeafTypesWithDenseTagFirst) {
   std::vector<std::optional<int64_t>> dense_max_values;
   XLS_ASSERT_OK(encoding.ForEachStoredLeafType(
       [&](const SumTypeEncoding::StoredLeafInfo& leaf) -> absl::Status {
-        XLS_ASSIGN_OR_RETURN(int64_t bit_count, GetBitCount(*leaf.type));
+        XLS_ASSIGN_OR_RETURN(int64_t bit_count, GetBitCount(leaf.type()));
         bit_counts.push_back(bit_count);
-        dense_max_values.push_back(leaf.dense_max_value);
+        dense_max_values.push_back(leaf.dense_max_value());
         return absl::OkStatus();
       }));
 

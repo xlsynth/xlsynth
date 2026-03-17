@@ -96,8 +96,9 @@ absl::StatusOr<InterpValue> CreateCanonicalZeroValueForSum(const SumType& type) 
   const SumTypeVariant& variant = type.variants().front();
   std::vector<InterpValue> payload_values;
   payload_values.reserve(variant.size());
-  for (const std::unique_ptr<Type>& member : variant.payload_members()) {
-    XLS_ASSIGN_OR_RETURN(InterpValue zero, CreateZeroValueFromType(*member));
+  for (int64_t i = 0; i < variant.size(); ++i) {
+    XLS_ASSIGN_OR_RETURN(InterpValue zero,
+                         CreateZeroValueFromType(variant.GetMemberType(i)));
     payload_values.push_back(std::move(zero));
   }
   return CreateSumValue(type, variant.variant().identifier(), payload_values);

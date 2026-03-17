@@ -405,9 +405,9 @@ absl::StatusOr<SumTypeVariantProto> ToProto(const SumTypeVariant& variant,
   SumTypeVariantProto proto;
   XLS_ASSIGN_OR_RETURN(*proto.mutable_variant(),
                        ToProto(variant.variant(), file_table));
-  for (const std::unique_ptr<Type>& member : variant.payload_members()) {
+  for (int64_t i = 0; i < variant.size(); ++i) {
     XLS_ASSIGN_OR_RETURN(*proto.add_payload_members(),
-                         ToProto(*member, file_table));
+                         ToProto(variant.GetMemberType(i), file_table));
   }
   return proto;
 }
@@ -743,7 +743,15 @@ absl::StatusOr<std::unique_ptr<Type>> FromProto(const TypeProto& ctp,
               FromProto(member_proto, import_data, file_table));
           payload_members.push_back(std::move(payload_member));
         }
-        variants.push_back(SumTypeVariant(*variant, std::move(payload_members)));
+        if (variant->is_unit()) {
+          variants.push_back(SumTypeVariant::MakeUnit(*variant));
+        } else if (variant->is_tuple()) {
+          variants.push_back(
+              SumTypeVariant::MakeTuple(*variant, std::move(payload_members)));
+        } else {
+          variants.push_back(
+              SumTypeVariant::MakeStruct(*variant, std::move(payload_members)));
+        }
       }
       return std::make_unique<SumType>(*sum_def, std::move(variants));
     }

@@ -30,6 +30,30 @@
 
 namespace xls::dslx {
 
+ValueFormatSumVariantDescriptor ValueFormatSumVariantDescriptor::MakeUnit(
+    std::string name) {
+  return ValueFormatSumVariantDescriptor(
+      std::move(name), ValueFormatSumVariantKind::kUnit,
+      /*field_names=*/{}, /*payload_formats=*/{});
+}
+
+ValueFormatSumVariantDescriptor ValueFormatSumVariantDescriptor::MakeTuple(
+    std::string name, std::vector<ValueFormatDescriptor> payload_formats) {
+  return ValueFormatSumVariantDescriptor(
+      std::move(name), ValueFormatSumVariantKind::kTuple,
+      /*field_names=*/{}, std::move(payload_formats));
+}
+
+ValueFormatSumVariantDescriptor ValueFormatSumVariantDescriptor::MakeStruct(
+    std::string name, std::vector<std::string> field_names,
+    std::vector<ValueFormatDescriptor> payload_formats) {
+  CHECK_EQ(field_names.size(), payload_formats.size());
+  return ValueFormatSumVariantDescriptor(std::move(name),
+                                         ValueFormatSumVariantKind::kStruct,
+                                         std::move(field_names),
+                                         std::move(payload_formats));
+}
+
 ValueFormatDescriptor ValueFormatDescriptor::MakeLeafValue(
     FormatPreference format) {
   ValueFormatDescriptor vfd(ValueFormatDescriptorKind::kLeafValue);
@@ -87,7 +111,7 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
 
   size_t payload_start = 0;
   for (const ValueFormatSumVariantDescriptor& variant : variants) {
-    payload_start += variant.payload_formats.size();
+    payload_start += variant.payload_formats().size();
   }
   vfd.children_.reserve(payload_start);
   payload_start = 0;
@@ -97,20 +121,16 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
   vfd.sum_variant_payload_sizes_.reserve(variants.size());
   vfd.sum_variant_field_names_.reserve(variants.size());
   for (const ValueFormatSumVariantDescriptor& variant : variants) {
-    const size_t payload_size = variant.payload_formats.size();
-    CHECK(variant.kind == ValueFormatSumVariantKind::kStruct ||
-          variant.field_names.empty());
-    CHECK_EQ(variant.kind == ValueFormatSumVariantKind::kStruct
-                 ? variant.field_names.size()
-                 : payload_size,
-             payload_size);
-    vfd.sum_variant_names_.push_back(variant.name);
-    vfd.sum_variant_kinds_.push_back(variant.kind);
+    const size_t payload_size = variant.payload_formats().size();
+    vfd.sum_variant_names_.push_back(std::string(variant.name()));
+    vfd.sum_variant_kinds_.push_back(variant.kind());
     vfd.sum_variant_payload_starts_.push_back(payload_start);
     vfd.sum_variant_payload_sizes_.push_back(payload_size);
-    vfd.sum_variant_field_names_.push_back(variant.field_names);
-    vfd.children_.insert(vfd.children_.end(), variant.payload_formats.begin(),
-                         variant.payload_formats.end());
+    vfd.sum_variant_field_names_.push_back(
+        std::vector<std::string>(variant.field_names().begin(),
+                                 variant.field_names().end()));
+    vfd.children_.insert(vfd.children_.end(), variant.payload_formats().begin(),
+                         variant.payload_formats().end());
     payload_start += payload_size;
   }
   return vfd;
