@@ -244,6 +244,21 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
         return table_.SetTypeAnnotation(node, type_ref_annotation);
       }
 
+      XLS_ASSIGN_OR_RETURN(std::optional<SumRef> sum_type_ref,
+                           GetSumRef(node, import_data_));
+      if (sum_type_ref.has_value()) {
+        TypeAnnotation* type_ref_annotation =
+            CreateSumAnnotation(module_, *sum_type_ref);
+        table_.SetColonRefTarget(node, type_ref_annotation);
+        return table_.SetTypeAnnotation(node, type_ref_annotation);
+      }
+
+      XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
+                           ResolveSumConstructor(node, import_data_));
+      if (sum_constructor_ref.has_value()) {
+        return SetSumConstructorType(node, *sum_constructor_ref);
+      }
+
       // `imported_module::SomeStruct` case.
       XLS_ASSIGN_OR_RETURN(std::optional<StructOrProcRef> struct_ref,
                            GetStructOrProcRef(node, import_data_));
@@ -334,6 +349,11 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
         }
         return SetCrossModuleTypeAnnotation(node, *ref);
       }
+      XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
+                           ResolveSumConstructor(node, import_data_));
+      if (sum_constructor_ref.has_value()) {
+        return SetSumConstructorType(node, *sum_constructor_ref);
+      }
       XLS_ASSIGN_OR_RETURN(ModuleMember member,
                            GetPublicModuleMember((*import_module)->module(),
                                                  sub_col_ref, file_table_));
@@ -347,6 +367,11 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       const auto* annotation =
           std::get<TypeRefTypeAnnotation*>(node->subject());
       XLS_RETURN_IF_ERROR(annotation->Accept(this));
+      XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
+                           ResolveSumConstructor(node, import_data_));
+      if (sum_constructor_ref.has_value()) {
+        return SetSumConstructorType(node, *sum_constructor_ref);
+      }
       XLS_ASSIGN_OR_RETURN(std::optional<StructOrProcRef> struct_or_proc_ref,
                            GetStructOrProcRef(annotation, import_data_));
       if (struct_or_proc_ref.has_value()) {
@@ -613,6 +638,103 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       }
     }
     return DefaultHandler(node);
+  }
+
+  absl::Status HandleConstructorPattern(
+      const ConstructorPattern* node) override {
+    VLOG(5) << "HandleConstructorPattern: " << node->ToString();
+    XLS_ASSIGN_OR_RETURN(
+        std::optional<SumConstructorRef> sum_constructor_ref,
+        ResolveSumConstructor(node->constructor(), import_data_));
+    if (!sum_constructor_ref.has_value()) {
+      return TypeInferenceErrorStatus(
+          node->span(), nullptr,
+          absl::Substitute("Constructor pattern `$0` does not refer to a sum "
+                           "constructor.",
+                           node->constructor()->ToString()),
+          file_table_);
+    }
+    XLS_RETURN_IF_ERROR(
+        table_.SetTypeAnnotation(
+            node, CreateSumConstructorValueAnnotation(
+                      sum_constructor_ref->sum_ref)));
+    ++allow_non_unit_sum_constructor_depth_;
+    absl::Status constructor_status = node->constructor()->Accept(this);
+    --allow_non_unit_sum_constructor_depth_;
+    XLS_RETURN_IF_ERROR(constructor_status);
+
+    const SumVariant* variant = sum_constructor_ref->variant;
+    const NameRef* matched_type_variable = *table_.GetTypeVariable(node);
+    const TypeAnnotation* sum_value_type =
+        module_.Make<TypeVariableTypeAnnotation>(matched_type_variable);
+    const TypeAnnotation* constructor_type = module_.Make<MemberTypeAnnotation>(
+        node->constructor()->span(),
+        const_cast<TypeAnnotation*>(sum_value_type), variant->identifier());
+    if (variant->is_unit()) {
+      if (!node->positional_patterns().empty() ||
+          !node->named_patterns().empty()) {
+        return TypeInferenceErrorStatus(
+            node->span(), nullptr,
+            absl::Substitute("Unit constructor `$0` does not take payload "
+                             "patterns.",
+                             node->constructor()->ToString()),
+            file_table_);
+      }
+      return absl::OkStatus();
+    }
+
+    if (variant->is_tuple()) {
+      if (!node->named_patterns().empty()) {
+        return TypeInferenceErrorStatus(
+            node->span(), nullptr,
+            absl::Substitute("Tuple constructor `$0` does not support named "
+                             "payload patterns.",
+                             node->constructor()->ToString()),
+            file_table_);
+      }
+      if (node->positional_patterns().size() !=
+          variant->tuple_members().size()) {
+        return ArgCountMismatchErrorStatus(
+            node->span(),
+            absl::Substitute("Constructor pattern `$0` expects $1 payload "
+                             "pattern(s), got $2.",
+                             node->constructor()->ToString(),
+                             variant->tuple_members().size(),
+                             node->positional_patterns().size()),
+            file_table_);
+      }
+      for (int64_t i = 0; i < node->positional_patterns().size(); ++i) {
+        const TypeAnnotation* payload_type = module_.Make<ParamTypeAnnotation>(
+            const_cast<TypeAnnotation*>(constructor_type), i);
+        XLS_RETURN_IF_ERROR(
+            BindPatternToType(node->positional_patterns()[i], payload_type));
+      }
+      return absl::OkStatus();
+    }
+
+    if (!node->positional_patterns().empty()) {
+      return TypeInferenceErrorStatus(
+          node->span(), nullptr,
+          absl::Substitute(
+              "Struct constructor `$0` does not support positional "
+              "payload patterns.",
+              node->constructor()->ToString()),
+          file_table_);
+    }
+    XLS_RETURN_IF_ERROR(
+        ValidateStructPatternNames(*node, *variant, node->constructor()));
+    absl::flat_hash_map<std::string, const StructMemberNode*> member_map;
+    for (const StructMemberNode* member : variant->struct_members()) {
+      member_map.emplace(member->name(), member);
+    }
+    for (const auto& [name, pattern] : node->named_patterns()) {
+      const StructMemberNode* member = member_map.at(name);
+      const TypeAnnotation* payload_type = module_.Make<MemberTypeAnnotation>(
+          member->name_def()->span(),
+          const_cast<TypeAnnotation*>(constructor_type), member->name());
+      XLS_RETURN_IF_ERROR(BindPatternToType(pattern, payload_type));
+    }
+    return absl::OkStatus();
   }
 
   absl::Status HandleXlsTuple(const XlsTuple* node) override {
@@ -965,47 +1087,77 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
 
     XLS_ASSIGN_OR_RETURN(std::optional<StructOrProcRef> struct_or_proc_ref,
                          GetStructOrProcRef(node, import_data_));
-    if (!struct_or_proc_ref.has_value() ||
-        struct_or_proc_ref->parametrics.empty()) {
-      return DefaultHandler(node);
-    }
-    const StructDefBase* struct_def = struct_or_proc_ref->def;
-    if (struct_or_proc_ref->parametrics.size() >
-        struct_def->parametric_bindings().size()) {
-      return ArgCountMismatchErrorStatus(
-          node->span(),
-          absl::Substitute(
-              "Too many parametric values supplied; limit: $0 given: $1",
-              struct_def->parametric_bindings().size(),
-              struct_or_proc_ref->parametrics.size()),
-          file_table_);
-    }
-
-    // If any parametrics are explicitly specified, then they must all be
-    // explicit or defaulted. We technically could infer the rest, as with
-    // functions, but historically we choose not to. We must also constrain the
-    // actual parametric values to the binding type.
-    for (int i = 0; i < struct_def->parametric_bindings().size(); i++) {
-      const ParametricBinding* binding = struct_def->parametric_bindings()[i];
-      if (i < struct_or_proc_ref->parametrics.size()) {
-        if (std::holds_alternative<TypeAnnotation*>(
-                struct_or_proc_ref->parametrics[i])) {
-          continue;
-        }
-        const Expr* actual_expr =
-            i < struct_or_proc_ref->parametrics.size()
-                ? std::get<Expr*>(struct_or_proc_ref->parametrics[i])
-                : binding->expr();
-        XLS_RETURN_IF_ERROR(
-            DefineAndSetTypeVariable(actual_expr, "actual_expr"));
-        XLS_RETURN_IF_ERROR(
-            table_.SetTypeAnnotation(actual_expr, binding->type_annotation()));
-      } else if (binding->expr() == nullptr) {
+    if (struct_or_proc_ref.has_value() &&
+        !struct_or_proc_ref->parametrics.empty()) {
+      const StructDefBase* struct_def = struct_or_proc_ref->def;
+      if (struct_or_proc_ref->parametrics.size() >
+          struct_def->parametric_bindings().size()) {
         return ArgCountMismatchErrorStatus(
             node->span(),
-            absl::Substitute("No parametric value provided for `$0` in `$1`",
-                             binding->identifier(), struct_def->identifier()),
+            absl::Substitute(
+                "Too many parametric values supplied; limit: $0 given: $1",
+                struct_def->parametric_bindings().size(),
+                struct_or_proc_ref->parametrics.size()),
             file_table_);
+      }
+      for (int i = 0; i < struct_def->parametric_bindings().size(); ++i) {
+        const ParametricBinding* binding = struct_def->parametric_bindings()[i];
+        if (i < struct_or_proc_ref->parametrics.size()) {
+          if (std::holds_alternative<TypeAnnotation*>(
+                  struct_or_proc_ref->parametrics[i])) {
+            continue;
+          }
+          const Expr* actual_expr =
+              std::get<Expr*>(struct_or_proc_ref->parametrics[i]);
+          XLS_RETURN_IF_ERROR(
+              DefineAndSetTypeVariable(actual_expr, "actual_expr"));
+          XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(
+              actual_expr, binding->type_annotation()));
+        } else if (binding->expr() == nullptr) {
+          return ArgCountMismatchErrorStatus(
+              node->span(),
+              absl::Substitute("No parametric value provided for `$0` in `$1`",
+                               binding->identifier(), struct_def->identifier()),
+              file_table_);
+        }
+      }
+      return DefaultHandler(node);
+    }
+
+    XLS_ASSIGN_OR_RETURN(std::optional<SumRef> sum_ref,
+                         GetSumRef(node, import_data_));
+    if (sum_ref.has_value() && !sum_ref->parametrics.empty()) {
+      if (sum_ref->parametrics.size() >
+          sum_ref->def->parametric_bindings().size()) {
+        return ArgCountMismatchErrorStatus(
+            node->span(),
+            absl::Substitute(
+                "Too many parametric values supplied; limit: $0 given: $1",
+                sum_ref->def->parametric_bindings().size(),
+                sum_ref->parametrics.size()),
+            file_table_);
+      }
+      for (int i = 0; i < sum_ref->def->parametric_bindings().size(); ++i) {
+        const ParametricBinding* binding =
+            sum_ref->def->parametric_bindings()[i];
+        if (i < sum_ref->parametrics.size()) {
+          if (std::holds_alternative<TypeAnnotation*>(
+                  sum_ref->parametrics[i])) {
+            continue;
+          }
+          const Expr* actual_expr = std::get<Expr*>(sum_ref->parametrics[i]);
+          XLS_RETURN_IF_ERROR(
+              DefineAndSetTypeVariable(actual_expr, "actual_expr"));
+          XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(
+              actual_expr, binding->type_annotation()));
+        } else if (binding->expr() == nullptr) {
+          return ArgCountMismatchErrorStatus(
+              node->span(),
+              absl::Substitute("No parametric value provided for `$0` in `$1`",
+                               binding->identifier(),
+                               sum_ref->def->identifier()),
+              file_table_);
+        }
       }
     }
     return DefaultHandler(node);
@@ -1369,6 +1521,15 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(
           node, CreateStructAnnotation(module_, const_cast<StructDef*>(node),
                                        {}, std::nullopt)));
+    }
+    return DefaultHandler(node);
+  }
+
+  absl::Status HandleSumDef(const SumDef* node) override {
+    if (!node->IsParametric()) {
+      XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(
+          node, CreateSumAnnotation(module_, const_cast<SumDef*>(node),
+                                    std::vector<ExprOrType>{})));
     }
     return DefaultHandler(node);
   }
@@ -1809,6 +1970,16 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
 
         // The target must be a type or it's an invalid parametric to the macro.
         if (IsColonRefWithTypeTarget(table_, expr)) {
+          XLS_ASSIGN_OR_RETURN(
+              std::optional<SumRef> sum_ref,
+              GetSumRef(absl::down_cast<const ColonRef*>(expr), import_data_));
+          if (sum_ref.has_value()) {
+            return TypeInferenceErrorStatus(
+                *node->GetSpan(), nullptr,
+                absl::Substitute("Cannot use `$0` with sum type `$1`.",
+                                 node->ToString(), expr->ToString()),
+                file_table_);
+          }
           return absl::OkStatus();
         }
       }
@@ -1823,8 +1994,17 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     }
 
     // If the "type" is not an expr, then it is the type annotation.
-    XLS_RETURN_IF_ERROR(
-        table_.SetTypeAnnotation(node, std::get<TypeAnnotation*>(type)));
+    const TypeAnnotation* annotation = std::get<TypeAnnotation*>(type);
+    XLS_ASSIGN_OR_RETURN(std::optional<const SumDef*> sum_def,
+                         GetSumDef(annotation, import_data_));
+    if (sum_def.has_value()) {
+      return TypeInferenceErrorStatusForAnnotation(
+          annotation->span(), annotation,
+          absl::Substitute("Cannot use `$0` with sum type `$1`.",
+                           node->ToString(), annotation->ToString()),
+          file_table_);
+    }
+    XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(node, annotation));
     return DefaultHandler(node);
   }
 
@@ -1949,6 +2129,263 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     return std::nullopt;
   }
 
+  absl::StatusOr<std::optional<SumConstructorRef>> GetSumStructConstructorRef(
+      const TypeAnnotation* annotation) {
+    XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
+                         ResolveSumConstructor(annotation, import_data_));
+    if (!sum_constructor_ref.has_value()) {
+      return std::nullopt;
+    }
+    if (!sum_constructor_ref->variant->is_struct()) {
+      return std::nullopt;
+    }
+    return sum_constructor_ref;
+  }
+
+  TypeAnnotation* CreateSumConstructorValueAnnotation(const SumRef& sum_ref) {
+    return CreateSumAnnotation(module_, sum_ref);
+  }
+
+  absl::StatusOr<TypeAnnotation*> GetContextualSumConstructorValueAnnotation(
+      const ColonRef* node, const SumConstructorRef& ref) {
+    TypeAnnotation* syntax_sum_type = CreateSumConstructorValueAnnotation(
+        ref.sum_ref);
+    std::optional<const NameRef*> type_variable = table_.GetTypeVariable(node);
+    if (!type_variable.has_value()) {
+      return syntax_sum_type;
+    }
+    XLS_ASSIGN_OR_RETURN(std::vector<const TypeAnnotation*> annotations,
+                         table_.GetTypeAnnotationsForTypeVariable(
+                             std::nullopt, *type_variable));
+    for (const TypeAnnotation* annotation : annotations) {
+      if (!annotation->IsAnnotation<FunctionTypeAnnotation>()) {
+        continue;
+      }
+      const auto* function_type =
+          annotation->AsAnnotation<FunctionTypeAnnotation>();
+      if (!function_type->return_type()
+               ->IsAnnotation<TypeVariableTypeAnnotation>()) {
+        continue;
+      }
+      const auto* return_type =
+          function_type->return_type()
+              ->AsAnnotation<TypeVariableTypeAnnotation>();
+      XLS_ASSIGN_OR_RETURN(
+          std::optional<const TypeAnnotation*> declaration_type,
+          table_.GetDeclarationTypeAnnotation(return_type->type_variable()));
+      if (!declaration_type.has_value()) {
+        continue;
+      }
+      XLS_ASSIGN_OR_RETURN(std::optional<SumRef> contextual_sum_ref,
+                           GetSumRef(*declaration_type, import_data_));
+      if (!contextual_sum_ref.has_value() ||
+          contextual_sum_ref->def != ref.sum_ref.def) {
+        continue;
+      }
+      return const_cast<TypeAnnotation*>(*declaration_type);
+    }
+    return syntax_sum_type;
+  }
+
+  absl::Status SetSumConstructorType(const ColonRef* node,
+                                     const SumConstructorRef& ref) {
+    table_.SetColonRefTarget(node, ref.variant);
+    XLS_ASSIGN_OR_RETURN(
+        TypeAnnotation * sum_value_type,
+        GetContextualSumConstructorValueAnnotation(node, ref));
+    if (ref.variant->is_unit()) {
+      return table_.SetTypeAnnotation(node, sum_value_type);
+    }
+    if (!IsSupportedNonUnitSumConstructorContext(node)) {
+      return TypeInferenceErrorStatus(
+          node->span(), nullptr,
+          absl::Substitute(
+              "Non-unit constructor `$0` cannot be used as a value in "
+              "Phase 1; invoke it instead.",
+              node->ToString()),
+          file_table_);
+    }
+
+    return table_.SetTypeAnnotation(
+        node,
+        module_.Make<MemberTypeAnnotation>(AttrSpan(node), sum_value_type,
+                                           node->attr()));
+  }
+
+  bool IsSupportedNonUnitSumConstructorContext(const ColonRef* node) const {
+    if (allow_non_unit_sum_constructor_depth_ > 0) {
+      return true;
+    }
+    for (const AstNode* current = node->parent(); current != nullptr;
+         current = current->parent()) {
+      if (const auto* invocation = dynamic_cast<const Invocation*>(current);
+          invocation != nullptr) {
+        return invocation->callee() == node;
+      }
+      if (dynamic_cast<const ConstructorPattern*>(current) != nullptr ||
+          dynamic_cast<const StructInstanceBase*>(current) != nullptr) {
+        return true;
+      }
+      if (dynamic_cast<const TypeRef*>(current) != nullptr ||
+          dynamic_cast<const TypeRefTypeAnnotation*>(current) != nullptr) {
+        continue;
+      }
+      return false;
+    }
+    return false;
+  }
+
+  absl::Status ValidateStructPatternNames(const ConstructorPattern& pattern,
+                                          const SumVariant& variant,
+                                          const ColonRef* constructor) {
+    absl::btree_set<std::string> formal_names;
+    for (const StructMemberNode* member : variant.struct_members()) {
+      formal_names.insert(member->name());
+    }
+    absl::btree_set<std::string> actual_names;
+    for (const auto& [name, child_pattern] : pattern.named_patterns()) {
+      if (!formal_names.contains(name)) {
+        return TypeInferenceErrorStatus(
+            child_pattern->span(), nullptr,
+            absl::Substitute("Constructor `$0` has no member `$1`.",
+                             constructor->ToString(), name),
+            file_table_);
+      }
+      if (!actual_names.insert(name).second) {
+        return TypeInferenceErrorStatus(
+            child_pattern->span(), nullptr,
+            absl::Substitute("Duplicate payload pattern for `$0` in "
+                             "constructor `$1`.",
+                             name, constructor->ToString()),
+            file_table_);
+      }
+    }
+    if (actual_names.size() != formal_names.size()) {
+      absl::btree_set<std::string> missing_set;
+      absl::c_set_difference(formal_names, actual_names,
+                             std::inserter(missing_set, missing_set.begin()));
+      std::vector<std::string> missing(missing_set.begin(), missing_set.end());
+      return TypeInferenceErrorStatus(
+          pattern.span(), nullptr,
+          absl::Substitute(
+              "Constructor pattern `$0` is missing member(s): $1",
+              constructor->ToString(),
+              absl::StrJoin(missing, ", ",
+                            [](std::string* out, const std::string& piece) {
+                              absl::StrAppendFormat(out, "`%s`", piece);
+                            })),
+          file_table_);
+    }
+    return absl::OkStatus();
+  }
+
+  absl::Status ValidateNamedMemberInstance(
+      const StructInstanceBase& instance,
+      const std::vector<StructMemberNode*>& formal_members,
+      std::string_view aggregate_name, bool is_struct) {
+    absl::btree_set<std::string> formal_names;
+    for (const StructMemberNode* member : formal_members) {
+      formal_names.insert(member->name());
+    }
+    absl::btree_set<std::string> actual_names;
+    for (const auto& [name, expr] : instance.GetUnorderedMembers()) {
+      if (!formal_names.contains(name)) {
+        return TypeInferenceErrorStatus(
+            expr->span(), nullptr,
+            is_struct
+                ? absl::Substitute(
+                      "Struct `$0` has no member `$1`, but it was provided by "
+                      "this instance.",
+                      aggregate_name, name)
+                : absl::Substitute(
+                      "Constructor `$0` has no member `$1`, but it was "
+                      "provided by this instance.",
+                      aggregate_name, name),
+            file_table_);
+      }
+      if (!actual_names.insert(name).second) {
+        return TypeInferenceErrorStatus(
+            expr->span(), nullptr,
+            is_struct
+                ? absl::Substitute(
+                      "Duplicate value seen for `$0` in this `$1` struct "
+                      "instance.",
+                      name, aggregate_name)
+                : absl::Substitute(
+                      "Duplicate value seen for `$0` in constructor `$1`.",
+                      name, aggregate_name),
+            file_table_);
+      }
+    }
+    if (instance.requires_all_members() &&
+        actual_names.size() != formal_names.size()) {
+      absl::btree_set<std::string> missing_set;
+      absl::c_set_difference(formal_names, actual_names,
+                             std::inserter(missing_set, missing_set.begin()));
+      std::vector<std::string> missing(missing_set.begin(), missing_set.end());
+      return TypeInferenceErrorStatus(
+          instance.span(), nullptr,
+          is_struct
+              ? absl::Substitute(
+                    "Instance of struct `$0` is missing member(s): $1",
+                    aggregate_name,
+                    absl::StrJoin(missing, ", ",
+                                  [](std::string* out,
+                                     const std::string& piece) {
+                                    absl::StrAppendFormat(out, "`%s`", piece);
+                                  }))
+              : absl::Substitute(
+                    "Instance of constructor `$0` is missing member(s): $1",
+                    aggregate_name,
+                    absl::StrJoin(missing, ", ",
+                                  [](std::string* out,
+                                     const std::string& piece) {
+                                    absl::StrAppendFormat(out, "`%s`", piece);
+                                  })),
+          file_table_);
+    }
+    return absl::OkStatus();
+  }
+
+  absl::Status BindNamedMemberInstance(
+      const StructInstanceBase& instance, const TypeAnnotation* aggregate_type,
+      const std::vector<StructMemberNode*>& formal_members) {
+    absl::flat_hash_map<std::string, const StructMemberNode*> formal_member_map;
+    for (const StructMemberNode* formal_member : formal_members) {
+      formal_member_map.emplace(formal_member->name(), formal_member);
+    }
+    for (const auto& [name, actual_member] : instance.members()) {
+      const StructMemberNode* formal_member = formal_member_map.at(name);
+      const TypeAnnotation* formal_member_type =
+          module_.Make<MemberTypeAnnotation>(formal_member->name_def()->span(),
+                                             const_cast<TypeAnnotation*>(
+                                                 aggregate_type),
+                                             formal_member->name());
+      table_.SetAnnotationFlag(formal_member_type,
+                               TypeInferenceFlag::kFormalMemberType);
+      XLS_RETURN_IF_ERROR(
+          DefineAndSetTypeVariable(actual_member, "actual_member",
+                                   formal_member_type));
+      XLS_RETURN_IF_ERROR(
+          table_.SetTypeAnnotation(actual_member, formal_member_type));
+      XLS_RETURN_IF_ERROR(actual_member->Accept(this));
+    }
+    return absl::OkStatus();
+  }
+
+  absl::Status BindPatternToType(const NameDefTree* pattern,
+                                 const TypeAnnotation* type) {
+    const AstNode* actual_child =
+        pattern->is_leaf() ? ToAstNode(pattern->leaf()) : pattern;
+    XLS_RETURN_IF_ERROR(
+        DefineAndSetTypeVariable(actual_child, "sum_pattern", type));
+    XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(actual_child, type));
+    if (pattern->is_leaf()) {
+      return actual_child->Accept(this);
+    }
+    return HandleNameDefTreeChildren(pattern, type);
+  }
+
   // Helper that creates an internal type variable for a `ConstantDef`, `Param`,
   // or similar type of node that contains a `NameDef` and optional
   // `TypeAnnotation`.
@@ -2048,52 +2485,6 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     return absl::OkStatus();
   }
 
-  // Ensures that a `StructInstance` nodes provides exprs for all the names in a
-  // struct definition, with no extraneous or duplicate names.
-  absl::Status ValidateStructInstanceMemberNames(
-      const StructInstanceBase& instance, const StructDefBase& def) {
-    std::vector<std::string> formal_name_vector = def.GetMemberNames();
-    absl::btree_set<std::string> formal_names(formal_name_vector.begin(),
-                                              formal_name_vector.end());
-    absl::btree_set<std::string> actual_names;
-    for (const auto& [name, expr] : instance.GetUnorderedMembers()) {
-      if (!formal_names.contains(name)) {
-        return TypeInferenceErrorStatus(
-            expr->span(), nullptr,
-            absl::Substitute("Struct `$0` has no member `$1`, but it was "
-                             "provided by this instance.",
-                             def.identifier(), name),
-            file_table_);
-      }
-      if (!actual_names.insert(name).second) {
-        return TypeInferenceErrorStatus(
-            expr->span(), nullptr,
-            absl::Substitute(
-                "Duplicate value seen for `$0` in this `$1` struct instance.",
-                name, def.identifier()),
-            file_table_);
-      }
-    }
-    if (instance.requires_all_members() &&
-        actual_names.size() != formal_names.size()) {
-      absl::btree_set<std::string> missing_set;
-      absl::c_set_difference(formal_names, actual_names,
-                             std::inserter(missing_set, missing_set.begin()));
-      std::vector<std::string> missing(missing_set.begin(), missing_set.end());
-      return TypeInferenceErrorStatus(
-          instance.span(), nullptr,
-          absl::Substitute(
-              "Instance of struct `$0` is missing member(s): $1",
-              def.identifier(),
-              absl::StrJoin(missing, ", ",
-                            [](std::string* out, const std::string& piece) {
-                              absl::StrAppendFormat(out, "`%s`", piece);
-                            })),
-          file_table_);
-    }
-    return absl::OkStatus();
-  }
-
   // Gets the explicit type annotation (expected to be of type `T` if it is
   // direct) for a node by querying the type variable that it shares with a
   // declaration, if any. This must be done before imposing any synthetic type
@@ -2133,7 +2524,36 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     // named arguments instead of parallel ordering. The naming of arguments
     // creates additional pitfalls, like erroneously naming two different
     // arguments the same thing.
-    XLS_RETURN_IF_ERROR(node->struct_ref()->Accept(this));
+    ++allow_non_unit_sum_constructor_depth_;
+    absl::Status struct_ref_status = node->struct_ref()->Accept(this);
+    --allow_non_unit_sum_constructor_depth_;
+    XLS_RETURN_IF_ERROR(struct_ref_status);
+    XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
+                         GetSumStructConstructorRef(node->struct_ref()));
+    if (sum_constructor_ref.has_value()) {
+      if (source.has_value()) {
+        return TypeInferenceErrorStatusForAnnotation(
+            node->span(), node->struct_ref(),
+            "Struct-style sum constructors do not support splat syntax.",
+            file_table_);
+      }
+      const NameRef* type_variable = *table_.GetTypeVariable(node);
+      XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(
+          node, CreateSumAnnotation(module_, sum_constructor_ref->sum_ref)));
+      XLS_RETURN_IF_ERROR(ValidateNamedMemberInstance(
+          *node, sum_constructor_ref->variant->struct_members(),
+          sum_constructor_ref->variant->identifier(), /*is_struct=*/false));
+      const TypeAnnotation* sum_value_type =
+          module_.Make<TypeVariableTypeAnnotation>(type_variable);
+      const TypeAnnotation* constructor_type =
+          module_.Make<MemberTypeAnnotation>(
+              node->struct_ref()->span(),
+              const_cast<TypeAnnotation*>(sum_value_type),
+              sum_constructor_ref->variant->identifier());
+      XLS_RETURN_IF_ERROR(BindNamedMemberInstance(
+          *node, constructor_type, sum_constructor_ref->variant->struct_members()));
+      return absl::OkStatus();
+    }
     XLS_ASSIGN_OR_RETURN(std::optional<StructOrProcRef> struct_or_proc_ref,
                          GetStructOrProcRef(node->struct_ref(), import_data_));
     if (!struct_or_proc_ref.has_value()) {
@@ -2162,28 +2582,15 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
         node,
         CreateStructAnnotation(module_, const_cast<StructDef*>(struct_def),
                                struct_or_proc_ref->parametrics, node)));
-    XLS_RETURN_IF_ERROR(ValidateStructInstanceMemberNames(*node, *struct_def));
+    XLS_RETURN_IF_ERROR(ValidateNamedMemberInstance(
+        *node, struct_def->members(), struct_def->identifier(),
+        /*is_struct=*/true));
 
-    absl::flat_hash_map<std::string, const StructMemberNode*> formal_member_map;
-    for (const StructMemberNode* formal_member : struct_def->members()) {
-      formal_member_map.emplace(formal_member->name(), formal_member);
-    }
     const TypeAnnotation* struct_variable_type =
         module_.Make<TypeVariableTypeAnnotation>(type_variable);
-    for (const auto& [name, actual_member] : node->members()) {
-      const StructMemberNode* formal_member = formal_member_map.at(name);
-      const TypeAnnotation* formal_member_type =
-          module_.Make<MemberTypeAnnotation>(formal_member->name_def()->span(),
-                                             struct_variable_type,
-                                             formal_member->name());
-      table_.SetAnnotationFlag(formal_member_type,
-                               TypeInferenceFlag::kFormalMemberType);
-      XLS_RETURN_IF_ERROR(DefineAndSetTypeVariable(
-          actual_member, "actual_member", formal_member_type));
-      XLS_RETURN_IF_ERROR(
-          table_.SetTypeAnnotation(actual_member, formal_member_type));
-      XLS_RETURN_IF_ERROR(actual_member->Accept(this));
-    }
+    XLS_RETURN_IF_ERROR(
+        BindNamedMemberInstance(*node, struct_variable_type,
+                                struct_def->members()));
     return absl::OkStatus();
   }
 
@@ -2192,6 +2599,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
   const FileTable& file_table_;
   ImportData& import_data_;
   TypecheckModuleFn typecheck_imported_module_;
+  int allow_non_unit_sum_constructor_depth_ = 0;
   bool handle_proc_functions_ = false;
 };
 

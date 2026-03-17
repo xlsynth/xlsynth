@@ -210,6 +210,12 @@ class MakeValueVisitor : public TypeVisitor {
     result_ = InterpValue::MakeTuple(std::move(elems));
     return absl::OkStatus();
   }
+  absl::Status HandleSum(const SumType& t) override {
+    return TypeInferenceErrorStatus(
+        span_, &t,
+        absl::StrFormat("Cannot make a %s of sum type.", value_name_),
+        file_table());
+  }
   absl::Status HandleProc(const ProcType& t) override {
     return TypeInferenceErrorStatus(
         span_, &t,

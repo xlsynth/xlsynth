@@ -226,6 +226,26 @@ class Unifier {
                  : UnifyParametricStructAnnotations(*struct_def,
                                                     annotations_to_unify);
     }
+    XLS_ASSIGN_OR_RETURN(std::optional<SumRef> first_sum_ref,
+                         GetSumRef(annotations[0], import_data_));
+    if (first_sum_ref.has_value()) {
+      const SumDef* sum_def = first_sum_ref->def;
+      std::vector<const TypeAnnotation*> annotations_to_unify;
+      for (const TypeAnnotation* annotation : annotations) {
+        XLS_ASSIGN_OR_RETURN(std::optional<SumRef> next_sum_ref,
+                             GetSumRef(annotation, import_data_));
+        if (!next_sum_ref.has_value() || next_sum_ref->def != sum_def) {
+          return error_generator_.TypeMismatchError(parametric_context_,
+                                                    annotations[0], annotation);
+        }
+        if (sum_def->IsParametric()) {
+          annotations_to_unify.push_back(annotation);
+        }
+      }
+      return annotations_to_unify.empty()
+                 ? annotations[0]
+                 : UnifyParametricSumAnnotations(*sum_def, annotations_to_unify);
+    }
     return UnifyBitsLikeTypeAnnotations(annotations, span);
   }
 
@@ -532,6 +552,55 @@ class Unifier {
         instantiator.has_value() ? (*instantiator)->span()
                                  : annotations[0]->span(),
         parametric_context_, struct_def, explicit_parametrics, instantiator);
+  }
+
+  // Unifies multiple annotations for a parametric sum, and produces an
+  // annotation with agreeing explicit parametric values. Unlike parametric
+  // structs, sum constructors do not yet have a dedicated instantiation path,
+  // so this unifier only propagates explicit values already present on one or
+  // more of the annotations.
+  absl::StatusOr<const TypeAnnotation*> UnifyParametricSumAnnotations(
+      const SumDef& sum_def, std::vector<const TypeAnnotation*> annotations) {
+    VLOG(6) << "Unifying parametric sum annotations; sum def: "
+            << sum_def.identifier();
+    std::vector<ExprOrType> unified_parametrics;
+    std::vector<InterpValue> unified_parametric_values;
+    for (const TypeAnnotation* annotation : annotations) {
+      XLS_ASSIGN_OR_RETURN(std::optional<SumRef> sum_ref,
+                           GetSumRef(annotation, import_data_));
+      XLS_RET_CHECK(sum_ref.has_value());
+      for (int i = 0; i < sum_ref->parametrics.size(); ++i) {
+        ExprOrType parametric = sum_ref->parametrics[i];
+        std::optional<InterpValue> value;
+        if (std::holds_alternative<TypeAnnotation*>(parametric)) {
+          value = InterpValue::MakeTypeReference(
+              std::get<TypeAnnotation*>(parametric));
+        } else {
+          XLS_ASSIGN_OR_RETURN(
+              InterpValue evaluated_value,
+              evaluator_.Evaluate(ParametricContextScopedExpr(
+                  parametric_context_,
+                  sum_def.parametric_bindings()[i]->type_annotation(),
+                  std::get<Expr*>(parametric))));
+          value = std::move(evaluated_value);
+        }
+        if (i == unified_parametrics.size()) {
+          unified_parametrics.push_back(parametric);
+          unified_parametric_values.push_back(*value);
+        } else if (*value != unified_parametric_values[i]) {
+          return TypeInferenceErrorStatusForAnnotation(
+              annotation->span(), annotation,
+              absl::Substitute("Value mismatch for parametric `$0` of sum "
+                               "`$1`: $2 vs. $3",
+                               sum_def.parametric_bindings()[i]->identifier(),
+                               sum_def.identifier(), value->ToString(),
+                               unified_parametric_values[i].ToString()),
+              file_table_);
+        }
+      }
+    }
+    return CreateSumAnnotation(module_, const_cast<SumDef*>(&sum_def),
+                               unified_parametrics);
   }
 
   absl::StatusOr<const TypeAnnotation*> UnifyBitsLikeTypeAnnotations(

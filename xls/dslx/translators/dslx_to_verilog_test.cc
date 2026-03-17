@@ -138,6 +138,33 @@ type AliasType1 = Point[1];
   ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
 }
 
+TEST_F(DslxToVerilogTest, SemanticSumTypeDefinition) {
+  constexpr std::string_view program =
+      R"(
+pub enum MaybeWord {
+  None,
+  Some(u32),
+  Pair { lo: u8, hi: u8 },
+}
+)";
+
+  dslx::ImportData import_data = dslx::CreateImportDataForTest();
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      dslx::ParseAndTypecheck(program, "test_module.x", "test_module",
+                              &import_data, nullptr));
+
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+
+  for (const TypeDefinition& def : tm.module->GetTypeDefinitions()) {
+    XLS_ASSERT_OK(type_to_verilog.AddTypeForTypeDefinition(def, &import_data));
+  }
+
+  ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
+}
+
 TEST_F(DslxToVerilogTest, NestedTypeDefinition) {
   constexpr std::string_view program =
       R"(

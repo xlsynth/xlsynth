@@ -37,6 +37,7 @@
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/sum_type_encoding.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/ir/bits.h"
@@ -113,8 +114,29 @@ std::optional<std::string_view> TypeDefinitionIdentifier(
           [](EnumDef* enum_def) -> std::optional<std::string_view> {
             return enum_def->name_def()->identifier();
           },
+          [](SumDef* sum_def) -> std::optional<std::string_view> {
+            return sum_def->name_def()->identifier();
+          },
       },
       resolved_type_definition.definition);
+}
+
+std::vector<const TypeAnnotation*> GetSumPayloadTypeAnnotations(
+    const SumDef& sum_def) {
+  std::vector<const TypeAnnotation*> result;
+  for (const SumVariant* variant : sum_def.variants()) {
+    if (variant->is_tuple()) {
+      result.insert(result.end(), variant->tuple_members().begin(),
+                    variant->tuple_members().end());
+      continue;
+    }
+    if (variant->is_struct()) {
+      for (const StructMemberNode* member : variant->struct_members()) {
+        result.push_back(member->type());
+      }
+    }
+  }
+  return result;
 }
 }  // namespace
 
@@ -386,6 +408,51 @@ DslxTypeToVerilogManager::TypeDefinitionToVastType(
                 }
 
                 return vast_enum_def;
+              },
+              [&](SumDef* sum_def) -> absl::StatusOr<verilog::DataType*> {
+                XLS_RET_CHECK(type->IsSum());
+                const SumType& sum_type = type->AsSum();
+                const SumTypeEncoding encoding(sum_type);
+                std::vector<const TypeAnnotation*> payload_type_annotations =
+                    GetSumPayloadTypeAnnotations(*sum_def);
+                XLS_RET_CHECK_EQ(payload_type_annotations.size(),
+                                 encoding.payload_slot_count());
+
+                std::vector<verilog::Def*> vast_struct_members;
+                XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count,
+                                     encoding.tag_bit_count());
+                verilog::DataType* tag_type =
+                    tag_bit_count == 1
+                        ? static_cast<verilog::DataType*>(
+                              file_->Make<verilog::ScalarType>(SourceInfo()))
+                        : static_cast<verilog::DataType*>(
+                              file_->Make<verilog::BitVectorType>(
+                                  SourceInfo(), tag_bit_count, false));
+                vast_struct_members.push_back(file_->Make<verilog::Def>(
+                    SourceInfo(), "tag", verilog::DataKind::kLogic, tag_type));
+
+                int64_t payload_index = 0;
+                XLS_RETURN_IF_ERROR(encoding.ForEachPayloadType(
+                    [&](const Type& payload_type) -> absl::Status {
+                      XLS_ASSIGN_OR_RETURN(
+                          verilog::DataType * payload_data_type,
+                          TypeAnnotationToVastType(
+                              &payload_type,
+                              payload_type_annotations.at(payload_index),
+                              import_data));
+                      vast_struct_members.push_back(file_->Make<verilog::Def>(
+                          SourceInfo(),
+                          absl::StrFormat("payload_%d", payload_index),
+                          payload_data_type->IsUserDefined()
+                              ? verilog::DataKind::kUser
+                              : verilog::DataKind::kLogic,
+                          payload_data_type));
+                      ++payload_index;
+                      return absl::OkStatus();
+                    }));
+
+                return file_->Make<verilog::Struct>(SourceInfo(),
+                                                    vast_struct_members);
               },
           },
           resolved_type_definition_source.definition));

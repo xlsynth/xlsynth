@@ -38,6 +38,7 @@
 #include "xls/data_structures/inline_bitmap.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/ast_utils.h"
+#include "xls/dslx/interp_value_utils.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/interp_value.h"
@@ -312,6 +313,56 @@ absl::StatusOr<Expr*> GenerateDslxConstant(absl::BitGenRef bit_gen,
             return module->Make<dslx::ColonRef>(fake_span, name_ref,
                                                 value.name_def->identifier());
           },
+          [&](dslx::SumDef* sum_def) -> absl::StatusOr<Expr*> {
+            if (sum_def->variants().empty()) {
+              return absl::InvalidArgumentError(
+                  "Cannot generate a constant for an empty sum type.");
+            }
+
+            int64_t variant_index = absl::Uniform(
+                bit_gen, size_t{0}, sum_def->variants().size());
+            dslx::SumVariant* variant = sum_def->variants().at(variant_index);
+            auto* sum_type_ref = module->Make<dslx::TypeRef>(fake_span, sum_def);
+            auto* sum_type_annotation =
+                module->Make<dslx::TypeRefTypeAnnotation>(
+                    fake_span, sum_type_ref, std::vector<dslx::ExprOrType>{});
+            auto* constructor_ref = module->Make<dslx::ColonRef>(
+                fake_span, sum_type_annotation, variant->identifier());
+            if (variant->is_unit()) {
+              return constructor_ref;
+            }
+            if (variant->is_tuple()) {
+              std::vector<Expr*> args;
+              args.reserve(variant->tuple_members().size());
+              for (dslx::TypeAnnotation* member_type :
+                   variant->tuple_members()) {
+                XLS_ASSIGN_OR_RETURN(Expr * member_value,
+                                     GenerateDslxConstant(bit_gen, module,
+                                                          member_type));
+                args.push_back(member_value);
+              }
+              return module->Make<dslx::Invocation>(fake_span, constructor_ref,
+                                                    args);
+            }
+
+            std::vector<std::pair<std::string, Expr*>> members;
+            members.reserve(variant->struct_members().size());
+            auto* constructor_type_ref =
+                module->Make<dslx::TypeRef>(fake_span, constructor_ref);
+            auto* constructor_type_annotation =
+                module->Make<dslx::TypeRefTypeAnnotation>(
+                    fake_span, constructor_type_ref,
+                    std::vector<dslx::ExprOrType>{});
+            for (dslx::StructMemberNode* member : variant->struct_members()) {
+              XLS_ASSIGN_OR_RETURN(Expr * member_value,
+                                   GenerateDslxConstant(bit_gen, module,
+                                                        member->type()));
+              members.push_back(
+                  std::make_pair(member->name(), member_value));
+            }
+            return module->Make<dslx::StructInstance>(
+                fake_span, constructor_type_annotation, members);
+          },
           [&](dslx::ColonRef* colon_ref) -> absl::StatusOr<Expr*> {
             return absl::UnimplementedError(
                 "Generating constants of ColonRef types isn't yet supported.");
@@ -367,6 +418,30 @@ static absl::StatusOr<InterpValue> GenerateBitsLikeInterpValue(
   return InterpValue::MakeBits(tag, Bits::FromBitmap(std::move(bitmap)));
 }
 
+static absl::StatusOr<InterpValue> GenerateSumInterpValue(
+    absl::BitGenRef bit_gen, const dslx::SumType& sum_type,
+    absl::Span<const InterpValue> prior) {
+  if (sum_type.variants().empty()) {
+    return absl::InvalidArgumentError(
+        "Cannot generate an InterpValue for an empty sum type.");
+  }
+
+  int64_t variant_index =
+      absl::Uniform(bit_gen, size_t{0}, sum_type.variants().size());
+  const dslx::SumTypeVariant& variant = sum_type.variants().at(variant_index);
+
+  std::vector<InterpValue> payload_values;
+  payload_values.reserve(variant.size());
+  for (const std::unique_ptr<dslx::Type>& member : variant.payload_members()) {
+    XLS_ASSIGN_OR_RETURN(InterpValue member_value,
+                         GenerateInterpValue(bit_gen, *member, prior));
+    payload_values.push_back(std::move(member_value));
+  }
+
+  return dslx::CreateSumValue(sum_type, variant.variant().identifier(),
+                              payload_values);
+}
+
 absl::StatusOr<InterpValue> GenerateInterpValue(
     absl::BitGenRef bit_gen, const dslx::Type& arg_type,
     absl::Span<const InterpValue> prior) {
@@ -387,6 +462,9 @@ absl::StatusOr<InterpValue> GenerateInterpValue(
       members.push_back(member);
     }
     return InterpValue::MakeTuple(members);
+  }
+  if (auto* sum_type = dynamic_cast<const dslx::SumType*>(&arg_type)) {
+    return GenerateSumInterpValue(bit_gen, *sum_type, prior);
   }
 
   // Note: we have to test for BitsLike before ArrayType because

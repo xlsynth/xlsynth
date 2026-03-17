@@ -87,6 +87,36 @@ absl::StatusOr<ValueFormatDescriptor> MakeEnumFormatDescriptor(
                                          std::move(value_to_name));
 }
 
+absl::StatusOr<ValueFormatDescriptor> MakeSumFormatDescriptor(
+    const SumType& type, FormatPreference field_preference) {
+  std::vector<ValueFormatSumVariantDescriptor> variants;
+  variants.reserve(type.variant_count());
+  for (const SumTypeVariant& variant : type.variants()) {
+    ValueFormatSumVariantDescriptor variant_desc{
+        .name = std::string(variant.variant().identifier()),
+        .kind = variant.is_unit()   ? ValueFormatSumVariantKind::kUnit
+                : variant.is_tuple() ? ValueFormatSumVariantKind::kTuple
+                                     : ValueFormatSumVariantKind::kStruct,
+    };
+    variant_desc.payload_formats.reserve(variant.size());
+    if (variant.is_struct()) {
+      variant_desc.field_names.reserve(variant.size());
+      for (int64_t i = 0; i < variant.size(); ++i) {
+        variant_desc.field_names.push_back(
+            std::string(variant.GetMemberName(i)));
+      }
+    }
+    for (const std::unique_ptr<Type>& member : variant.payload_members()) {
+      XLS_ASSIGN_OR_RETURN(ValueFormatDescriptor payload_format,
+                           MakeValueFormatDescriptor(*member, field_preference));
+      variant_desc.payload_formats.push_back(std::move(payload_format));
+    }
+    variants.push_back(std::move(variant_desc));
+  }
+  return ValueFormatDescriptor::MakeSum(type.nominal_type().identifier(), variants,
+                                        field_preference);
+}
+
 }  // namespace
 
 absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
@@ -108,6 +138,11 @@ absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
     absl::Status HandleStruct(const StructType& t) override {
       XLS_ASSIGN_OR_RETURN(result_,
                            MakeStructFormatDescriptor(t, field_preference_));
+      return absl::OkStatus();
+    }
+    absl::Status HandleSum(const SumType& t) override {
+      XLS_ASSIGN_OR_RETURN(result_,
+                           MakeSumFormatDescriptor(t, field_preference_));
       return absl::OkStatus();
     }
     absl::Status HandleProc(const ProcType& t) override {

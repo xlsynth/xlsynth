@@ -50,12 +50,15 @@
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/interp_value_internal_utils.h"
 #include "xls/dslx/interp_value_utils.h"
 #include "xls/dslx/make_value_format_descriptor.h"
+#include "xls/dslx/sum_type_encoding.h"
 #include "xls/dslx/type_system/deduce_utils.h"
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
+#include "xls/dslx/type_system_v2/import_utils.h"
 #include "xls/dslx/value_format_descriptor.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/format_preference.h"
@@ -110,6 +113,17 @@ absl::StatusOr<ValueFormatDescriptor> ExprToValueFormatDescriptor(
   XLS_RET_CHECK(maybe_type.has_value());
   XLS_RET_CHECK(maybe_type.value() != nullptr);
   return MakeValueFormatDescriptor(*maybe_type.value(), field_preference);
+}
+
+absl::StatusOr<const ColonRef*> GetConstructorRef(
+    const TypeAnnotation* type_annotation) {
+  auto* type_ref_type_annotation =
+      dynamic_cast<const TypeRefTypeAnnotation*>(type_annotation);
+  XLS_RET_CHECK_NE(type_ref_type_annotation, nullptr);
+  TypeDefinition type_definition =
+      type_ref_type_annotation->type_ref()->type_definition();
+  XLS_RET_CHECK(std::holds_alternative<ColonRef*>(type_definition));
+  return std::get<ColonRef*>(type_definition);
 }
 
 std::optional<ValueFormatDescriptor> GetFormatDescriptorFromNumber(
@@ -553,7 +567,8 @@ absl::Status BytecodeEmitter::HandleBuiltinRecv(const Invocation* node) {
   // true. Required because the Recv bytecode has a predicate and default value
   // operand.
   XLS_ASSIGN_OR_RETURN(InterpValue default_value,
-                       CreateZeroValueFromType(channel_data.payload_type()));
+                       internal::CreateInternalPlaceholderValueFromType(
+                           channel_data.payload_type()));
   Add(Bytecode::MakeLiteral(node->span(), default_value));
   Add(Bytecode::MakeRecv(node->span(), std::move(channel_data)));
   return absl::OkStatus();
@@ -828,8 +843,21 @@ absl::Status BytecodeEmitter::HandleColonRef(const ColonRef* node) {
   return absl::OkStatus();
 }
 
+absl::StatusOr<InterpValue> BytecodeEmitter::HandleUnitSumConstructor(
+    const ColonRef* colon_ref, const SumType& sum_type) {
+  return CreateSumValue(sum_type, colon_ref->attr(), {});
+}
+
 absl::StatusOr<InterpValue> BytecodeEmitter::HandleColonRefInternal(
     const ColonRef* node) {
+  XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
+                       ResolveSumConstructor(node, *import_data_));
+  if (sum_constructor_ref.has_value()) {
+    std::optional<Type*> type = type_info_->GetItem(node);
+    XLS_RET_CHECK(type.has_value());
+    XLS_RET_CHECK((*type)->IsSum());
+    return HandleUnitSumConstructor(node, (*type)->AsSum());
+  }
   return type_info_->GetConstExpr(node);
 }
 
@@ -1116,6 +1144,39 @@ absl::Status BytecodeEmitter::PushResolvedCallee(const Invocation* invocation) {
   return absl::OkStatus();
 }
 
+absl::Status BytecodeEmitter::HandleSumConstructorInvocation(
+    const Invocation* node, const SumType& sum_type,
+    const ColonRef* constructor_ref) {
+  const SumTypeEncoding encoding(sum_type);
+  XLS_ASSIGN_OR_RETURN(SumTypeEncoding::VariantInfo variant,
+                       encoding.GetVariant(constructor_ref->attr()));
+  XLS_RET_CHECK_EQ(node->args().size(), variant.payload_size());
+
+  XLS_RETURN_IF_ERROR(encoding.VisitPayloadAssemblyOrder(
+      variant,
+      [&](int64_t active_index) -> absl::Status {
+        return node->args().at(active_index)->AcceptExpr(this);
+      },
+      [&](const Type& inactive_type) -> absl::Status {
+        XLS_ASSIGN_OR_RETURN(
+            InterpValue zero,
+            internal::CreateInternalPlaceholderValueFromType(inactive_type));
+        Add(Bytecode::MakeLiteral(node->span(), zero));
+        return absl::OkStatus();
+      }));
+
+  Add(Bytecode(node->span(), Bytecode::Op::kCreateTuple,
+               Bytecode::NumElements(encoding.payload_slot_count())));
+  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
+  Add(Bytecode::MakeLiteral(
+      node->span(),
+      InterpValue::MakeUBits(tag_bit_count, variant.variant_index)));
+  Add(Bytecode(node->span(), Bytecode::Op::kSwap));
+  Add(Bytecode(node->span(), Bytecode::Op::kCreateTuple,
+               Bytecode::NumElements(2)));
+  return absl::OkStatus();
+}
+
 absl::Status BytecodeEmitter::HandleInvocation(const Invocation* node) {
   if (NameRef* name_ref = dynamic_cast<NameRef*>(node->callee());
       name_ref != nullptr && name_ref->IsBuiltin()) {
@@ -1171,6 +1232,18 @@ absl::Status BytecodeEmitter::HandleInvocation(const Invocation* node) {
     }
   }
 
+  if (auto* callee = dynamic_cast<ColonRef*>(node->callee())) {
+    XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
+                         ResolveSumConstructor(callee, *import_data_));
+    if (sum_constructor_ref.has_value()) {
+      std::optional<Type*> node_type = type_info_->GetItem(node);
+      XLS_RET_CHECK(node_type.has_value());
+      XLS_RET_CHECK((*node_type)->IsSum());
+      return HandleSumConstructorInvocation(node, (*node_type)->AsSum(),
+                                            callee);
+    }
+  }
+
   for (auto* arg : node->args()) {
     XLS_RETURN_IF_ERROR(arg->AcceptExpr(this));
   }
@@ -1199,6 +1272,53 @@ absl::Status BytecodeEmitter::HandleInvocation(const Invocation* node) {
       node->span(), Bytecode::Op::kCall,
       Bytecode::InvocationData{node, caller_bindings_, callee_bindings}));
   return absl::OkStatus();
+}
+
+absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandleConstructorPattern(
+    const ConstructorPattern* pattern, const SumType& sum_type) {
+  const SumTypeEncoding encoding(sum_type);
+  XLS_ASSIGN_OR_RETURN(SumTypeEncoding::VariantInfo variant,
+                       encoding.GetVariant(pattern->constructor()->attr()));
+  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
+
+  std::vector<Bytecode::MatchArmItem> payload_items(
+      encoding.payload_slot_count(), Bytecode::MatchArmItem::MakeWildcard());
+  if (pattern->is_tuple()) {
+    XLS_RET_CHECK_EQ(pattern->positional_patterns().size(), variant.payload_size());
+    XLS_RETURN_IF_ERROR(encoding.ForEachActivePayloadSlot(
+        variant,
+        [&](int64_t slot_index, int64_t active_index,
+            const Type& slot_type) -> absl::Status {
+          XLS_ASSIGN_OR_RETURN(
+              payload_items[slot_index],
+              HandleNameDefTreeExpr(
+                  pattern->positional_patterns().at(active_index),
+                  const_cast<Type*>(&slot_type)));
+          return absl::OkStatus();
+        }));
+  } else if (pattern->is_struct()) {
+    const SumTypeVariant& sum_variant = *variant.variant;
+    absl::flat_hash_map<std::string_view, NameDefTree*> named_patterns;
+    for (const auto& [name, subpattern] : pattern->named_patterns()) {
+      named_patterns.emplace(name, subpattern);
+    }
+    XLS_RETURN_IF_ERROR(encoding.ForEachActivePayloadSlot(
+        variant,
+        [&](int64_t slot_index, int64_t active_index,
+            const Type& slot_type) -> absl::Status {
+          XLS_ASSIGN_OR_RETURN(
+              payload_items[slot_index],
+              HandleNameDefTreeExpr(
+                  named_patterns.at(sum_variant.GetMemberName(active_index)),
+                  const_cast<Type*>(&slot_type)));
+          return absl::OkStatus();
+        }));
+  }
+
+  return Bytecode::MatchArmItem::MakeTuple(
+      {Bytecode::MatchArmItem::MakeInterpValue(
+           InterpValue::MakeUBits(tag_bit_count, variant.variant_index)),
+       Bytecode::MatchArmItem::MakeTuple(std::move(payload_items))});
 }
 
 absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandleNameDefTreeExpr(
@@ -1248,6 +1368,14 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandleNameDefTreeExpr(
             },
             [&](WildcardPattern* n) -> absl::StatusOr<Bytecode::MatchArmItem> {
               return Bytecode::MatchArmItem::MakeWildcard();
+            },
+            [&](ConstructorPattern* constructor_pattern)
+                -> absl::StatusOr<Bytecode::MatchArmItem> {
+              auto* sum_type = dynamic_cast<SumType*>(type);
+              XLS_RET_CHECK(sum_type != nullptr)
+                  << "Constructor pattern expected sum type; got: "
+                  << (type == nullptr ? "<null>" : type->ToString());
+              return HandleConstructorPattern(constructor_pattern, *sum_type);
             },
             [&](RestOfTuple* n) -> absl::StatusOr<Bytecode::MatchArmItem> {
               return Bytecode::MatchArmItem::MakeRestOfTuple();
@@ -1597,7 +1725,55 @@ absl::Status BytecodeEmitter::HandleString(const String* node) {
   return absl::OkStatus();
 }
 
+absl::Status BytecodeEmitter::HandleSumStructInstance(
+    const StructInstance* node, const SumType& sum_type,
+    const ColonRef* constructor_ref) {
+  const SumTypeEncoding encoding(sum_type);
+  XLS_ASSIGN_OR_RETURN(SumTypeEncoding::VariantInfo variant,
+                       encoding.GetVariant(constructor_ref->attr()));
+  const SumTypeVariant& sum_variant = *variant.variant;
+  XLS_RET_CHECK(sum_variant.is_struct());
+
+  absl::flat_hash_map<std::string, Expr*> members_by_name;
+  for (const auto& [name, value] : node->members()) {
+    members_by_name.emplace(name, value);
+  }
+
+  XLS_RETURN_IF_ERROR(encoding.VisitPayloadAssemblyOrder(
+      variant,
+      [&](int64_t active_index) -> absl::Status {
+        return members_by_name
+            .at(std::string(sum_variant.GetMemberName(active_index)))
+            ->AcceptExpr(this);
+      },
+      [&](const Type& inactive_type) -> absl::Status {
+        XLS_ASSIGN_OR_RETURN(
+            InterpValue zero,
+            internal::CreateInternalPlaceholderValueFromType(inactive_type));
+        Add(Bytecode::MakeLiteral(node->span(), zero));
+        return absl::OkStatus();
+      }));
+
+  Add(Bytecode(node->span(), Bytecode::Op::kCreateTuple,
+               Bytecode::NumElements(encoding.payload_slot_count())));
+  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
+  Add(Bytecode::MakeLiteral(
+      node->span(),
+      InterpValue::MakeUBits(tag_bit_count, variant.variant_index)));
+  Add(Bytecode::MakeSwap(node->span()));
+  Add(Bytecode(node->span(), Bytecode::Op::kCreateTuple,
+               Bytecode::NumElements(2)));
+  return absl::OkStatus();
+}
+
 absl::Status BytecodeEmitter::HandleStructInstance(const StructInstance* node) {
+  if (std::optional<Type*> node_type = type_info_->GetItem(node);
+      node_type.has_value() && (*node_type)->IsSum()) {
+    XLS_ASSIGN_OR_RETURN(const ColonRef* constructor_ref,
+                         GetConstructorRef(node->struct_ref()));
+    return HandleSumStructInstance(node, (*node_type)->AsSum(),
+                                   constructor_ref);
+  }
   XLS_ASSIGN_OR_RETURN(StructType * struct_type,
                        type_info_->GetItemAs<StructType>(node));
 

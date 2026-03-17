@@ -47,6 +47,12 @@ absl::StatusOr<InterpValue> CreateZeroValue(const InterpValue& value);
 // Creates a zero-valued InterpValue from the given Type.
 absl::StatusOr<InterpValue> CreateZeroValueFromType(const Type& type);
 
+// Creates a well-formed sum-typed InterpValue from the given semantic payload
+// members for the named variant.
+absl::StatusOr<InterpValue> CreateSumValue(
+    const SumType& type, std::string_view variant_name,
+    absl::Span<const InterpValue> payload_values);
+
 // Finds the first index in the LHS and RHS sequences at which values differ or
 // nullopt if the two are equal.
 absl::StatusOr<std::optional<int64_t>> FindFirstDifferingIndex(

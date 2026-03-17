@@ -120,6 +120,9 @@ class BytecodeEmitter : public ExprVisitor {
   absl::Status HandleWidthSlice(const Index* node, WidthSlice* width_slice);
 
   absl::Status HandleInvocation(const Invocation* node) override;
+  absl::Status HandleSumConstructorInvocation(const Invocation* node,
+                                              const SumType& sum_type,
+                                              const ColonRef* constructor_ref);
   absl::Status HandleLambda(const Lambda* node) override;
   absl::Status HandleLet(const Let* node);
   absl::Status HandleMatch(const Match* node) override;
@@ -149,6 +152,9 @@ class BytecodeEmitter : public ExprVisitor {
   absl::Status HandleSpawn(const Spawn* node) override;
   absl::Status HandleString(const String* node) override;
   absl::Status HandleStructInstance(const StructInstance* node) override;
+  absl::Status HandleSumStructInstance(const StructInstance* node,
+                                       const SumType& sum_type,
+                                       const ColonRef* constructor_ref);
   absl::Status HandleSplatStructInstance(
       const SplatStructInstance* node) override;
   absl::Status HandleConditional(const Conditional* node) override;
@@ -183,9 +189,13 @@ class BytecodeEmitter : public ExprVisitor {
                                                    const TypeInfo* type_info);
   absl::StatusOr<InterpValue> HandleColonRefToValue(Module* module,
                                                     const ColonRef* colon_ref);
+  absl::StatusOr<InterpValue> HandleUnitSumConstructor(
+      const ColonRef* colon_ref, const SumType& sum_type);
 
   absl::StatusOr<Bytecode::MatchArmItem> HandleNameDefTreeExpr(
       NameDefTree* tree, Type* type = nullptr);
+  absl::StatusOr<Bytecode::MatchArmItem> HandleConstructorPattern(
+      const ConstructorPattern* pattern, const SumType& sum_type);
 
   absl::Status DestructureLet(NameDefTree* tree,
                               std::variant<Type*, int64_t> type_or_size);

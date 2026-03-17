@@ -46,7 +46,7 @@ namespace xls::dslx {
 using ModuleMember =
     std::variant<Function*, Proc*, TestFunction*, TestProc*, QuickCheck*,
                  TypeAlias*, StructDef*, ProcAlias*, ProcDef*, ConstantDef*,
-                 EnumDef*, Import*, Use*, ConstAssert*, Impl*, Trait*,
+                 EnumDef*, SumDef*, Import*, Use*, ConstAssert*, Impl*, Trait*,
                  VerbatimNode*>;
 
 // Returns all the NameDefs defined by the given module member.
@@ -264,6 +264,7 @@ class Module : public AstNode {
   const ProcDef* FindProcDef(const Span& span) const;
 
   const EnumDef* FindEnumDef(const Span& span) const;
+  const SumDef* FindSumDef(const Span& span) const;
 
   // Obtains all the type definition nodes in the module; e.g. TypeAlias,
   // StructDef, EnumDef.
@@ -295,6 +296,7 @@ class Module : public AstNode {
   std::vector<StructDef*> GetStructDefs() const {
     return GetTopWithT<StructDef>();
   }
+  std::vector<SumDef*> GetSumDefs() const { return GetTopWithT<SumDef>(); }
   std::vector<ProcDef*> GetProcDefs() { return GetTopWithT<ProcDef>(); }
 
   std::vector<Proc*> GetProcs() const { return GetTopWithT<Proc>(); }
