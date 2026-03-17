@@ -758,7 +758,7 @@ const Y = map([u32:1], X);)",
 TEST(TypecheckV2BuiltinTest, MapSecondArgNonUnitSumConstructor) {
   EXPECT_THAT(
       R"(
-enum Option {
+sum Option {
   None,
   Some(u32),
 }

@@ -2018,7 +2018,7 @@ proc Foo {
 
 TEST(BytecodeEmitterTest, ImportedSumConstantEmitsLiteralValue) {
   constexpr std::string_view kImported = R"(
-pub enum Option {
+pub sum Option {
   None,
   Some(u32),
 }

@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
@@ -32,7 +33,7 @@ namespace xls::dslx {
 
 class ValueFormatDescriptor;
 
-struct ValueFormatSumVariantDescriptor;
+class ValueFormatSumVariantDescriptor;
 class ValueFormatSumVariantView;
 
 enum class ValueFormatSumVariantKind : int8_t {
@@ -205,15 +206,39 @@ class ValueFormatDescriptor {
 
 // Describes one constructor inside a sum formatting descriptor.
 //
-// Callers describe each variant in canonical sum order and attach the payload
-// formats owned by that variant. `ValueFormatDescriptor` flattens those payload
-// descriptors internally into the canonical `(tag, payload_slots...)` layout
-// used by runtime sum values.
-struct ValueFormatSumVariantDescriptor {
-  std::string name;
-  ValueFormatSumVariantKind kind;
-  std::vector<std::string> field_names;
-  std::vector<ValueFormatDescriptor> payload_formats;
+// Callers build descriptors through the kind-specific factory functions so the
+// unit / tuple / struct distinction is encoded at construction time instead of
+// by mutable cross-field invariants.
+class ValueFormatSumVariantDescriptor {
+ public:
+  static ValueFormatSumVariantDescriptor MakeUnit(std::string name);
+  static ValueFormatSumVariantDescriptor MakeTuple(
+      std::string name, std::vector<ValueFormatDescriptor> payload_formats);
+  static ValueFormatSumVariantDescriptor MakeStruct(
+      std::string name, std::vector<std::string> field_names,
+      std::vector<ValueFormatDescriptor> payload_formats);
+
+  std::string_view name() const { return name_; }
+  ValueFormatSumVariantKind kind() const { return kind_; }
+  absl::Span<const std::string> field_names() const { return field_names_; }
+  absl::Span<const ValueFormatDescriptor> payload_formats() const {
+    return payload_formats_;
+  }
+
+ private:
+  ValueFormatSumVariantDescriptor(
+      std::string name, ValueFormatSumVariantKind kind,
+      std::vector<std::string> field_names,
+      std::vector<ValueFormatDescriptor> payload_formats)
+      : name_(std::move(name)),
+        kind_(kind),
+        field_names_(std::move(field_names)),
+        payload_formats_(std::move(payload_formats)) {}
+
+  std::string name_;
+  ValueFormatSumVariantKind kind_;
+  std::vector<std::string> field_names_;
+  std::vector<ValueFormatDescriptor> payload_formats_;
 };
 
 // Read-only view of one constructor inside a sum formatting descriptor.

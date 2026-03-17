@@ -456,8 +456,8 @@ absl::StatusOr<std::unique_ptr<Module>> Parser::ParseModule(
   auto verify_not_public = [&](Token construct_token) {
     if (is_public) {
       return ParseErrorStatus(construct_token.span(),
-                              "Expect a function, proc, struct, enum, or type "
-                              "after 'pub' keyword.");
+                              "Expect a function, proc, struct, sum, enum, or "
+                              "type after 'pub' keyword.");
     }
     return absl::OkStatus();
   };
@@ -466,7 +466,7 @@ absl::StatusOr<std::unique_ptr<Module>> Parser::ParseModule(
     if (!pending_attributes.empty()) {
       return ParseErrorStatus(*pending_attributes[0]->GetSpan(),
                               "Attributes are only supported for a function, "
-                              "proc, struct, enum, or type.");
+                              "proc, struct, sum, enum, or type.");
     }
     return absl::OkStatus();
   };
@@ -524,13 +524,25 @@ absl::StatusOr<std::unique_ptr<Module>> Parser::ParseModule(
           absl::StrFormat("Expected start of top-level construct; got: '%s'",
                           peek->ToString()));
     };
-    if (peek->kind() != TokenKind::kKeyword) {
-      return top_level_error();
-    }
-
     XLS_RET_CHECK(bindings != nullptr);
     XLS_RET_CHECK(module_member_start_pos.has_value());
     XLS_RETURN_IF_ERROR(CheckForDuplicateAttributes(pending_attributes));
+
+    if (peek->IsIdentifier("sum")) {
+      XLS_ASSIGN_OR_RETURN(
+          SumDef * sum_def,
+          ParseSumDef(*module_member_start_pos, is_public, *bindings));
+      XLS_RETURN_IF_ERROR(ApplyTypeAttributes(sum_def, pending_attributes));
+      XLS_RETURN_IF_ERROR(module_->AddTop(sum_def, make_collision_error));
+      is_public = false;
+      pending_attributes.clear();
+      module_member_start_pos = std::nullopt;
+      continue;
+    }
+
+    if (peek->kind() != TokenKind::kKeyword) {
+      return top_level_error();
+    }
 
     switch (peek->GetKeyword()) {
       case Keyword::kFn: {
@@ -610,26 +622,10 @@ absl::StatusOr<std::unique_ptr<Module>> Parser::ParseModule(
       }
       case Keyword::kEnum: {
         XLS_ASSIGN_OR_RETURN(
-            EnumOrSumDef enum_or_sum,
+            EnumDef * enum_def,
             ParseEnumDef(*module_member_start_pos, is_public, *bindings));
-        XLS_RETURN_IF_ERROR(absl::visit(
-            Visitor{
-                [&](EnumDef* node) {
-                  return ApplyTypeAttributes(node, pending_attributes);
-                },
-                [&](SumDef* node) {
-                  return ApplyTypeAttributes(node, pending_attributes);
-                },
-            },
-            enum_or_sum));
-        ModuleMember enum_or_sum_member = absl::visit(
-            Visitor{
-                [](EnumDef* node) -> ModuleMember { return node; },
-                [](SumDef* node) -> ModuleMember { return node; },
-            },
-            enum_or_sum);
-        XLS_RETURN_IF_ERROR(
-            module_->AddTop(enum_or_sum_member, make_collision_error));
+        XLS_RETURN_IF_ERROR(ApplyTypeAttributes(enum_def, pending_attributes));
+        XLS_RETURN_IF_ERROR(module_->AddTop(enum_def, make_collision_error));
         break;
       }
       case Keyword::kConst: {
@@ -4034,21 +4030,20 @@ absl::StatusOr<ForLoopBase*> Parser::ParseFor(Bindings& bindings) {
   }
 }
 
-absl::StatusOr<Parser::EnumOrSumDef> Parser::ParseEnumDef(
-    const Pos& start_pos, bool is_public, Bindings& bindings) {
-  XLS_ASSIGN_OR_RETURN(Token enum_tok, PopKeywordOrError(Keyword::kEnum));
+absl::StatusOr<EnumDef*> Parser::ParseEnumDef(const Pos& start_pos,
+                                              bool is_public,
+                                              Bindings& bindings) {
+  XLS_RETURN_IF_ERROR(PopKeywordOrError(Keyword::kEnum).status());
 
   // We don't bind the enum's name until the end to prevent recursive references
   // to itself in its body.
   XLS_ASSIGN_OR_RETURN(NameDef * name_def, ParseNameDefNoBind());
 
   XLS_ASSIGN_OR_RETURN(bool saw_colon, TryDropToken(TokenKind::kColon));
-  if (!saw_colon) {
-    return ParseSumDef(start_pos, is_public, name_def, bindings);
-  }
-
   TypeAnnotation* type_annotation = nullptr;
-  XLS_ASSIGN_OR_RETURN(type_annotation, ParseTypeAnnotation(bindings));
+  if (saw_colon) {
+    XLS_ASSIGN_OR_RETURN(type_annotation, ParseTypeAnnotation(bindings));
+  }
   XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kOBrace));
   Bindings enum_bindings(&bindings);
 
@@ -4071,8 +4066,18 @@ absl::StatusOr<Parser::EnumOrSumDef> Parser::ParseEnumDef(
 }
 
 absl::StatusOr<SumDef*> Parser::ParseSumDef(const Pos& start_pos, bool is_public,
-                                            NameDef* name_def,
                                             Bindings& bindings) {
+  XLS_ASSIGN_OR_RETURN(Token sum_tok, PopTokenOrError(TokenKind::kIdentifier));
+  if (!sum_tok.IsIdentifier("sum")) {
+    return ParseErrorStatus(sum_tok.span(),
+                            absl::StrFormat("Expected `sum`; got `%s`",
+                                            sum_tok.ToString()));
+  }
+
+  // We don't bind the sum's name until the end to prevent recursive references
+  // to itself in its body.
+  XLS_ASSIGN_OR_RETURN(NameDef * name_def, ParseNameDefNoBind());
+
   Bindings sum_bindings(&bindings);
 
   XLS_ASSIGN_OR_RETURN(bool dropped_oangle, TryDropToken(TokenKind::kOAngle));
@@ -4111,8 +4116,9 @@ absl::StatusOr<SumDef*> Parser::ParseSumDef(const Pos& start_pos, bool is_public
       return ParseErrorStatus(
           variant_name->span(),
           absl::StrFormat(
-              "Numeric enums now require an explicit underlying type; use "
-              "`enum %s : uN { ... }` for numeric members.",
+              "Numeric enum members belong in `enum %s { ... }` or "
+              "`enum %s : uN { ... }`, not `sum %s { ... }`.",
+              name_def->identifier(), name_def->identifier(),
               name_def->identifier()));
     }
 

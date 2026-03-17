@@ -3576,7 +3576,7 @@ proc Counter {
 TEST_F(TypecheckV2Test, TraceFmtWithUseOfSemanticSum) {
   constexpr std::string_view kProgram =
       R"(
-enum Option {
+sum Option {
   None,
   Pair { lhs: u32, rhs: u32 },
 }

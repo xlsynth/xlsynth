@@ -78,13 +78,13 @@ SumType MakeMixedPayloadSumType(Module& module) {
   sum_name->set_definer(sum_def);
 
   std::vector<SumTypeVariant> variants;
-  variants.emplace_back(*none, std::vector<std::unique_ptr<Type>>{});
+  variants.push_back(SumTypeVariant::MakeUnit(*none));
   std::vector<std::unique_ptr<Type>> byte_members;
   byte_members.push_back(BitsType::MakeU8());
-  variants.emplace_back(*byte, std::move(byte_members));
+  variants.push_back(SumTypeVariant::MakeTuple(*byte, std::move(byte_members)));
   std::vector<std::unique_ptr<Type>> wide_members;
   wide_members.push_back(std::make_unique<BitsType>(/*is_signed=*/false, 16));
-  variants.emplace_back(*wide, std::move(wide_members));
+  variants.push_back(SumTypeVariant::MakeTuple(*wide, std::move(wide_members)));
   return SumType(*sum_def, std::move(variants));
 }
 
@@ -247,10 +247,11 @@ TEST(InterpValueHelpersTest, CreateZeroSumValueUsesFirstVariantRecursively) {
   inner_name->set_definer(inner_def);
 
   std::vector<SumTypeVariant> inner_variants;
-  inner_variants.emplace_back(*inner_none, std::vector<std::unique_ptr<Type>>{});
+  inner_variants.push_back(SumTypeVariant::MakeUnit(*inner_none));
   std::vector<std::unique_ptr<Type>> inner_some_members;
   inner_some_members.push_back(BitsType::MakeU32());
-  inner_variants.emplace_back(*inner_some, std::move(inner_some_members));
+  inner_variants.push_back(
+      SumTypeVariant::MakeTuple(*inner_some, std::move(inner_some_members)));
   SumType inner_type(*inner_def, std::move(inner_variants));
 
   auto* outer_name = module.Make<NameDef>(kFakeSpan, "Outer", nullptr);
@@ -274,8 +275,9 @@ TEST(InterpValueHelpersTest, CreateZeroSumValueUsesFirstVariantRecursively) {
   std::vector<SumTypeVariant> outer_variants;
   std::vector<std::unique_ptr<Type>> outer_wrap_members;
   outer_wrap_members.push_back(inner_type.CloneToUnique());
-  outer_variants.emplace_back(*outer_wrap, std::move(outer_wrap_members));
-  outer_variants.emplace_back(*outer_none, std::vector<std::unique_ptr<Type>>{});
+  outer_variants.push_back(
+      SumTypeVariant::MakeTuple(*outer_wrap, std::move(outer_wrap_members)));
+  outer_variants.push_back(SumTypeVariant::MakeUnit(*outer_none));
   SumType outer_type(*outer_def, std::move(outer_variants));
 
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue zero, CreateZeroValueFromType(outer_type));
@@ -347,7 +349,11 @@ TEST(InterpValueHelpersTest,
   auto* wrapped =
       module.Make<SumVariant>(kFakeSpan, wrapped_name,
                               SumVariant::PayloadKind::kTuple,
-                              std::vector<TypeAnnotation*>{},
+                              std::vector<TypeAnnotation*>{
+                                  module.Make<TypeRefTypeAnnotation>(
+                                      kFakeSpan,
+                                      module.Make<TypeRef>(kFakeSpan, empty_def),
+                                      std::vector<ExprOrType>{})},
                               std::vector<StructMemberNode*>{});
   auto* nothing =
       module.Make<SumVariant>(kFakeSpan, nothing_name,
@@ -362,8 +368,9 @@ TEST(InterpValueHelpersTest,
   std::vector<SumTypeVariant> outer_variants;
   std::vector<std::unique_ptr<Type>> wrapped_members;
   wrapped_members.push_back(empty_type.CloneToUnique());
-  outer_variants.emplace_back(*wrapped, std::move(wrapped_members));
-  outer_variants.emplace_back(*nothing, std::vector<std::unique_ptr<Type>>{});
+  outer_variants.push_back(
+      SumTypeVariant::MakeTuple(*wrapped, std::move(wrapped_members)));
+  outer_variants.push_back(SumTypeVariant::MakeUnit(*nothing));
   SumType outer_type(*outer_def, std::move(outer_variants));
 
   const std::vector<InterpValue> no_payload_values;

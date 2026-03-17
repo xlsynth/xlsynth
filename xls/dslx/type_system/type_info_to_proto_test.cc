@@ -145,7 +145,7 @@ fn f() -> E { E::A }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest, MakeSumFunction) {
   std::string program = R"(
-enum Option {
+sum Option {
   None,
   Some(u32),
 }
@@ -157,7 +157,7 @@ fn f() -> Option { Option::None }
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        RejectsReorderedSumVariantsInToHumanString) {
   std::string program = R"(
-enum Option {
+sum Option {
   None,
   Some(u32),
 }
@@ -190,7 +190,7 @@ fn f() -> Option { Option::None }
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        SemanticSumEmptyPayloadKinds) {
   std::string program = R"(
-enum E {
+sum E {
   None,
   EmptyTuple(),
   EmptyStruct { },
@@ -232,7 +232,7 @@ fn f(x: bool) -> E {
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        RejectsReorderedSumVariantsInProtoImport) {
   std::string program = R"(
-enum Option {
+sum Option {
   None,
   Some(u32),
 }
@@ -272,7 +272,7 @@ fn f(x: bool) -> Option {
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        RejectsDuplicateAndMissingSumVariantsInProtoImport) {
   std::string program = R"(
-enum Option {
+sum Option {
   None,
   Some(u32),
 }

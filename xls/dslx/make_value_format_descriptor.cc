@@ -92,26 +92,31 @@ absl::StatusOr<ValueFormatDescriptor> MakeSumFormatDescriptor(
   std::vector<ValueFormatSumVariantDescriptor> variants;
   variants.reserve(type.variant_count());
   for (const SumTypeVariant& variant : type.variants()) {
-    ValueFormatSumVariantDescriptor variant_desc{
-        .name = std::string(variant.variant().identifier()),
-        .kind = variant.is_unit()   ? ValueFormatSumVariantKind::kUnit
-                : variant.is_tuple() ? ValueFormatSumVariantKind::kTuple
-                                     : ValueFormatSumVariantKind::kStruct,
-    };
-    variant_desc.payload_formats.reserve(variant.size());
-    if (variant.is_struct()) {
-      variant_desc.field_names.reserve(variant.size());
-      for (int64_t i = 0; i < variant.size(); ++i) {
-        variant_desc.field_names.push_back(
-            std::string(variant.GetMemberName(i)));
-      }
-    }
-    for (const std::unique_ptr<Type>& member : variant.payload_members()) {
+    std::vector<ValueFormatDescriptor> payload_formats;
+    payload_formats.reserve(variant.size());
+    for (int64_t i = 0; i < variant.size(); ++i) {
       XLS_ASSIGN_OR_RETURN(ValueFormatDescriptor payload_format,
-                           MakeValueFormatDescriptor(*member, field_preference));
-      variant_desc.payload_formats.push_back(std::move(payload_format));
+                           MakeValueFormatDescriptor(variant.GetMemberType(i),
+                                                     field_preference));
+      payload_formats.push_back(std::move(payload_format));
     }
-    variants.push_back(std::move(variant_desc));
+    if (variant.is_unit()) {
+      variants.push_back(ValueFormatSumVariantDescriptor::MakeUnit(
+          std::string(variant.variant().identifier())));
+    } else if (variant.is_tuple()) {
+      variants.push_back(ValueFormatSumVariantDescriptor::MakeTuple(
+          std::string(variant.variant().identifier()),
+          std::move(payload_formats)));
+    } else {
+      std::vector<std::string> field_names;
+      field_names.reserve(variant.size());
+      for (int64_t i = 0; i < variant.size(); ++i) {
+        field_names.push_back(std::string(variant.GetMemberName(i)));
+      }
+      variants.push_back(ValueFormatSumVariantDescriptor::MakeStruct(
+          std::string(variant.variant().identifier()), std::move(field_names),
+          std::move(payload_formats)));
+    }
   }
   return ValueFormatDescriptor::MakeSum(type.nominal_type().identifier(), variants,
                                         field_preference);

@@ -141,7 +141,7 @@ type AliasType1 = Point[1];
 TEST_F(DslxToVerilogTest, SemanticSumTypeDefinition) {
   constexpr std::string_view program =
       R"(
-pub enum MaybeWord {
+pub sum MaybeWord {
   None,
   Some(u32),
   Pair { lo: u8, hi: u8 },

@@ -1645,7 +1645,7 @@ std::string SumDef::ToString() const {
                       }),
         ">");
   }
-  std::string result = absl::StrFormat("%s%senum %s%s {\n",
+  std::string result = absl::StrFormat("%s%ssum %s%s {\n",
                                        MakeExternTypeAttr(extern_type_name_),
                                        is_public_ ? "pub " : "", identifier(),
                                        parametric_str);

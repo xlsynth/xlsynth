@@ -1505,7 +1505,7 @@ proc my_proc {
 }
 
 TEST(AstClonerTest, CloneModuleWithSemanticSums) {
-  constexpr std::string_view kProgram = R"(enum Option {
+  constexpr std::string_view kProgram = R"(sum Option {
     None,
     Some(u32),
     Point { x: u32, y: u32 },
@@ -1518,7 +1518,7 @@ fn unwrap_or_sum(x: Option) -> u32 {
         Option::None => u32:0,
     }
 })";
-  constexpr std::string_view kExpected = R"(enum Option {
+  constexpr std::string_view kExpected = R"(sum Option {
     None,
     Some(u32),
     Point { x: u32, y: u32 },

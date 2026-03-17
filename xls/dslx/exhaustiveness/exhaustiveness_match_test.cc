@@ -230,7 +230,7 @@ TEST(ExhaustivenessMatchTest, MatchOnSparseEnum) {
 TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructors) {
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
 
-enum MaybeU32 {
+sum MaybeU32 {
   None,
   Some(u32),
 }
@@ -247,7 +247,7 @@ fn main(x: MaybeU32) -> u32 {
 TEST(ExhaustivenessMatchTest, NonExhaustiveMatchOnSemanticSumConstructors) {
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
 
-enum MaybeU32 {
+sum MaybeU32 {
   None,
   Some(u32),
 }
@@ -263,7 +263,7 @@ fn main(x: MaybeU32) -> u32 {
 TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructorsWithWildcard) {
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
 
-enum MaybeU32 {
+sum MaybeU32 {
   None,
   Some(u32),
 }
@@ -281,7 +281,7 @@ fn main(x: MaybeU32) -> u32 {
 TEST(ExhaustivenessMatchTest, MatchOnSemanticStructVariantConstructors) {
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
 
-enum MaybePoint {
+sum MaybePoint {
   None,
   Point { x: u32, y: u32 },
 }
@@ -298,7 +298,7 @@ fn main(x: MaybePoint) -> u32 {
 TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructorsNonExhaustive) {
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
 
-enum Option {
+sum Option {
   None,
   Some(u32),
   Pair { lhs: u32, rhs: u32 },
@@ -316,7 +316,7 @@ fn main(x: Option) -> u32 {
 TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructorsWildcardCompletes) {
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
 
-enum Option {
+sum Option {
   None,
   Some(u32),
   Pair { lhs: u32, rhs: u32 },
@@ -334,7 +334,7 @@ fn main(x: Option) -> u32 {
 TEST(ExhaustivenessMatchTest, MatchTupleContainingSemanticSumConstructors) {
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
 
-enum MaybeU32 {
+sum MaybeU32 {
   None,
   Some(u32),
 }
@@ -353,7 +353,7 @@ TEST(ExhaustivenessMatchTest,
      NonExhaustiveMatchTupleContainingSemanticSumConstructors) {
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
 
-enum MaybeU32 {
+sum MaybeU32 {
   None,
   Some(u32),
 }
@@ -371,7 +371,7 @@ TEST(ExhaustivenessMatchTest,
      MatchOnSemanticSumConstructorsRedundantAfterWildcard) {
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
 
-enum Option {
+sum Option {
   None,
   Some(u32),
   Pair { lhs: u32, rhs: u32 },

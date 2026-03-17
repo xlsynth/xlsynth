@@ -3293,7 +3293,7 @@ class SumVariant : public AstNode {
 
 // Represents a semantic sum declaration; e.g.
 //
-//   enum Option<T: type> {
+//   sum Option<T: type> {
 //     None,
 //     Some(T),
 //   }

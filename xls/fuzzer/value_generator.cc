@@ -432,9 +432,10 @@ static absl::StatusOr<InterpValue> GenerateSumInterpValue(
 
   std::vector<InterpValue> payload_values;
   payload_values.reserve(variant.size());
-  for (const std::unique_ptr<dslx::Type>& member : variant.payload_members()) {
+  for (int64_t i = 0; i < variant.size(); ++i) {
     XLS_ASSIGN_OR_RETURN(InterpValue member_value,
-                         GenerateInterpValue(bit_gen, *member, prior));
+                         GenerateInterpValue(bit_gen, variant.GetMemberType(i),
+                                             prior));
     payload_values.push_back(std::move(member_value));
   }
 

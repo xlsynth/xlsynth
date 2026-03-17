@@ -372,21 +372,10 @@ TEST(InterpValueTest, FormatSemanticSum) {
   ValueFormatDescriptor leaf =
       ValueFormatDescriptor::MakeLeafValue(FormatPreference::kDefault);
   std::vector<ValueFormatSumVariantDescriptor> variants = {
-      ValueFormatSumVariantDescriptor{
-          .name = "None",
-          .kind = ValueFormatSumVariantKind::kUnit,
-      },
-      ValueFormatSumVariantDescriptor{
-          .name = "Some",
-          .kind = ValueFormatSumVariantKind::kTuple,
-          .payload_formats = {leaf},
-      },
-      ValueFormatSumVariantDescriptor{
-          .name = "Pair",
-          .kind = ValueFormatSumVariantKind::kStruct,
-          .field_names = {"lhs", "rhs"},
-          .payload_formats = {leaf, leaf},
-      },
+      ValueFormatSumVariantDescriptor::MakeUnit("None"),
+      ValueFormatSumVariantDescriptor::MakeTuple("Some", {leaf}),
+      ValueFormatSumVariantDescriptor::MakeStruct("Pair", {"lhs", "rhs"},
+                                                  {leaf, leaf}),
   };
   ValueFormatDescriptor fmt_desc =
       ValueFormatDescriptor::MakeSum("Option", variants,
@@ -426,21 +415,10 @@ TEST(InterpValueTest, SemanticSumVariantViewMatchesFlattenedLayout) {
   ValueFormatDescriptor leaf =
       ValueFormatDescriptor::MakeLeafValue(FormatPreference::kDefault);
   std::vector<ValueFormatSumVariantDescriptor> variants = {
-      ValueFormatSumVariantDescriptor{
-          .name = "None",
-          .kind = ValueFormatSumVariantKind::kUnit,
-      },
-      ValueFormatSumVariantDescriptor{
-          .name = "Some",
-          .kind = ValueFormatSumVariantKind::kTuple,
-          .payload_formats = {leaf},
-      },
-      ValueFormatSumVariantDescriptor{
-          .name = "Pair",
-          .kind = ValueFormatSumVariantKind::kStruct,
-          .field_names = {"lhs", "rhs"},
-          .payload_formats = {leaf, leaf},
-      },
+      ValueFormatSumVariantDescriptor::MakeUnit("None"),
+      ValueFormatSumVariantDescriptor::MakeTuple("Some", {leaf}),
+      ValueFormatSumVariantDescriptor::MakeStruct("Pair", {"lhs", "rhs"},
+                                                  {leaf, leaf}),
   };
   ValueFormatDescriptor fmt_desc =
       ValueFormatDescriptor::MakeSum("Option", variants,
@@ -474,12 +452,9 @@ TEST(InterpValueTest, SemanticSumVariantViewMatchesFlattenedLayout) {
 
 TEST(InterpValueTest, FormatSemanticSumEmptyStruct) {
   ValueFormatDescriptor fmt_desc = ValueFormatDescriptor::MakeSum(
-      "Option",
-      {ValueFormatSumVariantDescriptor{
-          .name = "EmptyStruct",
-          .kind = ValueFormatSumVariantKind::kStruct,
-          .field_names = {},
-      }},
+      "Option", {ValueFormatSumVariantDescriptor::MakeStruct(
+                    "EmptyStruct", /*field_names=*/{},
+                    /*payload_formats=*/{})},
       FormatPreference::kDefault);
 
   InterpValue empty_struct = InterpValue::MakeTuple(
@@ -493,14 +468,9 @@ TEST(InterpValueTest, FormatSemanticSumEmptyStruct) {
 
 TEST(InterpValueTest, FormatSemanticSumEmptyStructVariant) {
   std::vector<ValueFormatSumVariantDescriptor> variants = {
-      ValueFormatSumVariantDescriptor{
-          .name = "None",
-          .kind = ValueFormatSumVariantKind::kUnit,
-      },
-      ValueFormatSumVariantDescriptor{
-          .name = "EmptyStruct",
-          .kind = ValueFormatSumVariantKind::kStruct,
-      },
+      ValueFormatSumVariantDescriptor::MakeUnit("None"),
+      ValueFormatSumVariantDescriptor::MakeStruct(
+          "EmptyStruct", /*field_names=*/{}, /*payload_formats=*/{}),
   };
   ValueFormatDescriptor fmt_desc =
       ValueFormatDescriptor::MakeSum("Option", variants,

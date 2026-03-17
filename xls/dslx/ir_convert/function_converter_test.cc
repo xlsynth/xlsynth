@@ -582,7 +582,7 @@ TEST(FunctionConverterTest, ConvertsFunctionWithUpdate2DBuiltinEmptyTuple) {
 TEST(FunctionConverterTest,
      ConvertsImportedSumConstantWithoutConstructorDispatch) {
   constexpr std::string_view kImported = R"(
-pub enum Option {
+pub sum Option {
   None,
   Some(u32),
 }
@@ -623,7 +623,7 @@ fn f() -> imported::Option {
 
 TEST(FunctionConverterTest, ExpandsSemanticSumEqIntoTagAndPayloadChecks) {
   constexpr std::string_view kProgram = R"(
-enum Option {
+sum Option {
   None,
   Some(u32),
   Pair(u32, u32),
@@ -677,7 +677,7 @@ fn f(x: Option, y: Option) -> bool {
 
 TEST(FunctionConverterTest, UsesAggregateEqForNonSumArrayPayloadSubtrees) {
   constexpr std::string_view kProgram = R"(
-enum Option {
+sum Option {
   None,
   Some(u32),
 }
@@ -720,10 +720,10 @@ fn f(x: (Option, u32[4]), y: (Option, u32[4])) -> bool {
 TEST(FunctionConverterTest,
      RejectsSemanticSumConstructorWithInactiveEmptySumPayloadInPhase1) {
   constexpr std::string_view kProgram = R"(
-enum Empty {
+sum Empty {
 }
 
-enum Outer {
+sum Outer {
   Wrapped(Empty),
   Nothing,
 }

@@ -36,8 +36,9 @@ SumTypeEncoding::SumTypeEncoding(const SumType& type) : type_(type) {
         .variant = &variant,
         .payload_start = payload_start,
     });
-    for (const std::unique_ptr<Type>& member : variant.payload_members()) {
-      payload_slot_types_.push_back(member.get());
+    for (int64_t member_index = 0; member_index < variant.size();
+         ++member_index) {
+      payload_slot_types_.push_back(&variant.GetMemberType(member_index));
     }
     payload_start += variant.size();
   }
@@ -67,16 +68,10 @@ absl::Status SumTypeEncoding::ForEachVariant(
 absl::Status SumTypeEncoding::ForEachStoredLeafType(
     absl::FunctionRef<absl::Status(const StoredLeafInfo& leaf)> visitor) const {
   XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, this->tag_bit_count());
-  BitsType tag_type(/*is_signed=*/false, tag_bit_count);
-  XLS_RETURN_IF_ERROR(visitor(StoredLeafInfo{
-      .type = &tag_type,
-      .dense_max_value = type_.variant_count() - 1,
-  }));
+  XLS_RETURN_IF_ERROR(visitor(StoredLeafInfo::MakeDenseTag(
+      BitsType(/*is_signed=*/false, tag_bit_count), type_.variant_count() - 1)));
   return ForEachPayloadType([&](const Type& type) -> absl::Status {
-    return visitor(StoredLeafInfo{
-        .type = &type,
-        .dense_max_value = std::nullopt,
-    });
+    return visitor(StoredLeafInfo::MakePayload(type));
   });
 }
 
