@@ -39,6 +39,12 @@ struct StructOrProcRef {
   std::optional<const TypeRefTypeAnnotation*> type_ref_type_annotation;
 };
 
+struct SumRef {
+  const SumDef* def;
+  std::vector<ExprOrType> parametrics;
+  std::optional<const TypeRefTypeAnnotation*> type_ref_type_annotation;
+};
+
 // The signedness and bit count extracted from a `TypeAnnotation`. The
 // `TypeAnnotation` may use primitive values or exprs; we convey the
 // representation as is.
@@ -105,6 +111,14 @@ TypeAnnotation* CreateStructAnnotation(
 // Variant that converts a `StructOrProcRef` into an annotation.
 TypeAnnotation* CreateStructAnnotation(Module& module,
                                        const StructOrProcRef& ref);
+
+// Creates an annotation referring to the given sum definition with the given
+// parametric arguments.
+TypeAnnotation* CreateSumAnnotation(Module& module, SumDef* def,
+                                    std::vector<ExprOrType> parametrics);
+
+// Variant that converts a `SumRef` into an annotation.
+TypeAnnotation* CreateSumAnnotation(Module& module, const SumRef& ref);
 
 // Returns the element channel type of the given channel array type.
 ChannelTypeAnnotation* GetChannelArrayElementType(

@@ -2281,7 +2281,7 @@ fn doomed() {
 
 TEST_F(BytecodeInterpreterTest, AssertEqEnums) {
   constexpr std::string_view kProgram = R"(
-enum Flowers {
+enum Flowers : u24 {
     ROSES = u24:0xFF007F,
     VIOLETS = u24:0xEE82EE,
 }
@@ -2297,6 +2297,29 @@ fn doomed() {
               StatusIs(absl::StatusCode::kInternal,
                        AllOf(HasSubstr("Flowers::ROSES  // u24:16711807"),
                              HasSubstr("Flowers::VIOLETS  // u24:15631086"))));
+}
+
+TEST_F(BytecodeInterpreterTest, AssertEqSemanticSums) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn doomed() {
+  let a = Option::Pair { lhs: u32:1, rhs: u32:2 };
+  let b = Option::Pair { lhs: u32:1, rhs: u32:3 };
+  assert_eq(a, b)
+})";
+
+  absl::StatusOr<InterpValue> value = Interpret(kProgram, "doomed");
+  EXPECT_THAT(value.status(),
+              StatusIs(absl::StatusCode::kInternal,
+                       AllOf(HasSubstr("were not equal"),
+                             HasSubstr("Option::Pair {"),
+                             HasSubstr("<     rhs: u32:2"),
+                             HasSubstr(">     rhs: u32:3"))));
 }
 
 TEST_F(BytecodeInterpreterTest, CheckedCastSnToSn) {
@@ -2820,6 +2843,153 @@ fn main() -> bits[bit_count<Foo>()] {
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
   XLS_ASSERT_OK_AND_ASSIGN(Bits bits, result.GetBits());
   EXPECT_EQ(bits, UBits(0x5a4ad1, 24));
+}
+
+TEST_F(BytecodeInterpreterTest, SemanticSumConstructorsAndEquality) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn unwrap_or_sum(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    Option::Pair { lhs, rhs } => lhs + rhs,
+    Option::None => u32:0,
+  }
+}
+
+fn main() -> (u32, u32, bool, bool) {
+  (
+    unwrap_or_sum(Option::Some(u32:7)),
+    unwrap_or_sum(Option::Pair { lhs: u32:3, rhs: u32:4 }),
+    Option::Some(u32:5) == Option::Some(u32:5),
+    Option::Some(u32:5) != Option::Pair { lhs: u32:5, rhs: u32:0 }
+  )
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
+  XLS_ASSERT_OK_AND_ASSIGN(const std::vector<InterpValue>* values,
+                           result.GetValues());
+  EXPECT_THAT(*values,
+              ElementsAre(InterpValue::MakeU32(7), InterpValue::MakeU32(7),
+                          InterpValue::MakeBool(true),
+                          InterpValue::MakeBool(true)));
+}
+
+TEST_F(BytecodeInterpreterTest, SemanticSumEqualityInsideAggregates) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+struct Holder {
+  left: Option,
+  right: Option,
+}
+
+fn main() -> (bool, bool, bool, bool, bool, bool) {
+  let some = Option::Some(u32:5);
+  let same = Option::Some(u32:5);
+  let other = Option::Pair { lhs: u32:5, rhs: u32:0 };
+  let none = Option::None;
+  let array_lhs = Option[2]:[some, none];
+  let array_rhs = Option[2]:[same, none];
+  let array_other = Option[2]:[other, none];
+  let tuple_lhs = (some, none);
+  let tuple_rhs = (same, none);
+  let tuple_other = (other, none);
+  let struct_lhs = Holder { left: some, right: none };
+  let struct_rhs = Holder { left: same, right: none };
+  let struct_other = Holder { left: other, right: none };
+  (
+    array_lhs == array_rhs,
+    array_lhs != array_other,
+    tuple_lhs == tuple_rhs,
+    tuple_lhs != tuple_other,
+    struct_lhs == struct_rhs,
+    struct_lhs != struct_other
+  )
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
+  XLS_ASSERT_OK_AND_ASSIGN(const std::vector<InterpValue>* values,
+                           result.GetValues());
+  EXPECT_THAT(*values,
+              ElementsAre(InterpValue::MakeBool(true),
+                          InterpValue::MakeBool(true),
+                          InterpValue::MakeBool(true),
+                          InterpValue::MakeBool(true),
+                          InterpValue::MakeBool(true),
+                          InterpValue::MakeBool(true)));
+}
+
+TEST_F(BytecodeInterpreterTest,
+       SemanticSumConstructorsRejectNestedSumPayloadsInPhase1) {
+  constexpr std::string_view kProgram = R"(
+enum Inner {
+  None,
+  Some(u32),
+}
+
+enum Outer {
+  Wrapped(Inner),
+  Nothing,
+}
+
+fn main() -> bool {
+  let x = Outer::Nothing;
+  let y = Outer::Nothing;
+  match x {
+    Outer::Nothing => x == y,
+    Outer::Wrapped(_) => false,
+  }
+}
+)";
+  EXPECT_THAT(
+      Interpret(kProgram, "main", {}),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               testing::AllOf(
+                   HasSubstr("Phase 1 semantic sum payload members must be "
+                             "bits-like or enum typed"),
+                   HasSubstr("constructor `Wrapped`"),
+                   HasSubstr("Inner"))));
+}
+
+TEST_F(BytecodeInterpreterTest, ImportedSumReturningFunctionCall) {
+  constexpr std::string_view kImported = R"(
+pub enum Option {
+  None,
+  Some(u32),
+}
+
+pub fn make_some(x: u32) -> Option {
+  Option::Some(x)
+}
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn main(x: u32) -> u32 {
+  match imported::make_some(x) {
+    imported::Option::Some(v) => v,
+    imported::Option::None => u32:0,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(
+      ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue result,
+      Interpret(kProgram, "main", {InterpValue::MakeU32(7)},
+                BytecodeInterpreterOptions(), &import_data));
+  EXPECT_EQ(result, InterpValue::MakeU32(7));
 }
 
 }  // namespace

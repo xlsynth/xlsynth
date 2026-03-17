@@ -97,6 +97,7 @@ bool IsColonRefWithTypeTarget(const InferenceTable& table, const Expr* expr) {
   return colon_ref_target.has_value() &&
          ((*colon_ref_target)->kind() == AstNodeKind::kTypeAlias ||
           (*colon_ref_target)->kind() == AstNodeKind::kEnumDef ||
+          (*colon_ref_target)->kind() == AstNodeKind::kSumDef ||
           (*colon_ref_target)->kind() == AstNodeKind::kTypeAnnotation);
 }
 
@@ -208,6 +209,19 @@ absl::StatusOr<ColonRef*> ConvertGenericColonRefToDirect(
                 const_cast<StructDef*>(absl::down_cast<const StructDef*>(
                     struct_or_proc_ref->def))),
             struct_or_proc_ref->parametrics),
+        colon_ref->attr());
+  }
+
+  XLS_ASSIGN_OR_RETURN(std::optional<SumRef> sum_ref,
+                       GetSumRef(actual_type, import_data));
+  if (sum_ref.has_value()) {
+    return name_def->owner()->Make<ColonRef>(
+        Span::None(),
+        name_def->owner()->Make<TypeRefTypeAnnotation>(
+            Span::None(),
+            name_def->owner()->Make<TypeRef>(
+                Span::None(), const_cast<SumDef*>(sum_ref->def)),
+            sum_ref->parametrics),
         colon_ref->attr());
   }
 

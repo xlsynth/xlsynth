@@ -3573,6 +3573,22 @@ proc Counter {
                HasSubstr("Cannot format an expression with channel type")));
 }
 
+TEST_F(TypecheckV2Test, TraceFmtWithUseOfSemanticSum) {
+  constexpr std::string_view kProgram =
+      R"(
+enum Option {
+  None,
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn main(x: Option) {
+  trace_fmt!("{}", x);
+}
+)";
+
+  XLS_ASSERT_OK(Typecheck(kProgram));
+}
+
 TEST_F(TypecheckV2Test, BadTraceFmtWithUseOfFunction) {
   constexpr std::string_view kProgram =
       R"(

@@ -23,6 +23,7 @@
 #include "absl/strings/str_cat.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/sum_type_encoding.h"
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/ir/package.h"
@@ -86,6 +87,23 @@ absl::StatusOr<xls::Type*> TypeToIr(Package* package, const Type& type,
         members.push_back(type);
       }
       retval_ = package_->GetTupleType(members);
+      return absl::OkStatus();
+    }
+    absl::Status HandleSum(const SumType& t) override {
+      const SumTypeEncoding encoding(t);
+      XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
+      std::vector<xls::Type*> payload_members;
+      payload_members.reserve(encoding.payload_slot_count());
+      XLS_RETURN_IF_ERROR(encoding.ForEachPayloadType(
+          [&](const Type& member) -> absl::Status {
+            XLS_ASSIGN_OR_RETURN(xls::Type * type,
+                                 TypeToIr(package_, member, bindings_));
+            payload_members.push_back(type);
+            return absl::OkStatus();
+          }));
+      retval_ = package_->GetTupleType(
+          {package_->GetBitsType(tag_bit_count),
+           package_->GetTupleType(payload_members)});
       return absl::OkStatus();
     }
     absl::Status HandleProc(const ProcType& t) override {

@@ -248,6 +248,50 @@ TEST(AstGeneratorMultiTest, GeneratesZeroWidthValues) {
       "Generated %d samples and did not see a zero-width type", kNumSamples);
 }
 
+TEST(AstGeneratorMultiTest, GeneratesRequiredSumTypes) {
+  FileTable file_table;
+  std::mt19937_64 rng{0};
+  AstGeneratorOptions options;
+  options.require_sum_type = true;
+  constexpr int64_t kNumSamples = 32;
+  for (int64_t i = 0; i < kNumSamples; ++i) {
+    AstGenerator g(options, rng, file_table);
+    VLOG(1) << "Generating required-sum sample: " << i;
+    std::string module_name = absl::StrFormat("sum_sample_%d", i);
+    XLS_ASSERT_OK_AND_ASSIGN(AnnotatedModule module,
+                             g.Generate("main", module_name));
+    std::string text = module.module->ToString();
+    EXPECT_THAT(text, ContainsRegex(R"(enum x[0-9]+ \{)")) << text;
+    EXPECT_THAT(text, ContainsRegex(R"(x[0-9]+::x[0-9]+\()")) << text;
+    XLS_ASSERT_OK(ParseAndTypecheck<Function>(text, module_name)) << text;
+  }
+}
+
+TEST(AstGeneratorMultiTest,
+     GeneratesRequiredUnitOnlySumTypesWhenPayloadBitsDisabled) {
+  FileTable file_table;
+  std::mt19937_64 rng{0};
+  AstGeneratorOptions options;
+  options.require_sum_type = true;
+  options.max_width_bits_types = 0;
+  constexpr int64_t kNumSamples = 32;
+  for (int64_t i = 0; i < kNumSamples; ++i) {
+    AstGenerator g(options, rng, file_table);
+    VLOG(1) << "Generating required-unit-sum sample: " << i;
+    std::string module_name = absl::StrFormat("unit_sum_sample_%d", i);
+    XLS_ASSERT_OK_AND_ASSIGN(AnnotatedModule module,
+                             g.Generate("main", module_name));
+    std::string text = module.module->ToString();
+    std::vector<SumDef*> sum_defs = module.module->GetSumDefs();
+    ASSERT_EQ(sum_defs.size(), 1) << text;
+    const std::vector<SumVariant*>& variants = sum_defs.front()->variants();
+    ASSERT_EQ(variants.size(), 2) << text;
+    EXPECT_TRUE(variants.front()->is_unit()) << text;
+    EXPECT_TRUE(variants.back()->is_unit()) << text;
+    XLS_ASSERT_OK(ParseAndTypecheck<Function>(text, module_name)) << text;
+  }
+}
+
 class AstGeneratorRepeatableTest : public testing::TestWithParam<uint64_t> {};
 
 TEST_P(AstGeneratorRepeatableTest, GenerationRepeatableAtSeed) {

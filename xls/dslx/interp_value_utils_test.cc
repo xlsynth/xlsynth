@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include "xls/dslx/interp_value_internal_utils.h"
 #include "xls/dslx/interp_value_utils.h"
 
 #include <cstdint>
@@ -40,6 +41,52 @@ using ::absl_testing::IsOkAndHolds;
 using ::absl_testing::StatusIs;
 using ::testing::Eq;
 using ::testing::HasSubstr;
+
+SumType MakeMixedPayloadSumType(Module& module) {
+  const Span kFakeSpan = Span::Fake();
+
+  auto* sum_name = module.Make<NameDef>(kFakeSpan, "Example", nullptr);
+  auto* none_name = module.Make<NameDef>(kFakeSpan, "None", nullptr);
+  auto* byte_name = module.Make<NameDef>(kFakeSpan, "Byte", nullptr);
+  auto* wide_name = module.Make<NameDef>(kFakeSpan, "Wide", nullptr);
+
+  auto* u8_type = module.Make<BuiltinTypeAnnotation>(
+      kFakeSpan, BuiltinType::kU8,
+      module.GetOrCreateBuiltinNameDef(dslx::BuiltinType::kU8));
+  auto* u16_type = module.Make<BuiltinTypeAnnotation>(
+      kFakeSpan, BuiltinType::kU16,
+      module.GetOrCreateBuiltinNameDef(dslx::BuiltinType::kU16));
+
+  auto* none =
+      module.Make<SumVariant>(kFakeSpan, none_name,
+                              SumVariant::PayloadKind::kUnit,
+                              std::vector<TypeAnnotation*>{},
+                              std::vector<StructMemberNode*>{});
+  auto* byte =
+      module.Make<SumVariant>(kFakeSpan, byte_name,
+                              SumVariant::PayloadKind::kTuple,
+                              std::vector<TypeAnnotation*>{u8_type},
+                              std::vector<StructMemberNode*>{});
+  auto* wide =
+      module.Make<SumVariant>(kFakeSpan, wide_name,
+                              SumVariant::PayloadKind::kTuple,
+                              std::vector<TypeAnnotation*>{u16_type},
+                              std::vector<StructMemberNode*>{});
+  auto* sum_def = module.Make<SumDef>(
+      kFakeSpan, sum_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{none, byte, wide}, /*is_public=*/false);
+  sum_name->set_definer(sum_def);
+
+  std::vector<SumTypeVariant> variants;
+  variants.emplace_back(*none, std::vector<std::unique_ptr<Type>>{});
+  std::vector<std::unique_ptr<Type>> byte_members;
+  byte_members.push_back(BitsType::MakeU8());
+  variants.emplace_back(*byte, std::move(byte_members));
+  std::vector<std::unique_ptr<Type>> wide_members;
+  wide_members.push_back(std::make_unique<BitsType>(/*is_signed=*/false, 16));
+  variants.emplace_back(*wide, std::move(wide_members));
+  return SumType(*sum_def, std::move(variants));
+}
 
 TEST(InterpValueHelpersTest, CastBitsToArray) {
   InterpValue input(InterpValue::MakeU32(0xa5a5a5a5));
@@ -172,6 +219,175 @@ TEST(InterpValueHelpersTest, CreateZeroStructValue) {
   EXPECT_TRUE(InterpValue::MakeTuple({u8_zero, u1_zero}).Eq(struct_zero));
 }
 
+TEST(InterpValueHelpersTest, CreateZeroSumValueUsesFirstVariantRecursively) {
+  const Span kFakeSpan = Span::Fake();
+
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+
+  auto* inner_name = module.Make<NameDef>(kFakeSpan, "Inner", nullptr);
+  auto* inner_none_name = module.Make<NameDef>(kFakeSpan, "None", nullptr);
+  auto* inner_some_name = module.Make<NameDef>(kFakeSpan, "Some", nullptr);
+  auto* u32_type = module.Make<BuiltinTypeAnnotation>(
+      kFakeSpan, BuiltinType::kU32,
+      module.GetOrCreateBuiltinNameDef(dslx::BuiltinType::kU32));
+  auto* inner_none =
+      module.Make<SumVariant>(kFakeSpan, inner_none_name,
+                              SumVariant::PayloadKind::kUnit,
+                              std::vector<TypeAnnotation*>{},
+                              std::vector<StructMemberNode*>{});
+  auto* inner_some =
+      module.Make<SumVariant>(kFakeSpan, inner_some_name,
+                              SumVariant::PayloadKind::kTuple,
+                              std::vector<TypeAnnotation*>{u32_type},
+                              std::vector<StructMemberNode*>{});
+  auto* inner_def = module.Make<SumDef>(
+      kFakeSpan, inner_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{inner_none, inner_some}, /*is_public=*/false);
+  inner_name->set_definer(inner_def);
+
+  std::vector<SumTypeVariant> inner_variants;
+  inner_variants.emplace_back(*inner_none, std::vector<std::unique_ptr<Type>>{});
+  std::vector<std::unique_ptr<Type>> inner_some_members;
+  inner_some_members.push_back(BitsType::MakeU32());
+  inner_variants.emplace_back(*inner_some, std::move(inner_some_members));
+  SumType inner_type(*inner_def, std::move(inner_variants));
+
+  auto* outer_name = module.Make<NameDef>(kFakeSpan, "Outer", nullptr);
+  auto* outer_wrap_name = module.Make<NameDef>(kFakeSpan, "Wrap", nullptr);
+  auto* outer_none_name = module.Make<NameDef>(kFakeSpan, "Nothing", nullptr);
+  auto* outer_wrap =
+      module.Make<SumVariant>(kFakeSpan, outer_wrap_name,
+                              SumVariant::PayloadKind::kTuple,
+                              std::vector<TypeAnnotation*>{u32_type},
+                              std::vector<StructMemberNode*>{});
+  auto* outer_none =
+      module.Make<SumVariant>(kFakeSpan, outer_none_name,
+                              SumVariant::PayloadKind::kUnit,
+                              std::vector<TypeAnnotation*>{},
+                              std::vector<StructMemberNode*>{});
+  auto* outer_def = module.Make<SumDef>(
+      kFakeSpan, outer_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{outer_wrap, outer_none}, /*is_public=*/false);
+  outer_name->set_definer(outer_def);
+
+  std::vector<SumTypeVariant> outer_variants;
+  std::vector<std::unique_ptr<Type>> outer_wrap_members;
+  outer_wrap_members.push_back(inner_type.CloneToUnique());
+  outer_variants.emplace_back(*outer_wrap, std::move(outer_wrap_members));
+  outer_variants.emplace_back(*outer_none, std::vector<std::unique_ptr<Type>>{});
+  SumType outer_type(*outer_def, std::move(outer_variants));
+
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue zero, CreateZeroValueFromType(outer_type));
+  EXPECT_TRUE(InterpValue::MakeTuple(
+                  {InterpValue::MakeUBits(1, 0),
+                   InterpValue::MakeTuple(
+                       {InterpValue::MakeTuple({InterpValue::MakeUBits(1, 0),
+                                               InterpValue::MakeTuple(
+                                                   {InterpValue::MakeU32(0)})})})})
+                  .Eq(zero));
+}
+
+TEST(InterpValueHelpersTest, CreateZeroEmptySumValueFails) {
+  const Span kFakeSpan = Span::Fake();
+
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+
+  auto* empty_name = module.Make<NameDef>(kFakeSpan, "Empty", nullptr);
+  auto* empty_def = module.Make<SumDef>(
+      kFakeSpan, empty_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{}, /*is_public=*/false);
+  empty_name->set_definer(empty_def);
+  SumType empty_type(*empty_def, std::vector<SumTypeVariant>{});
+
+  EXPECT_THAT(CreateZeroValueFromType(empty_type),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("uninhabited sum type `Empty`")));
+}
+
+TEST(InterpValueHelpersTest, CreateInternalPlaceholderEmptySumValueUsesZeroTag) {
+  const Span kFakeSpan = Span::Fake();
+
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+
+  auto* empty_name = module.Make<NameDef>(kFakeSpan, "Empty", nullptr);
+  auto* empty_def = module.Make<SumDef>(
+      kFakeSpan, empty_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{}, /*is_public=*/false);
+  empty_name->set_definer(empty_def);
+  SumType empty_type(*empty_def, std::vector<SumTypeVariant>{});
+
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue zero,
+                           internal::CreateInternalPlaceholderValueFromType(
+                               empty_type));
+  EXPECT_TRUE(InterpValue::MakeTuple(
+                  {InterpValue::MakeUBits(1, 0), InterpValue::MakeTuple({})})
+                  .Eq(zero));
+}
+
+TEST(InterpValueHelpersTest,
+     CreateSumValueUsesInternalPlaceholderForInactiveEmptySumPayload) {
+  const Span kFakeSpan = Span::Fake();
+
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+
+  auto* empty_name = module.Make<NameDef>(kFakeSpan, "Empty", nullptr);
+  auto* empty_def = module.Make<SumDef>(
+      kFakeSpan, empty_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{}, /*is_public=*/false);
+  empty_name->set_definer(empty_def);
+  SumType empty_type(*empty_def, std::vector<SumTypeVariant>{});
+
+  auto* outer_name = module.Make<NameDef>(kFakeSpan, "Outer", nullptr);
+  auto* wrapped_name = module.Make<NameDef>(kFakeSpan, "Wrapped", nullptr);
+  auto* nothing_name = module.Make<NameDef>(kFakeSpan, "Nothing", nullptr);
+  auto* wrapped =
+      module.Make<SumVariant>(kFakeSpan, wrapped_name,
+                              SumVariant::PayloadKind::kTuple,
+                              std::vector<TypeAnnotation*>{},
+                              std::vector<StructMemberNode*>{});
+  auto* nothing =
+      module.Make<SumVariant>(kFakeSpan, nothing_name,
+                              SumVariant::PayloadKind::kUnit,
+                              std::vector<TypeAnnotation*>{},
+                              std::vector<StructMemberNode*>{});
+  auto* outer_def = module.Make<SumDef>(
+      kFakeSpan, outer_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{wrapped, nothing}, /*is_public=*/false);
+  outer_name->set_definer(outer_def);
+
+  std::vector<SumTypeVariant> outer_variants;
+  std::vector<std::unique_ptr<Type>> wrapped_members;
+  wrapped_members.push_back(empty_type.CloneToUnique());
+  outer_variants.emplace_back(*wrapped, std::move(wrapped_members));
+  outer_variants.emplace_back(*nothing, std::vector<std::unique_ptr<Type>>{});
+  SumType outer_type(*outer_def, std::move(outer_variants));
+
+  const std::vector<InterpValue> no_payload_values;
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
+                           CreateSumValue(outer_type, "Nothing",
+                                          no_payload_values));
+  EXPECT_TRUE(InterpValue::MakeTuple(
+                  {InterpValue::MakeUBits(1, 1),
+                   InterpValue::MakeTuple({InterpValue::MakeTuple(
+                       {InterpValue::MakeUBits(1, 0),
+                        InterpValue::MakeTuple({})})})})
+                  .Eq(value));
+}
+
+TEST(InterpValueHelpersTest, CreateSumValueRejectsPayloadTypeMismatch) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumType sum_type = MakeMixedPayloadSumType(module);
+
+  EXPECT_THAT(CreateSumValue(sum_type, "Byte", {InterpValue::MakeUBits(16, 1)}),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("does not match")));
+}
+
 TEST(InterpValueHelpersTest, InterpValueAsStringWorks) {
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue hello_world_u8_array,
                            InterpValue::MakeArray({
@@ -276,6 +492,33 @@ TEST(InterpValueHelpersTest, ValueToInterpValueEnum) {
   EXPECT_THAT(ValueToInterpValue(Value(UBits(3, 32)), &enum_type),
               IsOkAndHolds(Eq(InterpValue::MakeEnum(
                   UBits(3, 32), /*is_signed=*/false, &enum_def))));
+}
+
+TEST(InterpValueHelpersTest, ValueToInterpValueSumRejectsInvalidTag) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumType sum_type = MakeMixedPayloadSumType(module);
+
+  Value raw = Value::Tuple({Value(UBits(3, 2)),
+                            Value::Tuple({Value(UBits(0, 8)),
+                                          Value(UBits(0, 16))})});
+  EXPECT_THAT(ValueToInterpValue(raw, &sum_type),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("invalid tag")));
+}
+
+TEST(InterpValueHelpersTest,
+     ValueToInterpValueSumRejectsNoncanonicalInactivePayload) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumType sum_type = MakeMixedPayloadSumType(module);
+
+  Value raw = Value::Tuple({Value(UBits(0, 2)),
+                            Value::Tuple({Value(UBits(1, 8)),
+                                          Value(UBits(0, 16))})});
+  EXPECT_THAT(ValueToInterpValue(raw, &sum_type),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("noncanonical inactive payload slot")));
 }
 
 }  // namespace

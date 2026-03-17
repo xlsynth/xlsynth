@@ -23,6 +23,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/format_preference.h"
@@ -76,6 +77,56 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeStruct(
   return vfd;
 }
 
+ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
+    std::string_view sum_name,
+    absl::Span<const ValueFormatSumVariantDescriptor> variants,
+    FormatPreference tag_format) {
+  ValueFormatDescriptor vfd(ValueFormatDescriptorKind::kSum);
+  vfd.sum_name_ = sum_name;
+  vfd.sum_tag_format_ = tag_format;
+
+  size_t payload_start = 0;
+  for (const ValueFormatSumVariantDescriptor& variant : variants) {
+    payload_start += variant.payload_formats.size();
+  }
+  vfd.children_.reserve(payload_start);
+  payload_start = 0;
+  vfd.sum_variant_names_.reserve(variants.size());
+  vfd.sum_variant_kinds_.reserve(variants.size());
+  vfd.sum_variant_payload_starts_.reserve(variants.size());
+  vfd.sum_variant_payload_sizes_.reserve(variants.size());
+  vfd.sum_variant_field_names_.reserve(variants.size());
+  for (const ValueFormatSumVariantDescriptor& variant : variants) {
+    const size_t payload_size = variant.payload_formats.size();
+    CHECK(variant.kind == ValueFormatSumVariantKind::kStruct ||
+          variant.field_names.empty());
+    CHECK_EQ(variant.kind == ValueFormatSumVariantKind::kStruct
+                 ? variant.field_names.size()
+                 : payload_size,
+             payload_size);
+    vfd.sum_variant_names_.push_back(variant.name);
+    vfd.sum_variant_kinds_.push_back(variant.kind);
+    vfd.sum_variant_payload_starts_.push_back(payload_start);
+    vfd.sum_variant_payload_sizes_.push_back(payload_size);
+    vfd.sum_variant_field_names_.push_back(variant.field_names);
+    vfd.children_.insert(vfd.children_.end(), variant.payload_formats.begin(),
+                         variant.payload_formats.end());
+    payload_start += payload_size;
+  }
+  return vfd;
+}
+
+ValueFormatSumVariantView ValueFormatDescriptor::sum_variant(size_t i) const {
+  CHECK(IsSum());
+  const size_t payload_slot_start = sum_variant_payload_starts_.at(i);
+  const size_t payload_slot_count = sum_variant_payload_sizes_.at(i);
+  return ValueFormatSumVariantView(
+      sum_variant_names_.at(i), sum_variant_kinds_.at(i),
+      sum_variant_field_names_.at(i),
+      absl::MakeConstSpan(children_).subspan(payload_slot_start,
+                                             payload_slot_count));
+}
+
 absl::Status ValueFormatDescriptor::Accept(ValueFormatVisitor& v) const {
   switch (kind()) {
     case ValueFormatDescriptorKind::kLeafValue:
@@ -88,9 +139,11 @@ absl::Status ValueFormatDescriptor::Accept(ValueFormatVisitor& v) const {
       return v.HandleTuple(*this);
     case ValueFormatDescriptorKind::kStruct:
       return v.HandleStruct(*this);
+    case ValueFormatDescriptorKind::kSum:
+      return v.HandleSum(*this);
   }
-  return absl::InvalidArgumentError(absl::StrFormat(
-      "Out of bounds ValueFormatDescriptorKind: %d", static_cast<int>(kind())));
+  return absl::InvalidArgumentError(absl::StrCat(
+      "Out of bounds ValueFormatDescriptorKind: ", static_cast<int>(kind())));
 }
 
 }  // namespace xls::dslx

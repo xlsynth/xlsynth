@@ -238,12 +238,62 @@ cc_test(
 )
 
 cc_library(
+    name = "sum_type_encoding",
+    srcs = ["sum_type_encoding.cc"],
+    hdrs = ["sum_type_encoding.h"],
+    deps = [
+        "//xls/common/status:status_macros",
+        "//xls/dslx/type_system:type",
+        "@com_google_absl//absl/functional:function_ref",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "sum_type_encoding_test",
+    srcs = ["sum_type_encoding_test.cc"],
+    deps = [
+        ":sum_type_encoding",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/common/status:status_macros",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
+        "//xls/dslx/frontend:pos",
+        "//xls/dslx/type_system:type",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
+    name = "interp_value_internal_utils",
+    srcs = ["interp_value_internal_utils.cc"],
+    hdrs = ["interp_value_internal_utils.h"],
+    visibility = ["//xls/dslx:__subpackages__"],
+    deps = [
+        ":interp_value",
+        ":sum_type_encoding",
+        "//xls/common/status:status_macros",
+        "//xls/dslx/type_system:type",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_library(
     name = "interp_value_utils",
     srcs = ["interp_value_utils.cc"],
     hdrs = ["interp_value_utils.h"],
     deps = [
         ":channel_direction",
         ":interp_value",
+        ":interp_value_internal_utils",
+        ":sum_type_encoding",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
         "//xls/dslx/frontend:ast",
@@ -268,6 +318,7 @@ cc_test(
     srcs = ["interp_value_utils_test.cc"],
     deps = [
         ":interp_value",
+        ":interp_value_internal_utils",
         ":interp_value_utils",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
@@ -305,6 +356,7 @@ cc_library(
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
     ],
 )

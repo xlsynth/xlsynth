@@ -14,7 +14,10 @@
 #ifndef XLS_DSLX_EXHAUSTIVENESS_MATCH_EXHAUSTIVENESS_CHECKER_H_
 #define XLS_DSLX_EXHAUSTIVENESS_MATCH_EXHAUSTIVENESS_CHECKER_H_
 
+#include <cstdint>
+#include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "xls/dslx/exhaustiveness/interp_value_interval.h"
@@ -27,6 +30,16 @@
 #include "xls/dslx/type_system/type_info.h"
 
 namespace xls::dslx {
+
+struct FlattenedLeafType {
+  const Type* type;
+  std::optional<int64_t> dense_max_value;
+};
+
+struct FlattenedLeafTypes {
+  std::vector<std::unique_ptr<Type>> owned;
+  std::vector<FlattenedLeafType> flat;
+};
 
 // Object that we can incrementally feed match arms/patterns to and ask whether
 // we've reached a point where the patterns are exhaustive. This is useful for
@@ -54,6 +67,12 @@ class MatchExhaustivenessChecker {
   std::optional<InterpValue> SampleSimplestUncoveredValue() const;
 
  private:
+  struct SumVariantState {
+    std::string variant_name;
+    FlattenedLeafTypes leaf_types;
+    NdRegion remaining;
+  };
+
   const FileTable& file_table() const { return type_info_.file_table(); }
 
   const Span matched_expr_span_;
@@ -61,10 +80,18 @@ class MatchExhaustivenessChecker {
   const ImportData& import_data_;
   const TypeInfo& type_info_;
   const Type& matched_type_;
+  const SumType* matched_sum_type_ = nullptr;
 
-  // Flattened version of the pattern tuple, each element of this vector is a
-  // dimension in the NdRegion below.
-  std::vector<const Type*> leaf_types_;
+  // Flattened version of the matched type for non-sum matches. The owned
+  // storage is for synthesized leaves such as dense sum tags.
+  FlattenedLeafTypes leaf_types_;
+
+  // For top-level sum matches, we track the remaining payload space per active
+  // constructor instead of flattening every inactive variant payload into one
+  // global ND region.
+  // TODO: Replace this placeholder top-level partitioning with a recursive
+  // exhaustiveness representation that can model nested sums directly.
+  std::vector<SumVariantState> sum_variant_states_;
 
   // The remaining region of the value space that we need to test.
   NdRegion remaining_;

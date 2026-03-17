@@ -227,6 +227,166 @@ TEST(ExhaustivenessMatchTest, MatchOnSparseEnum) {
   CheckExhaustiveOnlyAfterLastPattern(kMatch);
 }
 
+TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn main(x: MaybeU32) -> u32 {
+  match x {
+    MaybeU32::Some(v) => v,
+    MaybeU32::None => u32:0,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, NonExhaustiveMatchOnSemanticSumConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn main(x: MaybeU32) -> u32 {
+  match x {
+    MaybeU32::Some(v) => v,
+  }
+})";
+  CheckNonExhaustive(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructorsWithWildcard) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn main(x: MaybeU32) -> u32 {
+  match x {
+    MaybeU32::Some(v) => v,
+    _ => u32:0,
+    MaybeU32::None => u32:1,
+  }
+})";
+  CheckExhaustiveWithRedundantPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnSemanticStructVariantConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum MaybePoint {
+  None,
+  Point { x: u32, y: u32 },
+}
+
+fn main(x: MaybePoint) -> u32 {
+  match x {
+    MaybePoint::Point { x: px, y: py } => px + py,
+    MaybePoint::None => u32:0,
+  }
+  })";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructorsNonExhaustive) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn main(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    Option::None => u32:0,
+  }
+})";
+  CheckNonExhaustive(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructorsWildcardCompletes) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn main(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    _ => u32:0,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchTupleContainingSemanticSumConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn main(x: (MaybeU32, bool)) -> u32 {
+  match x {
+    (MaybeU32::Some(v), _) => v,
+    (MaybeU32::None, true) => u32:1,
+    (MaybeU32::None, false) => u32:0,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest,
+     NonExhaustiveMatchTupleContainingSemanticSumConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn main(x: (MaybeU32, bool)) -> u32 {
+  match x {
+    (MaybeU32::Some(v), _) => v,
+    (MaybeU32::None, true) => u32:1,
+  }
+})";
+  CheckNonExhaustive(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest,
+     MatchOnSemanticSumConstructorsRedundantAfterWildcard) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn main(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    _ => u32:0,
+    Option::None => u32:1,
+  }
+})";
+  CheckExhaustiveWithRedundantPattern(kMatch);
+}
+
 TEST(ExhaustivenessMatchTest, MatchWithNestedTuplesAndRestOfTupleSprinkled) {
   constexpr std::string_view kMatch =
       R"(fn main(t: (u32, (u32, u32, u32), u32, u32)) -> u32 {
