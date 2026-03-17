@@ -773,14 +773,10 @@ absl::StatusOr<BValue> FunctionConverter::BuildEqByType(
     BValue lhs_payload = function_builder_->TupleIndex(lhs, 1, loc);
     BValue rhs_payload = function_builder_->TupleIndex(rhs, 1, loc);
     BValue tag_eq = function_builder_->Eq(lhs_tag, rhs_tag, loc);
-    BValue payload_eq = function_builder_->Literal(UBits(0, 1), loc);
+    std::vector<BValue> case_payload_eqs;
+    case_payload_eqs.reserve(sum_type->variant_count());
     XLS_RETURN_IF_ERROR(encoding.ForEachVariant(
         [&](const SumTypeEncoding::VariantInfo& variant) -> absl::Status {
-          BValue case_matches = function_builder_->Eq(
-              lhs_tag,
-              function_builder_->Literal(
-                  UBits(variant.variant_index, tag_bit_count), loc),
-              loc);
           BValue case_payload_eq = function_builder_->Literal(UBits(1, 1), loc);
           XLS_RETURN_IF_ERROR(encoding.ForEachActivePayloadSlot(
               variant,
@@ -800,11 +796,19 @@ absl::StatusOr<BValue> FunctionConverter::BuildEqByType(
                     function_builder_->And(case_payload_eq, member_eq, loc);
                 return absl::OkStatus();
               }));
-          payload_eq = function_builder_->Or(
-              payload_eq,
-              function_builder_->And(case_matches, case_payload_eq, loc), loc);
+          case_payload_eqs.push_back(case_payload_eq);
           return absl::OkStatus();
         }));
+    BValue payload_eq = case_payload_eqs.front();
+    if (case_payload_eqs.size() > 1) {
+      // TODO: Phase 2 owns malformed-sum equality. Phase 1 only defines
+      // equality for well-formed semantic sums, so invalid tag encodings fall
+      // through to a conservative `false` default instead of reifying
+      // malformed-value comparisons here.
+      payload_eq = function_builder_->Select(
+          lhs_tag, case_payload_eqs,
+          /*default_value=*/function_builder_->Literal(UBits(0, 1), loc), loc);
+    }
     return function_builder_->And(tag_eq, payload_eq, loc);
   }
   if (!TypeContainsSum(type)) {

@@ -8380,23 +8380,30 @@ struct Holder {
 fn aggregate_eq_test() {
   let some = Option::Some(u32:5);
   let same = Option::Some(u32:5);
+  let different = Option::Some(u32:6);
   let other = Option::Pair { lhs: u32:5, rhs: u32:0 };
   let none = Option::None;
   let array_lhs = Option[2]:[some, none];
   let array_rhs = Option[2]:[same, none];
+  let array_different = Option[2]:[different, none];
   let array_other = Option[2]:[other, none];
   let tuple_lhs = (some, none);
   let tuple_rhs = (same, none);
+  let tuple_different = (different, none);
   let tuple_other = (other, none);
   let struct_lhs = Holder { left: some, right: none };
   let struct_rhs = Holder { left: same, right: none };
+  let struct_different = Holder { left: different, right: none };
   let struct_other = Holder { left: other, right: none };
 
   assert_eq(array_lhs == array_rhs, true);
+  assert_eq(array_lhs != array_different, true);
   assert_eq(array_lhs != array_other, true);
   assert_eq(tuple_lhs == tuple_rhs, true);
+  assert_eq(tuple_lhs != tuple_different, true);
   assert_eq(tuple_lhs != tuple_other, true);
   assert_eq(struct_lhs == struct_rhs, true);
+  assert_eq(struct_lhs != struct_different, true);
   assert_eq(struct_lhs != struct_other, true);
 }
 )";
