@@ -657,13 +657,22 @@ fn f(x: Option, y: Option) -> bool {
                            package.package->GetTopAsFunction());
   int64_t tuple_index_count = 0;
   int64_t eq_count = 0;
+  int64_t eq_literal_count = 0;
+  int64_t select_count = 0;
   bool has_direct_param_eq = false;
   for (xls::Node* node : ir_function->nodes()) {
     if (node->op() == xls::Op::kTupleIndex) {
       ++tuple_index_count;
     }
+    if (node->op() == xls::Op::kSel) {
+      ++select_count;
+    }
     if (node->op() == xls::Op::kEq) {
       ++eq_count;
+      if (node->operand(0)->op() == xls::Op::kLiteral ||
+          node->operand(1)->op() == xls::Op::kLiteral) {
+        ++eq_literal_count;
+      }
       if (node->operand(0)->op() == xls::Op::kParam &&
           node->operand(1)->op() == xls::Op::kParam) {
         has_direct_param_eq = true;
@@ -672,6 +681,8 @@ fn f(x: Option, y: Option) -> bool {
   }
   EXPECT_GE(tuple_index_count, 4);
   EXPECT_GT(eq_count, 1);
+  EXPECT_EQ(select_count, 1);
+  EXPECT_EQ(eq_literal_count, 0);
   EXPECT_FALSE(has_direct_param_eq);
 }
 
