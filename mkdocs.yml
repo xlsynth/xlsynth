@@ -78,6 +78,7 @@ nav:
       - Proc-scoped channels: 'design_docs/proc_scoped_channels.md'
       - Synchronous Procs: 'design_docs/synchronous_procs.md'
       - DSLX Pattern Exhaustiveness: 'design_docs/dslx_pattern_exhaustiveness.md'
+      - DSLX Sum Types: 'design_docs/dslx_sum_types.md'
     - Releasing: 'releasing.md'
   - NoC:
     - Overview: 'noc/xls_noc_readme.md'
