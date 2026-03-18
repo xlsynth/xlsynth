@@ -19,6 +19,8 @@ import sys
 import glob
 import re
 
+import release_runtime_closure
+
 # List of Bazel targets to build
 COMMON_TARGETS = [
     "//xls/dev_tools:check_ir_equivalence_main",
@@ -201,6 +203,28 @@ def make_local_release(output_dir, targets, run_tests=True, mode="opt"):
             print(f"Copied {binary_path} to {destination_path}")
         except PermissionError as e:
             print(f"Permission denied while copying {binary_path}: {e}")
+            sys.exit(1)
+
+    if "//xls/public:libxls.so" in targets:
+        primary_dso_path = os.path.join(output_dir, "libxls.so")
+        platform = release_runtime_closure.detect_linux_release_platform()
+        release_named_dso_path = os.path.join(output_dir, f"libxls-{platform}.so")
+        try:
+            shutil.copy2(primary_dso_path, release_named_dso_path)
+            print(f"Copied {primary_dso_path} to {release_named_dso_path}")
+            packaged_runtime = release_runtime_closure.package_runtime_closure(
+                primary_dso_path = primary_dso_path,
+                output_dir = output_dir,
+                platform = platform,
+            )
+            print(
+                "Packaged Linux runtime closure: {} and {}".format(
+                    packaged_runtime["archive_path"],
+                    packaged_runtime["manifest_path"],
+                )
+            )
+        except (OSError, RuntimeError) as e:
+            print(f"Failed to package Linux runtime closure: {e}")
             sys.exit(1)
 
     # Copy the standard library files to the output directory in the same relpath locations
