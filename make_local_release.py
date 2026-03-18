@@ -274,9 +274,19 @@ def main():
     if options.macos:
         # Tests do not work on MacOS because static initializers of the estimators are
         # stripped out which breaks the build.
-        make_local_release(output_dir, MACOS_TARGETS, run_tests=False, mode=options.mode)
+        make_local_release(
+            output_dir,
+            MACOS_TARGETS,
+            run_tests=False,
+            mode=options.mode,
+        )
     else:
-        make_local_release(output_dir, LINUX_TARGETS, run_tests=True, mode=options.mode)
+        make_local_release(
+            output_dir,
+            LINUX_TARGETS,
+            run_tests=True,
+            mode=options.mode,
+        )
 
 if __name__ == "__main__":
     main()

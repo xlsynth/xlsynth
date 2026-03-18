@@ -134,7 +134,8 @@ jobs:
 
     - name: Install Clang
       run: |
-        dnf install -y llvm-toolset
+        # The prebuilt LLVM 18 Linux toolchain selected by Bazel expects libtinfo.so.5.
+        dnf install -y llvm-toolset ncurses-compat-libs
 
     - name: Note Clang version
       run: |
@@ -284,7 +285,7 @@ jobs:
         wget https://apt.llvm.org/llvm.sh
         chmod +x llvm.sh
         sudo ./llvm.sh 18
-        sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev
+        sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev libtinfo5
 
     - name: Install zlib development headers
       run: |
