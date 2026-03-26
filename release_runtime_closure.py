@@ -17,6 +17,7 @@
 """Packages the non-system Linux runtime closure for a released libxls shared library."""
 
 import argparse
+from enum import Enum
 import gzip
 import io
 import json
@@ -33,21 +34,137 @@ _SYSTEM_LIBRARY_PREFIXES = (
 )
 
 
-def build_runtime_archive_filename(platform):
-    return f"libxls-runtime-{platform}.tar.gz"
+class ReleaseTarget(Enum):
+    MACOS_ARM64 = ("macos-arm64", "arm64", None)
+    ROCKY8 = ("rocky8", "rocky8", "rocky8")
+    UBUNTU2004 = ("ubuntu2004", "ubuntu2004", "ubuntu2004")
+
+    def __init__(self, cli_name, artifact_suffix, runtime_platform):
+        self.cli_name = cli_name
+        self.artifact_suffix = artifact_suffix
+        self.runtime_platform = runtime_platform
+
+    @property
+    def is_linux(self):
+        return self.runtime_platform is not None
 
 
-def build_runtime_manifest_filename(platform):
-    return f"libxls-runtime-{platform}-manifest.json"
+RELEASE_TARGETS_BY_NAME = {
+    release_target.cli_name: release_target for release_target in ReleaseTarget
+}
+SUPPORTED_RELEASE_TARGETS = tuple(
+    release_target.cli_name for release_target in ReleaseTarget
+)
+SUPPORTED_LINUX_RELEASE_TARGETS = tuple(
+    release_target.cli_name
+    for release_target in ReleaseTarget
+    if release_target.is_linux
+)
+
+
+def parse_release_target(release_target_name):
+    release_target = RELEASE_TARGETS_BY_NAME.get(release_target_name)
+    if release_target is None:
+        raise ValueError(
+            "Unsupported release target {}. Expected one of: {}".format(
+                release_target_name,
+                ", ".join(SUPPORTED_RELEASE_TARGETS),
+            )
+        )
+    else:
+        return release_target
+
+
+def validate_linux_release_target(release_target_name):
+    release_target = parse_release_target(release_target_name)
+    if release_target.is_linux:
+        return release_target
+    else:
+        raise ValueError(
+            "Release target {} does not package a Linux runtime closure. Expected one of: {}".format(
+                release_target.cli_name,
+                ", ".join(SUPPORTED_LINUX_RELEASE_TARGETS),
+            )
+        )
+
+
+def coerce_linux_release_target(release_target):
+    if isinstance(release_target, ReleaseTarget):
+        if release_target.is_linux:
+            return release_target
+        else:
+            raise ValueError(
+                "Release target {} does not package a Linux runtime closure. Expected one of: {}".format(
+                    release_target.cli_name,
+                    ", ".join(SUPPORTED_LINUX_RELEASE_TARGETS),
+                )
+            )
+    else:
+        return validate_linux_release_target(release_target)
+
+
+def build_runtime_archive_filename(release_target):
+    linux_release_target = coerce_linux_release_target(release_target)
+    return f"libxls-runtime-{linux_release_target.artifact_suffix}.tar.gz"
+
+
+def build_runtime_manifest_filename(release_target):
+    linux_release_target = coerce_linux_release_target(release_target)
+    return f"libxls-runtime-{linux_release_target.artifact_suffix}-manifest.json"
+
+
+def detect_linux_release_target(os_release_path = Path("/etc/os-release")):
+    if not os_release_path.exists():
+        raise RuntimeError(
+            "Cannot detect Linux release target from missing {}".format(os_release_path)
+        )
+    release_fields = {}
+    for raw_line in os_release_path.read_text(encoding = "utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        release_fields[key] = value.strip().strip('"').strip("'").lower()
+    release_id = release_fields.get("ID", "")
+    version_id = release_fields.get("VERSION_ID", "")
+    if release_id == "ubuntu" and version_id == "20.04":
+        return ReleaseTarget.UBUNTU2004
+    elif release_id in {"rocky", "rhel", "almalinux", "centos"} and version_id.startswith("8"):
+        return ReleaseTarget.ROCKY8
+    else:
+        raise RuntimeError(
+            "Unsupported Linux release for auto-detected packaging: ID={} VERSION_ID={}".format(
+                release_id or "<missing>",
+                version_id or "<missing>",
+            )
+        )
 
 
 def detect_linux_release_platform(os_release_path = Path("/etc/os-release")):
-    if not os_release_path.exists():
-        return "ubuntu2004"
-    contents = os_release_path.read_text(encoding = "utf-8").lower()
-    if any(marker in contents for marker in ["rocky", "rhel", "almalinux", "centos"]):
-        return "rocky8"
-    return "ubuntu2004"
+    return detect_linux_release_target(os_release_path).runtime_platform
+
+
+def validate_matching_linux_release_target(
+    release_target,
+    allow_release_target_mismatch = False,
+    os_release_path = Path("/etc/os-release"),
+):
+    linux_release_target = coerce_linux_release_target(release_target)
+    detected_release_target = detect_linux_release_target(os_release_path)
+    if (
+        allow_release_target_mismatch
+        or detected_release_target == linux_release_target
+    ):
+        return linux_release_target
+    else:
+        raise RuntimeError(
+            "Requested Linux release target {} does not match detected host {} from {}. "
+            "Re-run with --allow-release-target-mismatch only if you intentionally need cross-target naming.".format(
+                linux_release_target.cli_name,
+                detected_release_target.cli_name,
+                os_release_path,
+            )
+        )
 
 
 def run_text_command(args):
@@ -172,16 +289,27 @@ def write_runtime_manifest(manifest_path, manifest):
     )
 
 
-def package_runtime_closure(primary_dso_path, output_dir, platform):
+def package_runtime_closure(
+    primary_dso_path,
+    output_dir,
+    release_target,
+    allow_release_target_mismatch = False,
+    os_release_path = Path("/etc/os-release"),
+):
     primary_path = Path(primary_dso_path)
     target_dir = Path(output_dir)
     target_dir.mkdir(parents = True, exist_ok = True)
+    linux_release_target = validate_matching_linux_release_target(
+        release_target,
+        allow_release_target_mismatch = allow_release_target_mismatch,
+        os_release_path = os_release_path,
+    )
 
     runtime_files = collect_runtime_closure(primary_path)
     manifest = build_runtime_manifest(primary_path.name, runtime_files)
 
-    archive_path = target_dir / build_runtime_archive_filename(platform)
-    manifest_path = target_dir / build_runtime_manifest_filename(platform)
+    archive_path = target_dir / build_runtime_archive_filename(linux_release_target)
+    manifest_path = target_dir / build_runtime_manifest_filename(linux_release_target)
 
     create_runtime_archive(archive_path, runtime_files)
     write_runtime_manifest(manifest_path, manifest)
@@ -196,16 +324,23 @@ def parse_args(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument("--libxls", required = True)
     parser.add_argument("--output-dir", required = True)
-    parser.add_argument("--platform", required = True)
+    parser.add_argument("--release-target", required = True)
+    parser.add_argument(
+        "--allow-release-target-mismatch",
+        action = "store_true",
+        help = "allow Linux artifact naming that does not match the detected host release target",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
+    release_target = validate_linux_release_target(args.release_target)
     result = package_runtime_closure(
         primary_dso_path = args.libxls,
         output_dir = args.output_dir,
-        platform = args.platform,
+        release_target = release_target,
+        allow_release_target_mismatch = args.allow_release_target_mismatch,
     )
     print("Packaged runtime closure:")
     print("  archive: {}".format(result["archive_path"]))

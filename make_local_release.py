@@ -56,6 +56,17 @@ IMPORT_RE = re.compile(r'^\s*import\s+"([^"]+)";\s*$')
 AOT_ENTRYPOINT_PROTO = "xls/jit/aot_entrypoint.proto"
 
 
+def resolve_release_target(requested_release_target):
+    if not requested_release_target:
+        raise ValueError(
+            "Local releases require --release-target (supported values: {})".format(
+                ", ".join(release_runtime_closure.SUPPORTED_RELEASE_TARGETS),
+            )
+        )
+    else:
+        return release_runtime_closure.parse_release_target(requested_release_target)
+
+
 def collect_proto_dependencies(proto_path):
     """Returns all local proto dependencies reachable from `proto_path`."""
     all_protos = set()
@@ -118,7 +129,14 @@ def get_git_info():
 
 # Main function to handle the release process.
 # Now accepts an optional `mode` argument to change the Bazel command.
-def make_local_release(output_dir, targets, run_tests=True, mode="opt"):
+def make_local_release(
+    output_dir,
+    targets,
+    run_tests=True,
+    mode="opt",
+    release_target=None,
+    allow_release_target_mismatch=False,
+):
     # Ensure the output directory exists and is writable
     if os.path.exists(output_dir):
         try:
@@ -207,15 +225,25 @@ def make_local_release(output_dir, targets, run_tests=True, mode="opt"):
 
     if "//xls/public:libxls.so" in targets:
         primary_dso_path = os.path.join(output_dir, "libxls.so")
-        platform = release_runtime_closure.detect_linux_release_platform()
-        release_named_dso_path = os.path.join(output_dir, f"libxls-{platform}.so")
+        if release_target is None:
+            print("Linux local releases require a Linux --release-target")
+            sys.exit(1)
+        release_target = release_runtime_closure.validate_matching_linux_release_target(
+            release_target,
+            allow_release_target_mismatch = allow_release_target_mismatch,
+        )
+        release_named_dso_path = os.path.join(
+            output_dir,
+            f"libxls-{release_target.artifact_suffix}.so",
+        )
         try:
             shutil.copy2(primary_dso_path, release_named_dso_path)
             print(f"Copied {primary_dso_path} to {release_named_dso_path}")
             packaged_runtime = release_runtime_closure.package_runtime_closure(
                 primary_dso_path = primary_dso_path,
                 output_dir = output_dir,
-                platform = platform,
+                release_target = release_target,
+                allow_release_target_mismatch = allow_release_target_mismatch,
             )
             print(
                 "Packaged Linux runtime closure: {} and {}".format(
@@ -281,21 +309,48 @@ def make_local_release(output_dir, targets, run_tests=True, mode="opt"):
         print(f"Failed to generate diff against main: {e}")
 
 # New main() function using optparse
-def main():
+def parse_cli_args(argv):
     from optparse import OptionParser
 
     usage = "usage: %prog [options] output_directory"
     parser = OptionParser(usage=usage)
     parser.add_option("-m", "--mode", dest="mode", default="opt", choices=["opt", "dbg-asan", "dbg"],
                       help="Build mode: opt (default) or dbg-asan")
-    parser.add_option("--macos", action="store_true", default=False, help="Build for macOS")
-    options, args = parser.parse_args()
+    parser.add_option(
+        "--release-target",
+        dest="release_target",
+        help="Release target profile name",
+    )
+    parser.add_option(
+        "--allow-release-target-mismatch",
+        dest="allow_release_target_mismatch",
+        action="store_true",
+        default=False,
+        help="Allow Linux artifact naming that differs from the detected host release target",
+    )
+    options, args = parser.parse_args(argv)
 
     if len(args) != 1:
         parser.error("You must specify exactly one output directory")
-    output_dir = args[0]
+    try:
+        release_target = resolve_release_target(options.release_target)
+    except ValueError as e:
+        parser.error(str(e))
+    options.release_target = release_target
+    if (
+        options.allow_release_target_mismatch
+        and release_target == release_runtime_closure.ReleaseTarget.MACOS_ARM64
+    ):
+        parser.error("--allow-release-target-mismatch only applies to Linux release targets")
+    return options, args[0]
 
-    if options.macos:
+
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    options, output_dir = parse_cli_args(argv)
+
+    if options.release_target == release_runtime_closure.ReleaseTarget.MACOS_ARM64:
         # Tests do not work on MacOS because static initializers of the estimators are
         # stripped out which breaks the build.
         make_local_release(
@@ -310,6 +365,8 @@ def main():
             LINUX_TARGETS,
             run_tests=True,
             mode=options.mode,
+            release_target=options.release_target,
+            allow_release_target_mismatch=options.allow_release_target_mismatch,
         )
 
 if __name__ == "__main__":
