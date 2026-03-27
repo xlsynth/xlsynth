@@ -184,6 +184,9 @@ jobs:
         gzip -c bazel-bin/xls/public/libxls.so > rocky8-artifacts/libxls-rocky8.so.gz
         sha256sum rocky8-artifacts/libxls-rocky8.so.gz > rocky8-artifacts/libxls-rocky8.so.gz.sha256
         sha256sum bazel-bin/xls/public/libxls.so > rocky8-artifacts/libxls-rocky8.so.sha256
+        python3 dist/package_runtime_closure.py --libxls bazel-bin/xls/public/libxls.so --output-dir rocky8-artifacts --release-target rocky8
+        sha256sum rocky8-artifacts/libxls-runtime-rocky8.tar.gz > rocky8-artifacts/libxls-runtime-rocky8.tar.gz.sha256
+        sha256sum rocky8-artifacts/libxls-runtime-rocky8-manifest.json > rocky8-artifacts/libxls-runtime-rocky8-manifest.json.sha256
 
         cp bazel-bin/xls/dslx/interpreter_main              rocky8-artifacts/dslx_interpreter_main-rocky8
         sha256sum rocky8-artifacts/dslx_interpreter_main-rocky8 > rocky8-artifacts/dslx_interpreter_main-rocky8.sha256
@@ -337,6 +340,9 @@ jobs:
         gzip -c bazel-bin/xls/public/libxls.so > ubuntu2004-artifacts/libxls-ubuntu2004.so.gz
         sha256sum ubuntu2004-artifacts/libxls-ubuntu2004.so.gz > ubuntu2004-artifacts/libxls-ubuntu2004.so.gz.sha256
         sha256sum bazel-bin/xls/public/libxls.so > ubuntu2004-artifacts/libxls-ubuntu2004.so.sha256
+        python3 dist/package_runtime_closure.py --libxls bazel-bin/xls/public/libxls.so --output-dir ubuntu2004-artifacts --release-target ubuntu2004
+        sha256sum ubuntu2004-artifacts/libxls-runtime-ubuntu2004.tar.gz > ubuntu2004-artifacts/libxls-runtime-ubuntu2004.tar.gz.sha256
+        sha256sum ubuntu2004-artifacts/libxls-runtime-ubuntu2004-manifest.json > ubuntu2004-artifacts/libxls-runtime-ubuntu2004-manifest.json.sha256
 
         cp bazel-bin/xls/dslx/interpreter_main             ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004
         sha256sum ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004 > ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004.sha256
@@ -465,6 +471,10 @@ jobs:
           ubuntu2004-artifacts/libxls-ubuntu2004.so.gz \
           ubuntu2004-artifacts/libxls-ubuntu2004.so.gz.sha256 \
           ubuntu2004-artifacts/libxls-ubuntu2004.so.sha256 \
+          ubuntu2004-artifacts/libxls-runtime-ubuntu2004.tar.gz \
+          ubuntu2004-artifacts/libxls-runtime-ubuntu2004.tar.gz.sha256 \
+          ubuntu2004-artifacts/libxls-runtime-ubuntu2004-manifest.json \
+          ubuntu2004-artifacts/libxls-runtime-ubuntu2004-manifest.json.sha256 \
           ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004 \
           ubuntu2004-artifacts/dslx_interpreter_main-ubuntu2004.sha256 \
           ubuntu2004-artifacts/dslx_ls-ubuntu2004 \
@@ -492,6 +502,10 @@ jobs:
           rocky8-artifacts/libxls-rocky8.so.gz \
           rocky8-artifacts/libxls-rocky8.so.gz.sha256 \
           rocky8-artifacts/libxls-rocky8.so.sha256 \
+          rocky8-artifacts/libxls-runtime-rocky8.tar.gz \
+          rocky8-artifacts/libxls-runtime-rocky8.tar.gz.sha256 \
+          rocky8-artifacts/libxls-runtime-rocky8-manifest.json \
+          rocky8-artifacts/libxls-runtime-rocky8-manifest.json.sha256 \
           rocky8-artifacts/dslx_interpreter_main-rocky8 \
           rocky8-artifacts/dslx_interpreter_main-rocky8.sha256 \
           rocky8-artifacts/dslx_ls-rocky8 \
