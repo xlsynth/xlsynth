@@ -122,6 +122,10 @@ def get_embedded_data(
             ctx.attr._absl_span[CcInfo].linking_context,
             ctx.attr._libc_runtime[CcInfo].linking_context,
         ],
+        # This helper is consumed via the returned CcInfo's static/PIC outputs.
+        # A standalone dylib would only contain the generated object file and
+        # would not fold in these transitive deps, which breaks Darwin links.
+        disallow_dynamic_library = True,
     )
     return CcInfo(compilation_context = comp_ctx, linking_context = link_ctx)
 
