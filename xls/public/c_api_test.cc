@@ -1506,6 +1506,11 @@ enum MyEnum : u5 {
     B = u5:4,
     C = EIGHT,
 }
+
+sum MySum {
+    Nothing,
+    Count(u8),
+}
 )";
   const char* additional_search_paths[] = {};
 
@@ -1535,14 +1540,44 @@ enum MyEnum : u5 {
 
   int64_t type_definition_count =
       xls_dslx_module_get_type_definition_count(module);
-  ASSERT_EQ(type_definition_count, 2);
+  ASSERT_EQ(type_definition_count, 3);
 
   xls_dslx_type_definition_kind kind0 =
       xls_dslx_module_get_type_definition_kind(module, 0);
   xls_dslx_type_definition_kind kind1 =
       xls_dslx_module_get_type_definition_kind(module, 1);
+  xls_dslx_type_definition_kind kind2 =
+      xls_dslx_module_get_type_definition_kind(module, 2);
   EXPECT_EQ(kind0, xls_dslx_type_definition_kind_struct_def);
   EXPECT_EQ(kind1, xls_dslx_type_definition_kind_enum_def);
+  EXPECT_EQ(kind2, xls_dslx_type_definition_kind_sum_def);
+
+  {
+    xls_dslx_sum_def* sum_def =
+        xls_dslx_module_get_type_definition_as_sum_def(module, 2);
+    char* identifier = xls_dslx_sum_def_get_identifier(sum_def);
+    absl::Cleanup free_identifier([=] { xls_c_str_free(identifier); });
+    EXPECT_EQ(std::string_view{identifier}, std::string_view{"MySum"});
+
+    EXPECT_FALSE(xls_dslx_sum_def_is_parametric(sum_def));
+    EXPECT_EQ(xls_dslx_sum_def_get_variant_count(sum_def), 2);
+
+    const xls_dslx_type* sum_def_type =
+        xls_dslx_type_info_get_type_sum_def(type_info, sum_def);
+    int64_t total_bit_count = 0;
+    ASSERT_TRUE(xls_dslx_type_get_total_bit_count(sum_def_type, &error,
+                                                  &total_bit_count))
+        << "got not-ok result from get-total-bit-count; error: " << error;
+    ASSERT_EQ(error, nullptr);
+    EXPECT_EQ(total_bit_count, 1 + 8);
+
+    xls_dslx_module_member* sum_member =
+        xls_dslx_module_member_from_sum_def(sum_def);
+    ASSERT_NE(sum_member, nullptr);
+    EXPECT_EQ(xls_dslx_module_member_get_kind(sum_member),
+              xls_dslx_module_member_kind_sum_def);
+    EXPECT_EQ(xls_dslx_module_member_get_sum_def(sum_member), sum_def);
+  }
 
   {
     xls_dslx_struct_def* struct_def =

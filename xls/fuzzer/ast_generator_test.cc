@@ -263,6 +263,10 @@ TEST(AstGeneratorMultiTest, GeneratesRequiredSumTypes) {
     std::string text = module.module->ToString();
     EXPECT_THAT(text, ContainsRegex(R"(sum x[0-9]+ \{)")) << text;
     EXPECT_THAT(text, ContainsRegex(R"(x[0-9]+::x[0-9]+\()")) << text;
+    EXPECT_THAT(text, ContainsRegex(R"(match \()")) << text;
+    EXPECT_THAT(text, ContainsRegex(R"(assert_eq\()")) << text;
+    EXPECT_THAT(text, ContainsRegex(R"(==)")) << text;
+    EXPECT_THAT(text, ContainsRegex(R"(!=)")) << text;
     XLS_ASSERT_OK(ParseAndTypecheck<Function>(text, module_name)) << text;
   }
 }
