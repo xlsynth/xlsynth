@@ -152,6 +152,10 @@ AstNodeKindProto ToProto(AstNodeKind kind) {
       return AST_NODE_KIND_SLICE;
     case AstNodeKind::kEnumDef:
       return AST_NODE_KIND_ENUM_DEF;
+    case AstNodeKind::kSumDef:
+      return AST_NODE_KIND_SUM_DEF;
+    case AstNodeKind::kSumVariant:
+      return AST_NODE_KIND_SUM_VARIANT;
     case AstNodeKind::kStructDef:
       return AST_NODE_KIND_STRUCT_DEF;
     case AstNodeKind::kProcDef:
@@ -186,6 +190,8 @@ AstNodeKindProto ToProto(AstNodeKind kind) {
       return AST_NODE_KIND_PROC_MEMBER;
     case AstNodeKind::kRestOfTuple:
       return AST_NODE_KIND_REST_OF_TUPLE;
+    case AstNodeKind::kConstructorPattern:
+      return AST_NODE_KIND_CONSTRUCTOR_PATTERN;
     case AstNodeKind::kImpl:
       return AST_NODE_KIND_IMPL;
     case AstNodeKind::kVerbatimNode:
@@ -356,6 +362,69 @@ absl::StatusOr<EnumTypeProto> ToProto(const EnumType& enum_type,
   return proto;
 }
 
+SumVariantKindProto ToProto(const SumVariant& variant) {
+  if (variant.is_unit()) {
+    return SUM_VARIANT_KIND_UNIT;
+  }
+  if (variant.is_tuple()) {
+    return SUM_VARIANT_KIND_TUPLE;
+  }
+  if (variant.is_struct()) {
+    return SUM_VARIANT_KIND_STRUCT;
+  }
+  return SUM_VARIANT_KIND_INVALID;
+}
+
+absl::StatusOr<SumVariantDefProto> ToProto(const SumVariant& variant,
+                                           const FileTable& /*file_table*/) {
+  SumVariantDefProto proto;
+  proto.set_identifier(variant.identifier());
+  proto.set_kind(ToProto(variant));
+  if (variant.is_struct()) {
+    for (const StructMemberNode* member : variant.struct_members()) {
+      proto.add_member_names(member->name());
+    }
+  }
+  return proto;
+}
+
+absl::StatusOr<SumDefProto> ToProto(const SumDef& sum_def,
+                                    const FileTable& file_table) {
+  SumDefProto proto;
+  *proto.mutable_span() = ToProto(sum_def.span(), file_table);
+  proto.set_identifier(sum_def.identifier());
+  proto.set_is_public(sum_def.is_public());
+  for (const SumVariant* variant : sum_def.variants()) {
+    XLS_ASSIGN_OR_RETURN(*proto.add_variants(), ToProto(*variant, file_table));
+  }
+  return proto;
+}
+
+absl::StatusOr<SumTypeVariantProto> ToProto(const SumTypeVariant& variant,
+                                            const FileTable& file_table) {
+  SumTypeVariantProto proto;
+  XLS_ASSIGN_OR_RETURN(*proto.mutable_variant(),
+                       ToProto(variant.variant(), file_table));
+  for (int64_t i = 0; i < variant.size(); ++i) {
+    XLS_ASSIGN_OR_RETURN(*proto.add_payload_members(),
+                         ToProto(variant.GetMemberType(i), file_table));
+  }
+  return proto;
+}
+
+absl::StatusOr<SumTypeProto> ToProto(const SumType& sum_type,
+                                     const FileTable& file_table) {
+  VLOG(5) << "Converting SumType to proto: " << sum_type.ToString();
+  SumTypeProto proto;
+  XLS_ASSIGN_OR_RETURN(*proto.mutable_sum_def(),
+                       ToProto(sum_type.nominal_type(), file_table));
+  for (const SumTypeVariant& variant : sum_type.variants()) {
+    XLS_ASSIGN_OR_RETURN(*proto.add_variants(), ToProto(variant, file_table));
+  }
+  VLOG(5) << "- proto: " << proto.ShortDebugString();
+  return proto;
+}
+
 absl::StatusOr<MetaTypeProto> ToProto(const MetaType& meta_type,
                                       const FileTable& file_table) {
   VLOG(5) << "Converting MetaType to proto: " << meta_type.ToString();
@@ -421,6 +490,11 @@ class ToProtoVisitor : public TypeVisitor {
   }
   absl::Status HandleStruct(const StructType& type) override {
     XLS_ASSIGN_OR_RETURN(*proto_.mutable_struct_type(),
+                         ToProto(type, file_table_));
+    return absl::OkStatus();
+  }
+  absl::Status HandleSum(const SumType& type) override {
+    XLS_ASSIGN_OR_RETURN(*proto_.mutable_sum_type(),
                          ToProto(type, file_table_));
     return absl::OkStatus();
   }
@@ -535,6 +609,60 @@ absl::StatusOr<TypeDim> FromProto(const TypeDimProto& ctdp,
   }
 }
 
+int64_t ExpectedPayloadMemberCount(const SumVariant& variant) {
+  if (variant.is_unit()) {
+    return 0;
+  }
+  if (variant.is_tuple()) {
+    return variant.tuple_members().size();
+  }
+  return variant.struct_members().size();
+}
+
+absl::Status ValidateSumVariantProto(const SumVariant& variant,
+                                     const SumTypeVariantProto& proto) {
+  const SumVariantDefProto& variant_proto = proto.variant();
+  if (variant_proto.kind() != ToProto(variant)) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Sum variant kind mismatch for `%s`; proto kind=%d AST kind=%d",
+        variant.identifier(), static_cast<int>(variant_proto.kind()),
+        static_cast<int>(ToProto(variant))));
+  }
+  int64_t expected_payload_member_count = ExpectedPayloadMemberCount(variant);
+  if (proto.payload_members_size() != expected_payload_member_count) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Sum variant payload member count mismatch for `%s`; proto count=%d "
+        "AST count=%d",
+        variant.identifier(), proto.payload_members_size(),
+        expected_payload_member_count));
+  }
+  if (!variant.is_struct()) {
+    if (variant_proto.member_names_size() != 0) {
+      return absl::InvalidArgumentError(absl::StrFormat(
+          "Unexpected named payload members in non-struct sum variant `%s`",
+          variant.identifier()));
+    }
+    return absl::OkStatus();
+  }
+  if (variant_proto.member_names_size() != variant.struct_members().size()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Struct sum variant member-name count mismatch for `%s`; proto "
+        "count=%d AST count=%d",
+        variant.identifier(), variant_proto.member_names_size(),
+        variant.struct_members().size()));
+  }
+  for (int64_t i = 0; i < variant.struct_members().size(); ++i) {
+    if (variant_proto.member_names(i) != variant.struct_members()[i]->name()) {
+      return absl::InvalidArgumentError(absl::StrFormat(
+          "Struct sum variant member-name mismatch for `%s` at index %d; "
+          "proto name=%s AST name=%s",
+          variant.identifier(), i, variant_proto.member_names(i),
+          variant.struct_members()[i]->name()));
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<std::unique_ptr<Type>> FromProto(const TypeProto& ctp,
                                                 const ImportData& import_data,
                                                 FileTable& file_table) {
@@ -580,6 +708,52 @@ absl::StatusOr<std::unique_ptr<Type>> FromProto(const TypeProto& ctp,
 
       return std::make_unique<EnumType>(*enum_def, std::move(size),
                                         /*is_signed=*/etp.is_signed(), members);
+    }
+    case TypeProto::TypeOneofCase::kSumType: {
+      const SumTypeProto& stp = ctp.sum_type();
+      const SumDefProto& sum_def_proto = stp.sum_def();
+      XLS_ASSIGN_OR_RETURN(const SumDef* sum_def,
+                           import_data.FindSumDef(
+                               FromProto(sum_def_proto.span(), file_table)));
+      if (stp.variants_size() != sum_def->variants().size()) {
+        return absl::InvalidArgumentError(absl::StrFormat(
+            "Sum variant count mismatch for `%s`; proto count=%d AST count=%d",
+            sum_def->identifier(), stp.variants_size(),
+            sum_def->variants().size()));
+      }
+      std::vector<SumTypeVariant> variants;
+      variants.reserve(stp.variants_size());
+      for (int64_t i = 0; i < sum_def->variants().size(); ++i) {
+        const SumVariant* variant = sum_def->variants()[i];
+        const SumTypeVariantProto& variant_proto = stp.variants(i);
+        const SumVariantDefProto& variant_def_proto = variant_proto.variant();
+        if (variant_def_proto.identifier() != variant->identifier()) {
+          return absl::InvalidArgumentError(absl::StrFormat(
+              "Sum variant order mismatch for `%s` at index %d; proto "
+              "identifier=%s AST identifier=%s",
+              sum_def->identifier(), i, variant_def_proto.identifier(),
+              variant->identifier()));
+        }
+        XLS_RETURN_IF_ERROR(ValidateSumVariantProto(*variant, variant_proto));
+        std::vector<std::unique_ptr<Type>> payload_members;
+        payload_members.reserve(variant_proto.payload_members_size());
+        for (const TypeProto& member_proto : variant_proto.payload_members()) {
+          XLS_ASSIGN_OR_RETURN(
+              std::unique_ptr<Type> payload_member,
+              FromProto(member_proto, import_data, file_table));
+          payload_members.push_back(std::move(payload_member));
+        }
+        if (variant->is_unit()) {
+          variants.push_back(SumTypeVariant::MakeUnit(*variant));
+        } else if (variant->is_tuple()) {
+          variants.push_back(
+              SumTypeVariant::MakeTuple(*variant, std::move(payload_members)));
+        } else {
+          variants.push_back(
+              SumTypeVariant::MakeStruct(*variant, std::move(payload_members)));
+        }
+      }
+      return std::make_unique<SumType>(*sum_def, std::move(variants));
     }
     case TypeProto::TypeOneofCase::kModuleType: {
       return absl::UnimplementedError(
@@ -764,6 +938,10 @@ absl::StatusOr<AstNodeKind> FromProto(AstNodeKindProto p) {
       return AstNodeKind::kSlice;
     case AST_NODE_KIND_ENUM_DEF:
       return AstNodeKind::kEnumDef;
+    case AST_NODE_KIND_SUM_DEF:
+      return AstNodeKind::kSumDef;
+    case AST_NODE_KIND_SUM_VARIANT:
+      return AstNodeKind::kSumVariant;
     case AST_NODE_KIND_STRUCT_DEF:
       return AstNodeKind::kStructDef;
     case AST_NODE_KIND_PROC_DEF:
@@ -804,6 +982,8 @@ absl::StatusOr<AstNodeKind> FromProto(AstNodeKindProto p) {
       return AstNodeKind::kProcMember;
     case AST_NODE_KIND_REST_OF_TUPLE:
       return AstNodeKind::kRestOfTuple;
+    case AST_NODE_KIND_CONSTRUCTOR_PATTERN:
+      return AstNodeKind::kConstructorPattern;
     case AST_NODE_KIND_IMPL:
       return AstNodeKind::kImpl;
     case AST_NODE_KIND_VERBATIM_NODE:
