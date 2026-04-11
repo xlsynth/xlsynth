@@ -319,6 +319,10 @@ def _xls_pass_registry_impl(ctx):
             compilation_outputs = comp_out,
             linking_contexts = link_deps,
             alwayslink = True,
+            # This registration stub is only meant to flow through the parent
+            # registry's static/PIC link inputs. A helper dylib would be linked
+            # from just the stub object and would miss these transitive deps.
+            disallow_dynamic_library = True,
         )
         linking_ctxs.append(link_ctx)
 
