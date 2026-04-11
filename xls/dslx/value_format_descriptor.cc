@@ -23,11 +23,36 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/format_preference.h"
 
 namespace xls::dslx {
+
+ValueFormatSumVariantDescriptor ValueFormatSumVariantDescriptor::MakeUnit(
+    std::string name) {
+  return ValueFormatSumVariantDescriptor(
+      std::move(name), ValueFormatSumVariantKind::kUnit,
+      /*field_names=*/{}, /*payload_formats=*/{});
+}
+
+ValueFormatSumVariantDescriptor ValueFormatSumVariantDescriptor::MakeTuple(
+    std::string name, std::vector<ValueFormatDescriptor> payload_formats) {
+  return ValueFormatSumVariantDescriptor(
+      std::move(name), ValueFormatSumVariantKind::kTuple,
+      /*field_names=*/{}, std::move(payload_formats));
+}
+
+ValueFormatSumVariantDescriptor ValueFormatSumVariantDescriptor::MakeStruct(
+    std::string name, std::vector<std::string> field_names,
+    std::vector<ValueFormatDescriptor> payload_formats) {
+  CHECK_EQ(field_names.size(), payload_formats.size());
+  return ValueFormatSumVariantDescriptor(std::move(name),
+                                         ValueFormatSumVariantKind::kStruct,
+                                         std::move(field_names),
+                                         std::move(payload_formats));
+}
 
 ValueFormatDescriptor ValueFormatDescriptor::MakeLeafValue(
     FormatPreference format) {
@@ -76,6 +101,34 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeStruct(
   return vfd;
 }
 
+ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
+    std::string_view sum_name,
+    absl::Span<const ValueFormatSumVariantDescriptor> variants,
+    FormatPreference tag_format) {
+  ValueFormatDescriptor vfd(ValueFormatDescriptorKind::kSum);
+  vfd.sum_name_ = sum_name;
+  vfd.sum_tag_format_ = tag_format;
+
+  vfd.sum_variants_.reserve(variants.size());
+  for (const ValueFormatSumVariantDescriptor& variant : variants) {
+    vfd.sum_variants_.emplace_back(
+        std::string(variant.name()), variant.kind(),
+        std::vector<std::string>(variant.field_names().begin(),
+                                 variant.field_names().end()),
+        std::vector<ValueFormatDescriptor>(variant.payload_formats().begin(),
+                                           variant.payload_formats().end()));
+  }
+  return vfd;
+}
+
+ValueFormatSumVariantView ValueFormatDescriptor::sum_variant(size_t i) const {
+  CHECK(IsSum());
+  const SumVariantFormat& variant = sum_variants_.at(i);
+  return ValueFormatSumVariantView(
+      variant.name, variant.kind, absl::MakeConstSpan(variant.field_names),
+      absl::MakeConstSpan(variant.payload_formats));
+}
+
 absl::Status ValueFormatDescriptor::Accept(ValueFormatVisitor& v) const {
   switch (kind()) {
     case ValueFormatDescriptorKind::kLeafValue:
@@ -88,9 +141,11 @@ absl::Status ValueFormatDescriptor::Accept(ValueFormatVisitor& v) const {
       return v.HandleTuple(*this);
     case ValueFormatDescriptorKind::kStruct:
       return v.HandleStruct(*this);
+    case ValueFormatDescriptorKind::kSum:
+      return v.HandleSum(*this);
   }
-  return absl::InvalidArgumentError(absl::StrFormat(
-      "Out of bounds ValueFormatDescriptorKind: %d", static_cast<int>(kind())));
+  return absl::InvalidArgumentError(absl::StrCat(
+      "Out of bounds ValueFormatDescriptorKind: ", static_cast<int>(kind())));
 }
 
 }  // namespace xls::dslx

@@ -359,6 +359,13 @@ class FunctionConverter {
   }
 
   // Helpers for HandleBinop().
+  absl::StatusOr<BValue> BuildEqByType(const Type& type, BValue lhs,
+                                       BValue rhs, const SourceInfo& loc);
+  absl::StatusOr<BValue> BuildPhase1WellFormedPredicateByType(
+      const Type& type, BValue value, const SourceInfo& loc);
+  absl::Status AssertPhase1SemanticSumValueIsWellFormed(
+      const Type& type, BValue value, const SourceInfo& loc, const Span& span,
+      std::string_view message_observer, std::string_view label_suffix);
   absl::Status HandleConcat(const Binop* node, BValue lhs, BValue rhs);
   absl::Status HandleEq(const Binop* node, BValue lhs, BValue rhs);
   absl::Status HandleNe(const Binop* node, BValue lhs, BValue rhs);
@@ -437,6 +444,12 @@ class FunctionConverter {
   absl::Status HandleRange(const Range* node);
   absl::Status HandleSplatStructInstance(const SplatStructInstance* node);
   absl::Status HandleStatement(const Statement* node);
+  absl::Status HandleSumConstructorInvocation(const Invocation* node,
+                                              const SumType& sum_type,
+                                              const ColonRef* constructor_ref);
+  absl::Status HandleSumStructInstance(const StructInstance* node,
+                                       const SumType& sum_type,
+                                       const ColonRef* constructor_ref);
   absl::Status HandleStructInstance(const StructInstance* node);
   absl::Status HandleConditional(const Conditional* node);
   absl::Status HandleTupleIndex(const TupleIndex* node);
@@ -467,6 +480,9 @@ class FunctionConverter {
   absl::StatusOr<BValue> HandleMatcher(NameDefTree* matcher,
                                        const BValue& matched_value,
                                        const Type& matched_type);
+  absl::StatusOr<BValue> HandleConstructorPattern(
+      NameDefTree* matcher, const ConstructorPattern* pattern,
+      const BValue& matched_value, const SumType& matched_type);
 
   // Makes the specified builtin available to the package.
   absl::StatusOr<BValue> DefMapWithBuiltin(const Invocation* parent_node,

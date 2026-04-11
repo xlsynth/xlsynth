@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
@@ -32,6 +33,15 @@ namespace xls::dslx {
 
 class ValueFormatDescriptor;
 
+class ValueFormatSumVariantDescriptor;
+class ValueFormatSumVariantView;
+
+enum class ValueFormatSumVariantKind : int8_t {
+  kUnit,
+  kTuple,
+  kStruct,
+};
+
 // Visits concrete types in the ValueFormatDescriptor hierarchy.
 class ValueFormatVisitor {
  public:
@@ -40,6 +50,7 @@ class ValueFormatVisitor {
   virtual absl::Status HandleArray(const ValueFormatDescriptor& d) = 0;
   virtual absl::Status HandleEnum(const ValueFormatDescriptor& d) = 0;
   virtual absl::Status HandleLeafValue(const ValueFormatDescriptor& d) = 0;
+  virtual absl::Status HandleSum(const ValueFormatDescriptor& d) = 0;
   virtual absl::Status HandleStruct(const ValueFormatDescriptor& d) = 0;
   virtual absl::Status HandleTuple(const ValueFormatDescriptor& d) = 0;
 };
@@ -50,6 +61,7 @@ enum class ValueFormatDescriptorKind : int8_t {
   kArray,
   kTuple,
   kStruct,
+  kSum,
 };
 
 // Class for the description of how to format values (according to the structure
@@ -59,8 +71,12 @@ enum class ValueFormatDescriptorKind : int8_t {
 // inference process so they can be used after IR conversion or in bytecode
 // interpretation, where the types are fully concrete and we only need limited
 // metadata in order to print them out properly. This data structure can be one
-// of several kinds (enum, tuple, array, struct, or leaf) corresponding to the
-// respective DSLX type.
+// of several kinds (enum, tuple, array, struct, sum, or leaf) corresponding to
+// the respective DSLX type.
+//
+// Sum descriptors preserve canonical variant order and enough constructor
+// metadata to recover unit, tuple, and struct spellings when formatting the
+// internal runtime representation of a semantic sum value.
 class ValueFormatDescriptor {
  public:
   ValueFormatDescriptor() : kind_(ValueFormatDescriptorKind::kLeafValue) {}
@@ -76,6 +92,10 @@ class ValueFormatDescriptor {
   static ValueFormatDescriptor MakeStruct(
       std::string_view struct_name, absl::Span<const std::string> field_names,
       absl::Span<const ValueFormatDescriptor> field_formats);
+  static ValueFormatDescriptor MakeSum(
+      std::string_view sum_name,
+      absl::Span<const ValueFormatSumVariantDescriptor> variants,
+      FormatPreference tag_format);
 
   ValueFormatDescriptorKind kind() const { return kind_; }
 
@@ -88,6 +108,7 @@ class ValueFormatDescriptor {
     return kind() == ValueFormatDescriptorKind::kStruct;
   };
   bool IsEnum() const { return kind() == ValueFormatDescriptorKind::kEnum; };
+  bool IsSum() const { return kind() == ValueFormatDescriptorKind::kSum; }
 
   // Leaf methods.
   FormatPreference leaf_format() const {
@@ -130,6 +151,21 @@ class ValueFormatDescriptor {
     return children_;
   }
 
+  // Sum methods.
+  std::string_view sum_name() const {
+    CHECK(IsSum());
+    return sum_name_;
+  }
+  size_t sum_variant_count() const {
+    CHECK(IsSum());
+    return sum_variants_.size();
+  }
+  ValueFormatSumVariantView sum_variant(size_t i) const;
+  FormatPreference sum_tag_format() const {
+    CHECK(IsSum());
+    return sum_tag_format_;
+  }
+
   // Methods for aggregate kinds.
   size_t size() const {
     CHECK(IsTuple() || IsArray() || IsStruct());
@@ -141,6 +177,21 @@ class ValueFormatDescriptor {
  private:
   explicit ValueFormatDescriptor(ValueFormatDescriptorKind kind)
       : kind_(kind) {}
+
+  struct SumVariantFormat {
+    SumVariantFormat(std::string name, ValueFormatSumVariantKind kind,
+                     std::vector<std::string> field_names,
+                     std::vector<ValueFormatDescriptor> payload_formats)
+        : name(std::move(name)),
+          kind(kind),
+          field_names(std::move(field_names)),
+          payload_formats(std::move(payload_formats)) {}
+
+    std::string name;
+    ValueFormatSumVariantKind kind;
+    std::vector<std::string> field_names;
+    std::vector<ValueFormatDescriptor> payload_formats;
+  };
 
   ValueFormatDescriptorKind kind_;
   std::vector<ValueFormatDescriptor> children_;
@@ -157,6 +208,80 @@ class ValueFormatDescriptor {
 
   std::string struct_name_;
   std::vector<std::string> struct_field_names_;
+
+  // Sum data members.
+  std::string sum_name_;
+  std::vector<SumVariantFormat> sum_variants_;
+  FormatPreference sum_tag_format_ = FormatPreference::kDefault;
+};
+
+// Describes one constructor inside a sum formatting descriptor.
+//
+// Callers build descriptors through the kind-specific factory functions so the
+// unit / tuple / struct distinction is encoded at construction time instead of
+// by mutable cross-field invariants.
+class ValueFormatSumVariantDescriptor {
+ public:
+  static ValueFormatSumVariantDescriptor MakeUnit(std::string name);
+  static ValueFormatSumVariantDescriptor MakeTuple(
+      std::string name, std::vector<ValueFormatDescriptor> payload_formats);
+  static ValueFormatSumVariantDescriptor MakeStruct(
+      std::string name, std::vector<std::string> field_names,
+      std::vector<ValueFormatDescriptor> payload_formats);
+
+  std::string_view name() const { return name_; }
+  ValueFormatSumVariantKind kind() const { return kind_; }
+  absl::Span<const std::string> field_names() const { return field_names_; }
+  absl::Span<const ValueFormatDescriptor> payload_formats() const {
+    return payload_formats_;
+  }
+
+ private:
+  ValueFormatSumVariantDescriptor(
+      std::string name, ValueFormatSumVariantKind kind,
+      std::vector<std::string> field_names,
+      std::vector<ValueFormatDescriptor> payload_formats)
+      : name_(std::move(name)),
+        kind_(kind),
+        field_names_(std::move(field_names)),
+        payload_formats_(std::move(payload_formats)) {}
+
+  std::string name_;
+  ValueFormatSumVariantKind kind_;
+  std::vector<std::string> field_names_;
+  std::vector<ValueFormatDescriptor> payload_formats_;
+};
+
+// Read-only view of one constructor inside a sum formatting descriptor.
+//
+// The payload formats let callers reason about one variant at a time without
+// exposing the broader flattened storage layout used internally.
+class ValueFormatSumVariantView {
+ public:
+  std::string_view name() const { return name_; }
+  ValueFormatSumVariantKind kind() const { return kind_; }
+  size_t payload_slot_count() const { return payload_formats_.size(); }
+  absl::Span<const std::string> field_names() const { return field_names_; }
+  absl::Span<const ValueFormatDescriptor> payload_formats() const {
+    return payload_formats_;
+  }
+
+ private:
+  friend class ValueFormatDescriptor;
+
+  ValueFormatSumVariantView(
+      std::string_view name, ValueFormatSumVariantKind kind,
+      absl::Span<const std::string> field_names,
+      absl::Span<const ValueFormatDescriptor> payload_formats)
+      : name_(name),
+        kind_(kind),
+        field_names_(field_names),
+        payload_formats_(payload_formats) {}
+
+  std::string_view name_;
+  ValueFormatSumVariantKind kind_;
+  absl::Span<const std::string> field_names_;
+  absl::Span<const ValueFormatDescriptor> payload_formats_;
 };
 
 }  // namespace xls::dslx

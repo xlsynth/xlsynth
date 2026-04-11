@@ -27,6 +27,7 @@
 #include "xls/dslx/channel_direction.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/type.h"
+#include "xls/ir/bits.h"
 #include "xls/ir/format_preference.h"
 #include "xls/ir/value.h"
 
@@ -41,11 +42,24 @@ absl::StatusOr<InterpValue> CastBitsToArray(const InterpValue& bits_value,
 absl::StatusOr<InterpValue> CastBitsToEnum(const InterpValue& bits_value,
                                            const EnumType& enum_type);
 
+// Returns the declared enum member bit patterns in source order.
+absl::StatusOr<std::vector<Bits>> GetDeclaredEnumMemberBits(
+    const EnumType& enum_type);
+
 // Creates a zero-valued InterpValue with the same structure as the input.
 absl::StatusOr<InterpValue> CreateZeroValue(const InterpValue& value);
 
-// Creates a zero-valued InterpValue from the given Type.
+// Creates a canonical zero-like InterpValue from the given Type for
+// interpreter/support-code internals. For semantic sums, this creates the first
+// declared variant with recursively zeroed payload values; empty sums return an
+// error. This internal sum policy does not make DSLX `zero!<Sum>()` valid.
 absl::StatusOr<InterpValue> CreateZeroValueFromType(const Type& type);
+
+// Creates a well-formed sum-typed InterpValue from the given semantic payload
+// members for the named variant.
+absl::StatusOr<InterpValue> CreateSumValue(
+    const SumType& type, std::string_view variant_name,
+    absl::Span<const InterpValue> payload_values);
 
 // Finds the first index in the LHS and RHS sequences at which values differ or
 // nullopt if the two are equal.

@@ -29,12 +29,15 @@
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/errors.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/ast_node_visitor_with_default.h"
+#include "xls/dslx/frontend/bindings.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/semantics_analysis.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/type_system_v2/decorate_error.h"
+#include "xls/dslx/type_system_v2/import_utils.h"
 #include "xls/dslx/type_system_v2/inference_table.h"
 #include "xls/dslx/type_system_v2/inference_table_converter.h"
 #include "xls/dslx/type_system_v2/inference_table_converter_impl.h"
@@ -47,6 +50,52 @@
 #include "xls/tools/typecheck_flags.pb.h"
 
 namespace xls::dslx {
+namespace {
+
+class SumConstructorParametricsValidator : public AstNodeVisitorWithDefault {
+ public:
+  SumConstructorParametricsValidator(const ImportData& import_data,
+                                     const FileTable& file_table)
+      : import_data_(import_data), file_table_(file_table) {}
+
+  absl::Status HandleInvocation(const Invocation* node) override {
+    XLS_RETURN_IF_ERROR(Validate(node));
+    return DefaultHandler(node);
+  }
+
+  absl::Status DefaultHandler(const AstNode* node) override {
+    for (const AstNode* child : node->GetChildren(/*want_types=*/true)) {
+      XLS_RETURN_IF_ERROR(child->Accept(this));
+    }
+    return absl::OkStatus();
+  }
+
+ private:
+  absl::Status Validate(const Instantiation* node) {
+    if (node->explicit_parametrics().empty()) {
+      return absl::OkStatus();
+    }
+    auto* colon_ref = dynamic_cast<const ColonRef*>(node->callee());
+    if (colon_ref == nullptr) {
+      return absl::OkStatus();
+    }
+    XLS_ASSIGN_OR_RETURN(std::optional<SumRef> sum_ref,
+                         GetSumRefForSubject(colon_ref, import_data_));
+    if (!sum_ref.has_value()) {
+      return absl::OkStatus();
+    }
+    return ParseErrorStatus(
+        node->span(),
+        "Explicit parametrics belong on the sum type, not the "
+        "constructor; use `Name<T>::Variant(...)`.",
+        file_table_);
+  }
+
+  const ImportData& import_data_;
+  const FileTable& file_table_;
+};
+
+}  // namespace
 
 absl::StatusOr<std::unique_ptr<ModuleInfo>> TypecheckModuleV2(
     std::unique_ptr<Module> module, std::filesystem::path path,
@@ -87,6 +136,9 @@ absl::StatusOr<std::unique_ptr<ModuleInfo>> TypecheckModuleV2(
       };
   XLS_RETURN_IF_ERROR(PopulateTable(table, module.get(), import_data, warnings,
                                     typecheck_imported_module));
+  SumConstructorParametricsValidator sum_constructor_parametrics_validator(
+      *import_data, import_data->file_table());
+  XLS_RETURN_IF_ERROR(module->Accept(&sum_constructor_parametrics_validator));
   XLS_ASSIGN_OR_RETURN(
       std::unique_ptr<InferenceTableConverter> converter,
       CreateInferenceTableConverter(

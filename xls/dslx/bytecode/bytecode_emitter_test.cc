@@ -2041,5 +2041,46 @@ proc Foo {
                                               ParametricEnv(), members));
 }
 
+TEST(BytecodeEmitterTest, ImportedSumConstantEmitsLiteralValue) {
+  constexpr std::string_view kImported = R"(
+pub sum Option {
+  None,
+  Some(u32),
+}
+
+pub const SOME: Option = Option::Some(u32:7);
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn main() -> imported::Option {
+  imported::SOME
+}
+)";
+
+  ImportData import_data(CreateImportDataForTest());
+  XLS_ASSERT_OK(
+      ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test.x", "test", &import_data));
+
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f,
+                           tm.module->GetMemberOrError<Function>("main"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<BytecodeFunction> bf,
+      BytecodeEmitter::Emit(&import_data, tm.type_info, *f, ParametricEnv()));
+
+  const std::vector<Bytecode>& bytecodes = bf->bytecodes();
+  ASSERT_EQ(bytecodes.size(), 1);
+  EXPECT_EQ(bytecodes[0].op(), Bytecode::Op::kLiteral);
+  ASSERT_TRUE(bytecodes[0].has_data());
+  EXPECT_EQ(
+      bytecodes[0].value_data().value(),
+      InterpValue::MakeTuple(
+          {InterpValue::MakeUBits(1, 1),
+           InterpValue::MakeTuple({InterpValue::MakeU32(7)})}));
+}
+
 }  // namespace
 }  // namespace xls::dslx

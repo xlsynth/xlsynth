@@ -87,6 +87,33 @@ void CheckExhaustiveOnlyAfterLastPattern(std::string_view program) {
   }
 }
 
+void CheckExhaustiveBeforeAnyPattern(std::string_view program) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "test.x", "test", &import_data));
+  std::optional<Function*> func = tm.module->GetFunction("main");
+  ASSERT_TRUE(func.has_value());
+  StatementBlock* body = func.value()->body();
+  const Statement& statement = *body->statements().back();
+  Match* match = dynamic_cast<Match*>(std::get<Expr*>(statement.wrapped()));
+  ASSERT_TRUE(match != nullptr);
+
+  std::optional<Type*> matched_type = tm.type_info->GetItem(match->matched());
+  ASSERT_TRUE(matched_type.has_value());
+  ASSERT_NE(matched_type.value(), nullptr);
+
+  MatchExhaustivenessChecker checker(match->matched()->span(), import_data,
+                                     *tm.type_info, *matched_type.value());
+  EXPECT_TRUE(checker.IsExhaustive());
+
+  for (const NameDefTree* pattern : GetPatterns(*match)) {
+    EXPECT_TRUE(checker.AddPattern(*pattern))
+        << "Expected match to stay exhaustive after adding pattern `"
+        << pattern->ToString() << "`";
+  }
+}
+
 void CheckNonExhaustive(std::string_view program) {
   ImportData import_data = CreateImportDataForTest();
   absl::StatusOr<TypecheckedModule> tm =
@@ -225,6 +252,200 @@ TEST(ExhaustivenessMatchTest, MatchOnSparseEnum) {
   }
 })";
   CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+sum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn main(x: MaybeU32) -> u32 {
+  match x {
+    MaybeU32::Some(v) => v,
+    MaybeU32::None => u32:0,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest,
+     MatchOnTupleContainingEmptySemanticSumIsVacuouslyExhaustive) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+sum Never {}
+
+fn main(x: (Never, bool)) -> u32 {
+  match x {
+    (_, true) => u32:1,
+  }
+})";
+  CheckExhaustiveBeforeAnyPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest,
+     MatchOnSumVariantWithEmptyEnumPayloadIsExhaustive) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Empty : u2 {
+}
+
+sum MaybeImpossible {
+  Unit,
+  Impossible(Empty),
+}
+
+fn main(x: MaybeImpossible) -> u32 {
+  match x {
+    MaybeImpossible::Unit => u32:0,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, NonExhaustiveMatchOnSemanticSumConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+sum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn main(x: MaybeU32) -> u32 {
+  match x {
+    MaybeU32::Some(v) => v,
+  }
+})";
+  CheckNonExhaustive(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructorsWithWildcard) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+sum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn main(x: MaybeU32) -> u32 {
+  match x {
+    MaybeU32::Some(v) => v,
+    _ => u32:0,
+    MaybeU32::None => u32:1,
+  }
+})";
+  CheckExhaustiveWithRedundantPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnSemanticStructVariantConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+sum MaybePoint {
+  None,
+  Point { x: u32, y: u32 },
+}
+
+fn main(x: MaybePoint) -> u32 {
+  match x {
+    MaybePoint::Point { x: px, y: py } => px + py,
+    MaybePoint::None => u32:0,
+  }
+  })";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructorsNonExhaustive) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+sum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn main(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    Option::None => u32:0,
+  }
+})";
+  CheckNonExhaustive(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructorsWildcardCompletes) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+sum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn main(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    _ => u32:0,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchTupleContainingSemanticSumConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+sum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn main(x: (MaybeU32, bool)) -> u32 {
+  match x {
+    (MaybeU32::Some(v), _) => v,
+    (MaybeU32::None, true) => u32:1,
+    (MaybeU32::None, false) => u32:0,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest,
+     NonExhaustiveMatchTupleContainingSemanticSumConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+sum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn main(x: (MaybeU32, bool)) -> u32 {
+  match x {
+    (MaybeU32::Some(v), _) => v,
+    (MaybeU32::None, true) => u32:1,
+  }
+})";
+  CheckNonExhaustive(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest,
+     MatchOnSemanticSumConstructorsRedundantAfterWildcard) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+sum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn main(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    _ => u32:0,
+    Option::None => u32:1,
+  }
+})";
+  CheckExhaustiveWithRedundantPattern(kMatch);
 }
 
 TEST(ExhaustivenessMatchTest, MatchWithNestedTuplesAndRestOfTupleSprinkled) {

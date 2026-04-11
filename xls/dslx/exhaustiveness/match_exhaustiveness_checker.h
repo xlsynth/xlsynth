@@ -14,7 +14,10 @@
 #ifndef XLS_DSLX_EXHAUSTIVENESS_MATCH_EXHAUSTIVENESS_CHECKER_H_
 #define XLS_DSLX_EXHAUSTIVENESS_MATCH_EXHAUSTIVENESS_CHECKER_H_
 
+#include <cstdint>
+#include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "xls/dslx/exhaustiveness/interp_value_interval.h"
@@ -29,21 +32,30 @@
 namespace xls::dslx {
 
 // Object that we can incrementally feed match arms/patterns to and ask whether
-// we've reached a point where the patterns are exhaustive. This is useful for
-// flagging a warning right when we've reached the point that the arms are
-// exhaustive.
+// we've reached a point where the patterns are exhaustive. For sums, this
+// tracks source-level constructor coverage for well-formed semantic values
+// only; malformed or otherwise raw boundary encodings are outside this
+// checker's model. This is useful for flagging a warning right when we've
+// reached the point that the arms are exhaustive.
 class MatchExhaustivenessChecker {
  public:
   MatchExhaustivenessChecker(const Span& matched_expr_span,
                              const ImportData& import_data,
                              const TypeInfo& type_info,
                              const Type& matched_type);
+  ~MatchExhaustivenessChecker();
+
+  MatchExhaustivenessChecker(const MatchExhaustivenessChecker&) = delete;
+  MatchExhaustivenessChecker& operator=(const MatchExhaustivenessChecker&) =
+      delete;
 
   // Returns whether we've reached a point of exhaustiveness after incorporating
   // the given `pattern`.
   bool AddPattern(const NameDefTree& pattern);
 
-  // Returns whether, based on already-added patterns, we're exhaustive.
+  // Returns whether, based on already-added patterns, we're exhaustive in the
+  // checker's model. For sums, that means every declared constructor payload
+  // space is covered, not that every raw boundary encoding has been handled.
   bool IsExhaustive() const;
 
   // This method returns an optional "sample" value from the uncovered input
@@ -54,20 +66,10 @@ class MatchExhaustivenessChecker {
   std::optional<InterpValue> SampleSimplestUncoveredValue() const;
 
  private:
-  const FileTable& file_table() const { return type_info_.file_table(); }
+  struct Impl;
+  const FileTable& file_table() const;
 
-  const Span matched_expr_span_;
-
-  const ImportData& import_data_;
-  const TypeInfo& type_info_;
-  const Type& matched_type_;
-
-  // Flattened version of the pattern tuple, each element of this vector is a
-  // dimension in the NdRegion below.
-  std::vector<const Type*> leaf_types_;
-
-  // The remaining region of the value space that we need to test.
-  NdRegion remaining_;
+  std::unique_ptr<Impl> impl_;
 };
 
 // Returns the full interval range we use to represent the contents of an enum
