@@ -2159,32 +2159,161 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
   sum_defs_.push_back(sum_def);
   generated_required_sum_ = true;
 
-  auto* constructor_ref = module_->Make<ColonRef>(
-      fake_span_, MakeTypeRefTypeAnnotation(sum_def),
-      active_variant_name_def->identifier());
-  Expr* constructor_expr = constructor_ref;
-  if (payload_type.has_value()) {
+  auto make_constructor_ref = [&](NameDef* variant_name_def) {
+    return module_->Make<ColonRef>(fake_span_, MakeTypeRefTypeAnnotation(sum_def),
+                                   variant_name_def->identifier());
+  };
+  auto make_sum_expr =
+      [&](NameDef* variant_name_def,
+          std::optional<TypeAnnotation*> want_payload_type)
+      -> absl::StatusOr<Expr*> {
+    ColonRef* constructor_ref = make_constructor_ref(variant_name_def);
+    if (!want_payload_type.has_value()) {
+      return constructor_ref;
+    }
     XLS_ASSIGN_OR_RETURN(TypedExpr payload_value,
-                         GenerateExprOfType(ctx, *payload_type));
-    constructor_expr = module_->Make<Invocation>(
+                         GenerateExprOfType(ctx, *want_payload_type));
+    return module_->Make<Invocation>(
         fake_span_, constructor_ref, std::vector<Expr*>{payload_value.expr});
-  }
+  };
+  XLS_ASSIGN_OR_RETURN(Expr * active_sum_expr,
+                       make_sum_expr(active_variant_name_def, payload_type));
 
   std::string sum_identifier = GenSym();
   auto* sum_binding =
-      module_->Make<NameDef>(fake_span_, sum_identifier, constructor_expr);
+      module_->Make<NameDef>(fake_span_, sum_identifier, active_sum_expr);
   statements->push_back(module_->Make<Statement>(module_->Make<Let>(
       fake_span_, module_->Make<NameDefTree>(fake_span_, sum_binding),
-      MakeTypeRefTypeAnnotation(sum_def), constructor_expr,
+      MakeTypeRefTypeAnnotation(sum_def), active_sum_expr,
       /*is_const=*/false)));
 
+  auto* active_sum_ref = MakeNameRef(sum_binding);
+  XLS_ASSIGN_OR_RETURN(Expr * unit_sum_expr,
+                       make_sum_expr(unit_variant_name_def, std::nullopt));
+
+  auto* eq_expr = module_->Make<Binop>(fake_span_, BinopKind::kEq,
+                                       active_sum_ref, MakeNameRef(sum_binding),
+                                       fake_span_);
+  auto* eq_binding = module_->Make<NameDef>(fake_span_, GenSym(), eq_expr);
+  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+      fake_span_, module_->Make<NameDefTree>(fake_span_, eq_binding),
+      MakeBoolTypeAnnotation(), eq_expr,
+      /*is_const=*/false)));
+
+  auto* ne_expr = module_->Make<Binop>(fake_span_, BinopKind::kNe,
+                                       MakeNameRef(sum_binding), unit_sum_expr,
+                                       fake_span_);
+  auto* ne_binding = module_->Make<NameDef>(fake_span_, GenSym(), ne_expr);
+  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+      fake_span_, module_->Make<NameDefTree>(fake_span_, ne_binding),
+      MakeBoolTypeAnnotation(), ne_expr,
+      /*is_const=*/false)));
+
+  statements->push_back(module_->Make<Statement>(module_->Make<Invocation>(
+      fake_span_, MakeBuiltinNameRef("assert_eq"),
+      std::vector<Expr*>{MakeNameRef(sum_binding), MakeNameRef(sum_binding)})));
+
+  auto* match_result_type =
+      MakeTypeAnnotation(/*is_signed=*/false, /*width=*/32,
+                         /*use_xn=*/false);
+  auto* nested_tuple_expr = module_->Make<XlsTuple>(
+      fake_span_, std::vector<Expr*>{MakeNameRef(sum_binding), MakeBool(true)},
+      /*has_trailing_comma=*/false);
+
+  std::vector<MatchArm*> match_arms;
+  if (payload_type.has_value()) {
+    auto* first_payload_name = MakeNameDef(GenSym());
+    auto* first_payload_pattern =
+        module_->Make<NameDefTree>(fake_span_, first_payload_name);
+    auto* first_constructor_pattern = module_->Make<ConstructorPattern>(
+        fake_span_, make_constructor_ref(active_variant_name_def),
+        ConstructorPattern::PayloadKind::kTuple,
+        std::vector<NameDefTree*>{first_payload_pattern},
+        std::vector<ConstructorPattern::NamedPattern>{});
+    match_arms.push_back(module_->Make<MatchArm>(
+        fake_span_,
+        std::vector<NameDefTree*>{module_->Make<NameDefTree>(
+            fake_span_,
+            std::vector<NameDefTree*>{
+                module_->Make<NameDefTree>(fake_span_,
+                                           first_constructor_pattern),
+                module_->Make<NameDefTree>(fake_span_, MakeBool(true)),
+            })},
+        module_->Make<Cast>(fake_span_, MakeNameRef(first_payload_name),
+                            match_result_type)));
+
+    auto* second_payload_name = MakeNameDef(GenSym());
+    auto* second_payload_pattern =
+        module_->Make<NameDefTree>(fake_span_, second_payload_name);
+    auto* second_constructor_pattern = module_->Make<ConstructorPattern>(
+        fake_span_, make_constructor_ref(active_variant_name_def),
+        ConstructorPattern::PayloadKind::kTuple,
+        std::vector<NameDefTree*>{second_payload_pattern},
+        std::vector<ConstructorPattern::NamedPattern>{});
+    match_arms.push_back(module_->Make<MatchArm>(
+        fake_span_,
+        std::vector<NameDefTree*>{module_->Make<NameDefTree>(
+            fake_span_,
+            std::vector<NameDefTree*>{
+                module_->Make<NameDefTree>(fake_span_,
+                                           second_constructor_pattern),
+                module_->Make<NameDefTree>(fake_span_,
+                                           module_->Make<WildcardPattern>(
+                                               fake_span_)),
+            })},
+        module_->Make<Cast>(fake_span_, MakeNameRef(second_payload_name),
+                            match_result_type)));
+  } else {
+    match_arms.push_back(module_->Make<MatchArm>(
+        fake_span_,
+        std::vector<NameDefTree*>{module_->Make<NameDefTree>(
+            fake_span_,
+            std::vector<NameDefTree*>{
+                module_->Make<NameDefTree>(fake_span_,
+                                           make_constructor_ref(
+                                               active_variant_name_def)),
+                module_->Make<NameDefTree>(fake_span_,
+                                           module_->Make<WildcardPattern>(
+                                               fake_span_)),
+            })},
+        GenerateNumber(/*value=*/1, match_result_type)));
+  }
+  match_arms.push_back(module_->Make<MatchArm>(
+      fake_span_,
+      std::vector<NameDefTree*>{module_->Make<NameDefTree>(
+          fake_span_,
+          std::vector<NameDefTree*>{
+              module_->Make<NameDefTree>(fake_span_,
+                                         make_constructor_ref(
+                                             unit_variant_name_def)),
+              module_->Make<NameDefTree>(fake_span_,
+                                         module_->Make<WildcardPattern>(
+                                             fake_span_)),
+          })},
+      GenerateNumber(/*value=*/0, match_result_type)));
+
+  auto* match_expr =
+      module_->Make<Match>(fake_span_, nested_tuple_expr, match_arms);
+  auto* match_binding = module_->Make<NameDef>(fake_span_, GenSym(), match_expr);
+  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+      fake_span_, module_->Make<NameDefTree>(fake_span_, match_binding),
+      match_result_type, match_expr,
+      /*is_const=*/false)));
+
+  auto* not_ne_expr = module_->Make<Binop>(
+      fake_span_, BinopKind::kEq, MakeNameRef(ne_binding), MakeBool(false),
+      fake_span_);
+  auto* observers_ok_expr = module_->Make<Binop>(
+      fake_span_, BinopKind::kAnd, MakeNameRef(eq_binding), not_ne_expr,
+      fake_span_);
+  auto* match_self_eq_expr = module_->Make<Binop>(
+      fake_span_, BinopKind::kEq, MakeNameRef(match_binding),
+      MakeNameRef(match_binding), fake_span_);
   auto* predicate_expr = module_->Make<Binop>(
-      fake_span_, BinopKind::kEq, MakeNameRef(sum_binding),
-      MakeNameRef(sum_binding), fake_span_);
-  std::string predicate_identifier = GenSym();
-  auto* predicate_binding = module_->Make<NameDef>(fake_span_,
-                                                   predicate_identifier,
-                                                   predicate_expr);
+      fake_span_, BinopKind::kAnd, observers_ok_expr, match_self_eq_expr,
+      fake_span_);
+  auto* predicate_binding =
+      module_->Make<NameDef>(fake_span_, GenSym(), predicate_expr);
   statements->push_back(module_->Make<Statement>(module_->Make<Let>(
       fake_span_, module_->Make<NameDefTree>(fake_span_, predicate_binding),
       MakeBoolTypeAnnotation(), predicate_expr,

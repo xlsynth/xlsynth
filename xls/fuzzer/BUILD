@@ -39,6 +39,11 @@ filegroup(
     srcs = glob(["crashers/*.x"]),
 )
 
+filegroup(
+    name = "semantic_sum_phase1_seed_corpus_files",
+    srcs = glob(["testdata/semantic_sum_phase1/**"]),
+)
+
 dslx_strip_comments(
     name = "x_files_stripped",
     srcs = [":x_files"],
@@ -506,6 +511,7 @@ cc_binary(
         ":ast_generator",
         ":run_fuzz_multiprocess_lib",
         ":sample",
+        ":semantic_sum_source_seed_replay",
         ":sample_cc_proto",
         "//xls/common:exit_status",
         "//xls/common:init_xls",
@@ -613,6 +619,328 @@ pytype_strict_contrib_test(
     deps = [
         "//xls/common:runfiles",
         "//xls/common:test_base",
+    ],
+)
+
+cc_proto_library(
+    name = "semantic_sum_seed_corpus_cc_proto",
+    deps = [":semantic_sum_seed_corpus_proto"],
+)
+
+proto_library(
+    name = "semantic_sum_seed_corpus_proto",
+    srcs = ["semantic_sum_seed_corpus.proto"],
+)
+
+cc_library(
+    name = "semantic_sum_source_seed_replay",
+    srcs = ["semantic_sum_source_seed_replay.cc"],
+    hdrs = ["semantic_sum_source_seed_replay.h"],
+    deps = [
+        ":run_fuzz",
+        ":sample",
+        ":semantic_sum_seed_corpus",
+        ":value_generator",
+        "//xls/common/file:filesystem",
+        "//xls/common/file:temp_directory",
+        "//xls/common/status:status_macros",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx:interp_value",
+        "//xls/dslx:parse_and_typecheck",
+        "//xls/dslx/frontend:module",
+        "//xls/dslx/type_system:type",
+        "//xls/ir:format_preference",
+        "//xls/tests:testvector_cc_proto",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/random",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "semantic_sum_source_seed_replay_test",
+    srcs = ["semantic_sum_source_seed_replay_test.cc"],
+    data = [":semantic_sum_phase1_seed_corpus_files"],
+    deps = [
+        ":semantic_sum_source_seed_replay",
+        "//xls/common/file:filesystem",
+        "//xls/common/file:get_runfile_path",
+        "//xls/common/file:temp_directory",
+        "//xls/common/status:matchers",
+        "//xls/common/status:status_macros",
+        "//xls/common:xls_gunit_main",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
+    name = "semantic_sum_negative_mutator",
+    srcs = ["semantic_sum_negative_mutator.cc"],
+    hdrs = ["semantic_sum_negative_mutator.h"],
+    deps = [
+        ":semantic_sum_seed_corpus_cc_proto",
+        ":semantic_sum_seed_corpus",
+        "//xls/common/status:status_macros",
+        "@com_google_absl//absl/random:bit_gen_ref",
+        "@com_google_absl//absl/random:distributions",
+        "@com_google_absl//absl/random:random",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_library(
+    name = "semantic_sum_negative_mutation_fuzz",
+    srcs = ["semantic_sum_negative_mutation_fuzz.cc"],
+    hdrs = ["semantic_sum_negative_mutation_fuzz.h"],
+    deps = [
+        ":semantic_sum_negative_mutator",
+        ":semantic_sum_seed_corpus",
+        "//xls/common:stopwatch",
+        "//xls/common/file:filesystem",
+        "//xls/common/status:status_macros",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx:parse_and_typecheck",
+        "@com_google_absl//absl/random:random",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_binary(
+    name = "semantic_sum_negative_mutation_fuzz_main",
+    srcs = ["semantic_sum_negative_mutation_fuzz_main.cc"],
+    deps = [
+        ":semantic_sum_negative_mutation_fuzz",
+        "//xls/common:exit_status",
+        "//xls/common:init_xls",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_test(
+    name = "semantic_sum_negative_mutation_fuzz_test",
+    srcs = ["semantic_sum_negative_mutation_fuzz_test.cc"],
+    data = [":semantic_sum_phase1_seed_corpus_files"],
+    deps = [
+        ":semantic_sum_negative_mutation_fuzz",
+        "//xls/common/file:get_runfile_path",
+        "//xls/common/file:temp_directory",
+        "//xls/common/status:matchers",
+        "//xls/common:xls_gunit_main",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
+    name = "semantic_sum_raw_boundary_fuzz",
+    srcs = ["semantic_sum_raw_boundary_fuzz.cc"],
+    hdrs = ["semantic_sum_raw_boundary_fuzz.h"],
+    deps = [
+        ":semantic_sum_seed_corpus",
+        "//xls/common:stopwatch",
+        "//xls/common/file:filesystem",
+        "//xls/common/status:status_macros",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx:interp_value",
+        "//xls/dslx:interp_value_utils",
+        "//xls/dslx:parse_and_typecheck",
+        "//xls/dslx:sum_type_encoding",
+        "//xls/dslx/type_system:type",
+        "//xls/ir:format_preference",
+        "//xls/ir:ir_parser",
+        "//xls/ir:value",
+        "@com_google_absl//absl/random:bit_gen_ref",
+        "@com_google_absl//absl/random:distributions",
+        "@com_google_absl//absl/random:random",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_binary(
+    name = "semantic_sum_raw_boundary_fuzz_main",
+    srcs = ["semantic_sum_raw_boundary_fuzz_main.cc"],
+    deps = [
+        ":semantic_sum_raw_boundary_fuzz",
+        "//xls/common:exit_status",
+        "//xls/common:init_xls",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_test(
+    name = "semantic_sum_raw_boundary_fuzz_test",
+    srcs = ["semantic_sum_raw_boundary_fuzz_test.cc"],
+    data = [":semantic_sum_phase1_seed_corpus_files"],
+    deps = [
+        ":semantic_sum_raw_boundary_fuzz",
+        "//xls/common/file:get_runfile_path",
+        "//xls/common/file:temp_directory",
+        "//xls/common/status:matchers",
+        "//xls/common:xls_gunit_main",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
+    name = "semantic_sum_inhabitance_fuzz",
+    srcs = ["semantic_sum_inhabitance_fuzz.cc"],
+    hdrs = ["semantic_sum_inhabitance_fuzz.h"],
+    deps = [
+        ":semantic_sum_seed_corpus",
+        ":value_generator",
+        "//xls/common:stopwatch",
+        "//xls/common/file:filesystem",
+        "//xls/common/status:status_macros",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx:interp_value",
+        "//xls/dslx:interp_value_utils",
+        "//xls/dslx:parse_and_typecheck",
+        "//xls/dslx:sum_type_encoding",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
+        "//xls/dslx/frontend:pos",
+        "//xls/dslx/type_system:type",
+        "//xls/ir:value",
+        "@com_google_absl//absl/random:distributions",
+        "@com_google_absl//absl/random:random",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_binary(
+    name = "semantic_sum_inhabitance_fuzz_main",
+    srcs = ["semantic_sum_inhabitance_fuzz_main.cc"],
+    deps = [
+        ":semantic_sum_inhabitance_fuzz",
+        "//xls/common:exit_status",
+        "//xls/common:init_xls",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_test(
+    name = "semantic_sum_inhabitance_fuzz_test",
+    srcs = ["semantic_sum_inhabitance_fuzz_test.cc"],
+    data = [":semantic_sum_phase1_seed_corpus_files"],
+    deps = [
+        ":semantic_sum_inhabitance_fuzz",
+        "//xls/common/file:get_runfile_path",
+        "//xls/common/file:temp_directory",
+        "//xls/common/status:matchers",
+        "//xls/common:xls_gunit_main",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
+    name = "semantic_sum_typeinfo_layout_fuzz",
+    srcs = ["semantic_sum_typeinfo_layout_fuzz.cc"],
+    hdrs = ["semantic_sum_typeinfo_layout_fuzz.h"],
+    deps = [
+        ":semantic_sum_seed_corpus",
+        "//xls/common:stopwatch",
+        "//xls/common/file:filesystem",
+        "//xls/common/status:status_macros",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx:parse_and_typecheck",
+        "//xls/dslx:sum_type_encoding",
+        "//xls/dslx/type_system:type",
+        "//xls/dslx/type_system:type_info_cc_proto",
+        "//xls/dslx/type_system:type_info_to_proto",
+        "//xls/dslx/frontend:ast",
+        "@com_google_absl//absl/random:bit_gen_ref",
+        "@com_google_absl//absl/random:distributions",
+        "@com_google_absl//absl/random:random",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_binary(
+    name = "semantic_sum_typeinfo_layout_fuzz_main",
+    srcs = ["semantic_sum_typeinfo_layout_fuzz_main.cc"],
+    deps = [
+        ":semantic_sum_typeinfo_layout_fuzz",
+        "//xls/common:exit_status",
+        "//xls/common:init_xls",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_test(
+    name = "semantic_sum_typeinfo_layout_fuzz_test",
+    srcs = ["semantic_sum_typeinfo_layout_fuzz_test.cc"],
+    data = [":semantic_sum_phase1_seed_corpus_files"],
+    deps = [
+        ":semantic_sum_typeinfo_layout_fuzz",
+        "//xls/common/file:get_runfile_path",
+        "//xls/common/file:temp_directory",
+        "//xls/common/status:matchers",
+        "//xls/common:xls_gunit_main",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
+    name = "semantic_sum_seed_corpus",
+    srcs = ["semantic_sum_seed_corpus.cc"],
+    hdrs = ["semantic_sum_seed_corpus.h"],
+    data = [":semantic_sum_phase1_seed_corpus_files"],
+    deps = [
+        ":semantic_sum_seed_corpus_cc_proto",
+        "//xls/common/file:filesystem",
+        "//xls/common/status:status_macros",
+        "@com_google_absl//absl/functional:function_ref",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "semantic_sum_seed_corpus_test",
+    srcs = ["semantic_sum_seed_corpus_test.cc"],
+    deps = [
+        ":semantic_sum_seed_corpus",
+        "//xls/common/file:get_runfile_path",
+        "//xls/common/status:matchers",
+        "//xls/common/status:status_macros",
+        "//xls/common:xls_gunit_main",
+        "@googletest//:gtest",
     ],
 )
 
