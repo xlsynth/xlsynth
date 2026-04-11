@@ -183,6 +183,33 @@ struct TopType {
   ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
 }
 
+TEST_F(DslxToVerilogTest, SemanticSumsAreRejectedInPhase1) {
+  constexpr std::string_view program =
+      R"(
+pub sum MaybeWord {
+  None,
+  Some(u32),
+}
+)";
+
+  dslx::ImportData import_data = dslx::CreateImportDataForTest();
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      dslx::ParseAndTypecheck(program, "test_module.x", "test_module",
+                              &import_data, nullptr));
+
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+
+  for (const TypeDefinition& def : tm.module->GetTypeDefinitions()) {
+    EXPECT_THAT(type_to_verilog.AddTypeForTypeDefinition(def, &import_data),
+                absl_testing::StatusIs(
+                    absl::StatusCode::kUnimplemented,
+                    ::testing::HasSubstr("TypeAnnotation SumDef")));
+  }
+}
+
 TEST_F(DslxToVerilogTest, TypeWithNestedTuple) {
   constexpr std::string_view program =
       R"(
