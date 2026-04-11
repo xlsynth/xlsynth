@@ -1,0 +1,156 @@
+seeds {
+  seed_id: "source_exhaustive_constructor_match_without_wildcard"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  relative_path: "source/exhaustive_constructor_match_without_wildcard.x"
+  review_artifact_path: "/Users/dank/.codex/review/xlsynth-dank-dslx-sum-types-phase1-review-2026-03-26-v1.md"
+  expected_stage_or_failure_class: "exhaustive_match_without_wildcard"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+  notes: "Exact constructor-only exhaustive match shape from the IR-converter regression."
+}
+seeds {
+  seed_id: "source_aggregate_contained_sum_match"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  relative_path: "source/aggregate_contained_sum_match.x"
+  review_artifact_path: "/Users/dank/.codex/review/xlsynth-dslx-sum-types-phase1-review-2026-04-07.md"
+  expected_stage_or_failure_class: "aggregate_contained_match"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
+seeds {
+  seed_id: "source_semantic_sum_equality_observer"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  relative_path: "source/semantic_sum_equality_observer.x"
+  review_artifact_path: "/Users/dank/.codex/review/xlsynth-dslx-sum-types-phase1-rue-20260410-192516/related-rue-10-20260411-001714/review.md"
+  expected_stage_or_failure_class: "observer_equality"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
+seeds {
+  seed_id: "source_semantic_sum_inequality_observer"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  relative_path: "source/semantic_sum_inequality_observer.x"
+  review_artifact_path: "/Users/dank/.codex/review/xlsynth-dslx-sum-types-phase1-rue-20260410-192516/related-rue-10-20260411-001714/review.md"
+  expected_stage_or_failure_class: "observer_inequality"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
+seeds {
+  seed_id: "source_semantic_sum_assert_eq_observer"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  relative_path: "source/semantic_sum_assert_eq_observer.x"
+  review_artifact_path: "/Users/dank/.codex/review/xlsynth-dslx-sum-types-phase1-rue-20260410-192516/related-rue-10-20260411-001714/review.md"
+  expected_stage_or_failure_class: "observer_assert_eq"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+  sample_args: "(bits[1]:0x0, (bits[32]:0x0)); (bits[1]:0x0, (bits[32]:0x0))"
+  sample_args: "(bits[1]:0x1, (bits[32]:0x0)); (bits[1]:0x1, (bits[32]:0x0))"
+  sample_args: "(bits[1]:0x1, (bits[32]:0x7fffffff)); (bits[1]:0x1, (bits[32]:0x7fffffff))"
+}
+seeds {
+  seed_id: "source_semantic_sum_format_observer"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  relative_path: "source/semantic_sum_format_observer.x"
+  review_artifact_path: "/Users/dank/.codex/review/xlsynth-dslx-sum-types-phase1-rue-20260410-192516/related-rue-10-20260411-001714/review.md"
+  expected_stage_or_failure_class: "observer_format"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
+seeds {
+  seed_id: "source_or_pattern_binding_nonfinal"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_NEGATIVE_MUTATION
+  relative_path: "source/or_pattern_binding_nonfinal.x"
+  review_artifact_path: "/Users/dank/.codex/review/xlsynth-dslx-sum-types-phase1-review-2026-04-08-followup.md"
+  expected_stage_or_failure_class: "or_pattern_binding"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_FAIL
+  expected_diagnostic_substr: "Cannot bind names in a match arm with multiple patterns"
+}
+seeds {
+  seed_id: "source_or_pattern_binding_final"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_NEGATIVE_MUTATION
+  relative_path: "source/or_pattern_binding_final.x"
+  review_artifact_path: "/Users/dank/.codex/review/xlsynth-dslx-sum-types-phase1-review-2026-04-08-followup.md"
+  expected_stage_or_failure_class: "or_pattern_binding"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_FAIL
+  expected_diagnostic_substr: "Cannot bind names in a match arm with multiple patterns"
+}
+seeds {
+  seed_id: "source_duplicate_sum_payload_field"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_NEGATIVE_MUTATION
+  relative_path: "source/duplicate_sum_payload_field.x"
+  review_artifact_path: "/Users/dank/.codex/review/xlsynth-dslx-sum-types-phase1-review-2026-04-08-followup.md"
+  expected_stage_or_failure_class: "duplicate_sum_payload_field"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_FAIL
+  expected_diagnostic_substr: "defined more than once"
+}
+seeds {
+  seed_id: "source_top_level_empty_enum_payload_match"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_INHABITANCE
+  relative_path: "source/top_level_empty_enum_payload_match.x"
+  review_artifact_path: "/Users/dank/.codex/review/xlsynth-dslx-sum-types-phase1-rue-20260410-192516/runs/pass-001/verify/cr-empty-enum-match-payload/top_level_empty_enum_payload_match.x"
+  expected_stage_or_failure_class: "partially_inhabited_sum"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
+seeds {
+  seed_id: "source_top_level_empty_sum_payload"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_NEGATIVE_MUTATION
+  relative_path: "source/top_level_empty_sum_payload.x"
+  review_artifact_path: "/Users/dank/.codex/review/xlsynth-dslx-sum-types-phase1-rue-20260410-192516/runs/pass-001/verify/cr-top-level-empty-sum-payload/top_level_empty_sum_payload.x"
+  expected_stage_or_failure_class: "empty_sum_payload_rejected"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_FAIL
+  expected_diagnostic_substr: "Phase 1 semantic sum payload members must be bits-like or enum typed"
+}
+seeds {
+  seed_id: "source_sample_runner_semantic_sum_argument"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_INHABITANCE
+  relative_path: "source/sample_runner_semantic_sum_argument.x"
+  review_artifact_path: "xls/fuzzer/sample_runner_test.cc"
+  expected_stage_or_failure_class: "sum_argument_runner_parity"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
+seeds {
+  seed_id: "raw_boundary_valid_enum_payload"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_RAW_BOUNDARY
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  relative_path: "raw_boundary/enum_payload_sum_module.x"
+  review_artifact_path: "/Users/dank/.codex/review/xlsynth-dslx-sum-types-phase1-rue-20260410-192516/related-rue-10-20260411-001714/review.md"
+  expected_stage_or_failure_class: "raw_boundary_roundtrip"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+  raw_ir_value_text: "(bits[2]:0x1, (bits[2]:0x1, bits[16]:0x0))"
+}
+seeds {
+  seed_id: "raw_boundary_non_member_enum_payload"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_RAW_BOUNDARY
+  relative_path: "raw_boundary/enum_payload_sum_module.x"
+  review_artifact_path: "/Users/dank/.codex/review/xlsynth-dslx-sum-types-phase1-rue-20260410-192516/related-rue-10-20260411-001714/review.md"
+  expected_stage_or_failure_class: "raw_boundary_non_member_enum_payload"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_FAIL
+  expected_diagnostic_substr: "declared member"
+  raw_ir_value_text: "(bits[2]:0x1, (bits[2]:0x2, bits[16]:0x0))"
+}
+seeds {
+  seed_id: "raw_boundary_invalid_sum_tag"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_RAW_BOUNDARY
+  relative_path: "raw_boundary/enum_payload_sum_module.x"
+  review_artifact_path: "/Users/dank/.codex/review/xlsynth-dank-dslx-sum-types-phase1-review-2026-03-17-v1.md"
+  expected_stage_or_failure_class: "raw_boundary_invalid_tag"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_FAIL
+  expected_diagnostic_substr: "invalid tag"
+  raw_ir_value_text: "(bits[2]:0x3, (bits[2]:0x0, bits[16]:0x0))"
+}
+seeds {
+  seed_id: "typeinfo_layout_basic_sum_shape"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_TYPEINFO_LAYOUT
+  relative_path: "typeinfo_layout/basic_sum_shape.x"
+  review_artifact_path: "xls/dslx/type_system/type_info_to_proto_test.cc"
+  expected_stage_or_failure_class: "typeinfo_proto_sum_shape"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
+seeds {
+  seed_id: "typeinfo_layout_empty_payload_kinds"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_TYPEINFO_LAYOUT
+  relative_path: "typeinfo_layout/empty_payload_kinds.x"
+  review_artifact_path: "xls/dslx/type_system/type_info_to_proto_test.cc"
+  expected_stage_or_failure_class: "typeinfo_proto_empty_payload_kinds"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
