@@ -14,6 +14,7 @@
 
 #include "xls/dslx/ir_convert/function_converter.h"
 
+#include <cstdint>
 #include <memory>
 #include <string_view>
 
@@ -28,7 +29,10 @@
 #include "xls/dslx/ir_convert/convert_options.h"
 #include "xls/dslx/ir_convert/test_utils.h"
 #include "xls/dslx/parse_and_typecheck.h"
+#include "xls/ir/bits.h"
+#include "xls/ir/nodes.h"
 #include "xls/ir/package.h"
+#include "xls/ir/value.h"
 #include "xls/ir/xls_ir_interface.pb.h"
 
 namespace xls::dslx {
@@ -41,6 +45,30 @@ void ExpectIr(std::string_view got) {
 
 PackageConversionData MakeConversionData(std::string_view n) {
   return {.package = std::make_unique<Package>(n)};
+}
+
+bool NodeExpressionContainsOp(const xls::Node* node, xls::Op op) {
+  if (node->op() == op) {
+    return true;
+  }
+  for (const xls::Node* operand : node->operands()) {
+    if (NodeExpressionContainsOp(operand, op)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool SelectCaseContainsOp(const xls::Select& select, xls::Op op) {
+  for (const xls::Node* case_node : select.cases()) {
+    if (NodeExpressionContainsOp(case_node, op)) {
+      return true;
+    }
+  }
+  if (select.default_value().has_value()) {
+    return NodeExpressionContainsOp(*select.default_value(), op);
+  }
+  return false;
 }
 
 TEST(FunctionConverterTest, ConvertsSimpleFunctionWithoutError) {
@@ -577,6 +605,771 @@ TEST(FunctionConverterTest, ConvertsFunctionWithUpdate2DBuiltinEmptyTuple) {
                   }
                 }
               )pb"));
+}
+
+TEST(FunctionConverterTest,
+     ConvertsImportedSumConstantWithoutConstructorDispatch) {
+  constexpr std::string_view kImported = R"(
+pub sum Option {
+  None,
+  Some(u32),
+}
+
+pub const SOME: Option = Option::Some(u32:7);
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn f() -> imported::Option {
+  imported::SOME
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(
+      ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+
+  EXPECT_EQ(package_data.ir_to_dslx.size(), 1);
+}
+
+TEST(FunctionConverterTest, ExpandsSemanticSumEqIntoTagAndPayloadChecks) {
+  constexpr std::string_view kProgram = R"(
+sum Option {
+  None,
+  Some(u32),
+  Pair(u32, u32),
+}
+
+fn f(x: Option, y: Option) -> bool {
+  x == y
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
+                           package.package->GetFunction(
+                               "__itok__test_module__f"));
+  int64_t tuple_index_count = 0;
+  int64_t eq_count = 0;
+  int64_t eq_literal_count = 0;
+  int64_t equality_select_count = 0;
+  bool has_direct_param_eq = false;
+  for (xls::Node* node : ir_function->nodes()) {
+    if (node->op() == xls::Op::kTupleIndex) {
+      ++tuple_index_count;
+    }
+    if (node->op() == xls::Op::kSel) {
+      const auto* select = node->As<xls::Select>();
+      if (SelectCaseContainsOp(*select, xls::Op::kEq)) {
+        ++equality_select_count;
+      }
+    }
+    if (node->op() == xls::Op::kEq) {
+      ++eq_count;
+      if (node->operand(0)->op() == xls::Op::kLiteral ||
+          node->operand(1)->op() == xls::Op::kLiteral) {
+        ++eq_literal_count;
+      }
+      if (node->operand(0)->op() == xls::Op::kParam &&
+          node->operand(1)->op() == xls::Op::kParam) {
+        has_direct_param_eq = true;
+      }
+    }
+  }
+  EXPECT_GE(tuple_index_count, 4);
+  EXPECT_GT(eq_count, 1);
+  EXPECT_EQ(equality_select_count, 1);
+  EXPECT_EQ(eq_literal_count, 0);
+  EXPECT_FALSE(has_direct_param_eq);
+}
+
+TEST(FunctionConverterTest, SingleVariantSemanticSumEqUsesSparseTagSelect) {
+  constexpr std::string_view kProgram = R"(
+sum Box {
+  Wrap(u32),
+}
+
+fn f(x: Box, y: Box) -> bool {
+  x == y
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
+                           package.package->GetFunction(
+                               "__itok__test_module__f"));
+  int64_t equality_select_count = 0;
+  for (xls::Node* node : ir_function->nodes()) {
+    if (node->op() == xls::Op::kSel) {
+      const auto* select = node->As<xls::Select>();
+      if (SelectCaseContainsOp(*select, xls::Op::kEq)) {
+        ++equality_select_count;
+      }
+    }
+  }
+  EXPECT_EQ(equality_select_count, 1);
+  EXPECT_THAT(package.DumpIr(), testing::HasSubstr("default="));
+}
+
+TEST(FunctionConverterTest,
+     SingleVariantSemanticSumMatchUsesSparseTagCheck) {
+  constexpr std::string_view kProgram = R"(
+sum Box {
+  Wrap(u32),
+}
+
+fn f(x: Box) -> u32 {
+  match x {
+    Box::Wrap(v) => v,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+  EXPECT_TRUE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
+                           package.package->GetFunction(
+                               "__itok__test_module__f"));
+  int64_t tag_select_count = 0;
+  for (xls::Node* node : ir_function->nodes()) {
+    if (node->op() == xls::Op::kSel &&
+        node->operand(0)->op() == xls::Op::kTupleIndex) {
+      ++tag_select_count;
+    }
+  }
+  EXPECT_EQ(tag_select_count, 1);
+  EXPECT_THAT(package.DumpIr(), testing::HasSubstr("assert("));
+  EXPECT_THAT(package.DumpIr(), testing::HasSubstr("default="));
+}
+
+TEST(FunctionConverterTest, RequiresImplicitTokenForPhase1SemanticSumMatch) {
+  constexpr std::string_view kProgram = R"(
+sum Option {
+  None,
+  Some(u32),
+}
+
+fn f(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    _ => u32:0,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+  EXPECT_TRUE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+
+  EXPECT_THAT(package.DumpIr(), testing::HasSubstr("assert("));
+  EXPECT_THAT(package.DumpIr(),
+              testing::HasSubstr("__itok__test_module__f"));
+  std::string interface_text = package.interface.DebugString();
+  EXPECT_THAT(interface_text,
+              testing::HasSubstr("name: \"__itok__test_module__f\""));
+  EXPECT_THAT(interface_text,
+              testing::HasSubstr("name: \"__test_module__f\""));
+}
+
+TEST(FunctionConverterTest,
+     RequiresImplicitTokenForAggregateContainedPhase1SemanticSumMatch) {
+  constexpr std::string_view kProgram = R"(
+sum Option {
+  None,
+  Some(u32),
+}
+
+fn f(x: (Option,)) -> u32 {
+  match x {
+    (Option::Some(v),) => v,
+    _ => u32:0,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+  EXPECT_TRUE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+
+  EXPECT_THAT(package.DumpIr(), testing::HasSubstr("assert("));
+  EXPECT_THAT(package.DumpIr(),
+              testing::HasSubstr("__itok__test_module__f"));
+}
+
+TEST(FunctionConverterTest,
+     RequiresImplicitTokenForExhaustivePhase1SemanticSumMatchWithoutWildcard) {
+  constexpr std::string_view kProgram = R"(
+sum Option {
+  None,
+  Some(u32),
+}
+
+fn f(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    Option::None => u32:0,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+  EXPECT_TRUE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+
+  EXPECT_THAT(package.DumpIr(), testing::HasSubstr("assert("));
+  EXPECT_THAT(package.DumpIr(), testing::HasSubstr("__itok__test_module__f"));
+  std::string interface_text = package.interface.DebugString();
+  EXPECT_THAT(interface_text,
+              testing::HasSubstr("name: \"__itok__test_module__f\""));
+  EXPECT_THAT(interface_text,
+              testing::HasSubstr("name: \"__test_module__f\""));
+}
+
+TEST(FunctionConverterTest,
+     RejectsBindingInLaterSemanticSumOrPatternBeforeConversion) {
+  constexpr std::string_view kProgram = R"(
+sum Option {
+  None,
+  Some(u32),
+}
+
+fn f(x: Option) -> u32 {
+  match x {
+    Option::None | Option::Some(v) => v,
+    _ => u32:0,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  EXPECT_THAT(
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module", &import_data),
+      ::absl_testing::StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          testing::AllOf(
+              testing::HasSubstr("Cannot bind names in a match arm with "
+                                 "multiple patterns"),
+              testing::HasSubstr("bound: v"))));
+}
+
+TEST(FunctionConverterTest, RequiresImplicitTokenForPhase1SemanticSumEquality) {
+  constexpr std::string_view kProgram = R"(
+sum Option {
+  None,
+  Some(u32),
+}
+
+fn f(x: Option, y: Option) -> bool {
+  x == y
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+  EXPECT_TRUE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+
+  EXPECT_THAT(package.DumpIr(),
+              testing::HasSubstr(
+                  "Phase 1 semantic sum equality received a non-semantic "
+                  "value"));
+  EXPECT_THAT(package.DumpIr(), testing::HasSubstr("__itok__test_module__f"));
+}
+
+TEST(FunctionConverterTest, RequiresImplicitTokenForPhase1SemanticSumInequality) {
+  constexpr std::string_view kProgram = R"(
+sum Option {
+  None,
+  Some(u32),
+}
+
+fn f(x: Option, y: Option) -> bool {
+  x != y
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+  EXPECT_TRUE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+
+  EXPECT_THAT(package.DumpIr(),
+              testing::HasSubstr(
+                  "Phase 1 semantic sum inequality received a non-semantic "
+                  "value"));
+  EXPECT_THAT(package.DumpIr(), testing::HasSubstr("__itok__test_module__f"));
+}
+
+TEST(FunctionConverterTest,
+     EmitsWellFormednessAssertForPhase1SemanticSumAssertEq) {
+  constexpr std::string_view kProgram = R"(
+sum Option {
+  None,
+  Some(u32),
+}
+
+fn f(x: Option, y: Option) -> () {
+  assert_eq(x, y)
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+  EXPECT_TRUE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+
+  EXPECT_THAT(package.DumpIr(),
+              testing::HasSubstr(
+                  "Phase 1 semantic sum assert_eq received a non-semantic "
+                  "value"));
+}
+
+TEST(FunctionConverterTest,
+     EmitsWellFormednessAssertForPhase1SemanticSumFormatMacro) {
+  constexpr std::string_view kProgram = R"(
+sum Option {
+  None,
+  Some(u32),
+}
+
+fn f(x: Option) {
+  trace_fmt!("x = {}", x);
+  ()
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+  EXPECT_TRUE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+
+  EXPECT_THAT(package.DumpIr(),
+              testing::HasSubstr(
+                  "Phase 1 semantic sum format macro received a non-semantic "
+                  "value"));
+}
+
+TEST(FunctionConverterTest, UsesAggregateEqForNonSumArrayPayloadSubtrees) {
+  constexpr std::string_view kProgram = R"(
+sum Option {
+  None,
+  Some(u32),
+}
+
+fn f(x: (Option, u32[4]), y: (Option, u32[4])) -> bool {
+  x == y
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
+                           package.package->GetTopAsFunction());
+  int64_t array_index_count = 0;
+  for (xls::Node* node : ir_function->nodes()) {
+    if (node->op() == xls::Op::kArrayIndex) {
+      ++array_index_count;
+    }
+  }
+  EXPECT_EQ(array_index_count, 0);
+}
+
+TEST(FunctionConverterTest,
+     RejectsSemanticSumConstructorWithInactiveEmptySumPayloadInPhase1) {
+  constexpr std::string_view kProgram = R"(
+sum Empty {
+}
+
+sum Outer {
+  Wrapped(Empty),
+  Nothing,
+}
+
+fn f() -> Outer {
+  Outer::Nothing
+}
+  )";
+
+  ImportData import_data = CreateImportDataForTest();
+  EXPECT_THAT(
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data),
+      ::absl_testing::StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          testing::AllOf(
+              testing::HasSubstr(
+                  "Phase 1 semantic sum payload members must be bits-like or "
+                  "enum typed"),
+              testing::HasSubstr("constructor `Wrapped`"),
+              testing::HasSubstr("Empty"))));
+}
+
+TEST(FunctionConverterTest,
+     ConvertsSemanticSumConstructorWithInactiveEmptyEnumPayloadInPhase1) {
+  constexpr std::string_view kProgram = R"(
+enum Empty: u2 {
+}
+
+sum MaybeImpossible {
+  Unit,
+  Impossible(Empty),
+}
+
+fn f() -> MaybeImpossible {
+  MaybeImpossible::Unit
+}
+  )";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+}
+
+TEST(FunctionConverterTest,
+     RejectsActiveEmptyEnumPayloadVariantAsNotWellFormedInPhase1) {
+  constexpr std::string_view kProgram = R"(
+enum Empty: u2 {
+}
+
+sum MaybeImpossible {
+  Unit,
+  Impossible(Empty),
+}
+
+fn f(x: MaybeImpossible) -> u32 {
+  match x {
+    MaybeImpossible::Unit => u32:0,
+  }
+}
+  )";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+  EXPECT_TRUE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
+                           package.package->GetFunction(
+                               "__itok__test_module__f"));
+  auto is_literal_value = [](xls::Node* node, uint64_t value) {
+    return node->op() == xls::Op::kLiteral &&
+           node->As<xls::Literal>()->value() ==
+               xls::Value(xls::UBits(value, 1));
+  };
+  auto is_false_predicate = [&](xls::Node* node) {
+    if (is_literal_value(node, 0)) {
+      return true;
+    }
+    return node->op() == xls::Op::kAnd &&
+           (is_literal_value(node->operand(0), 0) ||
+            is_literal_value(node->operand(1), 0));
+  };
+  bool has_empty_payload_case_rejection = false;
+  for (xls::Node* node : ir_function->nodes()) {
+    if (node->op() != xls::Op::kSel) {
+      continue;
+    }
+    const auto* select = node->As<xls::Select>();
+    if (select->cases().size() != 2 || select->default_value().has_value()) {
+      continue;
+    }
+    if (is_literal_value(select->get_case(0), 1) &&
+        is_false_predicate(select->get_case(1))) {
+      has_empty_payload_case_rejection = true;
+    }
+  }
+  EXPECT_TRUE(has_empty_payload_case_rejection) << package.DumpIr();
+}
+
+TEST(FunctionConverterTest,
+     RejectsActiveNonMemberEnumPayloadVariantAsNotWellFormedInPhase1) {
+  constexpr std::string_view kProgram = R"(
+enum Flavor: u2 {
+  Vanilla = u2:1,
+  Mint = u2:2,
+}
+
+sum Choice {
+  Unit,
+  Some(Flavor),
+}
+
+fn f(x: Choice) -> u32 {
+  match x {
+    Choice::Unit => u32:0,
+    _ => u32:1,
+  }
+}
+  )";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
+                        &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+  EXPECT_TRUE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(
+      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
+                           package.package->GetFunction(
+                               "__itok__test_module__f"));
+  auto matches_payload_member = [](xls::Node* node, uint64_t value) {
+    if (node->op() != xls::Op::kEq) {
+      return false;
+    }
+    auto has_literal_value = [&](xls::Node* operand) {
+      return operand->op() == xls::Op::kLiteral &&
+             operand->As<xls::Literal>()->value() ==
+                 xls::Value(xls::UBits(value, 2));
+    };
+    return has_literal_value(node->operand(0)) ||
+           has_literal_value(node->operand(1));
+  };
+  int64_t enum_member_eq_count = 0;
+  for (xls::Node* node : ir_function->nodes()) {
+    if (matches_payload_member(node, /*value=*/1) ||
+        matches_payload_member(node, /*value=*/2)) {
+      ++enum_member_eq_count;
+    }
+  }
+  EXPECT_EQ(enum_member_eq_count, 2) << package.DumpIr();
 }
 
 }  // namespace

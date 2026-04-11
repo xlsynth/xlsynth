@@ -238,9 +238,16 @@ class ConversionRecordVisitor : public AstNodeVisitorWithDefault {
     TypeInfo* invocation_owner_ti = GetTypeInfo(invocation);
     std::vector<InvocationCalleeData> calls =
         invocation_owner_ti->GetUniqueInvocationCalleeData(invocation);
-    XLS_RET_CHECK(!calls.empty())
-        << " no root invocation data for " << invocation->ToString() << " in "
-        << module_->name();
+    if (calls.empty()) {
+      // Sum constructors are special syntax, not real callable values, so TI
+      // does not record invocation callee data for them.
+      XLS_RET_CHECK(dynamic_cast<const ColonRef*>(invocation->callee()) !=
+                        nullptr ||
+                    IsBuiltinFn(invocation->callee()))
+          << " no root invocation data for " << invocation->ToString() << " in "
+          << module_->name();
+      return DefaultHandler(invocation);
+    }
 
     for (const InvocationCalleeData& call : calls) {
       VLOG(5) << "Processing call to " << call.callee->identifier()

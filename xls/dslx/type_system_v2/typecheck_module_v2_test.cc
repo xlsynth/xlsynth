@@ -18,12 +18,12 @@
 #include <string_view>
 #include <utility>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/substitute.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/import_data.h"
@@ -3282,6 +3282,336 @@ const Z = f(u32:1);
               TypecheckSucceeds(HasNodeWithType("Z", "uN[32]")));
 }
 
+TEST(TypecheckV2Test, SemanticSumTupleConstructor) {
+  EXPECT_THAT(
+      R"(
+sum MaybeU32 {
+  None,
+  Some(u32),
+}
+const X = MaybeU32::Some(u32:7);
+)",
+      TypecheckSucceeds(
+          HasNodeWithType("X", "MaybeU32 { None | Some(uN[32]) }")));
+}
+
+TEST(TypecheckV2Test, SemanticSumStructConstructor) {
+  EXPECT_THAT(
+      R"(
+sum MaybePoint {
+  None,
+  Point { x: u32, y: u32 },
+}
+const X = MaybePoint::Point { x: u32:1, y: u32:2 };
+)",
+      TypecheckSucceeds(HasNodeWithType(
+          "X", "MaybePoint { None | Point { x: uN[32], y: uN[32] } }")));
+}
+
+TEST(TypecheckV2Test,
+     ImportedSemanticSumConstructorExplicitParametricsRejected) {
+  constexpr std::string_view kImported = R"(#![feature(generics)]
+pub sum Option<N: u32> {
+  None,
+  Some(uN[N]),
+}
+)";
+  constexpr std::string_view kProgram = R"(#![feature(generics)]
+import imported;
+
+fn make(x: u8) -> imported::Option<u32:8> {
+  imported::Option::Some<u32:8>(x)
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(TypecheckV2(kImported, "imported", &import_data));
+  EXPECT_THAT(
+      TypecheckV2(kProgram, "main", &import_data),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("Explicit parametrics belong on the sum type, not "
+                         "the constructor")));
+}
+
+TEST(TypecheckV2Test, MissingSemanticSumConstructorReturnsUserError) {
+  EXPECT_THAT(
+      R"(
+sum Option {
+  None,
+  Some(u32),
+}
+
+const X = Option::Missing(u32:7);
+)",
+      TypecheckFails(HasSubstr("Sum 'Option' has no constructor 'Missing'.")));
+}
+
+TEST(TypecheckV2Test, SemanticSumStructConstructorMissingMemberRejected) {
+  EXPECT_THAT(
+      R"(
+sum MaybePoint {
+  None,
+  Point { x: u32, y: u32 },
+}
+
+const X = MaybePoint::Point { x: u32:1 };
+)",
+      TypecheckFails(
+          HasSubstr("Instance of constructor `Point` is missing member(s): "
+                    "`y`")));
+}
+
+TEST(TypecheckV2Test, SemanticSumStructConstructorExtraMemberRejected) {
+  EXPECT_THAT(
+      R"(
+sum MaybePoint {
+  None,
+  Point { x: u32, y: u32 },
+}
+
+const X = MaybePoint::Point { x: u32:1, y: u32:2, z: u32:3 };
+)",
+      TypecheckFails(
+          HasSubstr("Constructor `Point` has no member `z`")));
+}
+
+TEST(TypecheckV2Test, SemanticSumTuplePayloadAggregateRejectedInPhase1) {
+  EXPECT_THAT(
+      R"(
+struct Point {
+  x: u32,
+  y: u32,
+}
+
+sum MaybePoint {
+  None,
+  Some(Point),
+}
+
+const X = MaybePoint::None;
+)",
+      TypecheckFails(AllOf(
+          HasSubstr("Phase 1 semantic sum payload members must be bits-like or "
+                    "enum typed"),
+          HasSubstr("constructor `Some`"), HasSubstr("Point"))));
+}
+
+TEST(TypecheckV2Test, SemanticSumStructPayloadAggregateRejectedInPhase1) {
+  EXPECT_THAT(
+      R"(
+sum PairBox {
+  Pair { xy: (u32, u32) },
+}
+
+const X = PairBox::Pair { xy: (u32:1, u32:2) };
+)",
+      TypecheckFails(AllOf(
+          HasSubstr("Phase 1 semantic sum payload members must be bits-like or "
+                    "enum typed"),
+          HasSubstr("constructor `Pair`"), HasSubstr("(uN[32], uN[32])"))));
+}
+
+TEST(TypecheckV2Test, MatchWithSemanticSumConstructors) {
+  EXPECT_THAT(
+      R"(
+sum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn unwrap_or_zero(x: MaybeU32) -> u32 {
+  match x {
+    MaybeU32::Some(v) => v,
+    MaybeU32::None => u32:0,
+  }
+}
+
+const X = unwrap_or_zero(MaybeU32::Some(u32:7));
+)",
+      TypecheckSucceeds(AllOf(HasNodeWithType("v", "uN[32]"),
+                              HasNodeWithType("X", "uN[32]"))));
+}
+
+TEST(TypecheckV2Test,
+     ParametricSemanticTupleConstructorUsesContextualPayloadType) {
+  EXPECT_THAT(
+      R"(#![feature(generics)]
+sum OptionN<N: u32> {
+  None,
+  Some(uN[N]),
+}
+
+fn make(x: u16) -> OptionN<u32:8> {
+  OptionN::Some(x)
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("size mismatch"), HasSubstr("u16"),
+                           HasSubstr("uN[u32:8]"))));
+}
+
+TEST(TypecheckV2Test,
+     ParametricSemanticStructConstructorUsesContextualPayloadType) {
+  EXPECT_THAT(
+      R"(#![feature(generics)]
+sum BoxN<N: u32> {
+  None,
+  Pair { value: uN[N] },
+}
+
+fn make(x: u16) -> BoxN<u32:8> {
+  BoxN::Pair { value: x }
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("size mismatch"), HasSubstr("u16"),
+                           HasSubstr("uN[u32:8]"))));
+}
+
+TEST(TypecheckV2Test, ParametricSemanticSumPatternsBindPayloadTypes) {
+  EXPECT_THAT(
+      R"(#![feature(generics)]
+sum OptionN<N: u32> {
+  None,
+  Some(uN[N]),
+  Pair { value: uN[N] },
+}
+
+fn unwrap_or_zero(x: OptionN<u32:8>) -> u8 {
+  match x {
+    OptionN<u32:8>::Some(v) => v,
+    OptionN<u32:8>::Pair { value } => value,
+    OptionN<u32:8>::None => u8:0,
+  }
+}
+
+const X = unwrap_or_zero(OptionN<u32:8>::Some(u8:7));
+const INPUT_Y: OptionN<u32:8> = OptionN::Pair { value: u8:9 };
+const Y = unwrap_or_zero(INPUT_Y);
+)",
+      TypecheckSucceeds(AllOf(
+          HasNodeWithType("v", "uN[8]"), HasNodeWithType("value", "uN[8]"),
+          HasNodeWithType("X", "uN[8]"), HasNodeWithType("Y", "uN[8]"))));
+}
+
+TEST(TypecheckV2Test, NonUnitSemanticSumConstructorCannotBeUsedAsValue) {
+  EXPECT_THAT(
+      R"(
+sum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn f() -> () {
+  let make = MaybeU32::Some;
+  ()
+}
+)",
+      TypecheckFails(AllOf(
+          HasSubstr("MaybeU32::Some"),
+          HasSubstr("cannot be used as a value in Phase 1"))));
+}
+
+TEST(TypecheckV2Test, MatchWithSemanticSumConstructorsNonExhaustive) {
+  EXPECT_THAT(
+      R"(
+sum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn unwrap_or_zero(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    Option::None => u32:0,
+  }
+}
+)",
+      TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+}
+
+TEST(TypecheckV2Test, MatchWithSemanticSumConstructorsWildcardCompletes) {
+  EXPECT_THAT(
+      R"(
+sum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn unwrap_or_zero(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    _ => u32:0,
+  }
+}
+
+const X = unwrap_or_zero(Option::Pair { lhs: u32:3, rhs: u32:4 });
+)",
+      TypecheckSucceeds(
+          AllOf(HasNodeWithType("v", "uN[32]"), HasNodeWithType("X", "uN[32]"))));
+}
+
+TEST(TypecheckV2Test, MatchOrPatternRejectsBindingInLaterAlternative) {
+  EXPECT_THAT(
+      R"(
+sum Option {
+  None,
+  Some(u32),
+}
+
+fn f(x: Option) -> u32 {
+  match x {
+    Option::None | Option::Some(v) => v,
+    _ => u32:0,
+  }
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("Cannot bind names in a match arm with "
+                                     "multiple patterns"),
+                           HasSubstr("bound: v"))));
+}
+
+TEST(TypecheckV2Test, MatchOrPatternRejectsBindingInFirstAlternative) {
+  EXPECT_THAT(
+      R"(
+sum Option {
+  None,
+  Some(u32),
+}
+
+fn f(x: Option) -> u32 {
+  match x {
+    Option::Some(v) | Option::None => v,
+    _ => u32:0,
+  }
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("Cannot bind names in a match arm with "
+                                     "multiple patterns"),
+                           HasSubstr("bound: v"))));
+}
+
+TEST(TypecheckV2Test, MatchWithSemanticSumConstructorsAlreadyExhaustive) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+sum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn unwrap_or_zero(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    _ => u32:0,
+    Option::None => u32:1,
+  }
+}
+)"));
+  ASSERT_THAT(result.tm.warnings.warnings().size(), 1);
+  EXPECT_EQ(result.tm.warnings.warnings()[0].message,
+            "Match is already exhaustive before this pattern");
+}
+
 TEST(TypecheckV2Test, MatchArmTupleType) {
   EXPECT_THAT(R"(
 const X = u32:1;
@@ -3908,6 +4238,19 @@ const Y = zero!<S>();
       TypecheckSucceeds(HasNodeWithType("Y", "S { a: uN[32], b: uN[32] }")));
 }
 
+TEST(TypecheckV2Test, ZeroMacroSumFails) {
+  EXPECT_THAT(
+      R"(
+sum MaybeU32 {
+  None,
+  Some(u32),
+}
+const Y = zero!<MaybeU32>();
+)",
+      TypecheckFails(HasSubstr("Cannot use `zero!<MaybeU32>()` with sum type "
+                               "`MaybeU32`.")));
+}
+
 TEST(TypecheckV2Test, ZeroMacroParametricStruct) {
   EXPECT_THAT(
       R"(
@@ -4033,6 +4376,26 @@ const Y = zero!<imported::S>();
   EXPECT_THAT(
       TypecheckV2(kProgram, "main", &import_data),
       IsOkAndHolds(HasTypeInfo(HasNodeWithType("Y", "S { field: uN[32] }"))));
+}
+
+TEST(TypecheckV2Test, ZeroMacroImportedSumFails) {
+  constexpr std::string_view kImported = R"(
+pub sum ImportedMaybe {
+  None,
+  Some(u32),
+}
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+const Y = zero!<imported::ImportedMaybe>();
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
+  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Cannot use "
+                                 "`zero!<imported::ImportedMaybe>()` with sum "
+                                 "type `imported::ImportedMaybe`.")));
 }
 
 TEST(TypecheckV2Test,
@@ -6827,7 +7190,7 @@ const_assert!(Y == 24);
 TEST(TypecheckV2Test, EnumBool) {
   EXPECT_THAT(
       R"(
-enum MyEnum {
+enum MyEnum : u1 {
   A = false,
   B = true,
 }
@@ -6846,7 +7209,7 @@ const_assert!(MyEnum::B as u1 == u1:1);
 TEST(TypecheckV2Test, EnumInt) {
   EXPECT_THAT(
       R"(
-enum MyEnum {
+enum MyEnum : s8 {
   A = s8:0,
   B = -128,
   C = 127,
@@ -6881,7 +7244,7 @@ TEST(TypecheckV2Test, EnumMixedConstLiterals) {
       R"(
 const X = u8:42;
 const Y = u8:10;
-enum MyEnum {
+enum MyEnum : u8 {
   A = 64,
   B = X,
   C = Y + Y,
@@ -6910,7 +7273,7 @@ enum MyEnum : u8 {
 TEST(TypecheckV2Test, EnumValueTypeMismatch) {
   EXPECT_THAT(
       R"(
-enum MyEnum {
+enum MyEnum : u8 {
   A = u8:1,
   B = u16:2,
 }
@@ -6939,13 +7302,13 @@ enum MyEnum : u8 {
       TypecheckFails(HasTypeMismatch("u8[u32:1]", "u8")));
 }
 
-TEST(TypecheckV2Test, EnumNoTypeOrValue) {
+TEST(TypecheckV2Test, EmptySumTypeDefinition) {
   EXPECT_THAT(
       R"(
-enum MyEnum {
+sum MyEnum {
 }
 )",
-      TypecheckFails(HasSubstr("has no type annotation and no value")));
+      TypecheckSucceeds(::testing::_));
 }
 
 TEST(TypecheckV2Test, EnumTypeAlias) {
@@ -8867,7 +9230,7 @@ fn f() -> IntAlias { IntAlias:0 }
 
 TEST(TypecheckV2Test, ImportedEnum) {
   constexpr std::string_view kImported = R"(
-pub enum MyEnum {
+pub enum MyEnum : s8 {
   A = s8:0,
   B = -128,
   C = 127,
@@ -8892,7 +9255,7 @@ const_assert!(imported::MyEnum::C as s8 == 127);
 
 TEST(TypecheckV2Test, ImportedEnumAsType) {
   constexpr std::string_view kImported = R"(
-pub enum MyEnum {
+pub enum MyEnum : s8 {
   A = s8:0,
   B = -128,
   C = 127,
@@ -8920,7 +9283,7 @@ fn f(x: A) -> A {
 
 TEST(TypecheckV2Test, ImportedEnumAsTypeTwoLevel) {
   constexpr std::string_view kFirst = R"(
-pub enum MyEnum {
+pub enum MyEnum : s8 {
   A = s8:0,
   B = -128,
   C = 127,
@@ -8953,7 +9316,7 @@ fn f(x: A) -> A {
 
 TEST(TypecheckV2Test, ImportedEnumInFunction) {
   constexpr std::string_view kImported = R"(
-pub enum MyEnum {
+pub enum MyEnum : s8 {
   A = s8:0,
   B = -128,
   C = 127,

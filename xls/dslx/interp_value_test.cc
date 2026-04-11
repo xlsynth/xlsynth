@@ -368,6 +368,124 @@ TEST(InterpValueTest, FormatEnum) {
   EXPECT_EQ(bar.ToFormattedString(fmt_desc).value(), "MyEnum::BAR  // u32:1");
 }
 
+TEST(InterpValueTest, FormatSemanticSum) {
+  ValueFormatDescriptor leaf =
+      ValueFormatDescriptor::MakeLeafValue(FormatPreference::kDefault);
+  std::vector<ValueFormatSumVariantDescriptor> variants = {
+      ValueFormatSumVariantDescriptor::MakeUnit("None"),
+      ValueFormatSumVariantDescriptor::MakeTuple("Some", {leaf}),
+      ValueFormatSumVariantDescriptor::MakeStruct("Pair", {"lhs", "rhs"},
+                                                  {leaf, leaf}),
+  };
+  ValueFormatDescriptor fmt_desc =
+      ValueFormatDescriptor::MakeSum("Option", variants,
+                                     FormatPreference::kDefault);
+
+  InterpValue none = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/0),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeU32(0), InterpValue::MakeU32(0),
+            InterpValue::MakeU32(0)})});
+  InterpValue some = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/1),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeU32(7), InterpValue::MakeU32(0),
+            InterpValue::MakeU32(0)})});
+  InterpValue pair = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/2),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeU32(0), InterpValue::MakeU32(3),
+            InterpValue::MakeU32(4)})});
+
+  EXPECT_EQ(none.ToFormattedString(fmt_desc, /*include_type_prefix=*/true)
+                .value(),
+            "Option::None");
+  EXPECT_EQ(some.ToFormattedString(fmt_desc, /*include_type_prefix=*/true)
+                .value(),
+            "Option::Some(u32:7)");
+  EXPECT_EQ(pair.ToFormattedString(fmt_desc, /*include_type_prefix=*/true)
+                .value(),
+            R"(Option::Pair {
+    lhs: u32:3,
+    rhs: u32:4
+})");
+}
+
+TEST(InterpValueTest, SemanticSumVariantViewMatchesFlattenedLayout) {
+  ValueFormatDescriptor leaf =
+      ValueFormatDescriptor::MakeLeafValue(FormatPreference::kDefault);
+  std::vector<ValueFormatSumVariantDescriptor> variants = {
+      ValueFormatSumVariantDescriptor::MakeUnit("None"),
+      ValueFormatSumVariantDescriptor::MakeTuple("Some", {leaf}),
+      ValueFormatSumVariantDescriptor::MakeStruct("Pair", {"lhs", "rhs"},
+                                                  {leaf, leaf}),
+  };
+  ValueFormatDescriptor fmt_desc =
+      ValueFormatDescriptor::MakeSum("Option", variants,
+                                     FormatPreference::kDefault);
+
+  const ValueFormatSumVariantView none = fmt_desc.sum_variant(0);
+  const ValueFormatSumVariantView some = fmt_desc.sum_variant(1);
+  const ValueFormatSumVariantView pair = fmt_desc.sum_variant(2);
+
+  EXPECT_EQ(none.name(), "None");
+  EXPECT_EQ(none.kind(), ValueFormatSumVariantKind::kUnit);
+  EXPECT_EQ(none.payload_slot_count(), 0);
+  EXPECT_THAT(none.field_names(), ::testing::IsEmpty());
+  EXPECT_THAT(none.payload_formats(), ::testing::IsEmpty());
+
+  EXPECT_EQ(some.name(), "Some");
+  EXPECT_EQ(some.kind(), ValueFormatSumVariantKind::kTuple);
+  EXPECT_EQ(some.payload_slot_count(), 1);
+  EXPECT_THAT(some.field_names(), ::testing::IsEmpty());
+  EXPECT_EQ(some.payload_formats().size(), 1);
+  EXPECT_TRUE(some.payload_formats().front().IsLeafValue());
+
+  EXPECT_EQ(pair.name(), "Pair");
+  EXPECT_EQ(pair.kind(), ValueFormatSumVariantKind::kStruct);
+  EXPECT_EQ(pair.payload_slot_count(), 2);
+  EXPECT_THAT(pair.field_names(), ::testing::ElementsAre("lhs", "rhs"));
+  EXPECT_EQ(pair.payload_formats().size(), 2);
+  EXPECT_TRUE(pair.payload_formats().front().IsLeafValue());
+  EXPECT_TRUE(pair.payload_formats().back().IsLeafValue());
+}
+
+TEST(InterpValueTest, FormatSemanticSumEmptyStruct) {
+  ValueFormatDescriptor fmt_desc = ValueFormatDescriptor::MakeSum(
+      "Option", {ValueFormatSumVariantDescriptor::MakeStruct(
+                    "EmptyStruct", /*field_names=*/{},
+                    /*payload_formats=*/{})},
+      FormatPreference::kDefault);
+
+  InterpValue empty_struct = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/1, /*value=*/0),
+       InterpValue::MakeTuple({})});
+
+  EXPECT_EQ(empty_struct.ToFormattedString(fmt_desc, /*include_type_prefix=*/true)
+                .value(),
+            "Option::EmptyStruct { }");
+}
+
+TEST(InterpValueTest, FormatSemanticSumEmptyStructVariant) {
+  std::vector<ValueFormatSumVariantDescriptor> variants = {
+      ValueFormatSumVariantDescriptor::MakeUnit("None"),
+      ValueFormatSumVariantDescriptor::MakeStruct(
+          "EmptyStruct", /*field_names=*/{}, /*payload_formats=*/{}),
+  };
+  ValueFormatDescriptor fmt_desc =
+      ValueFormatDescriptor::MakeSum("Option", variants,
+                                     FormatPreference::kDefault);
+
+  InterpValue empty_struct = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/1, /*value=*/1),
+       InterpValue::MakeTuple({})});
+
+  EXPECT_EQ(empty_struct.ToFormattedString(fmt_desc,
+                                           /*include_type_prefix=*/true)
+                .value(),
+            "Option::EmptyStruct { }");
+}
+
 TEST(InterpValueTest, AsProtoBits) {
   InterpValue iv = InterpValue::MakeU32(0xdeadbeef);
   XLS_ASSERT_OK_AND_ASSIGN(xls::ValueProto proto, iv.AsProto());
