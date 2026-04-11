@@ -34,6 +34,7 @@
 #include "xls/fuzzer/ast_generator.h"
 #include "xls/fuzzer/run_fuzz_multiprocess.h"
 #include "xls/fuzzer/sample.h"
+#include "xls/fuzzer/semantic_sum_source_seed_replay.h"
 #include "xls/fuzzer/sample.pb.h"
 
 ABSL_FLAG(absl::Duration, duration, absl::InfiniteDuration(),
@@ -67,6 +68,9 @@ ABSL_FLAG(std::optional<std::string>, save_temps_path, std::nullopt,
 ABSL_FLAG(std::optional<int64_t>, seed, std::nullopt,
           "Seed value for generation. By default, a nondetermistic seed is "
           "used; if a seed is provided, it is used for determinism");
+ABSL_FLAG(std::optional<std::string>, seed_manifest, std::nullopt,
+          "Manifest of semantic-sum source seeds to replay before random "
+          "sample generation.");
 ABSL_FLAG(bool, simulate, false, "Run Verilog simulation.");
 ABSL_FLAG(std::optional<std::string>, simulator, std::nullopt,
           "Verilog simulator to use.");
@@ -108,6 +112,7 @@ struct Options {
   std::optional<int64_t> sample_count;
   std::optional<std::filesystem::path> save_temps_path;
   std::optional<int64_t> seed;
+  std::optional<std::filesystem::path> seed_manifest;
   bool simulate;
   std::optional<std::string> simulator;
   std::optional<std::filesystem::path> summary_path;
@@ -119,11 +124,7 @@ struct Options {
 };
 
 absl::Status CheckOrCreateWritableDirectory(const std::filesystem::path& path) {
-  if (!std::filesystem::exists(path) &&
-      !std::filesystem::create_directory(path)) {
-    return absl::InvalidArgumentError(
-        absl::StrCat(path.string(), " could not be created"));
-  }
+  XLS_RETURN_IF_ERROR(RecursivelyCreateDir(path));
   if (!std::filesystem::is_directory(path)) {
     return absl::InvalidArgumentError(
         absl::StrCat(path.string(), " is not a directory"));
@@ -183,6 +184,26 @@ absl::Status RealMain(const Options& options) {
   sample_options.set_use_system_verilog(options.use_system_verilog);
   sample_options.set_with_valid_holdoff(options.with_valid_holdoff);
 
+  if (options.seed_manifest.has_value()) {
+    if (options.generate_proc) {
+      return absl::InvalidArgumentError(
+          "seed_manifest replay is only supported for function samples.");
+    }
+    std::optional<std::filesystem::path> summary_file;
+    if (options.summary_path.has_value()) {
+      summary_file = *options.summary_path / "source_seed_replay.binarypb";
+    }
+    XLS_ASSIGN_OR_RETURN(
+        SemanticSumSourceReplayStats replay_stats,
+        ReplaySemanticSumSourceSeeds(*options.seed_manifest, sample_options,
+                                     options.seed, options.save_temps_path,
+                                     summary_file));
+    LOG(INFO) << "Replayed " << replay_stats.passing_seed_count
+              << " passing semantic-sum source seeds and verified "
+              << replay_stats.failing_seed_count
+              << " failing semantic-sum source seeds.";
+  }
+
   return ParallelGenerateAndRunSamples(
       worker_count, ast_generator_options, sample_options, options.seed,
       /*top_run_dir=*/options.save_temps_path,
@@ -224,6 +245,7 @@ int main(int argc, char** argv) {
       .sample_count = absl::GetFlag(FLAGS_sample_count),
       .save_temps_path = absl::GetFlag(FLAGS_save_temps_path),
       .seed = absl::GetFlag(FLAGS_seed),
+      .seed_manifest = absl::GetFlag(FLAGS_seed_manifest),
       .simulate = absl::GetFlag(FLAGS_simulate),
       .simulator = absl::GetFlag(FLAGS_simulator),
       .summary_path = absl::GetFlag(FLAGS_summary_path),
