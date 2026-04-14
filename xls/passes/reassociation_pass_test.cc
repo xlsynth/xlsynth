@@ -1468,6 +1468,21 @@ top fn __sample__main_0_next(__state: bits[29] id=1) -> bits[29] {
   EXPECT_THAT(Run(p.get()), IsOkAndHolds(false));
 }
 
+// Reduced from source-fuzzer crasher
+// source_48h_reassoc_fix_20260414/source/crashers/714a7b61.
+// `sub(x, x)` cancels to an empty additive element set; before the fix,
+// reassociating the outer negation dereferences that empty set.
+TEST_F(ReassociationPassTest, DISABLED_NegateCancellingSubDoesNotCrash) {
+  auto p = CreatePackage();
+  FunctionBuilder fb(TestName(), p.get());
+  BValue x = fb.Param("x", p->GetBitsType(23));
+  fb.Negate(fb.Subtract(x, x));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, fb.Build());
+  ScopedVerifyEquivalence sve(f, kProverTimeout);
+  ASSERT_THAT(Run(p.get()), IsOkAndHolds(true));
+  EXPECT_THAT(f->return_value(), m::Literal(UBits(0, 23)));
+}
+
 // Found by DSLX fuzzer 03/31/2026 (https://github.com/google/xls/issues/4023)
 //
 // Modified to be a bit clearer.

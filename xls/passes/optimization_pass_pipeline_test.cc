@@ -191,6 +191,27 @@ TEST_F(OptimizationPipelineTest, DoubleNeg) {
   EXPECT_THAT(f->return_value(), m::Param());
 }
 
+// Reproduces the source-fuzzer crasher minimized from a 34-bit miscompare to
+// the smallest width where the optimizer can still lose the sign bit.
+// Today the input bits[5]:0x4 optimizes from bits[5]:0x1c to bits[5]:0xc.
+TEST_F(OptimizationPipelineTest, DISABLED_NegatedUmodCtzKeepsWideSign) {
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, ParseFunction(R"(
+     fn negated_umod_ctz(x: bits[5]) -> bits[5] {
+        one_hot.1: bits[6] = one_hot(x, lsb_prio=true)
+        ctz: bits[3] = encode(one_hot.1)
+        wide_ctz: bits[5] = zero_ext(ctz, new_bit_count=5)
+        modulus: bits[5] = literal(value=20)
+        reduced: bits[5] = umod(wide_ctz, modulus)
+        doubled: bits[5] = add(reduced, reduced)
+        ret negated: bits[5] = neg(doubled)
+     }
+  )",
+                                                       p.get()));
+  ScopedVerifyEquivalence sve(f, kProverTimeout);
+  ASSERT_THAT(Run(p.get()), IsOkAndHolds(true));
+}
+
 TEST_F(OptimizationPipelineTest, AssociateAdd) {
   TestAssociativeWithConstants("add", Op::kAdd, 7 + 12);
 }
