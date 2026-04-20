@@ -15,6 +15,7 @@
 #include "xls/interpreter/tracing_observer.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -27,6 +28,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/substitute.h"
 #include "absl/types/span.h"
+#include "riegeli/base/maker.h"
 #include "riegeli/bytes/fd_reader.h"
 #include "riegeli/bytes/fd_writer.h"
 #include "riegeli/bytes/string_reader.h"
@@ -42,6 +44,7 @@
 #include "xls/interpreter/evaluator_options.h"
 #include "xls/interpreter/function_interpreter.h"
 #include "xls/interpreter/interpreter_proc_runtime.h"
+#include "xls/interpreter/proc_runtime.h"
 #include "xls/interpreter/trace.pb.h"
 #include "xls/interpreter/trace_recorder.h"
 #include "xls/ir/bits.h"
@@ -121,7 +124,8 @@ TEST_P(TracingObserverTest, SimpleFunction) {
   XLS_ASSERT_OK_AND_ASSIGN(Function * f, fb.BuildWithReturnValue(add));
 
   std::string trace_buffer;
-  riegeli::RecordWriter writer{riegeli::StringWriter(&trace_buffer)};
+  riegeli::RecordWriter writer(
+      riegeli::Maker<riegeli::StringWriter>(&trace_buffer));
   TraceRecorder recorder(writer);
   TracingObserver observer(recorder);
 
@@ -130,7 +134,8 @@ TEST_P(TracingObserverTest, SimpleFunction) {
           .status());
 
   ASSERT_TRUE(writer.Close());
-  riegeli::RecordReader reader{riegeli::StringReader(trace_buffer)};
+  riegeli::RecordReader reader(
+      riegeli::Maker<riegeli::StringReader>(trace_buffer));
   std::vector<TracePacketProto> packets;
   TracePacketProto packet_reader;
   while (reader.ReadRecord(packet_reader)) {
@@ -196,7 +201,8 @@ TEST_P(TracingObserverTest, ProcTick) {
   XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<ProcRuntime> runtime,
                            CreateProcRuntime(p.get()));
   std::string trace_buffer;
-  riegeli::RecordWriter writer{riegeli::StringWriter(&trace_buffer)};
+  riegeli::RecordWriter writer(
+      riegeli::Maker<riegeli::StringWriter>(&trace_buffer));
   TraceRecorder recorder(writer);
   TracingObserver observer(recorder);
 
@@ -205,7 +211,8 @@ TEST_P(TracingObserverTest, ProcTick) {
   XLS_ASSERT_OK(runtime->Tick());
 
   ASSERT_TRUE(writer.Close());
-  riegeli::RecordReader reader{riegeli::StringReader(trace_buffer)};
+  riegeli::RecordReader reader(
+      riegeli::Maker<riegeli::StringReader>(trace_buffer));
   std::vector<TracePacketProto> packets;
   TracePacketProto packet_reader;
   while (reader.ReadRecord(packet_reader)) {
@@ -235,7 +242,8 @@ TEST_P(TracingObserverTest, BlockCycle) {
   XLS_ASSERT_OK_AND_ASSIGN(Block * block, bb.Build());
 
   std::string trace_buffer;
-  riegeli::RecordWriter writer{riegeli::StringWriter(&trace_buffer)};
+  riegeli::RecordWriter writer(
+      riegeli::Maker<riegeli::StringWriter>(&trace_buffer));
   TraceRecorder recorder(writer);
   TracingObserver observer(recorder);
 
@@ -249,7 +257,8 @@ TEST_P(TracingObserverTest, BlockCycle) {
   XLS_ASSERT_OK(continuation->RunOneCycle(inputs));
 
   ASSERT_TRUE(writer.Close());
-  riegeli::RecordReader reader{riegeli::StringReader(trace_buffer)};
+  riegeli::RecordReader reader(
+      riegeli::Maker<riegeli::StringReader>(trace_buffer));
   std::vector<TracePacketProto> packets;
   TracePacketProto packet_reader;
   while (reader.ReadRecord(packet_reader)) {
@@ -286,8 +295,9 @@ TEST_P(TracingObserverTest, ScopedTracingObserverWritesFile) {
 
   std::vector<Value> args = {Value(UBits(10, 32)), Value(UBits(32, 32))};
   {
-    auto writer = std::make_unique<riegeli::RecordWriter<riegeli::FdWriter<>>>(
-        riegeli::FdWriter(temp.path().string()));
+    std::unique_ptr<riegeli::RecordWriterBase> writer =
+        riegeli::Maker<riegeli::RecordWriter>(
+            riegeli::Maker<riegeli::FdWriter>(temp.path()));
     CHECK_OK(writer->status());
     ScopedTracingObserver observer(std::move(writer));
     if (GetParam()) {  // JIT
@@ -310,7 +320,7 @@ TEST_P(TracingObserverTest, ScopedTracingObserverWritesFile) {
     }
   }
 
-  riegeli::RecordReader reader{riegeli::FdReader(temp.path().string())};
+  riegeli::RecordReader reader(riegeli::Maker<riegeli::FdReader>(temp.path()));
   std::vector<TracePacketProto> packets;
   TracePacketProto packet_reader;
   while (reader.ReadRecord(packet_reader)) {

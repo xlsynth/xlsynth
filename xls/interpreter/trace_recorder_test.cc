@@ -17,9 +17,12 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "absl/container/flat_hash_map.h"
+#include "riegeli/base/maker.h"
 #include "riegeli/bytes/string_reader.h"
 #include "riegeli/bytes/string_writer.h"
 #include "riegeli/records/record_reader.h"
@@ -46,7 +49,8 @@ TEST_F(TraceRecorderTest, ProcRecording) {
   XLS_ASSERT_OK_AND_ASSIGN(Node * state_node, proc->GetNode("st"));
 
   std::string trace_buffer;
-  riegeli::RecordWriter writer{riegeli::StringWriter(&trace_buffer)};
+  riegeli::RecordWriter writer(
+      riegeli::Maker<riegeli::StringWriter>(&trace_buffer));
 
   TraceRecorder recorder(writer);
   XLS_ASSERT_OK(recorder.RecordNodeValue(state_node, Value(UBits(42, 32))));
@@ -55,7 +59,8 @@ TEST_F(TraceRecorderTest, ProcRecording) {
 
   ASSERT_TRUE(writer.Close());
 
-  riegeli::RecordReader reader{riegeli::StringReader(trace_buffer)};
+  riegeli::RecordReader reader(
+      riegeli::Maker<riegeli::StringReader>(trace_buffer));
 
   absl::flat_hash_map<std::string, int64_t> name_to_id;
   // Copy of trace.packets() with name mappings removed.
@@ -101,7 +106,8 @@ TEST_F(TraceRecorderTest, BlockRecording) {
   XLS_ASSERT_OK_AND_ASSIGN(Node * port_node, block->GetNode("in"));
 
   std::string trace_buffer;
-  riegeli::RecordWriter writer{riegeli::StringWriter(&trace_buffer)};
+  riegeli::RecordWriter writer(
+      riegeli::Maker<riegeli::StringWriter>(&trace_buffer));
   TraceRecorder recorder(writer);
   XLS_ASSERT_OK(recorder.RecordNodeValue(port_node, Value(UBits(42, 32))));
   recorder.Tick();
@@ -109,7 +115,8 @@ TEST_F(TraceRecorderTest, BlockRecording) {
 
   ASSERT_TRUE(writer.Close());
 
-  riegeli::RecordReader reader{riegeli::StringReader(trace_buffer)};
+  riegeli::RecordReader reader(
+      riegeli::Maker<riegeli::StringReader>(trace_buffer));
   absl::flat_hash_map<std::string, int64_t> name_to_id;
   std::vector<NodeTraceProto> node_values;
   TracePacketProto packet;
