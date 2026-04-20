@@ -9656,9 +9656,23 @@ fn f(input: u32) -> u32 { input }
 )"));
   ASSERT_THAT(result.tm.warnings.warnings().size(), 1);
   EXPECT_EQ(result.tm.warnings.warnings()[0].kind,
-            WarningKind::kKeywordParameterName);
+            WarningKind::kVerilogKeywordName);
   EXPECT_EQ(result.tm.warnings.warnings()[0].message,
             "Parameter name `input` is a Verilog/SystemVerilog keyword; "
+            "(System)Verilog code generation may fail");
+}
+
+TEST(TypecheckV2Test, SystemVerilogKeywordStructMemberNameGivesWarning) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+struct S {
+  input: u32,
+}
+)"));
+  ASSERT_THAT(result.tm.warnings.warnings().size(), 1);
+  EXPECT_EQ(result.tm.warnings.warnings()[0].kind,
+            WarningKind::kVerilogKeywordName);
+  EXPECT_EQ(result.tm.warnings.warnings()[0].message,
+            "Struct member name `input` is a Verilog/SystemVerilog keyword; "
             "(System)Verilog code generation may fail");
 }
 
