@@ -926,13 +926,21 @@ absl::Status IrTranslator::HandleArraySlice(ArraySlice* array_slice) {
   Z3_ast start_ast = GetValue(array_slice->start());
   ArrayType* input_type = array_slice->array()->GetType()->AsArrayOrDie();
   ArrayType result_type(array_slice->width(), input_type->element_type());
-  Z3_ast formatted_start_ast =
-      GetAsFormattedArrayIndex(ctx_, start_ast, input_type);
-
+  int64_t min_offset_bits = Bits::MinBitCountUnsigned(array_slice->width());
+  // Make sure we don't overflow.
+  int64_t offset_width =
+      1 + std::max<int64_t>(
+              min_offset_bits,
+              Z3_get_bv_sort_size(ctx_, Z3_get_sort(ctx_, start_ast)));
+  Z3_sort index_sort = Z3_mk_bv_sort(ctx_, offset_width);
+  Z3_ast start_ext = Z3_mk_zero_ext(
+      ctx_,
+      offset_width - Z3_get_bv_sort_size(ctx_, Z3_get_sort(ctx_, start_ast)),
+      start_ast);
   std::vector<Z3_ast> elements;
   for (uint64_t i = 0; i < array_slice->width(); ++i) {
-    Z3_ast i_ast = GetAsFormattedArrayIndex(ctx_, i, input_type);
-    Z3_ast index_ast = Z3_mk_bvadd(ctx_, i_ast, formatted_start_ast);
+    Z3_ast i_ast = Z3_mk_int64(ctx_, i, index_sort);
+    Z3_ast index_ast = Z3_mk_bvadd(ctx_, start_ext, i_ast);
     elements.push_back(GetArrayElement(input_type, array_ast, index_ast));
   }
 
