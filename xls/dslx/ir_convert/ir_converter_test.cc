@@ -3023,6 +3023,117 @@ proc A {
   ExpectIr(converted);
 }
 
+TEST_F(IrConverterTest, TopProcDefWithNoSpawns) {
+  constexpr std::string_view program = R"(
+#![feature(explicit_state_access)]
+
+proc Main {
+  c_in: chan<u32> in,
+  c_out: chan<u32> out,
+  i: u32,
+}
+
+impl Main {
+  fn new(c_in: chan<u32> in, c_out: chan<u32> out) -> Self {
+    Main { c_in: c_in, c_out: c_out, i: 1 }
+  }
+
+  fn next(self) {
+    let i_val = read(self.i);
+    let (tok, j) = recv(join(), self.c_in);
+    let tok = send(tok, self.c_out, i_val + j);
+    write(self.i, i_val + j);
+  }
+}
+)";
+
+  auto import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string converted,
+      ConvertOneFunctionForTest(program, "Main", import_data));
+  ExpectIr(converted);
+}
+
+TEST_F(IrConverterTest, TopProcDefWithNoConstructorFails) {
+  constexpr std::string_view program = R"(
+#![feature(explicit_state_access)]
+
+proc Main {
+  c_in: chan<u32> in,
+  c_out: chan<u32> out,
+  i: u32,
+}
+
+impl Main {
+  fn next(self) {
+    let i_val = read(self.i);
+    let (tok, j) = recv(join(), self.c_in);
+    let tok = send(tok, self.c_out, i_val + j);
+    write(self.i, i_val + j);
+  }
+}
+)";
+
+  auto import_data = CreateImportDataForTest();
+  EXPECT_THAT(ConvertOneFunctionForTest(program, "Main", import_data).status(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Proc 'Main' does not have a constructor")));
+}
+
+TEST_F(IrConverterTest, TopProcDefWithNonConstructorNewFails) {
+  constexpr std::string_view program = R"(
+#![feature(explicit_state_access)]
+
+proc Main {
+  c_in: chan<u32> in,
+  c_out: chan<u32> out,
+  i: u32,
+}
+
+impl Main {
+  fn new(c_in: chan<u32> in, c_out: chan<u32> out) {
+    let x = Main { c_in: c_in, c_out: c_out, i: 1 };
+  }
+
+  fn next(self) {
+    let i_val = read(self.i);
+    let (tok, j) = recv(join(), self.c_in);
+    let tok = send(tok, self.c_out, i_val + j);
+    write(self.i, i_val + j);
+  }
+}
+)";
+
+  auto import_data = CreateImportDataForTest();
+  EXPECT_THAT(ConvertOneFunctionForTest(program, "Main", import_data).status(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Proc 'Main' does not have a constructor")));
+}
+
+TEST_F(IrConverterTest, TopProcDefWithNoNextFails) {
+  constexpr std::string_view program = R"(
+#![feature(explicit_state_access)]
+
+proc Main {
+  c_in: chan<u32> in,
+  c_out: chan<u32> out,
+  i: u32,
+}
+
+impl Main {
+  fn new(c_in: chan<u32> in, c_out: chan<u32> out) -> Self {
+    Main { c_in: c_in, c_out: c_out, i: 1 }
+  }
+}
+)";
+
+  auto import_data = CreateImportDataForTest();
+  EXPECT_THAT(
+      ConvertOneFunctionForTest(program, "Main", import_data).status(),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("A proc with no 'next' function cannot be top.")));
+}
+
 TEST_F(IrConverterTest, SendIfRecvIf) {
   constexpr std::string_view program = R"(proc producer {
   c: chan<u32> out;
