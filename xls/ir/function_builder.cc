@@ -36,6 +36,7 @@
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/common/symbolized_stacktrace.h"
+#include "xls/data_structures/leaf_type_tree.h"
 #include "xls/ir/block.h"
 #include "xls/ir/channel.h"
 #include "xls/ir/channel_ops.h"
@@ -44,6 +45,7 @@
 #include "xls/ir/function.h"
 #include "xls/ir/function_base.h"
 #include "xls/ir/lsb_or_msb.h"
+#include "xls/ir/node_util.h"
 #include "xls/ir/nodes.h"
 #include "xls/ir/op.h"
 #include "xls/ir/package.h"
@@ -1208,6 +1210,21 @@ BValue BuilderBase::Next(BValue state_read, BValue value,
       /*predicate=*/pred.has_value() ? std::make_optional(pred->node())
                                      : std::nullopt,
       /*label=*/label, name);
+}
+
+LeafTypeTree<BValue> BuilderBase::MakeLeafTypeTree(BValue v) {
+  if (!v.valid() || ErrorPending()) {
+    return LeafTypeTree<BValue>(v.GetType(), BValue());
+  }
+  auto res = ToTreeOfNodes(v.node());
+  if (!res.ok()) {
+    SetError(absl::StrFormat("Failed to convert value %s to LeafTypeTree",
+                             v.ToString()),
+             v.loc());
+    return LeafTypeTree<BValue>(v.GetType(), BValue());
+  }
+  return leaf_type_tree::Map<BValue, Node*>(
+      res->AsView(), [&](Node* n) -> BValue { return BValue(n, this); });
 }
 
 FunctionBuilder::FunctionBuilder(std::string_view name, Package* package,

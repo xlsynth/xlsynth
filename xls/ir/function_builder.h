@@ -36,6 +36,7 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xls/common/status/ret_check.h"
+#include "xls/data_structures/leaf_type_tree.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/block.h"
 #include "xls/ir/channel.h"
@@ -694,6 +695,9 @@ class BuilderBase {
               std::optional<BValue> pred = std::nullopt,
               std::optional<std::string> label = std::nullopt,
               const SourceInfo& loc = SourceInfo(), std::string_view name = "");
+
+  // Converts a BValue to a LeafTypeTree of BValues.
+  LeafTypeTree<BValue> MakeLeafTypeTree(BValue v);
 
   Package* package() const;
 
