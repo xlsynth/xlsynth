@@ -846,8 +846,8 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
     // use of proc-level parametrics. Unlike with impl-style member functions,
     // we don't have a target struct context for the proc.
     if (!function->IsInProc()) {
-      XLS_RETURN_IF_ERROR(GenerateTypeInfo(caller_or_target_struct_context,
-                                           invocation->callee()));
+      XLS_RETURN_IF_ERROR(
+          GenerateTypeInfo(caller_context, invocation->callee()));
     }
 
     for (int i = 0; i < parametric_free_function_type->param_types().size();
@@ -855,18 +855,13 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       const TypeAnnotation* formal_type =
           parametric_free_function_type->param_types()[i];
       const Expr* actual_param = actual_args[i];
-      const bool is_self_param =
-          i == 0 && function_and_target_object.target_object.has_value();
       XLS_RETURN_IF_ERROR(
           table_.AddTypeAnnotationToVariableForParametricContext(
               caller_context, *table_.GetTypeVariable(actual_param),
               formal_type));
       TypeSystemTrace arg_trace =
           tracer_->TraceConvertActualArgument(actual_param);
-      XLS_RETURN_IF_ERROR(ConvertSubtree(
-          actual_param, caller,
-          is_self_param ? function_and_target_object.target_struct_context
-                        : caller_context));
+      XLS_RETURN_IF_ERROR(ConvertSubtree(actual_param, caller, caller_context));
     }
 
     // Convert the actual parametric function in the context of this invocation,
@@ -1190,11 +1185,11 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
           ref.def->owner(), absl::StrCat("struct_", ref.def->identifier()),
           struct_base_ti);
     };
-    XLS_ASSIGN_OR_RETURN(
-        InferenceTable::StructContextResult lookup_result,
-        table_.GetOrCreateParametricStructContext(
-            ref.def, node, parametric_env,
-            CreateStructOrProcAnnotation(module_, ref), type_info_factory));
+    XLS_ASSIGN_OR_RETURN(InferenceTable::StructContextResult lookup_result,
+                         table_.GetOrCreateParametricStructContext(
+                             ref.def, node, parametric_env,
+                             CreateStructOrProcAnnotation(module_, ref),
+                             parent_context, type_info_factory));
     const ParametricContext* struct_context = lookup_result.context;
     if (!lookup_result.created_new) {
       return struct_context;

@@ -172,6 +172,68 @@ const_assert!(D == 4);
 )"));
 }
 
+TEST(TypecheckV2GenericsTest,
+     ResolveAnnotationFromSeparateImplInvocationWithOtherStruct) {
+  EXPECT_THAT(
+      R"(
+#![feature(generics)]
+
+struct S2<T: type> {
+  val: T,
+}
+
+impl S2<T> {
+  fn call<U: type>(self, other: S2<U>) -> U {
+    other.val
+  }
+}
+
+fn structs<N: u32>() -> s32[N+1] {
+  let my_val = map(0..N, |i| i as s32);
+  let plus_one = map(0..N+1, |i| (i + 1) as s32);
+  S2{val: my_val}.call(S2{val: plus_one})
+}
+
+const RES = structs<4>();
+const_assert!(RES == [s32:1, 2, 3, 4, 5]);
+)",
+      TypecheckSucceeds(HasNodeWithType("RES", "sN[32][5]")));
+}
+
+TEST(TypecheckV2GenericsTest, ResolveAnnotationFromSeparateImplInvocation) {
+  EXPECT_THAT(
+      R"(
+#![feature(generics)]
+
+fn is_odd(i: u32) -> bool {
+  i % 2 == 1
+}
+
+struct S2<odd_map_type: type> {
+  odd_map: odd_map_type,
+}
+
+impl S2 {
+  fn call(self, i: u32) -> u32 {
+    if self.odd_map[i] {
+      i + 2
+    } else {
+      i
+    }
+  }
+}
+
+fn add_two<N: u32>() -> u32 {
+  let odd_map = map(0..N, is_odd);
+  S2{odd_map: odd_map}.call(N - 1)
+}
+
+const RES = add_two<5>();
+const_assert!(RES == u32:4);
+)",
+      TypecheckSucceeds(HasNodeWithType("RES", "uN[32]")));
+}
+
 TEST(TypecheckV2GenericsTest, GenericConstantAccess) {
   EXPECT_THAT(
       R"(

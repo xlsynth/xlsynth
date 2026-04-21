@@ -467,6 +467,7 @@ class InferenceTableImpl : public InferenceTable {
   absl::StatusOr<StructContextResult> GetOrCreateParametricStructContext(
       const StructDefBase* struct_def, const AstNode* node,
       ParametricEnv parametric_env, const TypeAnnotation* self_type,
+      std::optional<const ParametricContext*> parent_context,
       absl::FunctionRef<absl::StatusOr<TypeInfo*>()> type_info_factory)
       override {
     std::optional<StructContextResult> cached_result =
@@ -478,7 +479,7 @@ class InferenceTableImpl : public InferenceTable {
     auto context = std::make_unique<ParametricContext>(
         parametric_contexts_.size(), node,
         ParametricStructDetails{struct_def, parametric_env}, type_info,
-        /*parent_context=*/std::nullopt, self_type);
+        parent_context, self_type);
     const ParametricContext* result = context.get();
     parametric_contexts_.push_back(std::move(context));
     auto& contexts = parametric_struct_contexts_[struct_def];
