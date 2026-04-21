@@ -61,6 +61,7 @@ class Function;
 class FunctionBase;
 class Node;
 class Proc;
+class StateElement;
 class Type;
 
 // Represents a value for use in the function-definition building process,
@@ -695,6 +696,10 @@ class BuilderBase {
               std::optional<BValue> pred = std::nullopt,
               std::optional<std::string> label = std::nullopt,
               const SourceInfo& loc = SourceInfo(), std::string_view name = "");
+  BValue Next(class StateElement* state_element, BValue value,
+              std::optional<BValue> pred = std::nullopt,
+              std::optional<std::string> label = std::nullopt,
+              const SourceInfo& loc = SourceInfo(), std::string_view name = "");
 
   // Converts a BValue to a LeafTypeTree of BValues.
   LeafTypeTree<BValue> MakeLeafTypeTree(BValue v);
@@ -912,6 +917,17 @@ class ProcBuilder : public BuilderBase {
     return StateElement(name, Value(initial_value),
                         /*read_predicate=*/std::nullopt, loc);
   }
+
+  // Adds a state element to the proc without creating a state read.
+  absl::StatusOr<class StateElement*> UnreadStateElement(
+      std::string_view name, const Value& initial_value,
+      const SourceInfo& loc = SourceInfo());
+
+  // Adds a state read node for an existing state element.
+  BValue StateRead(class StateElement* state_element,
+                   std::optional<BValue> predicate = std::nullopt,
+                   std::optional<std::string> label = std::nullopt,
+                   const SourceInfo& loc = SourceInfo());
 
   // Overriden Param method is explicitly disabled (returns an error). Use
   // StateElement method to add state elements.

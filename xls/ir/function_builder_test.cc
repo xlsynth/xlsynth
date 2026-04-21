@@ -504,6 +504,31 @@ TEST(FunctionBuilderTest, BuildTwiceFails) {
                                HasSubstr("multiple times")));
 }
 
+TEST(FunctionBuilderTest, UnreadStateElementAndStateRead) {
+  Package p("p");
+  ProcBuilder b("unread_state_test", &p);
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      StateElement * state_element,
+      b.UnreadStateElement("my_state", Value(UBits(42, 32))));
+
+  BValue cond = b.Literal(UBits(1, 1));
+  BValue not_cond = b.Not(cond);
+
+  BValue read0 = b.StateRead(state_element, cond);
+  BValue read1 = b.StateRead(state_element, not_cond, "labeled_read");
+
+  BValue selected = b.Select(cond, {read1, read0});
+
+  b.Next(state_element, selected);
+  XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, b.Build());
+
+  EXPECT_THAT(proc->StateElements(),
+              ElementsAre(m::StateElement("my_state", Value(UBits(42, 32)))));
+
+  EXPECT_EQ(proc->GetStateReadsByStateElement(state_element).size(), 2);
+}
+
 TEST(FunctionBuilderTest, SendAndReceive) {
   Package p("p");
   XLS_ASSERT_OK_AND_ASSIGN(

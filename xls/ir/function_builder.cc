@@ -1227,6 +1227,35 @@ LeafTypeTree<BValue> BuilderBase::MakeLeafTypeTree(BValue v) {
       res->AsView(), [&](Node* n) -> BValue { return BValue(n, this); });
 }
 
+BValue BuilderBase::Next(class StateElement* state_element, BValue value,
+                         std::optional<BValue> pred,
+                         std::optional<std::string> label,
+                         const SourceInfo& loc, std::string_view name) {
+  if (ErrorPending()) {
+    return BValue();
+  }
+  if (!value.GetType()->IsEqualTo(state_element->type())) {
+    return SetError(
+        absl::StrFormat(
+            "next value for state element '%s' must be of type %s; is: %s",
+            state_element->name(), state_element->type()->ToString(),
+            value.GetType()->ToString()),
+        loc);
+  }
+  if (pred.has_value() && (!pred->GetType()->IsBits() ||
+                           pred->GetType()->AsBitsOrDie()->bit_count() != 1)) {
+    return SetError(absl::StrFormat("Predicate operand of next must be of bits "
+                                    "type of width 1; is: %s",
+                                    pred->GetType()->ToString()),
+                    loc);
+  }
+  return AddNode<xls::Next>(
+      loc, /*state_element=*/state_element, /*value=*/value.node(),
+      /*predicate=*/pred.has_value() ? std::make_optional(pred->node())
+                                     : std::nullopt,
+      /*label=*/label, name);
+}
+
 FunctionBuilder::FunctionBuilder(std::string_view name, Package* package,
                                  bool should_verify)
     : BuilderBase(std::make_unique<Function>(std::string(name), package),
@@ -1504,6 +1533,34 @@ BValue ProcBuilder::StateElement(std::string_view name,
   return SetError(absl::StrFormat("Unable to create initial value due to %s",
                                   built.status().ToString()),
                   loc);
+}
+
+absl::StatusOr<class StateElement*> ProcBuilder::UnreadStateElement(
+    std::string_view name, const Value& initial_value, const SourceInfo& loc) {
+  if (ErrorPending()) {
+    return GetError();
+  }
+  return proc()->AppendUnreadStateElement(name, initial_value, loc);
+}
+
+BValue ProcBuilder::StateRead(class StateElement* state_element,
+                              std::optional<BValue> predicate,
+                              std::optional<std::string> label,
+                              const SourceInfo& loc) {
+  if (ErrorPending()) {
+    return BValue();
+  }
+  absl::StatusOr<xls::StateRead*> state_read = proc()->AddStateRead(
+      state_element,
+      predicate.has_value() ? std::make_optional(predicate->node())
+                            : std::nullopt,
+      label, loc);
+  if (!state_read.ok()) {
+    return SetError(absl::StrFormat("Unable to add state read: %s",
+                                    state_read.status().message()),
+                    loc);
+  }
+  return CreateBValue(*state_read, loc);
 }
 
 BValue ProcBuilder::Param(std::string_view name, Type* type,

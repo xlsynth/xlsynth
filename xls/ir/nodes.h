@@ -834,11 +834,14 @@ class Next final : public Node {
   absl::StatusOr<Node*> CloneInNewFunction(
       absl::Span<Node* const> new_operands,
       FunctionBase* new_function) const final;
+
   Node* state_read() const {
     CHECK(state_read_ != nullptr)
         << "state_read() called on a Next node with only StateElement set";
     return state_read_;
   }
+
+  bool has_state_read() const { return state_read_ != nullptr; }
 
   Node* value() const {
     if (state_read_ == nullptr) {
