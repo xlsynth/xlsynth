@@ -18,7 +18,6 @@
 #include <cstdint>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
@@ -36,6 +35,7 @@
 #include "xls/ir/lsb_or_msb.h"
 #include "xls/ir/nodes.h"
 #include "xls/ir/package.h"
+#include "xls/ir/source_location.h"
 #include "xls/ir/value.h"
 #include "xls/ir/value_flattening.h"
 #include "xls/ir/value_utils.h"
@@ -71,9 +71,21 @@ void GenIrNodesPass::HandleParam(const FuzzParamProto& param) {
       absl::StrFormat("p%d", state().context_list().GetListSize());
   // Retrieve the Type object from the FuzzTypeProto.
   Type* type = helpers_.ConvertTypeProtoToType(p_, param.type());
+  if (remaining_param_bits_.has_value() &&
+      *remaining_param_bits_ < type->GetFlatBitCount()) {
+    Bits value_bits = helpers_.ChangeBytesBitWidth(param.fallback_value_bytes(),
+                                                   type->GetFlatBitCount());
+    Value value = UnflattenBitsToValue(value_bits, type).value();
+    state().context_list().AppendElement(state().fb()->Literal(
+        value, SourceInfo(), absl::StrFormat("fallback_%s", name)));
+    return;
+  }
   // Append the param BValue to the combined context list and the context list
   // for its type.
   state().context_list().AppendElement(state().fb()->Param(name, type));
+  if (remaining_param_bits_.has_value()) {
+    *remaining_param_bits_ -= type->GetFlatBitCount();
+  }
 }
 
 void GenIrNodesPass::HandleShra(const FuzzShraProto& shra) {

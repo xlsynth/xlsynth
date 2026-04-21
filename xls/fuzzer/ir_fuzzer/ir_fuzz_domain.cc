@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/types/span.h"
 #include "xls/fuzzer/ir_fuzzer/fuzz_program.pb.h"
@@ -207,8 +209,9 @@ auto RestrictOps(auto&& domain, absl::Span<Op const> ops, bool allow_clz,
                     : std::move(define_function).WithFieldUnset("invoke");
   return invoke;
 }
-std::vector<Op> GetRestrictedSet(absl::Span<Op const> ops, bool only_bits) {
-  std::vector<Op> restricted_set;
+std::vector<Op> GetRestrictedSet(absl::Span<Op const> ops, bool only_bits,
+                                 absl::Span<Op const> excluded) {
+  std::vector<Op> restricted_set(excluded.begin(), excluded.end());
   restricted_set.reserve(kAllOps.size());
   absl::flat_hash_set<Op> kept(ops.begin(), ops.end());
   // Add always included ones.
@@ -239,8 +242,9 @@ std::vector<Op> GetRestrictedSet(absl::Span<Op const> ops, bool only_bits) {
 }
 
 absl::Status BuildIr(Package* package, std::string_view top_name,
-                     const FuzzProgramProto& fuzz_program) {
-  GenIrNodesPass pass(package, top_name, fuzz_program);
+                     const FuzzProgramProto& fuzz_program,
+                     std::optional<int64_t> param_bits) {
+  GenIrNodesPass pass(package, top_name, fuzz_program, param_bits);
   pass.GenIrNodes();
   return absl::OkStatus();
 }
@@ -250,23 +254,13 @@ absl::Status BuildIr(Package* package, std::string_view top_name,
 fuzztest::Domain<FuzzPackage> FuzzPackageDomainBuilder::Build() && {
   fuzztest::Domain<FuzzOpProto> op_domain = RestrictOps(
       fuzztest::Arbitrary<FuzzOpProto>().WithOneofAlwaysSet("fuzz_op"),
-      GetRestrictedSet(ops_, only_bits_), allow_clz_, allow_ctz_,
+      GetRestrictedSet(ops_, only_bits_, removed_ops_), allow_clz_, allow_ctz_,
       allow_define_function_, allow_invoke_);
   auto args = with_args_
                   ? static_cast<fuzztest::Domain<std::string>>(
                         fuzztest::Arbitrary<std::string>().WithMinSize(1000))
                   : fuzztest::Just<std::string>("");
-  return fuzztest::Map(
-      [](FuzzProgramProto fuzz_program) {
-        // Create the package.
-        std::unique_ptr<Package> p =
-            std::make_unique<VerifiedPackage>(kFuzzTestName);
-        CHECK_OK(BuildIr(p.get(), kFuzzTestName, fuzz_program))
-            << "Failed to build package from FuzzProgramProto: "
-            << fuzz_program.DebugString();
-        // Create the FuzzPackage object as the domain export.
-        return FuzzPackage(std::move(p), fuzz_program);
-      },
+  auto proto =
       fuzztest::Arbitrary<FuzzProgramProto>()
           .WithStringField("args_bytes", args)
           .WithEnumField("version",
@@ -274,7 +268,24 @@ fuzztest::Domain<FuzzPackage> FuzzPackageDomainBuilder::Build() && {
           .WithRepeatedProtobufField(
               "fuzz_ops",
               // Generate at least one FuzzOp.
-              fuzztest::VectorOf(op_domain).WithMinSize(min_op_count_)));
+              fuzztest::VectorOf(op_domain).WithMinSize(min_op_count_));
+  proto = (combine_list_method_.has_value())
+              ? std::move(proto).WithEnumField(
+                    "combine_list_method",
+                    fuzztest::Just<int>(*combine_list_method_))
+              : std::move(proto);
+  return fuzztest::Map(
+      [](FuzzProgramProto fuzz_program, std::optional<int64_t> param_bits) {
+        // Create the package.
+        std::unique_ptr<Package> p =
+            std::make_unique<VerifiedPackage>(kFuzzTestName);
+        CHECK_OK(BuildIr(p.get(), kFuzzTestName, fuzz_program, param_bits))
+            << "Failed to build package from FuzzProgramProto: "
+            << fuzz_program.DebugString();
+        // Create the FuzzPackage object as the domain export.
+        return FuzzPackage(std::move(p), fuzz_program);
+      },
+      std::move(proto), fuzztest::Just<std::optional<int64_t>>(param_bits_));
 }
 
 fuzztest::Domain<FuzzPackageWithArgs> PackageWithArgsDomainBuilder::Build() && {

@@ -17,14 +17,17 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "xls/common/fuzzing/fuzztest.h"
+#include "absl/log/check.h"
 #include "absl/types/span.h"
 #include "xls/fuzzer/ir_fuzzer/fuzz_program.pb.h"
 #include "xls/fuzzer/ir_fuzzer/ir_fuzz_test_library.h"
 #include "xls/ir/op.h"
 #include "xls/ir/package.h"
+#include "xls/ir/type.h"
 
 // Contains functions that return IR fuzz test domains.
 
@@ -76,16 +79,35 @@ class FuzzPackageDomainBuilder {
     allow_invoke_ = false;
     return std::move(*this);
   }
+  // Limits the total combined bit count of all params to less then this value.
+  FuzzPackageDomainBuilder WithParamBits(int64_t bits) && {
+    param_bits_ = bits;
+    return std::move(*this);
+  }
+  // Forces the combine list method to be the given value.
+  FuzzPackageDomainBuilder WithCombineListMethod(
+      std::optional<CombineListMethod> method) && {
+    combine_list_method_ = std::move(method);
+    return std::move(*this);
+  }
+  // Remove the given operations from the domain. overrides WithOperations.
+  FuzzPackageDomainBuilder WithoutOperations(absl::Span<Op const> ops) && {
+    removed_ops_.insert(removed_ops_.end(), ops.begin(), ops.end());
+    return std::move(*this);
+  }
 
  private:
   bool only_bits_ = false;
   absl::Span<Op const> ops_ = kAllOps;
+  std::vector<Op> removed_ops_;
   int64_t min_op_count_ = 1;
   bool with_args_ = true;
   bool allow_clz_ = true;
   bool allow_ctz_ = true;
   bool allow_define_function_ = true;
   bool allow_invoke_ = true;
+  std::optional<int64_t> param_bits_;
+  std::optional<CombineListMethod> combine_list_method_;
 };
 
 // Helper to build a package with args domain.
@@ -117,6 +139,20 @@ class PackageWithArgsDomainBuilder {
   }
   PackageWithArgsDomainBuilder NoCtz() && {
     return PackageWithArgsDomainBuilder(std::move(base_).NoCtz(),
+                                        arg_set_count_);
+  }
+  PackageWithArgsDomainBuilder WithParamBits(int64_t bits) && {
+    return PackageWithArgsDomainBuilder(std::move(base_).WithParamBits(bits),
+                                        arg_set_count_);
+  }
+  PackageWithArgsDomainBuilder WithCombineListMethod(
+      std::optional<CombineListMethod> method) && {
+    return PackageWithArgsDomainBuilder(
+        std::move(base_).WithCombineListMethod(std::move(method)),
+        arg_set_count_);
+  }
+  PackageWithArgsDomainBuilder WithoutOperations(absl::Span<Op const> ops) && {
+    return PackageWithArgsDomainBuilder(std::move(base_).WithoutOperations(ops),
                                         arg_set_count_);
   }
 
@@ -157,6 +193,17 @@ class PackageDomainBuilder {
   }
   PackageDomainBuilder NoInvoke() && {
     return PackageDomainBuilder(std::move(base_).NoInvoke());
+  }
+  PackageDomainBuilder WithParamBits(int64_t bits) && {
+    return PackageDomainBuilder(std::move(base_).WithParamBits(bits));
+  }
+  PackageDomainBuilder WithCombineListMethod(
+      std::optional<CombineListMethod> method) && {
+    return PackageDomainBuilder(
+        std::move(base_).WithCombineListMethod(std::move(method)));
+  }
+  PackageDomainBuilder WithoutOperations(absl::Span<Op const> ops) && {
+    return PackageDomainBuilder(std::move(base_).WithoutOperations(ops));
   }
 
  private:

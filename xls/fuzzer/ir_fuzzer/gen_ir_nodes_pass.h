@@ -42,10 +42,14 @@ namespace xls {
 class GenIrNodesPass : public IrFuzzVisitor {
  public:
   GenIrNodesPass(Package* p, std::string_view top_name,
-                 const FuzzProgramProto& fuzz_program)
-      : p_(p), fuzz_program_(fuzz_program), helpers_(fuzz_program.version()) {
-    function_states_.emplace_back(p, top_name, fuzz_program.version(),
-                                  fuzz_program.combine_list_method());
+                 const FuzzProgramProto& fuzz_program,
+                 std::optional<int64_t> param_bits = std::nullopt)
+      : p_(p),
+        fuzz_program_(fuzz_program),
+        helpers_(fuzz_program_.version()),
+        remaining_param_bits_(param_bits) {
+    function_states_.emplace_back(p, top_name, fuzz_program_.version(),
+                                  fuzz_program_.combine_list_method());
   }
 
   void GenIrNodes();
@@ -203,6 +207,7 @@ class GenIrNodesPass : public IrFuzzVisitor {
   absl::flat_hash_map<Function*, absl::flat_hash_set<Function*>>
       caller_to_callee_;
   std::vector<FunctionState> function_states_;
+  std::optional<int64_t> remaining_param_bits_ = std::nullopt;
 };
 
 }  // namespace xls

@@ -249,6 +249,9 @@ message FuzzOpProto {
 message FuzzParamProto {
   // Use of FuzzTypeProto to specify the type of the parameter.
   optional FuzzTypeProto type = 1;
+  // If we don't have enough param bits to create the param, use these bytes to
+  // fill in the param.
+  optional bytes fallback_value_bytes = 2;
 }
 
 message FuzzShraProto {
