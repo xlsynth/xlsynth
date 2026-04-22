@@ -249,6 +249,12 @@ TEST_F(ExplicitStateRuntimeTest, ExplicitStateAccessReadWithLabeledRead) {
                       "State element read after read in same activation.")));
 }
 
+TEST_F(ExplicitStateRuntimeTest,
+       ExplicitStateAccessMultipleBranchingLabeledReads) {
+  XLS_ASSERT_OK_AND_ASSIGN(auto interpreter, CreateRuntime(GetTestDataPath()));
+  EXPECT_THAT(interpreter->Tick(), absl_testing::IsOk());
+}
+
 TEST_F(ExplicitStateRuntimeTest, ExplicitStateAccessMultipleStates) {
   XLS_ASSERT_OK_AND_ASSIGN(auto interpreter, CreateRuntime(GetTestDataPath()));
   EXPECT_THAT(interpreter->Tick(), absl_testing::IsOk());
