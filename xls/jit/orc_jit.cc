@@ -32,6 +32,7 @@
 #include "llvm/include/llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"  // IWYU pragma: keep
 #include "llvm/include/llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/include/llvm/ExecutionEngine/Orc/Core.h"
+#include "llvm/include/llvm/ExecutionEngine/Orc/DylibManager.h"
 #include "llvm/include/llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/include/llvm/ExecutionEngine/Orc/ExecutorProcessControl.h"
 #include "llvm/include/llvm/ExecutionEngine/Orc/IRCompileLayer.h"
@@ -39,6 +40,7 @@
 #include "llvm/include/llvm/ExecutionEngine/Orc/InProcessMemoryAccess.h"
 #include "llvm/include/llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/include/llvm/ExecutionEngine/Orc/Layer.h"
+#include "llvm/include/llvm/ExecutionEngine/Orc/MemoryAccess.h"
 #include "llvm/include/llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h"
 #include "llvm/include/llvm/ExecutionEngine/Orc/Shared/ExecutorSymbolDef.h"
 #include "llvm/include/llvm/ExecutionEngine/Orc/SymbolStringPool.h"
@@ -70,16 +72,13 @@ namespace xls {
 namespace {
 // TODO: move to ExecutorProcessControl-based APIs.
 class UnsupportedExecutorProcessControl
-    : public llvm::orc::ExecutorProcessControl,
-      private llvm::orc::InProcessMemoryAccess {
+    : public llvm::orc::ExecutorProcessControl {
  public:
   UnsupportedExecutorProcessControl()
       : ExecutorProcessControl(
             std::make_shared<llvm::orc::SymbolStringPool>(),
-            std::make_unique<llvm::orc::InPlaceTaskDispatcher>()),
-        InProcessMemoryAccess(llvm::Triple("").isArch64Bit()) {
+            std::make_unique<llvm::orc::InPlaceTaskDispatcher>()) {
     this->TargetTriple = llvm::Triple("");
-    this->MemAccess = this;
   }
 
   llvm::Expected<int32_t> runAsMain(llvm::orc::ExecutorAddr MainFnAddr,
@@ -108,6 +107,12 @@ class UnsupportedExecutorProcessControl
   llvm::Expected<std::unique_ptr<llvm::orc::DylibManager>>
   createDefaultDylibMgr() override {
     llvm_unreachable("Unsupported");
+  }
+
+  llvm::Expected<std::unique_ptr<llvm::orc::MemoryAccess>>
+  createDefaultMemoryAccess() override {
+    return std::make_unique<llvm::orc::InProcessMemoryAccess>(
+        this->TargetTriple.isArch64Bit());
   }
 };
 }  // namespace
