@@ -104,6 +104,47 @@ bool xls_ir_analysis_get_intervals_for_node_id(
     const struct xls_ir_analysis* a, int64_t node_id, char** error_out,
     struct xls_interval_set** intervals_out);
 
+// Returns whether at most one bit can be true in the bits-typed node.
+//
+// Returns an error if `node_id` is not found, or if the node is not bits-typed.
+bool xls_ir_analysis_at_most_one_bit_true(const struct xls_ir_analysis* a,
+                                          int64_t node_id, char** error_out,
+                                          bool* result_out);
+
+// Returns whether at least one bit is known to be true in the bits-typed node.
+//
+// Returns an error if `node_id` is not found, or if the node is not bits-typed.
+bool xls_ir_analysis_at_least_one_bit_true(const struct xls_ir_analysis* a,
+                                           int64_t node_id, char** error_out,
+                                           bool* result_out);
+
+// Returns whether exactly one bit is known to be true in the bits-typed node.
+//
+// Returns an error if `node_id` is not found, or if the node is not bits-typed.
+bool xls_ir_analysis_exactly_one_bit_true(const struct xls_ir_analysis* a,
+                                          int64_t node_id, char** error_out,
+                                          bool* result_out);
+
+// Returns whether two bits are known to be unequal.
+//
+// Returns an error if either node id is not found, if either node is not
+// bits-typed, or if either bit index is out of range.
+bool xls_ir_analysis_known_not_equals(const struct xls_ir_analysis* a,
+                                      int64_t lhs_node_id,
+                                      int64_t lhs_bit_index,
+                                      int64_t rhs_node_id,
+                                      int64_t rhs_bit_index, char** error_out,
+                                      bool* result_out);
+
+// Returns whether the first bit implies the second.
+//
+// Returns an error if either node id is not found, if either node is not
+// bits-typed, or if either bit index is out of range.
+bool xls_ir_analysis_implies(const struct xls_ir_analysis* a,
+                             int64_t lhs_node_id, int64_t lhs_bit_index,
+                             int64_t rhs_node_id, int64_t rhs_bit_index,
+                             char** error_out, bool* result_out);
+
 // Interval set inspection APIs.
 int64_t xls_interval_set_get_interval_count(const struct xls_interval_set* s);
 
