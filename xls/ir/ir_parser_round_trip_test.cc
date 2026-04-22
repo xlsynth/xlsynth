@@ -483,6 +483,39 @@ void RoundtripIrFuzz(std::shared_ptr<Package> original) {
 }
 FUZZ_TEST(IrParserRoundTripTest, RoundtripIrFuzz).WithDomains(IrFuzzDomain());
 
+TEST(IrParserRoundTripTest, RoundtripIrFuzzRegression) {
+  RoundtripIrFuzz(
+      std::shared_ptr<Package>(Parser::ParsePackage(R"xls_ir(package FuzzTest
+
+top fn FuzzTest() -> bits[1] {
+  literal.4: bits[64] = literal(value=0, id=4)
+  literal.5: bits[64] = literal(value=0, id=5)
+  literal.1: bits[64] = literal(value=0, id=1)
+  shra.6: bits[64] = shra(literal.4, literal.5, id=6)
+  bit_slice.2: bits[1] = bit_slice(literal.1, start=0, width=1, id=2)
+  decode.7: bits[1000] = decode(shra.6, width=1000, id=7)
+  cover.3: () = cover(bit_slice.2, label="\"", id=3)
+  bit_slice_update.8: bits[64] = bit_slice_update(shra.6, decode.7, shra.6, id=8)
+  decode.9: bits[1000] = decode(decode.7, width=1000, id=9)
+  ret or_reduce.10: bits[1] = or_reduce(shra.6, id=10)
+}
+)xls_ir")
+                                   .value()));
+}
+
+TEST(IrParserRoundTripTest, RoundtripIrFuzzNullByteRegression) {
+  RoundtripIrFuzz(
+      std::shared_ptr<Package>(Parser::ParsePackage(R"xls_ir(package FuzzTest
+
+top fn FuzzTest() -> bits[1] {
+  literal.1: bits[1] = literal(value=0, id=1)
+  cover.3: () = cover(literal.1, label="\0", id=3)
+  ret identity.4: bits[1] = identity(literal.1, id=4)
+}
+)xls_ir")
+                                   .value()));
+}
+
 TEST(IrParserRoundTripTest, ParseCoverWithIllegalLabelRegression) {
   absl::StatusOr<std::unique_ptr<Package>> package =
       Parser::ParsePackage(R"xls_ir(package FuzzTest

@@ -185,6 +185,13 @@ class Tokenizer {
     Advance(quote.size());
     int64_t content_start = index();
     while (!EndOfString()) {
+      if (current() == '\\') {
+        Advance();
+        if (!EndOfString()) {
+          Advance();
+        }
+        continue;
+      }
       if (MatchSubstring(quote)) {
         std::string_view content = std::string_view(str_.data() + content_start,
                                                     index() - content_start);
