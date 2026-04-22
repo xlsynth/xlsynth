@@ -247,5 +247,40 @@ fn a(x: u32, y: u32) -> u32 { x + y }
                                       HasNodeWithType("y", "uN[32]")));
 }
 
+TEST(TypecheckV2Test, UnusedDefinition) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+fn f() {
+  let a = u32:1;
+}
+)"));
+  ASSERT_THAT(result.tm.warnings.warnings().size(), 1);
+  EXPECT_EQ(result.tm.warnings.warnings()[0].message,
+            "Definition of `a` (type `uN[32]`) is not used in function `f`");
+}
+
+TEST(TypecheckV2Test, AllowSomeUnusedDefInNameDefTree) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+fn f(A: (u32, u32)[5]) -> (u32, u32) {
+  for (i, (a, b)) in A {
+    (a, a)
+  } ((u32:0, u32:0))
+}
+)"));
+  EXPECT_EQ(result.tm.warnings.warnings().size(), 0);
+}
+
+TEST(TypecheckV2Test, NodeSpanInStatusPayload) {
+  EXPECT_THAT(R"(
+struct Foo {
+  a: u32
+}
+
+const C = u33:4;
+const F = Foo { a: C };
+)",
+              TypecheckFailsWithPayload(HasSizeMismatch("u32", "u33"),
+                                        HasSpan(8, 19, 8, 20)));
+}
+
 }  // namespace
 }  // namespace xls::dslx

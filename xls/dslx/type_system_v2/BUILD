@@ -558,13 +558,49 @@ cc_library(
     ],
 )
 
-cc_test(
+# INTENTIONALLY not a cc_test so you won't be tempted to test it.
+cc_library(
     name = "typecheck_module_v2_test",
     srcs = ["typecheck_module_v2_test.cc"],
-    shard_count = 4,
+)
+
+cc_test(
+    name = "typecheck_module_v2_array_tuple_test",
+    srcs = ["typecheck_module_v2_array_tuple_test.cc"],
     deps = [
         ":matchers",
-        ":type_system_test_utils",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx/type_system:typecheck_test_utils",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "typecheck_module_v2_struct_test",
+    srcs = ["typecheck_module_v2_struct_test.cc"],
+    deps = [
+        ":matchers",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx/type_system:typecheck_test_utils",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "typecheck_module_v2_function_test",
+    srcs = ["typecheck_module_v2_function_test.cc"],
+    deps = [
+        ":matchers",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
         "//xls/dslx:create_import_data",
@@ -574,7 +610,36 @@ cc_test(
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
-        "@com_google_absl//absl/strings",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "typecheck_module_v2_control_flow_test",
+    srcs = ["typecheck_module_v2_control_flow_test.cc"],
+    deps = [
+        ":matchers",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx/type_system:typecheck_test_utils",
+        "@com_google_absl//absl/status:status_matchers",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "typecheck_module_v2_proc_test",
+    srcs = ["typecheck_module_v2_proc_test.cc"],
+    deps = [
+        ":matchers",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx/type_system:typecheck_test_utils",
+        "@com_google_absl//absl/status:status_matchers",
         "@googletest//:gtest",
     ],
 )
@@ -599,9 +664,13 @@ cc_test(
     srcs = ["typecheck_module_v2_generics_test.cc"],
     deps = [
         ":matchers",
+        ":type_system_test_utils",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
         "//xls/dslx/type_system:typecheck_test_utils",
+        "@com_google_absl//absl/status:status_matchers",
         "@googletest//:gtest",
     ],
 )
@@ -909,6 +978,68 @@ cc_test(
         "//xls/dslx/frontend:pos",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "typecheck_module_v2_enum_test",
+    srcs = ["typecheck_module_v2_enum_test.cc"],
+    deps = [
+        ":matchers",
+        ":type_system_test_utils",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx/type_system:typecheck_test_utils",
+        "@com_google_absl//absl/status:status_matchers",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "typecheck_module_v2_lambda_test",
+    srcs = ["typecheck_module_v2_lambda_test.cc"],
+    deps = [
+        ":matchers",
+        ":type_system_test_utils",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx/type_system:typecheck_test_utils",
+        "@com_google_absl//absl/status:status_matchers",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "typecheck_module_v2_declaration_test",
+    srcs = ["typecheck_module_v2_declaration_test.cc"],
+    deps = [
+        ":matchers",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx/type_system:typecheck_test_utils",
+        "@com_google_absl//absl/status:status_matchers",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "typecheck_module_v2_slice_test",
+    srcs = ["typecheck_module_v2_slice_test.cc"],
+    deps = [
+        ":matchers",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx/type_system:typecheck_test_utils",
+        "@com_google_absl//absl/status:status_matchers",
         "@googletest//:gtest",
     ],
 )

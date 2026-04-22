@@ -2023,5 +2023,134 @@ fn f(a: u32) { trace_fmt!("a is {}", g); }
                   HasSubstr("Cannot format an expression with function type")));
 }
 
+TEST(TypecheckV2Test, ZeroMacroNumber) {
+  EXPECT_THAT("const Y = zero!<u10>();",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[10]")));
+}
+
+TEST(TypecheckV2Test, ZeroMacroFromParametric) {
+  EXPECT_THAT(R"(
+fn f<N:u32>() -> uN[N] { zero!<uN[N]>() }
+const Y = f<10>();
+)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[10]")));
+}
+
+TEST(TypecheckV2Test, ZeroMacroExprError) {
+  EXPECT_THAT(R"(
+const X = u32:10;
+const Y = zero!<X>();
+)",
+              TypecheckFails(HasSubstr("in `zero!<X>()`")));
+}
+
+TEST(TypecheckV2Test, ZeroMacroImportedType) {
+  constexpr std::string_view kImported = R"(
+pub type X = u10;
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+const Y = zero!<imported::X>();
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
+  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
+              IsOkAndHolds(HasTypeInfo(HasNodeWithType("Y", "uN[10]"))));
+}
+
+TEST(TypecheckV2Test, AllOnesMacroNumber) {
+  EXPECT_THAT("const Y = all_ones!<u10>();",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[10]")));
+}
+
+TEST(TypecheckV2Test, AllOnesMacroFromParametric) {
+  EXPECT_THAT(R"(
+fn f<N:u32>() -> uN[N] { all_ones!<uN[N]>() }
+const Y = f<10>();
+)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[10]")));
+}
+
+TEST(TypecheckV2Test, AllOnesMacroExprError) {
+  EXPECT_THAT(R"(
+const X = u32:10;
+const Y = all_ones!<X>();
+)",
+              TypecheckFails(HasSubstr("in `all_ones!<X>()`")));
+}
+
+TEST(TypecheckV2Test, AllOnesMacroImportedType) {
+  constexpr std::string_view kImported = R"(
+pub type X = u10;
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+const Y = all_ones!<imported::X>();
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
+  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
+              IsOkAndHolds(HasTypeInfo(HasNodeWithType("Y", "uN[10]"))));
+}
+
+TEST(TypecheckV2Test, ConstAssertTrue) {
+  EXPECT_THAT(
+      R"(
+const_assert!(true);
+)",
+      TypecheckSucceeds(HasNodeWithType("true", "uN[1]")));
+}
+
+TEST(TypecheckV2Test, ConstAssertFalseFails) {
+  EXPECT_THAT(
+      R"(
+const_assert!(false);
+)",
+      TypecheckFails(HasSubstr("const_assert! failure: `false`")));
+}
+
+TEST(TypecheckV2Test, ConstAssertConstExpr) {
+  EXPECT_THAT(
+      R"(
+const_assert!(1 > 0);
+)",
+      TypecheckSucceeds(HasNodeWithType("1 > 0", "uN[1]")));
+}
+
+TEST(TypecheckV2Test, ConstAssertFalseConstExprFails) {
+  EXPECT_THAT(
+      R"(
+const_assert!(0 > 1);
+)",
+      TypecheckFails(HasSubstr("const_assert! failure: `0 > 1`")));
+}
+
+TEST(TypecheckV2Test, MinAttribute) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+const_assert!(u8::MIN == 0);
+const_assert!(u32::MIN == 0);
+const_assert!(s8::MIN == -128);
+const_assert!(s32::MIN == -2147483648);
+)"));
+}
+
+TEST(TypecheckV2Test, MaxAttribute) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+const_assert!(u8::MAX == 255);
+const_assert!(u32::MAX == 4294967295);
+const_assert!(s8::MAX == 127);
+const_assert!(s32::MAX == 2147483647);
+)"));
+}
+
+TEST(TypecheckV2Test, ZeroAttribute) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+const_assert!(u8::ZERO == 0);
+const_assert!(u32::ZERO == 0);
+const_assert!(s8::ZERO == 0);
+const_assert!(s32::ZERO == 0);
+)"));
+}
+
 }  // namespace
 }  // namespace xls::dslx
