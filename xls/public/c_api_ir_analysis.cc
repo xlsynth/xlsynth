@@ -72,6 +72,20 @@ absl::StatusOr<Node*> GetBitsNodeById(
   return node;
 }
 
+// The binary query C APIs expose QueryEngine's `TreeBitLocation` predicates
+// through node ids plus bit indices.
+absl::StatusOr<TreeBitLocation> GetTreeBitLocationByNodeIdAndBitIndex(
+    const absl::flat_hash_map<int64_t, Node*>& id_to_node, int64_t node_id,
+    int64_t bit_index) {
+  XLS_ASSIGN_OR_RETURN(Node * node, GetBitsNodeById(id_to_node, node_id));
+  if (bit_index < 0 || bit_index >= node->BitCountOrDie()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Node id %d has width %d; bit index %d is out of range.", node_id,
+        node->BitCountOrDie(), bit_index));
+  }
+  return TreeBitLocation(node, bit_index);
+}
+
 absl::StatusOr<std::pair<Bits, Bits>> KnownBitsMaskAndValue(
     const QueryEngine& qe, Node* node) {
   CHECK(node->GetType()->IsBits());
@@ -260,6 +274,128 @@ bool xls_ir_analysis_get_intervals_for_node_id(
       a->query_engine.GetIntervals(node.value()).Get({});
   intervals.Normalize();
   *intervals_out = new xls_interval_set(std::move(intervals));
+  *error_out = nullptr;
+  return true;
+}
+
+bool xls_ir_analysis_at_most_one_bit_true(const struct xls_ir_analysis* a,
+                                          int64_t node_id, char** error_out,
+                                          bool* result_out) {
+  CHECK_NE(a, nullptr);
+  CHECK_NE(error_out, nullptr);
+  CHECK_NE(result_out, nullptr);
+
+  absl::StatusOr<xls::Node*> node =
+      xls::GetBitsNodeById(a->id_to_node, node_id);
+  if (!node.ok()) {
+    *result_out = false;
+    *error_out = xls::ToOwnedCString(node.status().ToString());
+    return false;
+  }
+
+  *result_out = a->query_engine.AtMostOneBitTrue(node.value());
+  *error_out = nullptr;
+  return true;
+}
+
+bool xls_ir_analysis_at_least_one_bit_true(const struct xls_ir_analysis* a,
+                                           int64_t node_id, char** error_out,
+                                           bool* result_out) {
+  CHECK_NE(a, nullptr);
+  CHECK_NE(error_out, nullptr);
+  CHECK_NE(result_out, nullptr);
+
+  absl::StatusOr<xls::Node*> node =
+      xls::GetBitsNodeById(a->id_to_node, node_id);
+  if (!node.ok()) {
+    *result_out = false;
+    *error_out = xls::ToOwnedCString(node.status().ToString());
+    return false;
+  }
+
+  *result_out = a->query_engine.AtLeastOneBitTrue(node.value());
+  *error_out = nullptr;
+  return true;
+}
+
+bool xls_ir_analysis_exactly_one_bit_true(const struct xls_ir_analysis* a,
+                                          int64_t node_id, char** error_out,
+                                          bool* result_out) {
+  CHECK_NE(a, nullptr);
+  CHECK_NE(error_out, nullptr);
+  CHECK_NE(result_out, nullptr);
+
+  absl::StatusOr<xls::Node*> node =
+      xls::GetBitsNodeById(a->id_to_node, node_id);
+  if (!node.ok()) {
+    *result_out = false;
+    *error_out = xls::ToOwnedCString(node.status().ToString());
+    return false;
+  }
+
+  *result_out = a->query_engine.ExactlyOneBitTrue(node.value());
+  *error_out = nullptr;
+  return true;
+}
+
+bool xls_ir_analysis_known_not_equals(const struct xls_ir_analysis* a,
+                                      int64_t lhs_node_id,
+                                      int64_t lhs_bit_index,
+                                      int64_t rhs_node_id,
+                                      int64_t rhs_bit_index, char** error_out,
+                                      bool* result_out) {
+  CHECK_NE(a, nullptr);
+  CHECK_NE(error_out, nullptr);
+  CHECK_NE(result_out, nullptr);
+
+  absl::StatusOr<xls::TreeBitLocation> lhs =
+      xls::GetTreeBitLocationByNodeIdAndBitIndex(a->id_to_node, lhs_node_id,
+                                                 lhs_bit_index);
+  if (!lhs.ok()) {
+    *result_out = false;
+    *error_out = xls::ToOwnedCString(lhs.status().ToString());
+    return false;
+  }
+  absl::StatusOr<xls::TreeBitLocation> rhs =
+      xls::GetTreeBitLocationByNodeIdAndBitIndex(a->id_to_node, rhs_node_id,
+                                                 rhs_bit_index);
+  if (!rhs.ok()) {
+    *result_out = false;
+    *error_out = xls::ToOwnedCString(rhs.status().ToString());
+    return false;
+  }
+
+  *result_out = a->query_engine.KnownNotEquals(lhs.value(), rhs.value());
+  *error_out = nullptr;
+  return true;
+}
+
+bool xls_ir_analysis_implies(const struct xls_ir_analysis* a,
+                             int64_t lhs_node_id, int64_t lhs_bit_index,
+                             int64_t rhs_node_id, int64_t rhs_bit_index,
+                             char** error_out, bool* result_out) {
+  CHECK_NE(a, nullptr);
+  CHECK_NE(error_out, nullptr);
+  CHECK_NE(result_out, nullptr);
+
+  absl::StatusOr<xls::TreeBitLocation> lhs =
+      xls::GetTreeBitLocationByNodeIdAndBitIndex(a->id_to_node, lhs_node_id,
+                                                 lhs_bit_index);
+  if (!lhs.ok()) {
+    *result_out = false;
+    *error_out = xls::ToOwnedCString(lhs.status().ToString());
+    return false;
+  }
+  absl::StatusOr<xls::TreeBitLocation> rhs =
+      xls::GetTreeBitLocationByNodeIdAndBitIndex(a->id_to_node, rhs_node_id,
+                                                 rhs_bit_index);
+  if (!rhs.ok()) {
+    *result_out = false;
+    *error_out = xls::ToOwnedCString(rhs.status().ToString());
+    return false;
+  }
+
+  *result_out = a->query_engine.Implies(lhs.value(), rhs.value());
   *error_out = nullptr;
   return true;
 }

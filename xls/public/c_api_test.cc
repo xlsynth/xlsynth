@@ -4232,6 +4232,97 @@ top fn f(s: bits[1] id=1) -> bits[8] {
   EXPECT_EQ(std::string_view(hi1_s), "0x2 [8 bits]");
 }
 
+TEST(XlsCApiTest, IrAnalysisBddPredicateQueriesByNodeId) {
+  const std::string_view kIr = R"(package p
+top fn f(x: bits[8] id=1) -> bits[1] {
+  zero: bits[8] = literal(value=0, id=2)
+  one: bits[8] = literal(value=1, id=3)
+  two: bits[8] = literal(value=2, id=4)
+  x_eq_0: bits[1] = eq(x, zero, id=5)
+  x_ne_0: bits[1] = not(x_eq_0, id=6)
+  x_eq_1: bits[1] = eq(x, one, id=7)
+  x_lt_2: bits[1] = ult(x, two, id=8)
+  exclusive_eqs: bits[2] = concat(x_eq_0, x_eq_1, id=9)
+  exhaustive_pair: bits[2] = concat(x_eq_0, x_ne_0, id=10)
+  ret result: bits[1] = identity(x_lt_2, id=11)
+})";
+
+  char* error = nullptr;
+  xls_package* package = nullptr;
+  ASSERT_TRUE(xls_parse_ir_package(std::string(kIr).c_str(), "test.ir", &error,
+                                   &package))
+      << "xls_parse_ir_package error: " << error;
+  ASSERT_EQ(error, nullptr);
+  ASSERT_NE(package, nullptr);
+  absl::Cleanup free_package([&] { xls_package_free(package); });
+
+  xls_ir_analysis* analysis = nullptr;
+  ASSERT_TRUE(xls_ir_analysis_create_from_package(package, &error, &analysis))
+      << "xls_ir_analysis_create_from_package error: " << error;
+  ASSERT_EQ(error, nullptr);
+  ASSERT_NE(analysis, nullptr);
+  absl::Cleanup free_analysis([&] { xls_ir_analysis_free(analysis); });
+
+  bool result = false;
+  ASSERT_TRUE(xls_ir_analysis_at_most_one_bit_true(analysis, /*node_id=*/9,
+                                                   &error, &result))
+      << "xls_ir_analysis_at_most_one_bit_true error: " << error;
+  ASSERT_EQ(error, nullptr);
+  EXPECT_TRUE(result);
+
+  ASSERT_TRUE(xls_ir_analysis_at_least_one_bit_true(analysis, /*node_id=*/9,
+                                                    &error, &result))
+      << "xls_ir_analysis_at_least_one_bit_true error: " << error;
+  ASSERT_EQ(error, nullptr);
+  EXPECT_FALSE(result);
+
+  ASSERT_TRUE(xls_ir_analysis_at_least_one_bit_true(analysis, /*node_id=*/10,
+                                                    &error, &result))
+      << "xls_ir_analysis_at_least_one_bit_true error: " << error;
+  ASSERT_EQ(error, nullptr);
+  EXPECT_TRUE(result);
+
+  ASSERT_TRUE(xls_ir_analysis_exactly_one_bit_true(analysis, /*node_id=*/10,
+                                                   &error, &result))
+      << "xls_ir_analysis_exactly_one_bit_true error: " << error;
+  ASSERT_EQ(error, nullptr);
+  EXPECT_TRUE(result);
+
+  ASSERT_TRUE(xls_ir_analysis_exactly_one_bit_true(analysis, /*node_id=*/9,
+                                                   &error, &result))
+      << "xls_ir_analysis_exactly_one_bit_true error: " << error;
+  ASSERT_EQ(error, nullptr);
+  EXPECT_FALSE(result);
+
+  ASSERT_TRUE(xls_ir_analysis_known_not_equals(
+      analysis, /*lhs_node_id=*/10, /*lhs_bit_index=*/1, /*rhs_node_id=*/10,
+      /*rhs_bit_index=*/0, &error, &result))
+      << "xls_ir_analysis_known_not_equals error: " << error;
+  ASSERT_EQ(error, nullptr);
+  EXPECT_TRUE(result);
+
+  ASSERT_TRUE(xls_ir_analysis_known_not_equals(
+      analysis, /*lhs_node_id=*/9, /*lhs_bit_index=*/1, /*rhs_node_id=*/9,
+      /*rhs_bit_index=*/0, &error, &result))
+      << "xls_ir_analysis_known_not_equals error: " << error;
+  ASSERT_EQ(error, nullptr);
+  EXPECT_FALSE(result);
+
+  ASSERT_TRUE(xls_ir_analysis_implies(analysis, /*lhs_node_id=*/9,
+                                      /*lhs_bit_index=*/1, /*rhs_node_id=*/8,
+                                      /*rhs_bit_index=*/0, &error, &result))
+      << "xls_ir_analysis_implies error: " << error;
+  ASSERT_EQ(error, nullptr);
+  EXPECT_TRUE(result);
+
+  ASSERT_TRUE(xls_ir_analysis_implies(analysis, /*lhs_node_id=*/8,
+                                      /*lhs_bit_index=*/0, /*rhs_node_id=*/9,
+                                      /*rhs_bit_index=*/1, &error, &result))
+      << "xls_ir_analysis_implies error: " << error;
+  ASSERT_EQ(error, nullptr);
+  EXPECT_FALSE(result);
+}
+
 TEST(XlsCApiTest, IrAnalysisOptionsEnableContextSensitiveRange) {
   const std::string_view kIr = R"(package p
 top fn f(x: bits[4] id=1) -> bits[4] {
