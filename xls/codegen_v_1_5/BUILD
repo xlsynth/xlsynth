@@ -870,9 +870,6 @@ cc_library(
     name = "state_to_register_io_lowering_pass",
     srcs = ["state_to_register_io_lowering_pass.cc"],
     hdrs = ["state_to_register_io_lowering_pass.h"],
-    data = glob([
-        "testdata/state_to_register_io_lowering_test*",
-    ]),
     deps = [
         ":block_conversion_pass",
         "//xls/common/status:ret_check",
@@ -901,6 +898,9 @@ cc_library(
 cc_test(
     name = "state_to_register_io_lowering_pass_test",
     srcs = ["state_to_register_io_lowering_pass_test.cc"],
+    data = glob([
+        "testdata/state_to_register_io_lowering_test*",
+    ]),
     deps = [
         ":pass_test_base",
         ":state_to_register_io_lowering_pass",
