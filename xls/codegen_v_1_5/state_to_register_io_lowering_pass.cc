@@ -229,18 +229,47 @@ absl::Status LowerStateElement(ScheduledBlock* block,
                                   *last_write, read_stage_index, read_stage));
   }
 
+  std::vector<Node*> all_write_conditions;
   std::vector<Node*> gates;
   std::vector<Node*> write_conditions;
   std::vector<Node*> values;
+  all_write_conditions.reserve(writes.size());
   gates.reserve(writes.size());
   write_conditions.reserve(writes.size());
   values.reserve(writes.size());
+
   for (Next* write : writes) {
     XLS_ASSIGN_OR_RETURN(int stage_index, block->GetStageIndex(write));
     Stage& stage = block->stages()[stage_index];
 
     Node* value = write->value();
     std::optional<Node*> predicate = write->predicate();
+
+    // If we have no full bit to update and this is just a self-assignment, we
+    // can skip this write entirely.
+    if (!reg_full && write->value() == reg_read_or_zero) {
+      continue;
+    }
+
+    // The write condition triggers exactly when the stage is outputting its
+    // results and the predicate is true.
+    //
+    // If we have a full bit to update, we compute the condition even if this is
+    // just a self-assignment.
+    std::vector<Node*> condition_operands{stage.outputs_valid(),
+                                          stage.outputs_ready()};
+    if (predicate.has_value()) {
+      condition_operands.push_back(*predicate);
+    }
+    XLS_ASSIGN_OR_RETURN(Node * condition,
+                         NaryAndIfNeeded(block, condition_operands));
+    all_write_conditions.push_back(condition);
+
+    // For data updates, we skip all self-assignments, as they're just
+    // unchanged values.
+    if (write->value() == reg_read_or_zero) {
+      continue;
+    }
 
     // If needed, add identity nodes to signal that the value and predicate both
     // need to be available at the write's stage. (This enables pipeline
@@ -259,15 +288,11 @@ absl::Status LowerStateElement(ScheduledBlock* block,
 
     std::vector<Node*> gate_operands{stage.inputs_valid(),
                                      stage.active_inputs_valid()};
-    std::vector<Node*> condition_operands{stage.outputs_valid(),
-                                          stage.outputs_ready()};
     if (predicate.has_value()) {
       gate_operands.push_back(*predicate);
-      condition_operands.push_back(*predicate);
     }
     XLS_ASSIGN_OR_RETURN(Node * gate, NaryAndIfNeeded(block, gate_operands));
-    XLS_ASSIGN_OR_RETURN(Node * condition,
-                         NaryAndIfNeeded(block, condition_operands));
+
     gates.push_back(gate);
     write_conditions.push_back(condition);
     values.push_back(value);
@@ -319,9 +344,15 @@ absl::Status LowerStateElement(ScheduledBlock* block,
 
   // Write the full bit if needed.
   if (reg_full != nullptr) {
+    std::optional<Node*> full_write_enable = std::nullopt;
+    if (!all_write_conditions.empty()) {
+      XLS_ASSIGN_OR_RETURN(full_write_enable,
+                           NaryOrIfNeeded(block, all_write_conditions,
+                                          /*name=*/"", last_write_loc));
+    }
     XLS_RETURN_IF_ERROR(AddFullRegisterWrite(block, reg_full, read_predicate,
                                              read_stage, last_write_loc,
-                                             write_load_enable));
+                                             full_write_enable));
   }
 
   return absl::OkStatus();
