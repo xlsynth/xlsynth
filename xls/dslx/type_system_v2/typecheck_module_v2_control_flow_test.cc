@@ -1485,27 +1485,6 @@ fn tuple_match(input: u32, sign: bool) -> u32 {
           HasNodeWithType("tuple_match", "(uN[32], uN[1]) -> uN[32]")));
 }
 
-TEST(TypecheckV2Test, LambdaWithMultipleParamsMismatch) {
-  EXPECT_THAT(
-      R"(
-fn main() -> u32 {
-  (|i, j: bool| -> u32 {i * j})(u32:2, u32:4)
-}
-)",
-      TypecheckFails(HasSizeMismatch("bool", "u32")));
-}
-
-TEST(TypecheckV2Test, LambdaWithContextParamsTypeMismatch) {
-  EXPECT_THAT(
-      R"(
-fn main() {
-  const X = false;
-  let ARR = map(0..5, |i| -> u32 { X * i });
-}
-)",
-      TypecheckFails(HasSizeMismatch("uN[1]", "uN[32]")));
-}
-
 TEST(TypecheckV2Test, FuzzTestDomainRangeBitSizeMismatch) {
   EXPECT_THAT(
       R"(

@@ -95,6 +95,16 @@ const_assert!(main() == 8);
       TypecheckSucceeds(HasNodeWithType("main", "() -> uN[32]")));
 }
 
+TEST(TypecheckV2Test, LambdaWithMultipleParamsMismatch) {
+  EXPECT_THAT(
+      R"(
+fn main() -> u32 {
+  (|i, j: bool| -> u32 {i * j})(u32:2, u32:4)
+}
+)",
+      TypecheckFails(HasSizeMismatch("bool", "u32")));
+}
+
 TEST(TypecheckV2Test, LambdaWithContextCapture) {
   EXPECT_THAT(
       R"(
@@ -109,6 +119,17 @@ const_assert!(main() == 32);
 )",
       TypecheckSucceeds(AllOf(HasNodeWithType("ARR", "uN[32][5]"),
                               HasNodeWithType("X", "uN[32]"))));
+}
+
+TEST(TypecheckV2Test, LambdaWithContextParamsTypeMismatch) {
+  EXPECT_THAT(
+      R"(
+fn main() {
+  const X = false;
+  let ARR = map(0..5, |i| -> u32 { X * i });
+}
+)",
+      TypecheckFails(HasSizeMismatch("uN[1]", "uN[32]")));
 }
 
 TEST(TypecheckV2Test, LambdaGeneratedValueAsType) {
