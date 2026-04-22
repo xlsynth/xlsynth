@@ -1790,6 +1790,34 @@ TEST_F(ArithSimplificationPassTest, UDivBy1) {
   EXPECT_THAT(f->return_value(), m::Param("x"));
 }
 
+TEST_F(ArithSimplificationPassTest, UDivByShiftedValue) {
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, ParseFunction(R"(
+fn func(x: bits[8], k: bits[2]) -> bits[8] {
+  literal_3: bits[8] = literal(value=3)
+  shll_1: bits[8] = shll(literal_3, k)
+  ret udiv_1: bits[8] = udiv(x, shll_1)
+}
+)",
+                                                       p.get()));
+  ScopedVerifyEquivalence sve(f);
+  ASSERT_THAT(Run(p.get()), IsOkAndHolds(true));
+}
+
+TEST_F(ArithSimplificationPassTest, SDivByShiftedValue) {
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, ParseFunction(R"(
+fn func(x: bits[8], k: bits[2]) -> bits[8] {
+  literal_3: bits[8] = literal(value=3)
+  shll_1: bits[8] = shll(literal_3, k)
+  ret sdiv_1: bits[8] = sdiv(x, shll_1)
+}
+)",
+                                                       p.get()));
+  ScopedVerifyEquivalence sve(f);
+  ASSERT_THAT(Run(p.get()), IsOkAndHolds(true));
+}
+
 TEST_F(ArithSimplificationPassTest, MulBy1) {
   auto p = CreatePackage();
   XLS_ASSERT_OK_AND_ASSIGN(Function * f, ParseFunction(R"(
@@ -2488,6 +2516,65 @@ fn FuzzTest() -> bits[1] {
                                                        p.get()));
   ScopedVerifyEquivalence sve(f);
   ASSERT_THAT(Run(p.get()), IsOkAndHolds(true));
+}
+
+TEST_F(ArithSimplificationPassTest, SDivByZeroShift) {
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, ParseFunction(R"(
+fn FuzzTest() -> bits[8] {
+  literal.28: bits[8] = literal(value=0, id=28)
+  udiv.5: bits[8] = udiv(literal.28, literal.28, id=5)
+  shll.6: bits[8] = shll(udiv.5, udiv.5, id=6)
+  ret sdiv.8: bits[8] = sdiv(udiv.5, shll.6, id=8)
+}
+  )",
+                                                       p.get()));
+  ScopedRecordIr sri(p.get());
+  ScopedVerifyEquivalence sve(f);
+  ASSERT_THAT(Run(p.get()), IsOkAndHolds(true));
+}
+
+TEST_F(ArithSimplificationPassTest, UDivByZeroShift) {
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, ParseFunction(R"(
+fn FuzzTest(x: bits[8], y: bits[8]) -> bits[8] {
+  five: bits[8] = literal(value=5, id=1)
+  shll.2: bits[8] = shll(y, five, id=2)
+  ret udiv.3: bits[8] = udiv(x, shll.2, id=3)
+}
+  )",
+                                                       p.get()));
+  ScopedRecordIr sri(p.get());
+  ScopedVerifyEquivalence sve(f);
+  ASSERT_THAT(Run(p.get()), IsOkAndHolds(true));
+}
+
+TEST_F(ArithSimplificationPassTest, UDivByShiftedVariablePowerOfTwoWideShift) {
+  auto p = CreatePackage();
+  FunctionBuilder fb(TestName(), p.get());
+  BValue x = fb.Param("x", p->GetBitsType(8));
+  BValue k = fb.Param("k", p->GetBitsType(128));
+  BValue zero = fb.Literal(UBits(0, 8));
+  BValue divisor = fb.Shll(zero, k);
+  fb.UDiv(x, divisor);
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, fb.Build());
+
+  ScopedVerifyEquivalence sve(f);
+  ASSERT_THAT(Run(p.get()), IsOkAndHolds(true));
+}
+
+TEST_F(ArithSimplificationPassTest, SDivByShiftedVariablePowerOfTwoWideShift) {
+  auto p = CreatePackage();
+  FunctionBuilder fb(TestName(), p.get());
+  BValue x = fb.Param("x", p->GetBitsType(8));
+  BValue k = fb.Param("k", p->GetBitsType(128));
+  BValue zero = fb.Literal(UBits(0, 8));
+  BValue divisor = fb.Shll(zero, k);
+  fb.SDiv(x, divisor);
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, fb.Build());
+
+  ScopedVerifyEquivalence sve(f);
+  ASSERT_THAT(Run(p.get()), IsOkAndHolds(false));
 }
 
 void IrFuzzArithSimplification(FuzzPackageWithArgs fuzz_package_with_args) {
