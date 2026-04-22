@@ -247,8 +247,9 @@ class FunctionConverter {
   // Every AST node has an "IR value" that is either a function builder value
   // (BValue) or its IR-conversion-time-constant-decorated cousin (CValue), or
   // an inter-proc Channel.
-  using IrValue = std::variant<BValue, CValue, Channel*, ChannelInterface*,
-                               ChannelArray*, ProcDefInstance*>;
+  using IrValue =
+      std::variant<BValue, CValue, Channel*, ChannelInterface*, ChannelArray*,
+                   ProcDefInstance*, xls::StateElement*>;
 
   // The `IrValue` for an instance of an impl-based proc. This is basically a
   // tuple, except that the members are typically non-BValues (e.g. channels).

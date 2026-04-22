@@ -81,6 +81,7 @@
 #include "xls/ir/op.h"
 #include "xls/ir/package.h"
 #include "xls/ir/source_location.h"
+#include "xls/ir/state_element.h"
 #include "xls/ir/type.h"
 #include "xls/ir/value.h"
 #include "xls/ir/value_utils.h"
@@ -508,6 +509,10 @@ absl::Status FunctionConverter::Visit(const AstNode* node) {
           [](ProcDefInstance* instance) {
             return absl::StrCat("instance of ",
                                 instance->proc_def->identifier());
+          },
+          [](xls::StateElement* se) {
+            return absl::StrFormat("StateElement %s (%p)", se->name(),
+                                   static_cast<const void*>(se));
           },
       },
       value);
@@ -2676,8 +2681,10 @@ absl::Status FunctionConverter::HandleBuiltinRead(const Invocation* node) {
   BValue active = implicit_token_data_->create_control_predicate();
   std::string state_name = GetStateElementName(source);
   BValue state_read_called = state_read_called_by_state_name_[state_name];
-  if (options_.emit_assert) {
+
+  if (options_.emit_assert && state_read_called.node() != nullptr) {
     // Assert multiple reads don't happen in same activation.
+    // Only needed if we've already seen a read.
     implicit_token_data_->entry_token = function_builder_->Assert(
         implicit_token_data_->entry_token,
         function_builder_->Or(function_builder_->Not(active),
@@ -2687,15 +2694,43 @@ absl::Status FunctionConverter::HandleBuiltinRead(const Invocation* node) {
         implicit_token_data_->entry_token);
   }
   state_read_called_by_state_name_[state_name] =
-      function_builder_->Or(state_read_called, active);
+      state_read_called.node() == nullptr
+          ? active
+          : function_builder_->Or(state_read_called, active);
   XLS_RETURN_IF_ERROR(Visit(source));
-  XLS_ASSIGN_OR_RETURN(BValue state_read, Use(source));
-  if (node->label().has_value()) {
-    state_read.node()->As<StateRead>()->set_label(*node->label());
+  std::optional<IrValue> ir_val = GetNodeToIr(source);
+  XLS_RET_CHECK(ir_val.has_value());
+  xls::StateElement* state_element = nullptr;
+  BValue state_val;
+  xls::StateRead* state_read = nullptr;
+
+  if (std::holds_alternative<xls::StateElement*>(*ir_val)) {
+    state_element = std::get<xls::StateElement*>(*ir_val);
+  } else {
+    XLS_ASSIGN_OR_RETURN(state_val, Use(source));
+    Node* state_node = state_val.node();
+    XLS_RET_CHECK(state_node->Is<StateRead>());
+    state_read = state_node->As<StateRead>();
+    state_element = state_read->state_element();
   }
-  Def(node, [&](const SourceInfo& loc) {
-    return function_builder_->Identity(state_read, loc);
+
+  ProcBuilder* builder_ptr =
+      dynamic_cast<ProcBuilder*>(function_builder_.get());
+  XLS_RET_CHECK(builder_ptr != nullptr);
+
+  // Create a new StateRead node.
+  BValue new_read = builder_ptr->StateRead(state_element, active, node->label(),
+                                           ToSourceInfo(node->span()));
+  Def(node, [&](const SourceInfo& loc) -> BValue {
+    return function_builder_->Identity(new_read, loc);
   });
+
+  // Initialize or accumulate calling condition.
+  state_read_called_by_state_name_[source->ToString()] =
+      state_read_called.node() == nullptr
+          ? active
+          : function_builder_->Or(state_read_called, active);
+
   return absl::OkStatus();
 }
 
@@ -2712,29 +2747,50 @@ absl::Status FunctionConverter::HandleBuiltinWrite(const Invocation* node) {
   BValue state_write_called = state_write_called_by_state_name_[state_name];
   if (options_.emit_assert) {
     // Assert write doesn't happen before a read
+    BValue read_condition =
+        state_read_called.node() == nullptr
+            ? function_builder_->Not(active)
+            : function_builder_->Or(function_builder_->Not(active),
+                                    state_read_called);
+
     implicit_token_data_->entry_token = function_builder_->Assert(
-        implicit_token_data_->entry_token,
-        function_builder_->Or(function_builder_->Not(active),
-                              state_read_called),
+        implicit_token_data_->entry_token, read_condition,
         "State element written before read in same activation.");
 
     // Assert multiple writes don't happen in same activation
-    implicit_token_data_->entry_token = function_builder_->Assert(
-        implicit_token_data_->entry_token,
-        function_builder_->Or(function_builder_->Not(active),
-                              function_builder_->Not(state_write_called)),
-        "State element written after write in same activation.");
+    if (state_write_called.node() != nullptr) {
+      implicit_token_data_->entry_token = function_builder_->Assert(
+          implicit_token_data_->entry_token,
+          function_builder_->Or(function_builder_->Not(active),
+                                function_builder_->Not(state_write_called)),
+          "State element written after write in same activation.");
+    }
 
     implicit_token_data_->control_tokens.push_back(
         implicit_token_data_->entry_token);
   }
+
+  // Initialize or accumulate calling condition.
   state_write_called_by_state_name_[state_name] =
-      function_builder_->Or(state_write_called, active);
+      state_write_called.node() == nullptr
+          ? active
+          : function_builder_->Or(state_write_called, active);
+
   XLS_RETURN_IF_ERROR(Visit(target));
-  XLS_ASSIGN_OR_RETURN(BValue state_read, Use(target));
+  std::optional<IrValue> ir_val = GetNodeToIr(target);
+  XLS_RET_CHECK(ir_val.has_value());
+
   ProcBuilder* builder_ptr =
       dynamic_cast<ProcBuilder*>(function_builder_.get());
-  builder_ptr->Next(state_read, update_val, active, node->label());
+  XLS_RET_CHECK(builder_ptr != nullptr);
+
+  if (std::holds_alternative<xls::StateElement*>(*ir_val)) {
+    xls::StateElement* state_element = std::get<xls::StateElement*>(*ir_val);
+    builder_ptr->Next(state_element, update_val, active, node->label());
+  } else {
+    XLS_ASSIGN_OR_RETURN(BValue state_read, Use(target));
+    builder_ptr->Next(state_read, update_val, active, node->label());
+  }
   node_to_ir_[node] = function_builder_->Tuple({});
   return absl::OkStatus();
 }
@@ -2923,6 +2979,10 @@ absl::StatusOr<ChanRef> FunctionConverter::IrValueToChannelRef(
           [](ProcDefInstance* proc) -> absl::StatusOr<ChanRef> {
             return absl::InvalidArgumentError(
                 "Unexpected proc instance in IrValue.");
+          },
+          [](xls::StateElement* se) -> absl::StatusOr<ChanRef> {
+            return absl::InvalidArgumentError(
+                "Unexpected StateElement in IrValue.");
           },
       },
       ir_value);
@@ -3936,14 +3996,6 @@ absl::Status FunctionConverter::HandleProcNextFunction(
       builder->Literal(Value::Token(), SourceInfo(), token_name);
   const bool explicit_state_access =
       module_->attributes().contains(ModuleAttribute::kExplicitStateAccess);
-  if (explicit_state_access) {
-    for (Param* p : f->params()) {
-      state_read_called_by_state_name_[p->identifier()] =
-          builder->Literal(UBits(0, 1));
-      state_write_called_by_state_name_[p->identifier()] =
-          builder->Literal(UBits(0, 1));
-    }
-  }
   tokens_.push_back(implicit_token);
   auto* builder_ptr = builder.get();
   SetFunctionBuilder(std::move(builder));
@@ -3965,11 +4017,12 @@ absl::Status FunctionConverter::HandleProcNextFunction(
       state_name = absl::StrCat("__", p->identifier());
       Value init = f->params().size() > 1 ? initial_element.elements()[i]
                                           : initial_element;
-      BValue p_state = builder_ptr->StateElement(state_name, init);
+      XLS_ASSIGN_OR_RETURN(xls::StateElement * unread_state_element,
+                           builder_ptr->UnreadStateElement(state_name, init));
       state_name_proto->set_name(state_name);
       XLS_ASSIGN_OR_RETURN(auto type, ResolveTypeToIr(p->type_annotation()));
       *state_name_proto->mutable_type() = type->ToProto();
-      SetNodeToIr(f->params()[i]->name_def(), p_state);
+      SetNodeToIr(f->params()[i]->name_def(), unread_state_element);
     }
   } else {
     state = builder_ptr->StateElement(state_name, initial_element);
