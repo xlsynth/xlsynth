@@ -249,5 +249,31 @@ const_assert!(RES2 == [u32:0, 3, 2]);
                                       HasNodeWithType("RES2", "uN[32][3]"))));
 }
 
+TEST(TypecheckV2Test, LambdaUsesUnrollForOutput) {
+  EXPECT_THAT(
+      R"(
+const A = u32:1;
+fn foo() -> u32[5] {
+  let B = u32:2;
+  const X = unroll_for! (i, a) in u32:0..5 {
+    let C = B + i;
+    let D = A * a;
+    C + D
+  }(u32:0);
+
+  map(u32:0..5, |i| { i + X })
+}
+
+const FOO = foo();
+const_assert!(FOO == [u32:20, 21, 22, 23, 24]);
+
+)",
+      TypecheckSucceeds(AllOf(
+          HasNodeWithType("X", "uN[32]"), HasNodeWithType("FOO", "uN[32][5]"),
+          HasNodeWithType("lambda_capture_struct_at_fake.x:13:17-13:30<u32>",
+                          "typeof(lambda_capture_struct_at_fake.x:13:17-13:30 "
+                          "{ X: uN[32] })"))));
+}
+
 }  // namespace
 }  // namespace xls::dslx

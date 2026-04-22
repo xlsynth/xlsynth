@@ -269,7 +269,7 @@ class CollectNameRefs : public AstNodeVisitorWithDefault {
         (node->GetDefiner()->kind() != AstNodeKind::kFunction &&
          node->GetDefiner()->kind() != AstNodeKind::kImport)) {
       XLS_RETURN_IF_ERROR(AddNameRef(node));
-      if (node->GetDefiner() != nullptr) {
+      if (node->GetDefiner() != nullptr && in_type_annotation_) {
         XLS_RETURN_IF_ERROR(node->GetDefiner()->Accept(this));
         XLS_RETURN_IF_ERROR(DefaultHandler(node->GetDefiner()));
       }
