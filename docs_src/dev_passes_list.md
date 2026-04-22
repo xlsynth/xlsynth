@@ -38,6 +38,23 @@ accuracy.
 
 
 
+## decompose_dataflow - Decompose dataflow {#decompose_dataflow}
+
+
+Decompose and flatten all compound data type dataflow. This replaces all
+array and tuple operations with operations on base values except directly
+around externally visible values.
+
+This pass is meant for testing and measurement.
+
+
+[Header](http://github.com/google/xls/tree/main/xls/dev_tools/dev_passes/decompose_dataflow_pass.h)
+
+
+
+
+
+
 ## literalize_zero_bits - Literalize zero bits {#literalize_zero_bits}
 
 

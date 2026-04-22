@@ -717,6 +717,19 @@ class GenericSelect {
       absl::Span<Node* const> new_cases, std::optional<Node*> new_default_value,
       const SourceInfo& loc) const;
 
+  // Creates a new select-like node of the same kind as this GenericSelect with
+  // a new selector.
+  //
+  // `new_cases` must have the same size as `cases()`.
+  //
+  // - For `priority_sel`, `new_default_value` must be present.
+  // - For `one_hot_sel`, `new_default_value` must be empty.
+  absl::StatusOr<Node*> CloneSelectLike(
+      Node* new_selector, absl::Span<Node* const> new_cases,
+      std::optional<Node*> new_default_value,
+      std::optional<SourceInfo> new_loc = std::nullopt,
+      std::optional<std::string_view> new_name = std::nullopt) const;
+
   friend bool operator==(const GenericSelect& lhs, const GenericSelect& rhs) {
     return lhs.AsNode() == rhs.AsNode();
   }

@@ -1627,22 +1627,32 @@ absl::StatusOr<Node*> GenericSelect::MakePredicateForDefault() const {
 absl::StatusOr<Node*> GenericSelect::MakeSelectLikeWithNewArms(
     absl::Span<Node* const> new_cases, std::optional<Node*> new_default_value,
     const SourceInfo& loc) const {
+  return CloneSelectLike(selector(), new_cases, new_default_value, loc);
+}
+
+absl::StatusOr<Node*> GenericSelect::CloneSelectLike(
+    Node* new_selector, absl::Span<Node* const> new_cases,
+    std::optional<Node*> new_default_value, std::optional<SourceInfo> new_loc,
+    std::optional<std::string_view> new_name) const {
   XLS_RET_CHECK(valid());
   XLS_RET_CHECK_EQ(new_cases.size(), cases().size());
   FunctionBase* fb = AsNode()->function_base();
+  SourceInfo loc = new_loc.value_or(AsNode()->loc());
+  std::string_view name = new_name.value_or(AsNode()->GetNameView());
   return std::visit(
       Visitor{[&](Select* /*unused*/) -> absl::StatusOr<Node*> {
-                return fb->MakeNode<Select>(loc, selector(), new_cases,
-                                            new_default_value);
+                return fb->MakeNodeWithName<Select>(
+                    loc, new_selector, new_cases, new_default_value, name);
               },
               [&](PrioritySelect* /*unused*/) -> absl::StatusOr<Node*> {
                 XLS_RET_CHECK(new_default_value.has_value());
-                return fb->MakeNode<PrioritySelect>(loc, selector(), new_cases,
-                                                    *new_default_value);
+                return fb->MakeNodeWithName<PrioritySelect>(
+                    loc, new_selector, new_cases, *new_default_value, name);
               },
               [&](OneHotSelect* /*unused*/) -> absl::StatusOr<Node*> {
                 XLS_RET_CHECK(!new_default_value.has_value());
-                return fb->MakeNode<OneHotSelect>(loc, selector(), new_cases);
+                return fb->MakeNodeWithName<OneHotSelect>(loc, new_selector,
+                                                          new_cases, name);
               }},
       sel_);
 }
