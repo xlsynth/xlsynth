@@ -205,7 +205,7 @@ bool QueryEngine::Covers(Node* node, const Bits& value) const {
 
   std::optional<SharedLeafTypeTree<TernaryVector>> ternary = GetTernary(node);
   if (!ternary.has_value()) {
-    return false;
+    return true;
   }
   return ternary_ops::IsCompatible(ternary->Get({}), value);
 }
