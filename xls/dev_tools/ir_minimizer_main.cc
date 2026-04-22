@@ -838,6 +838,8 @@ absl::StatusOr<SimplificationResult> SimplifyNode(
   if (n->Is<Param>() && absl::GetFlag(FLAGS_can_remove_params) &&
       absl::GetFlag(FLAGS_can_extract_segments) &&
       n->function_base()->IsFunction() &&
+      // Don't mess with params for non-top-level functions.
+      GetNodesWhichCall(n->function_base()->AsFunctionOrDie()).empty() &&
       // We need some users to pull up to parameters.
       !n->users().empty() &&
       // Avoid adding too many new parameters. Limit set somewhat arbitrarily
