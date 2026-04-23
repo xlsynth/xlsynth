@@ -1057,12 +1057,14 @@ void XlsccTestBase::IOTest(std::string_view content, std::list<IOOpTest> inputs,
 
     const std::string arg_name = op.final_param_name;
 
-    if (op.op == xlscc::OpType::kRecv || op.op == xlscc::OpType::kRead) {
+    if (op.op == xlscc::OpType::kRecv || op.op == xlscc::OpType::kRead ||
+        op.op == xlscc::OpType::kExplicitReadResponse) {
       const IOOpTest test_op = inputs.front();
       inputs.pop_front();
 
       std::string expected_name = ch_name;
-      if (op.op == xlscc::OpType::kRead) {
+      if (op.op == xlscc::OpType::kRead ||
+          op.op == xlscc::OpType::kExplicitReadResponse) {
         expected_name += "__read";
       }
       CHECK_EQ(expected_name, test_op.name);
@@ -1114,19 +1116,22 @@ void XlsccTestBase::IOTest(std::string_view content, std::list<IOOpTest> inputs,
       ch_name = op.channel->unique_name;
     }
 
-    if (op.op == xlscc::OpType::kRecv || op.op == xlscc::OpType::kRead) {
+    if (op.op == xlscc::OpType::kRecv || op.op == xlscc::OpType::kRead ||
+        op.op == xlscc::OpType::kExplicitReadResponse) {
       const IOOpTest test_op = inputs.front();
       inputs.pop_front();
 
       std::string expected_name = ch_name;
-      if (op.op == xlscc::OpType::kRead) {
+      if (op.op == xlscc::OpType::kRead ||
+          op.op == xlscc::OpType::kExplicitReadResponse) {
         expected_name += "__read";
       }
       CHECK_EQ(expected_name, test_op.name);
 
       xls::Value cond_val;
 
-      if (op.op == xlscc::OpType::kRecv) {
+      if (op.op == xlscc::OpType::kRecv ||
+          op.op == xlscc::OpType::kExplicitReadResponse) {
         cond_val = io_return;
       } else {
         ASSERT_TRUE(io_return.IsTuple());
@@ -1150,13 +1155,16 @@ void XlsccTestBase::IOTest(std::string_view content, std::list<IOOpTest> inputs,
       EXPECT_EQ(val, test_op.condition ? 1 : 0);
 
     } else if (op.op == xlscc::OpType::kSend ||
-               op.op == xlscc::OpType::kWrite) {
+               op.op == xlscc::OpType::kWrite ||
+               op.op == xlscc::OpType::kExplicitReadRequest) {
       const IOOpTest test_op = outputs.front();
       outputs.pop_front();
 
       std::string expected_name = ch_name;
       if (op.op == xlscc::OpType::kWrite) {
         expected_name += "__write";
+      } else if (op.op == xlscc::OpType::kExplicitReadRequest) {
+        expected_name += "__read";
       }
 
       CHECK_EQ(expected_name, test_op.name);

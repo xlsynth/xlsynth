@@ -1337,6 +1337,11 @@ class __xls_memory {
   T read(long long int addr) const {
     return T();
   }
+  void read_request(long long int addr) const {
+  }
+  T read_response() const {
+    return T();
+  }
 };
 
 

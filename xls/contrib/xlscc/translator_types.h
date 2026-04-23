@@ -454,6 +454,8 @@ enum class OpType {
   kSendRecv,
   kRead,
   kWrite,
+  kExplicitReadRequest,
+  kExplicitReadResponse,
   kTrace,
   kLoopBegin,
   kLoopEndJump,

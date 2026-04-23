@@ -302,7 +302,7 @@ CEnumType::~CEnumType() = default;
 CEnumType::CEnumType(std::string name, int width, bool is_signed,
                      absl::btree_map<std::string, int64_t> variants_by_name)
     : CIntType(width, is_signed),
-      name_(std ::move(name)),
+      name_(std::move(name)),
       variants_by_name_(std::move(variants_by_name)) {
   for (const auto& variant : variants_by_name_) {
     if (!variants_by_value_.contains(variant.second)) {
@@ -1327,6 +1327,12 @@ std::string Debug_OpName(const IOOp& op) {
         break;
       case OpType::kWrite:
         op_type_name = "write";
+        break;
+      case OpType::kExplicitReadRequest:
+        op_type_name = "read_request";
+        break;
+      case OpType::kExplicitReadResponse:
+        op_type_name = "read_response";
         break;
       default:
         LOG(FATAL) << absl::StrFormat("Op type doesn't make sense here: %i",

@@ -156,7 +156,8 @@ absl::StatusOr<IOOp*> Translator::AddOpToChannel(
   std::shared_ptr<CType> channel_item_type;
 
   // Channel must be inserted first by AddOpToChannel
-  if (op.op == OpType::kRecv || op.op == OpType::kRead) {
+  if (op.op == OpType::kRecv || op.op == OpType::kRead ||
+      op.op == OpType::kExplicitReadResponse) {
     if (op.is_blocking) {
       channel_item_type = channel->item_type;
     } else {
@@ -576,6 +577,34 @@ absl::StatusOr<Translator::IOOpReturn> Translator::InterceptIOOp(
       op.op = OpType::kRecv;
       op.ret_value = channel_specific_condition;
       op.is_blocking = false;
+    } else if (op_name == "read_request") {
+      XLSCC_CHECK_GT(channel->memory_size, 0, loc);
+
+      CValue out_val = arg_vals.at(0);
+      XLSCC_CHECK(out_val.valid(), loc);
+
+      XLS_ASSIGN_OR_RETURN(
+          TrackedBValue out_val_converted,
+          GenTypeConvert(out_val,
+                         CChannelType::MemoryAddressType(channel->memory_size),
+                         loc));
+
+      std::vector<TrackedBValue> sp = {out_val_converted,
+                                       channel_specific_condition};
+      op.ret_value = context().fb->Tuple(
+          ToNativeBValues(sp), loc,
+          /*name=*/
+          absl::StrFormat("%s_op%i", channel->unique_name, channel->total_ops));
+      op.op = OpType::kExplicitReadRequest;
+      op.is_blocking = true;
+    } else if (op_name == "read_response") {
+      if (call->getNumArgs() != 0) {
+        return absl::UnimplementedError(
+            ErrorMessage(loc, "IO read_response() should have zero arguments"));
+      }
+      op.op = OpType::kExplicitReadResponse;
+      op.ret_value = channel_specific_condition;
+      op.is_blocking = true;
     } else if (op_name == "write") {
       if (channel->memory_size <= 0) {  // channel write()
         if (call->getNumArgs() != 1) {
@@ -586,7 +615,9 @@ absl::StatusOr<Translator::IOOpReturn> Translator::InterceptIOOp(
         CValue out_val = arg_vals.at(0);
         XLSCC_CHECK(out_val.valid(), loc);
 
-        std::vector<TrackedBValue> sp = {out_val.rvalue(),
+        TrackedBValue out_val_converted = out_val.rvalue();
+
+        std::vector<TrackedBValue> sp = {out_val_converted,
                                          channel_specific_condition};
         op.ret_value =
             context().fb->Tuple(ToNativeBValues(sp), loc,
@@ -825,11 +856,13 @@ absl::StatusOr<TrackedBValue> Translator::AddConditionToIOReturn(
       break;
     }
     case OpType::kRecv:
+    case OpType::kExplicitReadResponse:
       op_condition = retval;
       break;
     case OpType::kSend:
     case OpType::kWrite:
     case OpType::kRead:
+    case OpType::kExplicitReadRequest:
       op_condition = context().fb->TupleIndex(retval, /*idx=*/1, loc);
       break;
     case OpType::kTrace: {
@@ -880,11 +913,13 @@ absl::StatusOr<TrackedBValue> Translator::AddConditionToIOReturn(
       break;
     }
     case OpType::kRecv:
+    case OpType::kExplicitReadResponse:
       new_retval = op_condition;
       break;
     case OpType::kSend:
     case OpType::kWrite:
-    case OpType::kRead: {
+    case OpType::kRead:
+    case OpType::kExplicitReadRequest: {
       TrackedBValue data = context().fb->TupleIndex(retval, /*idx=*/0, loc);
       new_retval = context().fb->Tuple({data, op_condition}, loc);
       break;
@@ -931,7 +966,8 @@ absl::StatusOr<TrackedBValue> Translator::GetOpCondition(
 
   switch (op.op) {
     case OpType::kRecv:
-    case OpType::kActivationBarrier: {
+    case OpType::kActivationBarrier:
+    case OpType::kExplicitReadResponse: {
       io_condition = ret_val;
       break;
     }
@@ -957,7 +993,8 @@ absl::StatusOr<TrackedBValue> Translator::GetOpCondition(
     }
     case OpType::kRead:
     case OpType::kWrite:
-    case OpType::kSend: {
+    case OpType::kSend:
+    case OpType::kExplicitReadRequest: {
       io_condition =
           pb.TupleIndex(ret_val, 1, op.op_location,
                         absl::StrFormat("%s_pred", Debug_OpName(op)));
@@ -1037,6 +1074,33 @@ absl::StatusOr<GenerateIOReturn> Translator::GenerateIO(
                /*name=*/absl::StrFormat("%s_valid", Debug_OpName(op)))});
     }
     arg_io_val = in_val;
+  } else if (op.op == OpType::kExplicitReadResponse) {
+    xls::Channel* xls_channel = nullptr;
+
+    XLSCC_CHECK_NE(channel_bundle.read_response, nullptr, op_loc);
+    xls_channel = channel_bundle.read_response;
+
+    unused_xls_channel_ops_.remove({xls_channel, /*is_send=*/false});
+
+    CHECK_NE(xls_channel, nullptr);
+
+    TrackedBValue receive =
+        pb.ReceiveIf(xls_channel, before_token, condition, op_loc,
+                     /*name=*/Debug_OpName(op));
+
+    new_token =
+        pb.TupleIndex(receive, 0, op_loc,
+                      /*name=*/absl::StrFormat("%s_token", Debug_OpName(op)));
+
+    TrackedBValue in_val =
+        pb.TupleIndex(receive, 1, op_loc,
+                      /*name=*/absl::StrFormat("%s_value", Debug_OpName(op)));
+
+    // Received value is a tuple (data, ...)
+    in_val =
+        pb.TupleIndex(in_val, 0, op_loc,
+                      /*name=*/absl::StrFormat("%s_data", Debug_OpName(op)));
+    arg_io_val = in_val;
   } else if (op.op == OpType::kSend) {
     xls::Channel* xls_channel = channel_bundle.regular;
 
@@ -1049,6 +1113,27 @@ absl::StatusOr<GenerateIOReturn> Translator::GenerateIO(
 
     new_token = pb.SendIf(xls_channel, before_token, condition, val, op_loc,
                           /*name=*/absl::StrFormat("%s", Debug_OpName(op)));
+    XLSCC_CHECK(new_token.valid(), op_loc);
+  } else if (op.op == OpType::kExplicitReadRequest) {
+    xls::Channel* xls_channel = nullptr;
+
+    XLSCC_CHECK_NE(channel_bundle.read_request, nullptr, op_loc);
+    xls_channel = channel_bundle.read_request;
+
+    unused_xls_channel_ops_.remove({xls_channel, /*is_send=*/true});
+
+    CHECK_NE(xls_channel, nullptr);
+    TrackedBValue val =
+        pb.TupleIndex(ret_io_value, 0, op_loc,
+                      /*name=*/absl::StrFormat("%s_value", Debug_OpName(op)));
+
+    // TODO(google/xls#861): supported masked memory operations.
+    TrackedBValue mask = pb.Literal(xls::Value::Tuple({}), op_loc);
+    val = pb.Tuple({val, mask}, op_loc);
+
+    new_token = pb.SendIf(xls_channel, before_token, condition, val, op_loc,
+                          /*name=*/absl::StrFormat("%s", Debug_OpName(op)));
+    XLSCC_CHECK(new_token.valid(), op_loc);
   } else if (op.op == OpType::kRead) {
     CHECK_EQ(channel_bundle.regular, nullptr);
     CHECK_NE(channel_bundle.read_request, nullptr);
