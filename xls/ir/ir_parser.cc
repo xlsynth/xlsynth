@@ -3241,14 +3241,12 @@ static absl::Status VerifyAndSwapError(Package* package) {
 }
 
 /* static */ absl::StatusOr<Function*> Parser::ParseFunction(
-    std::string_view input_string, Package* package, bool verify_function_only,
-    absl::Span<const IrAttribute> outer_attributes) {
+    std::string_view input_string, Package* package,
+    bool verify_function_only) {
   XLS_ASSIGN_OR_RETURN(auto scanner, Scanner::Create(input_string));
   Parser p(std::move(scanner));
   XLS_ASSIGN_OR_RETURN(auto more_attributes,
                        p.MaybeParseOuterAttributes(package));
-  more_attributes.insert(more_attributes.end(), outer_attributes.begin(),
-                         outer_attributes.end());
   XLS_ASSIGN_OR_RETURN(Function * function,
                        p.ParseFunction(package, more_attributes));
   SetUnassignedNodeIds(package, function);
@@ -3264,11 +3262,10 @@ static absl::Status VerifyAndSwapError(Package* package) {
 }
 
 /* static */ absl::StatusOr<Proc*> Parser::ParseProc(
-    std::string_view input_string, Package* package,
-    absl::Span<const IrAttribute> outer_attributes) {
+    std::string_view input_string, Package* package) {
   XLS_ASSIGN_OR_RETURN(auto scanner, Scanner::Create(input_string));
   Parser p(std::move(scanner));
-  XLS_ASSIGN_OR_RETURN(Proc * proc, p.ParseProc(package, outer_attributes));
+  XLS_ASSIGN_OR_RETURN(Proc * proc, p.ParseProc(package));
   SetUnassignedNodeIds(package, proc);
 
   // Verify the whole package because the addition of the proc may break
@@ -3278,11 +3275,10 @@ static absl::Status VerifyAndSwapError(Package* package) {
 }
 
 /* static */ absl::StatusOr<Block*> Parser::ParseBlock(
-    std::string_view input_string, Package* package,
-    absl::Span<const IrAttribute> outer_attributes) {
+    std::string_view input_string, Package* package) {
   XLS_ASSIGN_OR_RETURN(auto scanner, Scanner::Create(input_string));
   Parser p(std::move(scanner));
-  XLS_ASSIGN_OR_RETURN(Block * block, p.ParseBlock(package, outer_attributes));
+  XLS_ASSIGN_OR_RETURN(Block * block, p.ParseBlock(package));
   SetUnassignedNodeIds(package, block);
 
   // Verify the whole package because the addition of the block may break
@@ -3292,11 +3288,10 @@ static absl::Status VerifyAndSwapError(Package* package) {
 }
 
 /* static */ absl::StatusOr<Channel*> Parser::ParseChannel(
-    std::string_view input_string, Package* package,
-    absl::Span<const IrAttribute> outer_attributes) {
+    std::string_view input_string, Package* package) {
   XLS_ASSIGN_OR_RETURN(auto scanner, Scanner::Create(input_string));
   Parser p(std::move(scanner));
-  return p.ParseChannel(package, outer_attributes);
+  return p.ParseChannel(package);
 }
 
 /* static */ absl::StatusOr<std::unique_ptr<Package>> Parser::ParsePackage(
@@ -3364,12 +3359,11 @@ absl::StatusOr<Stage> Parser::ParseScheduledStage(
 }
 
 /* static */ absl::StatusOr<ScheduledFunction*> Parser::ParseScheduledFunction(
-    std::string_view input_string, Package* package,
-    absl::Span<const IrAttribute> outer_attributes) {
+    std::string_view input_string, Package* package) {
   XLS_ASSIGN_OR_RETURN(auto scanner, Scanner::Create(input_string));
   Parser p(std::move(scanner));
   XLS_ASSIGN_OR_RETURN(ScheduledFunction * function,
-                       p.ParseScheduledFunction(package, outer_attributes));
+                       p.ParseScheduledFunction(package));
   SetUnassignedNodeIds(package, function);
 
   // Verify the whole package because the addition of the function may break
@@ -3379,12 +3373,10 @@ absl::StatusOr<Stage> Parser::ParseScheduledStage(
 }
 
 /* static */ absl::StatusOr<ScheduledProc*> Parser::ParseScheduledProc(
-    std::string_view input_string, Package* package,
-    absl::Span<const IrAttribute> outer_attributes) {
+    std::string_view input_string, Package* package) {
   XLS_ASSIGN_OR_RETURN(auto scanner, Scanner::Create(input_string));
   Parser p(std::move(scanner));
-  XLS_ASSIGN_OR_RETURN(ScheduledProc * proc,
-                       p.ParseScheduledProc(package, outer_attributes));
+  XLS_ASSIGN_OR_RETURN(ScheduledProc * proc, p.ParseScheduledProc(package));
   SetUnassignedNodeIds(package, proc);
 
   // Verify the whole package because the addition of the proc may break
@@ -3394,12 +3386,10 @@ absl::StatusOr<Stage> Parser::ParseScheduledStage(
 }
 
 /* static */ absl::StatusOr<ScheduledBlock*> Parser::ParseScheduledBlock(
-    std::string_view input_string, Package* package,
-    absl::Span<const IrAttribute> outer_attributes) {
+    std::string_view input_string, Package* package) {
   XLS_ASSIGN_OR_RETURN(auto scanner, Scanner::Create(input_string));
   Parser p(std::move(scanner));
-  XLS_ASSIGN_OR_RETURN(ScheduledBlock * block,
-                       p.ParseScheduledBlock(package, outer_attributes));
+  XLS_ASSIGN_OR_RETURN(ScheduledBlock * block, p.ParseScheduledBlock(package));
   SetUnassignedNodeIds(package, block);
 
   // Verify the whole package because the addition of the block may break

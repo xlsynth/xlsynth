@@ -102,23 +102,19 @@ class Parser {
   // TODO(meheff): 2022/2/9 Remove `verify_function_only` argument.
   static absl::StatusOr<Function*> ParseFunction(
       std::string_view input_string, Package* package,
-      bool verify_function_only = false,
-      absl::Span<const IrAttribute> outer_attributes = {});
+      bool verify_function_only = false);
 
   // Parse the input_string as a proc into the given package.
-  static absl::StatusOr<Proc*> ParseProc(
-      std::string_view input_string, Package* package,
-      absl::Span<const IrAttribute> outer_attributes = {});
+  static absl::StatusOr<Proc*> ParseProc(std::string_view input_string,
+                                         Package* package);
 
   // Parse the input_string as a block into the given package.
-  static absl::StatusOr<Block*> ParseBlock(
-      std::string_view input_string, Package* package,
-      absl::Span<const IrAttribute> outer_attributes = {});
+  static absl::StatusOr<Block*> ParseBlock(std::string_view input_string,
+                                           Package* package);
 
   // Parse the input_string as a channel in the given package.
-  static absl::StatusOr<Channel*> ParseChannel(
-      std::string_view input_string, Package* package,
-      absl::Span<const IrAttribute> outer_attributes = {});
+  static absl::StatusOr<Channel*> ParseChannel(std::string_view input_string,
+                                               Package* package);
 
   // Parse the input_string as a function type into the given package.
   static absl::StatusOr<FunctionType*> ParseFunctionType(
@@ -130,18 +126,15 @@ class Parser {
 
   // Parses a top-level scheduled function, including signature and body.
   static absl::StatusOr<ScheduledFunction*> ParseScheduledFunction(
-      std::string_view input_string, Package* package,
-      absl::Span<const IrAttribute> outer_attributes = {});
+      std::string_view input_string, Package* package);
 
   // Parses a top-level scheduled proc, including signature and body.
   static absl::StatusOr<ScheduledProc*> ParseScheduledProc(
-      std::string_view input_string, Package* package,
-      absl::Span<const IrAttribute> outer_attributes = {});
+      std::string_view input_string, Package* package);
 
   // Parses a top-level scheduled block, including signature and body.
   static absl::StatusOr<ScheduledBlock*> ParseScheduledBlock(
-      std::string_view input_string, Package* package,
-      absl::Span<const IrAttribute> outer_attributes = {});
+      std::string_view input_string, Package* package);
 
   // Parses the given input string as a package skipping verification. This
   // should only be used in tests when malformed IR is desired.
