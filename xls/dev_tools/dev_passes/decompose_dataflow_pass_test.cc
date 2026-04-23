@@ -282,6 +282,36 @@ TEST_F(DecomposeDataflowPassTest, CountedFor) {
                        m::ArrayIndex(m::Param("acc"), {m::Literal(1)})));
 }
 
+TEST_F(DecomposeDataflowPassTest, Eq) {
+  auto p = CreatePackage();
+  FunctionBuilder fb("f", p.get());
+  BValue x = fb.Param("x", p->GetArrayType(2, p->GetBitsType(32)));
+  BValue y = fb.Param("y", p->GetArrayType(2, p->GetBitsType(32)));
+  fb.Eq(x, y);
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, fb.Build());
+  ScopedVerifyEquivalence sve(f);
+  EXPECT_THAT(Run(p.get()), IsOkAndHolds(true));
+
+  EXPECT_THAT(f->return_value(),
+              m::And(m::Eq(m::ArrayIndex(), m::ArrayIndex()),
+                     m::Eq(m::ArrayIndex(), m::ArrayIndex())));
+}
+
+TEST_F(DecomposeDataflowPassTest, Ne) {
+  auto p = CreatePackage();
+  FunctionBuilder fb("f", p.get());
+  BValue x = fb.Param("x", p->GetArrayType(2, p->GetBitsType(32)));
+  BValue y = fb.Param("y", p->GetArrayType(2, p->GetBitsType(32)));
+  fb.Ne(x, y);
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, fb.Build());
+  ScopedVerifyEquivalence sve(f);
+  EXPECT_THAT(Run(p.get()), IsOkAndHolds(true));
+
+  EXPECT_THAT(f->return_value(),
+              m::Or(m::Ne(m::ArrayIndex(), m::ArrayIndex()),
+                    m::Ne(m::ArrayIndex(), m::ArrayIndex())));
+}
+
 TEST_F(DecomposeDataflowPassTest, ArrayIndexNarrowSelectorRegression) {
   auto p = CreatePackage();
   FunctionBuilder fb("f", p.get());

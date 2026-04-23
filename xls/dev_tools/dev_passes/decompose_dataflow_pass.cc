@@ -85,6 +85,52 @@ class DecomposeDataflowVisitor final : public DataflowVisitor<Node*> {
     return SetValue(node, std::move(tree));
   }
 
+  absl::Status HandleEq(CompareOp* eq) override {
+    if (IsSingleLeaf(eq->operand(0))) {
+      return DefaultHandler(eq);
+    }
+    auto lhs = GetValue(eq->operand(0));
+    auto rhs = GetValue(eq->operand(1));
+    changed_ = true;
+    XLS_ASSIGN_OR_RETURN(
+        LeafTypeTree<Node*> segments,
+        (leaf_type_tree::ZipStatus<Node*, Node*, Node*>(
+            lhs, rhs,
+            [&](Node* lhs_leaf, Node* rhs_leaf) -> absl::StatusOr<Node*> {
+              return eq->function_base()->MakeNodeWithName<CompareOp>(
+                  eq->loc(), lhs_leaf, rhs_leaf, Op::kEq,
+                  NodeNameFormat("%s_decomposed_piece", eq));
+            })));
+    XLS_ASSIGN_OR_RETURN(
+        Node * new_eq,
+        NaryAndIfNeeded(eq->function_base(), segments.elements(),
+                        NodeNameFormat("%s_decomposed", eq), eq->loc()));
+    return SetValue(eq, LeafTypeTree<Node*>(eq->GetType(), {new_eq}));
+  }
+
+  absl::Status HandleNe(CompareOp* ne) override {
+    if (IsSingleLeaf(ne->operand(0))) {
+      return DefaultHandler(ne);
+    }
+    auto lhs = GetValue(ne->operand(0));
+    auto rhs = GetValue(ne->operand(1));
+    changed_ = true;
+    XLS_ASSIGN_OR_RETURN(
+        LeafTypeTree<Node*> segments,
+        (leaf_type_tree::ZipStatus<Node*, Node*, Node*>(
+            lhs, rhs,
+            [&](Node* lhs_leaf, Node* rhs_leaf) -> absl::StatusOr<Node*> {
+              return ne->function_base()->MakeNodeWithName<CompareOp>(
+                  ne->loc(), lhs_leaf, rhs_leaf, Op::kNe,
+                  NodeNameFormat("%s_decomposed_piece", ne));
+            })));
+    XLS_ASSIGN_OR_RETURN(
+        Node * new_ne,
+        NaryOrIfNeeded(ne->function_base(), segments.elements(),
+                       NodeNameFormat("%s_decomposed", ne), ne->loc()));
+    return SetValue(ne, LeafTypeTree<Node*>(ne->GetType(), {new_ne}));
+  }
+
   absl::Status HandleOneHotSel(OneHotSelect* sel) override {
     // Normally OHS will go to default-handler if the control is not One hot but
     // we want to always go to the dataflow join. This is because the
