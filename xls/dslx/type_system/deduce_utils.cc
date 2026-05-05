@@ -84,7 +84,10 @@ class FormatMacroArgumentValidator : public TypeVisitor {
     return absl::OkStatus();
   }
   absl::Status HandleSum(const SumType& t) override {
-    return absl::OkStatus();
+    return TypeInferenceErrorStatus(
+        span_, &t,
+        ": Cannot format an expression with semantic sum type in Phase 1",
+        file_table_);
   }
   absl::Status HandleProc(const ProcType& t) override {
     return absl::OkStatus();
@@ -119,6 +122,35 @@ class FormatMacroArgumentValidator : public TypeVisitor {
   const FileTable& file_table_;
   const Span& span_;
 };
+
+bool TypeContainsSum(const Type& type) {
+  if (dynamic_cast<const SumType*>(&type) != nullptr) {
+    return true;
+  }
+  if (const auto* array_type = dynamic_cast<const ArrayType*>(&type);
+      array_type != nullptr) {
+    return TypeContainsSum(array_type->element_type());
+  }
+  if (const auto* tuple_type = dynamic_cast<const TupleType*>(&type);
+      tuple_type != nullptr) {
+    for (int64_t i = 0; i < tuple_type->size(); ++i) {
+      if (TypeContainsSum(tuple_type->GetMemberType(i))) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (const auto* struct_type = dynamic_cast<const StructType*>(&type);
+      struct_type != nullptr) {
+    for (int64_t i = 0; i < struct_type->size(); ++i) {
+      if (TypeContainsSum(struct_type->GetMemberType(i))) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return false;
+}
 
 }  // namespace
 
@@ -320,6 +352,12 @@ absl::Status ValidateNumber(const Number& number, const Type& type) {
 
 absl::Status ValidateFormatMacroArgument(const Type& type, const Span& span,
                                          const FileTable& file_table) {
+  if (TypeContainsSum(type)) {
+    return TypeInferenceErrorStatus(
+        span, &type,
+        ": Cannot format an expression with semantic sum type in Phase 1",
+        file_table);
+  }
   FormatMacroArgumentValidator validator(file_table, span);
   return type.Accept(validator);
 }

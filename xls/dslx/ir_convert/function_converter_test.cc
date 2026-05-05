@@ -1087,46 +1087,6 @@ fn f(x: Option, y: Option) -> () {
                   "value"));
 }
 
-TEST(FunctionConverterTest,
-     EmitsWellFormednessAssertForPhase1SemanticSumFormatMacro) {
-  constexpr std::string_view kProgram = R"(
-enum Option {
-  None,
-  Some(u32),
-}
-
-fn f(x: Option) {
-  trace_fmt!("x = {}", x);
-  ()
-}
-)";
-
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(kProgram, "test_module.x", "test_module",
-                        &import_data));
-
-  Function* f = tm.module->GetFunction("f").value();
-  ASSERT_NE(f, nullptr);
-  EXPECT_TRUE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
-
-  const ConvertOptions convert_options;
-  PackageConversionData package = MakeConversionData("test_module_package");
-  PackageData package_data{.conversion_info = &package};
-  FunctionConverter converter(package_data, tm.module, &import_data,
-                              convert_options, /*proc_data=*/nullptr,
-                              /*channel_scope=*/nullptr,
-                              /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
-
-  EXPECT_THAT(package.DumpIr(),
-              testing::HasSubstr(
-                  "Phase 1 semantic sum format macro received a non-semantic "
-                  "value"));
-}
-
 TEST(FunctionConverterTest, UsesAggregateEqForNonSumArrayPayloadSubtrees) {
   constexpr std::string_view kProgram = R"(
 enum Option {

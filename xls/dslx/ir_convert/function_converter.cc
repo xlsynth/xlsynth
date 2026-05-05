@@ -2983,11 +2983,6 @@ absl::Status FunctionConverter::HandleFormatMacro(const FormatMacro* node) {
   for (const Expr* arg : node->args()) {
     XLS_RETURN_IF_ERROR(Visit(arg));
     XLS_ASSIGN_OR_RETURN(BValue argval, Use(arg));
-    std::optional<Type*> arg_type = current_type_info_->GetItem(arg);
-    XLS_RET_CHECK(arg_type.has_value());
-    XLS_RETURN_IF_ERROR(AssertPhase1SemanticSumValueIsWellFormed(
-        *arg_type.value(), argval, ToSourceInfo(arg->span()), node->span(),
-        "format macro", "format"));
     args.push_back(argval);
   }
 

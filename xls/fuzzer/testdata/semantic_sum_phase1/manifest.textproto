@@ -43,14 +43,6 @@ seeds {
   sample_args: "(bits[1]:0x1, (bits[32]:0x7fffffff)); (bits[1]:0x1, (bits[32]:0x7fffffff))"
 }
 seeds {
-  seed_id: "source_semantic_sum_format_observer"
-  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
-  relative_path: "source/semantic_sum_format_observer.x"
-  review_artifact_path: "/Users/dank/.codex/review/xlsynth-dslx-sum-types-phase1-rue-20260410-192516/related-rue-10-20260411-001714/review.md"
-  expected_stage_or_failure_class: "observer_format"
-  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
-}
-seeds {
   seed_id: "source_or_pattern_binding_nonfinal"
   surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
   surfaces: SEMANTIC_SUM_SEED_SURFACE_NEGATIVE_MUTATION
