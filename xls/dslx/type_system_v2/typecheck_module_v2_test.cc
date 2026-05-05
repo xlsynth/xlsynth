@@ -4301,6 +4301,16 @@ const Y = zero!<Never>();
           HasSubstr("Sum type 'Never' does not have a known zero value.")));
 }
 
+TEST(TypecheckV2Test, ZeroMacroAnnotatedEmptySemanticSumFails) {
+  EXPECT_THAT(
+      R"(
+enum Never : u3 {}
+const Y = zero!<Never>();
+)",
+      TypecheckFails(
+          HasSubstr("Sum type 'Never' does not have a known zero value.")));
+}
+
 TEST(TypecheckV2Test, ZeroMacroParametricStruct) {
   EXPECT_THAT(
       R"(

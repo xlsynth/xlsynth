@@ -2591,6 +2591,14 @@ TEST_F(ParserTest, SumRemainsValidIdentifierOutsideTypeDeclarations) {
   EXPECT_TRUE(module->GetFunction("f").has_value());
 }
 
+TEST_F(ParserTest, EmptyEnumWithTagAnnotationIsSemanticSum) {
+  std::unique_ptr<Module> module = RoundTrip(R"(enum Never : u3 {})");
+  std::optional<ModuleMember*> maybe_member =
+      module->FindMemberWithName("Never");
+  ASSERT_TRUE(maybe_member.has_value());
+  EXPECT_TRUE(std::holds_alternative<SumDef*>(*maybe_member.value()));
+}
+
 TEST_F(ParserTest, PreserveEmptySemanticSumPayloadKinds) {
   std::unique_ptr<Module> module = RoundTrip(R"(enum Option {
     None,
