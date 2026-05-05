@@ -12,3 +12,61 @@ index 4e215..4a9dbe4 100644
      # The code has atrocious const hygiene. Produces mounds of warnings.
      deps = [
          ":vpi_user",
+diff --git dependency_support/com_icarus_iverilog/build-plugins.bzl dependency_support/com_icarus_iverilog/build-plugins.bzl
+index 06a5cd9..8618629 100644
+--- dependency_support/com_icarus_iverilog/build-plugins.bzl
++++ dependency_support/com_icarus_iverilog/build-plugins.bzl
+@@ -21,11 +21,18 @@ def vpi_binary(name, out, srcs, **kwargs):
+     All the extra arguments are passed directly to cc_binary.
+     """
+     cc_target = name + "_shared"
++    kwargs["linkopts"] = kwargs.get("linkopts", []) + select({
++        # VPI plugins are loaded into iverilog/vvp and intentionally reference
++        # host symbols that resolve when the module is dlopen'ed.
++        "@platforms//os:macos": ["-Wl,-undefined,dynamic_lookup"],
++        "//conditions:default": [],
++    })
++
+     cc_binary(
+         name = cc_target,
+         srcs = srcs,
+         linkshared = 1,
+         **kwargs
+     )
+
+     native.genrule(
+diff --git dependency_support/pseudo_configure.bzl dependency_support/pseudo_configure.bzl
+index c4a4ac7..73b7420 100644
+--- dependency_support/pseudo_configure.bzl
++++ dependency_support/pseudo_configure.bzl
+@@ -33,12 +33,12 @@ def pseudo_configure(name, out, src = None, defs = [], mappings = {}, additional
+     else:
+         cmd += "echo"
+     all_defs = ""
+     for def_ in defs:
+-        cmd += r"| sed 's/#\s*undef \b\(" + def_ + r"\)\b/#define \1 1/'"
++        cmd += r"| sed 's/#[[:space:]]*undef[[:space:]][[:space:]]*\(" + def_ + r"\)[[:space:]]*$$/#define \1 1/'"
+         all_defs += "#define " + def_ + " 1\\n"
+     for key, value in mappings.items():
+-        cmd += r"| sed 's/#\s*undef \b" + key + r"\b/#define " + str(key) + " " + str(value) + "/'"
+-        cmd += r"| sed 's/#\s*define \b\(" + key + r"\)\b 0/#define \1 " + str(value) + "/'"
++        cmd += r"| sed 's/#[[:space:]]*undef[[:space:]][[:space:]]*" + key + r"[[:space:]]*$$/#define " + str(key) + " " + str(value) + "/'"
++        cmd += r"| sed 's/#[[:space:]]*define[[:space:]][[:space:]]*\(" + key + r"\)[[:space:]][[:space:]]*0[[:space:]]*$$/#define \1 " + str(value) + "/'"
+         all_defs += "#define " + key + " " + value + "\\n"
+     cmd += r"| sed 's/\@DEFS\@/" + all_defs + "/'"
+     cmd += " >> $@"
+diff --git dependency_support/net_zlib/bundled.BUILD.bazel dependency_support/net_zlib/bundled.BUILD.bazel
+index b55f3ac..21b0785 100644
+--- dependency_support/net_zlib/bundled.BUILD.bazel
++++ dependency_support/net_zlib/bundled.BUILD.bazel
+@@ -69,6 +69,10 @@ cc_library(
+     copts = [
+         "-Wno-unused-variable",
+         "-Wno-implicit-function-declaration",
++        # Modern Apple clang predefines TARGET_OS_MAC for Darwin. zlib 1.2.11
++        # interprets that as the old classic-Mac path and rewrites fdopen.
++        # Keep the classic MACOS branch available without misdetecting Darwin.
++        "-UTARGET_OS_MAC",
+     ],
+     includes = ["zlib/include/"],
+     visibility = ["//visibility:public"],
