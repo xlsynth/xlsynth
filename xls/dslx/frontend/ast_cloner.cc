@@ -384,8 +384,11 @@ class AstCloner : public AstNodeVisitor {
 
     old_to_new_[n] = module(n)->Make<SumVariant>(
         n->span(), absl::down_cast<NameDef*>(old_to_new_.at(n->name_def())),
-        n->payload_kind(),
-        std::move(new_tuple_members), std::move(new_struct_members));
+        n->payload_kind(), std::move(new_tuple_members),
+        std::move(new_struct_members),
+        n->discriminant() == nullptr
+            ? nullptr
+            : absl::down_cast<Expr*>(old_to_new_.at(n->discriminant())));
     return absl::OkStatus();
   }
 
@@ -409,8 +412,13 @@ class AstCloner : public AstNodeVisitor {
     auto* new_name_def =
         absl::down_cast<NameDef*>(old_to_new_.at(n->name_def()));
     auto* new_sum_def = module(n)->Make<SumDef>(
-        n->span(), new_name_def, std::move(new_parametric_bindings),
-        std::move(new_variants), n->is_public());
+        n->span(), new_name_def,
+        std::move(new_parametric_bindings), std::move(new_variants),
+        n->is_public(),
+        n->tag_type_annotation() == nullptr
+            ? nullptr
+            : absl::down_cast<TypeAnnotation*>(
+                  old_to_new_.at(n->tag_type_annotation())));
     if (n->extern_type_name().has_value()) {
       new_sum_def->set_extern_type_name(*n->extern_type_name());
     }

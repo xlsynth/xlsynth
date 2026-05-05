@@ -3462,7 +3462,7 @@ fn main() {
 
 TEST_F(IrConverterTest, FormatMacroSemanticSumArg) {
   constexpr std::string_view program = R"(
-sum Option {
+enum Option {
   None,
   Pair { lhs: u32, rhs: u32 },
 }
@@ -8666,7 +8666,7 @@ pub fn main(c: C) -> bits[32] {
 
 TEST_F(IrConverterTest, SemanticSumConstructorsCompareWithInterpreter) {
   constexpr std::string_view program = R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
   Pair { lhs: u32, rhs: u32 },
@@ -8700,7 +8700,7 @@ fn option_test() {
 TEST_F(IrConverterTest,
        SemanticSumEqualityInsideAggregatesCompareWithInterpreter) {
   constexpr std::string_view program = R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
   Pair { lhs: u32, rhs: u32 },
@@ -8751,7 +8751,7 @@ fn aggregate_eq_test() {
 
 TEST_F(IrConverterTest, ImportedSumReturningFunctionWithoutConstructorDispatch) {
   constexpr std::string_view kImported = R"(
-pub sum Option {
+pub enum Option {
   None,
   Some(u32),
 }

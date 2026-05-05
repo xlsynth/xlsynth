@@ -363,7 +363,7 @@ TEST_F(SampleRunnerTest, EvaluateIR) {
 TEST_F(SampleRunnerTest, EvaluateIRWithSemanticSumArgument) {
   SampleRunner runner(GetTempPath());
   constexpr std::string_view dslx_text = R"(
-sum Choice {
+enum Choice {
   None,
   Byte(u8),
   Wide(u16),

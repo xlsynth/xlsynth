@@ -3288,7 +3288,8 @@ class SumVariant : public AstNode {
   SumVariant(Module* owner, Span span, NameDef* name_def,
              PayloadKind payload_kind,
              std::vector<TypeAnnotation*> tuple_members,
-             std::vector<StructMemberNode*> struct_members);
+             std::vector<StructMemberNode*> struct_members,
+             Expr* discriminant = nullptr);
 
   ~SumVariant() override;
 
@@ -3313,6 +3314,7 @@ class SumVariant : public AstNode {
   bool is_unit() const { return payload_kind_ == PayloadKind::kUnit; }
   bool is_tuple() const { return payload_kind_ == PayloadKind::kTuple; }
   bool is_struct() const { return payload_kind_ == PayloadKind::kStruct; }
+  Expr* discriminant() const { return discriminant_; }
 
   const std::vector<TypeAnnotation*>& tuple_members() const {
     return tuple_members_;
@@ -3325,13 +3327,14 @@ class SumVariant : public AstNode {
   Span span_;
   NameDef* name_def_;
   PayloadKind payload_kind_;
+  Expr* discriminant_;
   std::vector<TypeAnnotation*> tuple_members_;
   std::vector<StructMemberNode*> struct_members_;
 };
 
 // Represents a semantic sum declaration; e.g.
 //
-//   sum Option<T: type> {
+//   enum Option<T: type> {
 //     None,
 //     Some(T),
 //   }
@@ -3341,7 +3344,8 @@ class SumDef : public AstNode {
 
   SumDef(Module* owner, Span span, NameDef* name_def,
          std::vector<ParametricBinding*> parametric_bindings,
-         std::vector<SumVariant*> variants, bool is_public);
+         std::vector<SumVariant*> variants, bool is_public,
+         TypeAnnotation* tag_type_annotation = nullptr);
 
   ~SumDef() override;
 
@@ -3364,6 +3368,7 @@ class SumDef : public AstNode {
 
   bool is_public() const { return is_public_; }
   bool IsParametric() const { return !parametric_bindings_.empty(); }
+  TypeAnnotation* tag_type_annotation() const { return tag_type_annotation_; }
 
   const std::vector<ParametricBinding*>& parametric_bindings() const {
     return parametric_bindings_;
@@ -3392,6 +3397,7 @@ class SumDef : public AstNode {
  private:
   Span span_;
   NameDef* name_def_;
+  TypeAnnotation* tag_type_annotation_;
   std::vector<ParametricBinding*> parametric_bindings_;
   std::vector<SumVariant*> variants_;
   bool is_public_;

@@ -610,7 +610,7 @@ TEST(FunctionConverterTest, ConvertsFunctionWithUpdate2DBuiltinEmptyTuple) {
 TEST(FunctionConverterTest,
      ConvertsImportedSumConstantWithoutConstructorDispatch) {
   constexpr std::string_view kImported = R"(
-pub sum Option {
+pub enum Option {
   None,
   Some(u32),
 }
@@ -651,7 +651,7 @@ fn f() -> imported::Option {
 
 TEST(FunctionConverterTest, ExpandsSemanticSumEqIntoTagAndPayloadChecks) {
   constexpr std::string_view kProgram = R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
   Pair(u32, u32),
@@ -720,7 +720,7 @@ fn f(x: Option, y: Option) -> bool {
 
 TEST(FunctionConverterTest, SingleVariantSemanticSumEqUsesSparseTagSelect) {
   constexpr std::string_view kProgram = R"(
-sum Box {
+enum Box {
   Wrap(u32),
 }
 
@@ -767,7 +767,7 @@ fn f(x: Box, y: Box) -> bool {
 TEST(FunctionConverterTest,
      SingleVariantSemanticSumMatchUsesSparseTagCheck) {
   constexpr std::string_view kProgram = R"(
-sum Box {
+enum Box {
   Wrap(u32),
 }
 
@@ -815,7 +815,7 @@ fn f(x: Box) -> u32 {
 
 TEST(FunctionConverterTest, RequiresImplicitTokenForPhase1SemanticSumMatch) {
   constexpr std::string_view kProgram = R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
 }
@@ -861,7 +861,7 @@ fn f(x: Option) -> u32 {
 TEST(FunctionConverterTest,
      RequiresImplicitTokenForAggregateContainedPhase1SemanticSumMatch) {
   constexpr std::string_view kProgram = R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
 }
@@ -902,7 +902,7 @@ fn f(x: (Option,)) -> u32 {
 TEST(FunctionConverterTest,
      RequiresImplicitTokenForExhaustivePhase1SemanticSumMatchWithoutWildcard) {
   constexpr std::string_view kProgram = R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
 }
@@ -946,7 +946,7 @@ fn f(x: Option) -> u32 {
 TEST(FunctionConverterTest,
      RejectsBindingInLaterSemanticSumOrPatternBeforeConversion) {
   constexpr std::string_view kProgram = R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
 }
@@ -972,7 +972,7 @@ fn f(x: Option) -> u32 {
 
 TEST(FunctionConverterTest, RequiresImplicitTokenForPhase1SemanticSumEquality) {
   constexpr std::string_view kProgram = R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
 }
@@ -1011,7 +1011,7 @@ fn f(x: Option, y: Option) -> bool {
 
 TEST(FunctionConverterTest, RequiresImplicitTokenForPhase1SemanticSumInequality) {
   constexpr std::string_view kProgram = R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
 }
@@ -1051,7 +1051,7 @@ fn f(x: Option, y: Option) -> bool {
 TEST(FunctionConverterTest,
      EmitsWellFormednessAssertForPhase1SemanticSumAssertEq) {
   constexpr std::string_view kProgram = R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
 }
@@ -1090,7 +1090,7 @@ fn f(x: Option, y: Option) -> () {
 TEST(FunctionConverterTest,
      EmitsWellFormednessAssertForPhase1SemanticSumFormatMacro) {
   constexpr std::string_view kProgram = R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
 }
@@ -1129,7 +1129,7 @@ fn f(x: Option) {
 
 TEST(FunctionConverterTest, UsesAggregateEqForNonSumArrayPayloadSubtrees) {
   constexpr std::string_view kProgram = R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
 }
@@ -1172,10 +1172,10 @@ fn f(x: (Option, u32[4]), y: (Option, u32[4])) -> bool {
 TEST(FunctionConverterTest,
      RejectsSemanticSumConstructorWithInactiveEmptySumPayloadInPhase1) {
   constexpr std::string_view kProgram = R"(
-sum Empty {
+enum Empty {
 }
 
-sum Outer {
+enum Outer {
   Wrapped(Empty),
   Nothing,
 }
@@ -1205,7 +1205,7 @@ TEST(FunctionConverterTest,
 enum Empty: u2 {
 }
 
-sum MaybeImpossible {
+enum MaybeImpossible {
   Unit,
   Impossible(Empty),
 }
@@ -1241,7 +1241,7 @@ TEST(FunctionConverterTest,
 enum Empty: u2 {
 }
 
-sum MaybeImpossible {
+enum MaybeImpossible {
   Unit,
   Impossible(Empty),
 }
@@ -1314,7 +1314,7 @@ enum Flavor: u2 {
   Mint = u2:2,
 }
 
-sum Choice {
+enum Choice {
   Unit,
   Some(Flavor),
 }

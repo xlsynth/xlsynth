@@ -1,7 +1,7 @@
 enum Empty: u2 {
 }
 
-sum MaybeImpossible {
+enum MaybeImpossible {
   Unit,
   Impossible(Empty),
 }

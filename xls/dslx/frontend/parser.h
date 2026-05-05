@@ -575,23 +575,20 @@ class Parser : public TokenParser {
   // ultimately the loop terminates and the final accum value is returned.
   absl::StatusOr<ForLoopBase*> ParseFor(Bindings& bindings);
 
-  // Parses a numeric enum definition; e.g.
+  // Parses either a numeric enum definition or a semantic sum declaration using
+  // the shared `enum` introducer; e.g.
   //
   //  enum Foo : u2 {
   //    A = 0,
   //    B = 1,
   //  }
-  absl::StatusOr<EnumDef*> ParseEnumDef(const Pos& start_pos, bool is_public,
-                                        Bindings& bindings);
-
-  // Parses a semantic sum definition; e.g.
   //
-  //  sum Foo {
-  //    A,
-  //    B(u32),
+  //  enum Maybe {
+  //    None,
+  //    Some(u32),
   //  }
-  absl::StatusOr<SumDef*> ParseSumDef(const Pos& start_pos, bool is_public,
-                                      Bindings& bindings);
+  absl::StatusOr<std::variant<EnumDef*, SumDef*>> ParseEnumDef(
+      const Pos& start_pos, bool is_public, Bindings& bindings);
 
   absl::StatusOr<StructDef*> ParseStruct(const Pos& start_pos, bool is_public,
                                          Bindings& bindings);

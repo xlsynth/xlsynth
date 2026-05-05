@@ -2301,7 +2301,7 @@ fn doomed() {
 
 TEST_F(BytecodeInterpreterTest, AssertEqSemanticSums) {
   constexpr std::string_view kProgram = R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
   Pair { lhs: u32, rhs: u32 },
@@ -2847,7 +2847,7 @@ fn main() -> bits[bit_count<Foo>()] {
 
 TEST_F(BytecodeInterpreterTest, SemanticSumConstructorsAndEquality) {
   constexpr std::string_view kProgram = R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
   Pair { lhs: u32, rhs: u32 },
@@ -2879,13 +2879,36 @@ fn main() -> (u32, u32, bool, bool) {
                           InterpValue::MakeBool(true)));
 }
 
+TEST_F(BytecodeInterpreterTest, ZeroMacroSemanticSumUsesZeroDiscriminant) {
+  constexpr std::string_view kProgram = R"(
+enum Message : u3 {
+  Request(u8) = 3,
+  Idle(u8, bool) = 0,
+}
+
+fn main() -> (bool, u8, bool) {
+  match zero!<Message>() {
+    Message::Idle(code, ack) => (true, code, ack),
+    _ => (false, u8:255, true),
+  }
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
+  XLS_ASSERT_OK_AND_ASSIGN(const std::vector<InterpValue>* values,
+                           result.GetValues());
+  EXPECT_THAT(*values,
+              ElementsAre(InterpValue::MakeBool(true),
+                          InterpValue::MakeU8(0),
+                          InterpValue::MakeBool(false)));
+}
+
 TEST_F(BytecodeInterpreterTest,
        SemanticSumConstructorWithInactiveEmptyEnumPayload) {
   constexpr std::string_view kProgram = R"(
 enum Empty: u2 {
 }
 
-sum MaybeImpossible {
+enum MaybeImpossible {
   Unit,
   Impossible(Empty),
 }
@@ -2900,7 +2923,7 @@ fn main() -> bool {
 
 TEST_F(BytecodeInterpreterTest, SemanticSumEqualityInsideAggregates) {
   constexpr std::string_view kProgram = R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
   Pair { lhs: u32, rhs: u32 },
@@ -2960,12 +2983,12 @@ fn main() -> (bool, bool, bool, bool, bool, bool, bool, bool, bool) {
 TEST_F(BytecodeInterpreterTest,
        SemanticSumConstructorsRejectNestedSumPayloadsInPhase1) {
   constexpr std::string_view kProgram = R"(
-sum Inner {
+enum Inner {
   None,
   Some(u32),
 }
 
-sum Outer {
+enum Outer {
   Wrapped(Inner),
   Nothing,
 }
@@ -2991,7 +3014,7 @@ fn main() -> bool {
 
 TEST_F(BytecodeInterpreterTest, ImportedSumReturningFunctionCall) {
   constexpr std::string_view kImported = R"(
-pub sum Option {
+pub enum Option {
   None,
   Some(u32),
 }

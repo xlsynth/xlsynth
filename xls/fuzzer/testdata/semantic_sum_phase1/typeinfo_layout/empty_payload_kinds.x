@@ -1,4 +1,4 @@
-sum E {
+enum E {
   None,
   EmptyTuple(),
   EmptyStruct { },

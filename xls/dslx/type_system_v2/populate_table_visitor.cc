@@ -1582,6 +1582,27 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
           node, CreateSumAnnotation(module_, const_cast<SumDef*>(node),
                                     std::vector<ExprOrType>{})));
     }
+    std::vector<Expr*> discriminants;
+    for (const SumVariant* variant : node->variants()) {
+      if (variant->discriminant() != nullptr) {
+        discriminants.push_back(variant->discriminant());
+      }
+    }
+    if (!discriminants.empty()) {
+      XLS_ASSIGN_OR_RETURN(const NameRef* discriminant_type_variable,
+                           DefineTypeVariable(discriminants.front(),
+                                              "sum_discriminant"));
+      for (Expr* discriminant : discriminants) {
+        XLS_RETURN_IF_ERROR(
+            table_.SetTypeVariable(discriminant, discriminant_type_variable));
+      }
+      if (node->tag_type_annotation() != nullptr) {
+        table_.SetAnnotationFlag(node->tag_type_annotation(),
+                                 TypeInferenceFlag::kFormalMemberType);
+        XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(
+            discriminants.front(), node->tag_type_annotation()));
+      }
+    }
     return DefaultHandler(node);
   }
 
@@ -2024,7 +2045,8 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
           XLS_ASSIGN_OR_RETURN(
               std::optional<SumRef> sum_ref,
               GetSumRef(absl::down_cast<const ColonRef*>(expr), import_data_));
-          if (sum_ref.has_value()) {
+          if (sum_ref.has_value() &&
+              node->kind() != AstNodeKind::kZeroMacro) {
             return TypeInferenceErrorStatus(
                 *node->GetSpan(), nullptr,
                 absl::Substitute("Cannot use `$0` with sum type `$1`.",
@@ -2048,7 +2070,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     const TypeAnnotation* annotation = std::get<TypeAnnotation*>(type);
     XLS_ASSIGN_OR_RETURN(std::optional<const SumDef*> sum_def,
                          GetSumDef(annotation, import_data_));
-    if (sum_def.has_value()) {
+    if (sum_def.has_value() && node->kind() != AstNodeKind::kZeroMacro) {
       return TypeInferenceErrorStatusForAnnotation(
           annotation->span(), annotation,
           absl::Substitute("Cannot use `$0` with sum type `$1`.",

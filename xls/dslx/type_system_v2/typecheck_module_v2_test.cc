@@ -3286,7 +3286,7 @@ const Z = f(u32:1);
 TEST(TypecheckV2Test, SemanticSumTupleConstructor) {
   EXPECT_THAT(
       R"(
-sum MaybeU32 {
+enum MaybeU32 {
   None,
   Some(u32),
 }
@@ -3299,7 +3299,7 @@ const X = MaybeU32::Some(u32:7);
 TEST(TypecheckV2Test, SemanticSumStructConstructor) {
   EXPECT_THAT(
       R"(
-sum MaybePoint {
+enum MaybePoint {
   None,
   Point { x: u32, y: u32 },
 }
@@ -3309,10 +3309,23 @@ const X = MaybePoint::Point { x: u32:1, y: u32:2 };
           "X", "MaybePoint { None | Point { x: uN[32], y: uN[32] } }")));
 }
 
+TEST(TypecheckV2Test, SemanticSumExplicitDiscriminantsMustBeDistinct) {
+  EXPECT_THAT(
+      R"(
+enum Message : u3 {
+  Idle() = 0,
+  Request(u8) = 3,
+  Retry(u8) = 3,
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("Semantic sum `Message`"),
+                           HasSubstr("duplicate discriminant"))));
+}
+
 TEST(TypecheckV2Test,
      ImportedSemanticSumConstructorExplicitParametricsRejected) {
   constexpr std::string_view kImported = R"(#![feature(generics)]
-pub sum Option<N: u32> {
+pub enum Option<N: u32> {
   None,
   Some(uN[N]),
 }
@@ -3337,7 +3350,7 @@ fn make(x: u8) -> imported::Option<u32:8> {
 TEST(TypecheckV2Test, MissingSemanticSumConstructorReturnsUserError) {
   EXPECT_THAT(
       R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
 }
@@ -3350,7 +3363,7 @@ const X = Option::Missing(u32:7);
 TEST(TypecheckV2Test, SemanticSumStructConstructorMissingMemberRejected) {
   EXPECT_THAT(
       R"(
-sum MaybePoint {
+enum MaybePoint {
   None,
   Point { x: u32, y: u32 },
 }
@@ -3365,7 +3378,7 @@ const X = MaybePoint::Point { x: u32:1 };
 TEST(TypecheckV2Test, SemanticSumStructConstructorExtraMemberRejected) {
   EXPECT_THAT(
       R"(
-sum MaybePoint {
+enum MaybePoint {
   None,
   Point { x: u32, y: u32 },
 }
@@ -3384,7 +3397,7 @@ struct Point {
   y: u32,
 }
 
-sum MaybePoint {
+enum MaybePoint {
   None,
   Some(Point),
 }
@@ -3400,7 +3413,7 @@ const X = MaybePoint::None;
 TEST(TypecheckV2Test, SemanticSumStructPayloadAggregateRejectedInPhase1) {
   EXPECT_THAT(
       R"(
-sum PairBox {
+enum PairBox {
   Pair { xy: (u32, u32) },
 }
 
@@ -3415,7 +3428,7 @@ const X = PairBox::Pair { xy: (u32:1, u32:2) };
 TEST(TypecheckV2Test, MatchWithSemanticSumConstructors) {
   EXPECT_THAT(
       R"(
-sum MaybeU32 {
+enum MaybeU32 {
   None,
   Some(u32),
 }
@@ -3437,7 +3450,7 @@ TEST(TypecheckV2Test,
      ParametricSemanticTupleConstructorUsesContextualPayloadType) {
   EXPECT_THAT(
       R"(#![feature(generics)]
-sum OptionN<N: u32> {
+enum OptionN<N: u32> {
   None,
   Some(uN[N]),
 }
@@ -3454,7 +3467,7 @@ TEST(TypecheckV2Test,
      ParametricSemanticStructConstructorUsesContextualPayloadType) {
   EXPECT_THAT(
       R"(#![feature(generics)]
-sum BoxN<N: u32> {
+enum BoxN<N: u32> {
   None,
   Pair { value: uN[N] },
 }
@@ -3470,7 +3483,7 @@ fn make(x: u16) -> BoxN<u32:8> {
 TEST(TypecheckV2Test, ParametricSemanticSumPatternsBindPayloadTypes) {
   EXPECT_THAT(
       R"(#![feature(generics)]
-sum OptionN<N: u32> {
+enum OptionN<N: u32> {
   None,
   Some(uN[N]),
   Pair { value: uN[N] },
@@ -3496,7 +3509,7 @@ const Y = unwrap_or_zero(INPUT_Y);
 TEST(TypecheckV2Test, NonUnitSemanticSumConstructorCannotBeUsedAsValue) {
   EXPECT_THAT(
       R"(
-sum MaybeU32 {
+enum MaybeU32 {
   None,
   Some(u32),
 }
@@ -3514,7 +3527,7 @@ fn f() -> () {
 TEST(TypecheckV2Test, MatchWithSemanticSumConstructorsNonExhaustive) {
   EXPECT_THAT(
       R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
   Pair { lhs: u32, rhs: u32 },
@@ -3533,7 +3546,7 @@ fn unwrap_or_zero(x: Option) -> u32 {
 TEST(TypecheckV2Test, MatchWithSemanticSumConstructorsWildcardCompletes) {
   EXPECT_THAT(
       R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
   Pair { lhs: u32, rhs: u32 },
@@ -3555,7 +3568,7 @@ const X = unwrap_or_zero(Option::Pair { lhs: u32:3, rhs: u32:4 });
 TEST(TypecheckV2Test, MatchOrPatternRejectsBindingInLaterAlternative) {
   EXPECT_THAT(
       R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
 }
@@ -3575,7 +3588,7 @@ fn f(x: Option) -> u32 {
 TEST(TypecheckV2Test, MatchOrPatternRejectsBindingInFirstAlternative) {
   EXPECT_THAT(
       R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
 }
@@ -3594,7 +3607,7 @@ fn f(x: Option) -> u32 {
 
 TEST(TypecheckV2Test, MatchWithSemanticSumConstructorsAlreadyExhaustive) {
   XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
-sum Option {
+enum Option {
   None,
   Some(u32),
   Pair { lhs: u32, rhs: u32 },
@@ -4239,17 +4252,43 @@ const Y = zero!<S>();
       TypecheckSucceeds(HasNodeWithType("Y", "S { a: uN[32], b: uN[32] }")));
 }
 
-TEST(TypecheckV2Test, ZeroMacroSumFails) {
+TEST(TypecheckV2Test, ZeroMacroImplicitSemanticSumUsesFirstVariant) {
   EXPECT_THAT(
       R"(
-sum MaybeU32 {
+enum MaybeU32 {
   None,
   Some(u32),
 }
 const Y = zero!<MaybeU32>();
 )",
-      TypecheckFails(HasSubstr("Cannot use `zero!<MaybeU32>()` with sum type "
-                               "`MaybeU32`.")));
+      TypecheckSucceeds(
+          HasNodeWithType("Y", "MaybeU32 { None | Some(uN[32]) }")));
+}
+
+TEST(TypecheckV2Test, ZeroMacroExplicitSemanticSumUsesZeroDiscriminant) {
+  EXPECT_THAT(
+      R"(
+enum Message : u3 {
+  Request(u8) = 3,
+  Idle() = 0,
+}
+const Y = zero!<Message>();
+)",
+      TypecheckSucceeds(
+          HasNodeWithType("Y", "Message { Request(uN[8]) | Idle() }")));
+}
+
+TEST(TypecheckV2Test, ZeroMacroExplicitSemanticSumWithoutZeroFails) {
+  EXPECT_THAT(
+      R"(
+enum Message : u3 {
+  Request(u8) = 3,
+  Response(u8) = 7,
+}
+const Y = zero!<Message>();
+)",
+      TypecheckFails(
+          HasSubstr("Sum type 'Message' does not have a known zero value.")));
 }
 
 TEST(TypecheckV2Test, ZeroMacroParametricStruct) {
@@ -4379,9 +4418,9 @@ const Y = zero!<imported::S>();
       IsOkAndHolds(HasTypeInfo(HasNodeWithType("Y", "S { field: uN[32] }"))));
 }
 
-TEST(TypecheckV2Test, ZeroMacroImportedSumFails) {
+TEST(TypecheckV2Test, ZeroMacroImportedSemanticSumUsesFirstVariant) {
   constexpr std::string_view kImported = R"(
-pub sum ImportedMaybe {
+pub enum ImportedMaybe {
   None,
   Some(u32),
 }
@@ -4393,10 +4432,8 @@ const Y = zero!<imported::ImportedMaybe>();
   ImportData import_data = CreateImportDataForTest();
   XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
   EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("Cannot use "
-                                 "`zero!<imported::ImportedMaybe>()` with sum "
-                                 "type `imported::ImportedMaybe`.")));
+              IsOkAndHolds(HasTypeInfo(HasNodeWithType(
+                  "Y", "ImportedMaybe { None | Some(uN[32]) }"))));
 }
 
 TEST(TypecheckV2Test,
@@ -7306,7 +7343,7 @@ enum MyEnum : u8 {
 TEST(TypecheckV2Test, EmptySumTypeDefinition) {
   EXPECT_THAT(
       R"(
-sum MyEnum {
+enum MyEnum {
 }
 )",
       TypecheckSucceeds(::testing::_));

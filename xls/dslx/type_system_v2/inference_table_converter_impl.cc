@@ -147,6 +147,47 @@ absl::Status ValidatePhase1SumPayloadMemberType(
       file_table);
 }
 
+absl::Status ValidateSemanticSumDiscriminants(
+    const SumDef& sum_def, TypeInfo* type_info, ImportData* import_data,
+    WarningCollector* warning_collector,
+    const ParametricEnv& parametric_env, const FileTable& file_table) {
+  const bool has_explicit_discriminants = absl::c_any_of(
+      sum_def.variants(), [](const SumVariant* variant) {
+        return variant->discriminant() != nullptr;
+      });
+  if (!has_explicit_discriminants) {
+    return absl::OkStatus();
+  }
+
+  absl::flat_hash_set<std::string> seen_values;
+  for (const SumVariant* variant : sum_def.variants()) {
+    XLS_RET_CHECK(variant->discriminant() != nullptr);
+    absl::StatusOr<InterpValue> evaluated_value =
+        type_info->GetConstExpr(variant->discriminant());
+    if (!evaluated_value.ok()) {
+      evaluated_value = ConstexprEvaluator::EvaluateToValue(
+          import_data, type_info, warning_collector, parametric_env,
+          variant->discriminant());
+      if (!evaluated_value.ok()) {
+        return NotConstantErrorStatus(variant->discriminant()->span(),
+                                      variant->discriminant(), file_table);
+      }
+      type_info->NoteConstExpr(variant->discriminant(), *evaluated_value);
+      type_info->NoteConstExpr(variant->name_def(), *evaluated_value);
+    }
+    XLS_ASSIGN_OR_RETURN(Bits bits, evaluated_value->GetBits());
+    if (!seen_values.insert(bits.ToDebugString()).second) {
+      return TypeInferenceErrorStatus(
+          variant->discriminant()->span(), nullptr,
+          absl::Substitute(
+              "Semantic sum `$0` has duplicate discriminant `$1`.",
+              sum_def.identifier(), variant->discriminant()->ToString()),
+          file_table);
+    }
+  }
+  return absl::OkStatus();
+}
+
 // RAII guard for a frame on the proc type info stack.
 class ProcTypeInfoFrame {
  public:
@@ -1603,6 +1644,11 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
                          GetSumRef(annotation, import_data_));
     if (sum_ref.has_value()) {
       const SumDef* sum_def = sum_ref->def;
+      XLS_ASSIGN_OR_RETURN(TypeInfo * sum_type_info,
+                           GetTypeInfo(sum_def->owner(), parametric_context));
+      XLS_RETURN_IF_ERROR(ValidateSemanticSumDiscriminants(
+          *sum_def, sum_type_info, &import_data_, &warning_collector_,
+          table_.GetParametricEnv(parametric_context), file_table_));
       if (!sum_def->IsParametric()) {
         std::unique_ptr<Type> cached_type =
             GetCachedType(sum_def, std::nullopt);

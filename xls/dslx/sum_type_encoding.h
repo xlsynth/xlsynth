@@ -33,10 +33,13 @@ namespace xls::dslx {
 //
 // This deliberately exposes the current `(tag, payload_slots)` lowering layout
 // so Phase 1 interpreter, bytecode, exhaustiveness, and IR conversion code can
-// share one encoding rule. Do not treat the class name, slot order, or
-// tag/payload representation as a stable semantic API: later sum-type phases are
-// expected to replace this storage contract when boundary decoding and tagged
-// union lowering are implemented.
+// share one encoding rule. The Phase 1 storage tag is a dense declaration-order
+// index, not a user-visible semantic discriminant; explicit source
+// discriminants become part of the wire-compatible tagged-union contract in a
+// later phase. Do not treat the class name, slot order, or tag/payload
+// representation as a stable semantic API: later sum-type phases are expected
+// to replace this storage contract when boundary decoding and tagged-union
+// lowering are implemented.
 class Phase1SumTypeEncoding {
  public:
   struct VariantInfo {

@@ -1,4 +1,4 @@
-sum S {
+enum S {
   V { x: u32, x: u64 },
 }
 

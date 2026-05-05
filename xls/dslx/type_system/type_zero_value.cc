@@ -14,6 +14,7 @@
 
 #include "xls/dslx/type_system/type_zero_value.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -33,6 +34,7 @@
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/interp_value_utils.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/ir/bits.h"
@@ -76,6 +78,36 @@ absl::StatusOr<bool> HasKnownAllOnesValue(const EnumType& t,
   }
 
   return false;
+}
+
+absl::StatusOr<const SumTypeVariant*> GetZeroDiscriminantVariant(
+    const SumType& type, const ImportData& import_data) {
+  if (type.variant_count() == 0) {
+    return static_cast<const SumTypeVariant*>(nullptr);
+  }
+
+  const bool has_explicit_discriminants = std::any_of(
+      type.variants().begin(), type.variants().end(),
+      [](const SumTypeVariant& variant) {
+        return variant.variant().discriminant() != nullptr;
+      });
+  if (!has_explicit_discriminants) {
+    return &type.variants().front();
+  }
+
+  const SumDef& def = type.nominal_type();
+  XLS_ASSIGN_OR_RETURN(const TypeInfo* type_info,
+                       import_data.GetRootTypeInfoForNode(&def));
+  for (const SumTypeVariant& variant : type.variants()) {
+    XLS_RET_CHECK(variant.variant().discriminant() != nullptr);
+    XLS_ASSIGN_OR_RETURN(
+        InterpValue value,
+        type_info->GetConstExpr(variant.variant().discriminant()));
+    if (value.GetBitsOrDie().IsZero()) {
+      return &variant;
+    }
+  }
+  return static_cast<const SumTypeVariant*>(nullptr);
 }
 
 absl::StatusOr<InterpValue> ZeroOfBitsLike(const BitsLikeProperties& bits_like,
@@ -211,10 +243,32 @@ class MakeValueVisitor : public TypeVisitor {
     return absl::OkStatus();
   }
   absl::Status HandleSum(const SumType& t) override {
-    return TypeInferenceErrorStatus(
-        span_, &t,
-        absl::StrFormat("Cannot make a %s of sum type.", value_name_),
-        file_table());
+    if (value_name_ != kZeroValueName) {
+      return TypeInferenceErrorStatus(
+          span_, &t,
+          absl::StrFormat("Cannot make a %s of sum type.", value_name_),
+          file_table());
+    }
+    XLS_ASSIGN_OR_RETURN(const SumTypeVariant* zero_variant,
+                         GetZeroDiscriminantVariant(t, import_data_));
+    if (zero_variant == nullptr) {
+      return TypeInferenceErrorStatus(
+          span_, &t,
+          absl::StrFormat("Sum type '%s' does not have a known zero value.",
+                          t.nominal_type().identifier()),
+          file_table());
+    }
+    std::vector<InterpValue> payload_values;
+    payload_values.reserve(zero_variant->size());
+    for (int64_t i = 0; i < zero_variant->size(); ++i) {
+      XLS_RETURN_IF_ERROR(zero_variant->GetMemberType(i).Accept(*this));
+      XLS_ASSIGN_OR_RETURN(InterpValue payload_value, ResultOrError());
+      payload_values.push_back(std::move(payload_value));
+    }
+    XLS_ASSIGN_OR_RETURN(
+        result_, CreateSumValue(t, zero_variant->variant().identifier(),
+                                std::move(payload_values)));
+    return absl::OkStatus();
   }
   absl::Status HandleProc(const ProcType& t) override {
     return TypeInferenceErrorStatus(

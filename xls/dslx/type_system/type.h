@@ -819,10 +819,11 @@ class SumTypeVariant {
 
 // Represents a semantic sum after typechecking.
 //
-// `variants()` is stored in the same order as the defining `SumDef`, and that
-// order is semantic: it determines tag numbering, payload-slot layout, and the
-// behavior of positional consumers such as equality, formatting, and
-// serialization helpers.
+// `variants()` is stored in the same order as the defining `SumDef`. In Phase 1
+// that order determines the temporary dense storage tag, payload-slot layout,
+// and the behavior of positional consumers such as equality, formatting, and
+// serialization helpers. Source-level semantic discriminants are separate from
+// that temporary storage contract until the later tagged-union phase.
 class SumType : public Type {
  public:
   // `variants` must be in the same declaration order as `sum_def.variants()`.

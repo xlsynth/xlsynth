@@ -93,7 +93,7 @@ TEST(SemanticSumSeedCorpusTest, ReplaysSeedTextsFromManifestRoot) {
   EXPECT_THAT(seen_seed_ids,
               Contains("typeinfo_layout_empty_payload_kinds"));
   EXPECT_THAT(seen_texts,
-              Contains(ContainsRegex(R"(sum Option \{)")));
+              Contains(ContainsRegex(R"(enum Option \{)")));
   EXPECT_THAT(seen_texts,
               Contains(ContainsRegex(R"(EmptyStruct \{ \})")));
 }

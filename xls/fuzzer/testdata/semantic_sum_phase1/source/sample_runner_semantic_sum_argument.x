@@ -1,4 +1,4 @@
-sum Choice {
+enum Choice {
   None,
   Byte(u8),
   Wide(u16),

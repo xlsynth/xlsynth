@@ -1507,7 +1507,7 @@ enum MyEnum : u5 {
     C = EIGHT,
 }
 
-sum MySum {
+enum MySum {
     Nothing,
     Count(u8),
 }

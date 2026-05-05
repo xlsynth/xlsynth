@@ -206,7 +206,7 @@ std::string GenerateConstructorExpr(int64_t index, int64_t kind_choice) {
 
 std::string GenerateRandomProgram(absl::BitGenRef bit_gen) {
   int64_t variant_count = absl::Uniform(bit_gen, 2, 5);
-  std::string program = "sum Generated {\n";
+  std::string program = "enum Generated {\n";
   std::vector<int64_t> kind_choices;
   kind_choices.reserve(variant_count);
   for (int64_t i = 0; i < variant_count; ++i) {

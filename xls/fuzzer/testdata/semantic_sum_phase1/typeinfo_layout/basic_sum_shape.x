@@ -1,4 +1,4 @@
-sum Option {
+enum Option {
   None,
   Some(u32),
 }

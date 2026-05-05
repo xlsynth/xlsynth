@@ -2480,7 +2480,7 @@ fn f(x: u32) {
 TEST_F(ParserTest, MatchWithSemanticSumConstructors) {
   std::unique_ptr<Module> module = RoundTrip(R"(#![feature(generics)]
 
-sum Option<T: type> {
+enum Option<T: type> {
     None,
     Some(T),
     Point { x: u32, y: u32 },
@@ -2497,8 +2497,41 @@ fn f(x: Option<u32>) -> Option<u32> {
   EXPECT_TRUE(std::holds_alternative<SumDef*>(*maybe_member.value()));
 }
 
+TEST_F(ParserTest, SemanticSumSupportsExplicitDiscriminants) {
+  std::unique_ptr<Module> module = RoundTrip(R"(enum Message : u3 {
+    Idle() = 0,
+    Request(u8) = 3,
+    Response { field: u8 } = 7,
+})");
+  std::optional<ModuleMember*> maybe_member =
+      module->FindMemberWithName("Message");
+  ASSERT_TRUE(maybe_member.has_value());
+  ASSERT_TRUE(std::holds_alternative<SumDef*>(*maybe_member.value()));
+  const auto* sum_def = std::get<SumDef*>(*maybe_member.value());
+  ASSERT_TRUE(sum_def->GetVariant("Idle").has_value());
+  EXPECT_NE((*sum_def->GetVariant("Idle"))->discriminant(), nullptr);
+  EXPECT_EQ(sum_def->tag_type_annotation()->ToString(), "u3");
+}
+
+TEST_F(ParserTest, SemanticSumRejectsMixedDiscriminants) {
+  constexpr std::string_view kProgram = R"(enum Message {
+    Idle(),
+    Request(u8) = 3,
+})";
+  EXPECT_THAT(Parse(kProgram),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("must use either all implicit or all explicit "
+                                 "discriminants")));
+}
+
+TEST_F(ParserTest, BareUnitEnumWithoutValuesIsStillRejected) {
+  EXPECT_THAT(Parse("enum E { A, B }"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("requires a value for every member")));
+}
+
 TEST_F(ParserTest, MatchOrPatternRejectsBindingInLaterAlternative) {
-  constexpr std::string_view kProgram = R"(sum Option {
+  constexpr std::string_view kProgram = R"(enum Option {
     None,
     Some(u32),
 }
@@ -2517,7 +2550,7 @@ fn f(x: Option) -> u32 {
 }
 
 TEST_F(ParserTest, MatchOrPatternRejectsBindingInFirstAlternative) {
-  constexpr std::string_view kProgram = R"(sum Option {
+  constexpr std::string_view kProgram = R"(enum Option {
     None,
     Some(u32),
 }
@@ -2536,7 +2569,7 @@ fn f(x: Option) -> u32 {
 }
 
 TEST_F(ParserTest, MatchOrPatternAllowsBindingFreeAlternatives) {
-  constexpr std::string_view kProgram = R"(sum Option {
+  constexpr std::string_view kProgram = R"(enum Option {
     None,
     Some(u32),
 }
@@ -2559,7 +2592,7 @@ TEST_F(ParserTest, SumRemainsValidIdentifierOutsideTypeDeclarations) {
 }
 
 TEST_F(ParserTest, PreserveEmptySemanticSumPayloadKinds) {
-  std::unique_ptr<Module> module = RoundTrip(R"(sum Option {
+  std::unique_ptr<Module> module = RoundTrip(R"(enum Option {
     None,
     EmptyTuple(),
     EmptyStruct { },
@@ -2622,7 +2655,7 @@ fn f(x: Option) -> Option {
 TEST_F(ParserTest, RejectsConstructorLevelParametricsOnSemanticSums) {
   constexpr std::string_view kExplicitOnConstructor = R"(#![feature(generics)]
 
-sum Option<T: type> {
+enum Option<T: type> {
   None,
   Some(T),
 }
@@ -2637,7 +2670,7 @@ fn f(x: u32) -> Option<u32> {
 
   constexpr std::string_view kTurbofishOnConstructor = R"(#![feature(generics)]
 
-sum Option<T: type> {
+enum Option<T: type> {
   None,
   Some(T),
 }
@@ -2652,7 +2685,7 @@ fn f(x: u32) -> Option<u32> {
 }
 
 TEST_F(ParserTest, RejectsDuplicateSemanticSumConstructors) {
-  constexpr std::string_view kProgram = R"(sum Option {
+  constexpr std::string_view kProgram = R"(enum Option {
     Some,
     Some(u32),
   })";
@@ -2665,7 +2698,7 @@ TEST_F(ParserTest, RejectsDuplicateSemanticSumConstructors) {
 }
 
 TEST_F(ParserTest, RejectsDuplicateSemanticSumStructPayloadFields) {
-  constexpr std::string_view kProgram = R"(sum S {
+  constexpr std::string_view kProgram = R"(enum S {
     V { x: u32, x: u64 },
   })";
   EXPECT_THAT(Parse(kProgram),
@@ -4201,7 +4234,7 @@ TEST(ParserErrorTest, BadTestTarget) {
   EXPECT_THAT(module.status(),
               IsPosError("ParseError",
                          HasSubstr("Attributes are only supported for a "
-                                   "function, proc, struct, sum, enum, or "
+                                   "function, proc, struct, enum, or "
                                    "type.")));
 }
 

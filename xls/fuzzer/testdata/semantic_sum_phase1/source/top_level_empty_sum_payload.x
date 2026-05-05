@@ -1,6 +1,6 @@
-sum Never {}
+enum Never {}
 
-sum S {
+enum S {
   Unit,
   Impossible(Never),
 }

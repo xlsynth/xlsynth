@@ -156,6 +156,7 @@ cc_library(
         "//xls/dslx:errors",
         "//xls/dslx:import_data",
         "//xls/dslx:interp_value",
+        "//xls/dslx:interp_value_utils",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:pos",
         "//xls/ir:bits",

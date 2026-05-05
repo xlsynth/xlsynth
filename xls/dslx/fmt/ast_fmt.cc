@@ -2944,7 +2944,7 @@ DocRef Formatter::Format(const SumDef& n) {
     pieces.push_back(arena_.Make(Keyword::kPub));
     pieces.push_back(arena_.space());
   }
-  pieces.push_back(arena_.MakeText("sum"));
+  pieces.push_back(arena_.Make(Keyword::kEnum));
   pieces.push_back(arena_.space());
   pieces.push_back(arena_.MakeText(n.identifier()));
 
@@ -2959,6 +2959,12 @@ DocRef Formatter::Format(const SumDef& n) {
   }
 
   pieces.push_back(arena_.space());
+  if (n.tag_type_annotation() != nullptr) {
+    pieces.push_back(arena_.colon());
+    pieces.push_back(arena_.space());
+    pieces.push_back(Fmt(*n.tag_type_annotation(), comments_, arena_));
+    pieces.push_back(arena_.space());
+  }
   pieces.push_back(arena_.ocurl());
   pieces.push_back(arena_.hard_line());
 
@@ -2998,6 +3004,12 @@ DocRef Formatter::Format(const SumDef& n) {
         variant_pieces.push_back(arena_.space());
       }
       variant_pieces.push_back(arena_.ccurl());
+    }
+    if (variant->discriminant() != nullptr) {
+      variant_pieces.push_back(arena_.space());
+      variant_pieces.push_back(arena_.equals());
+      variant_pieces.push_back(arena_.space());
+      variant_pieces.push_back(Fmt(*variant->discriminant(), comments_, arena_));
     }
     variant_pieces.push_back(arena_.comma());
     nested.push_back(ConcatNGroup(arena_, variant_pieces));

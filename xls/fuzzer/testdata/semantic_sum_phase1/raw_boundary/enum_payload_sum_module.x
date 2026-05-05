@@ -3,7 +3,7 @@ enum Flavor: u2 {
   Mint = 1,
 }
 
-sum Choice {
+enum Choice {
   None,
   FlavorChoice(Flavor),
   Wide(u16),

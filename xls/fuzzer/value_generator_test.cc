@@ -642,19 +642,19 @@ TEST(ValueGeneratorTest, GenerateDslxConstantSemanticSums) {
   XLS_ASSERT_OK_AND_ASSIGN(
       std::unique_ptr<dslx::Module> module,
       dslx::ParseModule(R"(
-sum UnitOnly {
-  Only,
+enum UnitOnly {
+  Only(),
 }
 
-sum TupleOnly {
+enum TupleOnly {
   Only(u32),
 }
 
-sum StructOnly {
+enum StructOnly {
   Only { x: u32 },
 }
 
-sum Empty {}
+enum Empty {}
 )",
                         "test.x", "test", file_table));
 
@@ -671,8 +671,8 @@ sum Empty {}
   XLS_ASSERT_OK_AND_ASSIGN(dslx::Expr * unit_expr,
                            GenerateDslxConstant(unit_rng, module.get(),
                                                 unit_type));
-  EXPECT_NE(dynamic_cast<dslx::ColonRef*>(unit_expr), nullptr);
-  EXPECT_EQ(unit_expr->ToString(), "UnitOnly::Only");
+  EXPECT_NE(dynamic_cast<dslx::Invocation*>(unit_expr), nullptr);
+  EXPECT_EQ(unit_expr->ToString(), "UnitOnly::Only()");
 
   std::mt19937_64 tuple_rng{1};
   XLS_ASSERT_OK_AND_ASSIGN(dslx::Expr * tuple_expr,

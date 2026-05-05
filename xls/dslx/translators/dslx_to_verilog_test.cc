@@ -186,7 +186,7 @@ struct TopType {
 TEST_F(DslxToVerilogTest, SemanticSumsAreRejectedInPhase1) {
   constexpr std::string_view program =
       R"(
-pub sum MaybeWord {
+pub enum MaybeWord {
   None,
   Some(u32),
 }

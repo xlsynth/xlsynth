@@ -1526,11 +1526,13 @@ std::string EnumDef::ToString() const {
 SumVariant::SumVariant(Module* owner, Span span, NameDef* name_def,
                        PayloadKind payload_kind,
                        std::vector<TypeAnnotation*> tuple_members,
-                       std::vector<StructMemberNode*> struct_members)
+                       std::vector<StructMemberNode*> struct_members,
+                       Expr* discriminant)
     : AstNode(owner),
       span_(std::move(span)),
       name_def_(name_def),
       payload_kind_(payload_kind),
+      discriminant_(discriminant),
       tuple_members_(std::move(tuple_members)),
       struct_members_(std::move(struct_members)) {
   if (payload_kind_ == PayloadKind::kUnit) {
@@ -1548,6 +1550,9 @@ SumVariant::~SumVariant() = default;
 
 std::vector<AstNode*> SumVariant::GetChildren(bool want_types) const {
   std::vector<AstNode*> results = {name_def_};
+  if (discriminant_ != nullptr) {
+    results.push_back(discriminant_);
+  }
   if (!want_types) {
     return results;
   }
@@ -1565,37 +1570,52 @@ std::vector<AstNode*> SumVariant::GetChildren(bool want_types) const {
 
 std::string SumVariant::ToString() const {
   if (is_unit()) {
-    return identifier();
+    return discriminant_ == nullptr
+               ? identifier()
+               : absl::StrCat(identifier(), " = ", discriminant_->ToString());
   }
   if (is_tuple()) {
-    return absl::StrCat(
+    std::string result = absl::StrCat(
         identifier(), "(",
         absl::StrJoin(tuple_members_, ", ",
                       [](std::string* out, TypeAnnotation* member) {
                         absl::StrAppend(out, member->ToString());
                       }),
         ")");
+    if (discriminant_ != nullptr) {
+      absl::StrAppend(&result, " = ", discriminant_->ToString());
+    }
+    return result;
   }
   if (struct_members_.empty()) {
-    return absl::StrCat(identifier(), " { }");
+    return discriminant_ == nullptr
+               ? absl::StrCat(identifier(), " { }")
+               : absl::StrCat(identifier(), " { } = ",
+                              discriminant_->ToString());
   }
-  return absl::StrCat(
+  std::string result = absl::StrCat(
       identifier(), " { ",
       absl::StrJoin(struct_members_, ", ",
                     [](std::string* out, StructMemberNode* member) {
                       absl::StrAppend(out, member->ToString());
                     }),
       " }");
+  if (discriminant_ != nullptr) {
+    absl::StrAppend(&result, " = ", discriminant_->ToString());
+  }
+  return result;
 }
 
 // -- class SumDef
 
 SumDef::SumDef(Module* owner, Span span, NameDef* name_def,
                std::vector<ParametricBinding*> parametric_bindings,
-               std::vector<SumVariant*> variants, bool is_public)
+               std::vector<SumVariant*> variants, bool is_public,
+               TypeAnnotation* tag_type_annotation)
     : AstNode(owner),
       span_(std::move(span)),
       name_def_(name_def),
+      tag_type_annotation_(tag_type_annotation),
       parametric_bindings_(std::move(parametric_bindings)),
       variants_(std::move(variants)),
       is_public_(is_public) {}
@@ -1604,6 +1624,9 @@ SumDef::~SumDef() = default;
 
 std::vector<AstNode*> SumDef::GetChildren(bool want_types) const {
   std::vector<AstNode*> results = {name_def_};
+  if (want_types && tag_type_annotation_ != nullptr) {
+    results.push_back(tag_type_annotation_);
+  }
   for (ParametricBinding* binding : parametric_bindings_) {
     results.push_back(binding);
   }
@@ -1650,10 +1673,14 @@ std::string SumDef::ToString() const {
                       }),
         ">");
   }
-  std::string result = absl::StrFormat("%s%ssum %s%s {\n",
+  const std::string tag_type =
+      tag_type_annotation_ == nullptr
+          ? ""
+          : absl::StrCat(" : ", tag_type_annotation_->ToString());
+  std::string result = absl::StrFormat("%s%senum %s%s%s {\n",
                                        MakeExternTypeAttr(extern_type_name_),
                                        is_public_ ? "pub " : "", identifier(),
-                                       parametric_str);
+                                       parametric_str, tag_type);
   for (const SumVariant* variant : variants_) {
     absl::StrAppendFormat(&result, "%s%s,\n", kRustOneIndent,
                           variant->ToString());

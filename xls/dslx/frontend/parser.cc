@@ -469,8 +469,8 @@ absl::StatusOr<std::unique_ptr<Module>> Parser::ParseModule(
   auto verify_not_public = [&](Token construct_token) {
     if (is_public) {
       return ParseErrorStatus(construct_token.span(),
-                              "Expect a function, proc, struct, sum, enum, or "
-                              "type after 'pub' keyword.");
+                              "Expect a function, proc, struct, enum, or type "
+                              "after 'pub' keyword.");
     }
     return absl::OkStatus();
   };
@@ -479,7 +479,7 @@ absl::StatusOr<std::unique_ptr<Module>> Parser::ParseModule(
     if (!pending_attributes.empty()) {
       return ParseErrorStatus(*pending_attributes[0]->GetSpan(),
                               "Attributes are only supported for a function, "
-                              "proc, struct, sum, enum, or type.");
+                              "proc, struct, enum, or type.");
     }
     return absl::OkStatus();
   };
@@ -540,18 +540,6 @@ absl::StatusOr<std::unique_ptr<Module>> Parser::ParseModule(
     XLS_RET_CHECK(bindings != nullptr);
     XLS_RET_CHECK(module_member_start_pos.has_value());
     XLS_RETURN_IF_ERROR(CheckForDuplicateAttributes(pending_attributes));
-
-    if (peek->IsIdentifier("sum")) {
-      XLS_ASSIGN_OR_RETURN(
-          SumDef * sum_def,
-          ParseSumDef(*module_member_start_pos, is_public, *bindings));
-      XLS_RETURN_IF_ERROR(ApplyTypeAttributes(sum_def, pending_attributes));
-      XLS_RETURN_IF_ERROR(module_->AddTop(sum_def, make_collision_error));
-      is_public = false;
-      pending_attributes.clear();
-      module_member_start_pos = std::nullopt;
-      continue;
-    }
 
     if (peek->kind() != TokenKind::kKeyword) {
       return top_level_error();
@@ -636,11 +624,18 @@ absl::StatusOr<std::unique_ptr<Module>> Parser::ParseModule(
         break;
       }
       case Keyword::kEnum: {
-        XLS_ASSIGN_OR_RETURN(
-            EnumDef * enum_def,
-            ParseEnumDef(*module_member_start_pos, is_public, *bindings));
-        XLS_RETURN_IF_ERROR(ApplyTypeAttributes(enum_def, pending_attributes));
-        XLS_RETURN_IF_ERROR(module_->AddTop(enum_def, make_collision_error));
+        XLS_ASSIGN_OR_RETURN(auto enum_or_sum,
+                             ParseEnumDef(*module_member_start_pos, is_public,
+                                          *bindings));
+        XLS_RETURN_IF_ERROR(absl::visit(
+            [&](auto* node) -> absl::Status {
+              return ApplyTypeAttributes(node, pending_attributes);
+            },
+            enum_or_sum));
+        XLS_RETURN_IF_ERROR(module_->AddTop(
+            absl::visit([](auto* node) -> ModuleMember { return node; },
+                        enum_or_sum),
+            make_collision_error));
         break;
       }
       case Keyword::kConst: {
@@ -1199,6 +1194,11 @@ absl::Status Parser::ApplyTypeAttributes(T* node,
   node->SetAttributes(attributes);
   return absl::OkStatus();
 }
+
+template absl::Status Parser::ApplyTypeAttributes<EnumDef>(
+    EnumDef* node, std::vector<Attribute*> attributes);
+template absl::Status Parser::ApplyTypeAttributes<SumDef>(
+    SumDef* node, std::vector<Attribute*> attributes);
 
 absl::StatusOr<ModuleMember> Parser::ApplyProcAttributes(
     Proc* p, std::vector<Attribute*> attributes) {
@@ -4183,112 +4183,84 @@ absl::StatusOr<ForLoopBase*> Parser::ParseFor(Bindings& bindings) {
   }
 }
 
-absl::StatusOr<EnumDef*> Parser::ParseEnumDef(const Pos& start_pos,
-                                              bool is_public,
-                                              Bindings& bindings) {
+absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
+    const Pos& start_pos, bool is_public, Bindings& bindings) {
   XLS_RETURN_IF_ERROR(PopKeywordOrError(Keyword::kEnum).status());
 
   // We don't bind the enum's name until the end to prevent recursive references
   // to itself in its body.
   XLS_ASSIGN_OR_RETURN(NameDef * name_def, ParseNameDefNoBind());
 
-  XLS_ASSIGN_OR_RETURN(bool saw_colon, TryDropToken(TokenKind::kColon));
-  TypeAnnotation* type_annotation = nullptr;
-  if (saw_colon) {
-    XLS_ASSIGN_OR_RETURN(type_annotation, ParseTypeAnnotation(bindings));
-  }
-  XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kOBrace));
   Bindings enum_bindings(&bindings);
-
-  auto parse_enum_entry = [this,
-                           &enum_bindings]() -> absl::StatusOr<EnumMember> {
-    XLS_ASSIGN_OR_RETURN(NameDef * name_def, ParseNameDef(enum_bindings));
-    XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kEquals));
-    XLS_ASSIGN_OR_RETURN(Expr * expr, ParseExpression(enum_bindings));
-    return EnumMember{.name_def = name_def, .value = expr};
-  };
-
-  XLS_ASSIGN_OR_RETURN(
-      std::vector<EnumMember> entries,
-      ParseCommaSeq<EnumMember>(parse_enum_entry, TokenKind::kCBrace));
-  auto* enum_def = module_->Make<EnumDef>(Span(start_pos, GetPos()), name_def,
-                                          type_annotation, entries, is_public);
-  bindings.Add(name_def->identifier(), enum_def);
-  name_def->set_definer(enum_def);
-  return enum_def;
-}
-
-absl::StatusOr<SumDef*> Parser::ParseSumDef(const Pos& start_pos, bool is_public,
-                                            Bindings& bindings) {
-  XLS_ASSIGN_OR_RETURN(Token sum_tok, PopTokenOrError(TokenKind::kIdentifier));
-  if (!sum_tok.IsIdentifier("sum")) {
-    return ParseErrorStatus(sum_tok.span(),
-                            absl::StrFormat("Expected `sum`; got `%s`",
-                                            sum_tok.ToString()));
-  }
-
-  // We don't bind the sum's name until the end to prevent recursive references
-  // to itself in its body.
-  XLS_ASSIGN_OR_RETURN(NameDef * name_def, ParseNameDefNoBind());
-
-  Bindings sum_bindings(&bindings);
 
   XLS_ASSIGN_OR_RETURN(bool dropped_oangle, TryDropToken(TokenKind::kOAngle));
   std::vector<ParametricBinding*> parametric_bindings;
   if (dropped_oangle) {
     XLS_ASSIGN_OR_RETURN(parametric_bindings,
-                         ParseParametricBindings(sum_bindings));
+                         ParseParametricBindings(enum_bindings));
   }
 
+  XLS_ASSIGN_OR_RETURN(bool saw_colon, TryDropToken(TokenKind::kColon));
+  TypeAnnotation* type_annotation = nullptr;
+  if (saw_colon) {
+    XLS_ASSIGN_OR_RETURN(type_annotation, ParseTypeAnnotation(enum_bindings));
+  }
   XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kOBrace));
 
+  struct ParsedEntry {
+    Span span;
+    NameDef* name_def;
+    SumVariant::PayloadKind payload_kind;
+    std::vector<TypeAnnotation*> tuple_members;
+    std::vector<StructMemberNode*> struct_members;
+    Expr* discriminant;
+  };
+
   auto parse_struct_member =
-      [this, &sum_bindings]() -> absl::StatusOr<StructMemberNode*> {
+      [this, &enum_bindings]() -> absl::StatusOr<StructMemberNode*> {
     Pos node_start_pos = GetPos();
     XLS_ASSIGN_OR_RETURN(NameDef * member_name, ParseNameDefNoBind());
     Pos colon_start_pos = GetPos();
     XLS_RETURN_IF_ERROR(
         DropTokenOrError(TokenKind::kColon, /*start=*/nullptr,
-                         "Expect type annotation on sum-variant field"));
+                         "Expect type annotation on semantic-sum variant field"));
     Pos colon_end_pos = GetPos();
     XLS_ASSIGN_OR_RETURN(TypeAnnotation * type,
-                         ParseTypeAnnotation(sum_bindings));
+                         ParseTypeAnnotation(enum_bindings));
     return module_->Make<StructMemberNode>(
         Span(node_start_pos, GetPos()), member_name,
         Span(colon_start_pos, colon_end_pos), type);
   };
 
-  auto parse_variant =
-      [this, &sum_bindings, &parse_struct_member,
-       name_def]() -> absl::StatusOr<SumVariant*> {
+  auto parse_entry =
+      [this, &enum_bindings, &parse_struct_member,
+       &name_def]() -> absl::StatusOr<ParsedEntry> {
     Pos variant_start = GetPos();
     XLS_ASSIGN_OR_RETURN(NameDef * variant_name, ParseNameDefNoBind());
-
-    XLS_ASSIGN_OR_RETURN(bool saw_equals, PeekTokenIs(TokenKind::kEquals));
-    if (saw_equals) {
-      return ParseErrorStatus(
-          variant_name->span(),
-          absl::StrFormat(
-              "Numeric enum members belong in `enum %s { ... }` or "
-              "`enum %s : uN { ... }`, not `sum %s { ... }`.",
-              name_def->identifier(), name_def->identifier(),
-              name_def->identifier()));
-    }
 
     XLS_ASSIGN_OR_RETURN(bool dropped_oparen, TryDropToken(TokenKind::kOParen));
     if (dropped_oparen) {
       auto parse_payload =
-          [this, &sum_bindings]() -> absl::StatusOr<TypeAnnotation*> {
-        return ParseTypeAnnotation(sum_bindings);
+          [this, &enum_bindings]() -> absl::StatusOr<TypeAnnotation*> {
+        return ParseTypeAnnotation(enum_bindings);
       };
       XLS_ASSIGN_OR_RETURN(
           std::vector<TypeAnnotation*> tuple_members,
           ParseCommaSeq<TypeAnnotation*>(parse_payload, TokenKind::kCParen));
-      return module_->Make<SumVariant>(Span(variant_start, GetPos()),
-                                       variant_name,
-                                       SumVariant::PayloadKind::kTuple,
-                                       std::move(tuple_members),
-                                       std::vector<StructMemberNode*>{});
+      XLS_ASSIGN_OR_RETURN(bool dropped_equals,
+                           TryDropToken(TokenKind::kEquals));
+      Expr* discriminant = nullptr;
+      if (dropped_equals) {
+        XLS_ASSIGN_OR_RETURN(discriminant, ParseExpression(enum_bindings));
+      }
+      return ParsedEntry{
+          .span = Span(variant_start, GetPos()),
+          .name_def = variant_name,
+          .payload_kind = SumVariant::PayloadKind::kTuple,
+          .tuple_members = std::move(tuple_members),
+          .struct_members = {},
+          .discriminant = discriminant,
+      };
     }
 
     XLS_ASSIGN_OR_RETURN(bool dropped_obrace, TryDropToken(TokenKind::kOBrace));
@@ -4308,22 +4280,102 @@ absl::StatusOr<SumDef*> Parser::ParseSumDef(const Pos& start_pos, bool is_public
                               name_def->identifier()));
         }
       }
-      return module_->Make<SumVariant>(Span(variant_start, GetPos()),
-                                       variant_name,
-                                       SumVariant::PayloadKind::kStruct,
-                                       std::vector<TypeAnnotation*>{},
-                                       std::move(struct_members));
+      XLS_ASSIGN_OR_RETURN(bool dropped_equals,
+                           TryDropToken(TokenKind::kEquals));
+      Expr* discriminant = nullptr;
+      if (dropped_equals) {
+        XLS_ASSIGN_OR_RETURN(discriminant, ParseExpression(enum_bindings));
+      }
+      return ParsedEntry{
+          .span = Span(variant_start, GetPos()),
+          .name_def = variant_name,
+          .payload_kind = SumVariant::PayloadKind::kStruct,
+          .tuple_members = {},
+          .struct_members = std::move(struct_members),
+          .discriminant = discriminant,
+      };
     }
 
-    return module_->Make<SumVariant>(Span(variant_start, GetPos()), variant_name,
-                                     SumVariant::PayloadKind::kUnit,
-                                     std::vector<TypeAnnotation*>{},
-                                     std::vector<StructMemberNode*>{});
+    XLS_ASSIGN_OR_RETURN(bool dropped_equals, TryDropToken(TokenKind::kEquals));
+    Expr* discriminant = nullptr;
+    if (dropped_equals) {
+      XLS_ASSIGN_OR_RETURN(discriminant, ParseExpression(enum_bindings));
+    }
+    return ParsedEntry{
+        .span = Span(variant_start, GetPos()),
+        .name_def = variant_name,
+        .payload_kind = SumVariant::PayloadKind::kUnit,
+        .tuple_members = {},
+        .struct_members = {},
+        .discriminant = discriminant,
+    };
   };
 
-  XLS_ASSIGN_OR_RETURN(std::vector<SumVariant*> variants,
-                       ParseCommaSeq<SumVariant*>(parse_variant,
+  XLS_ASSIGN_OR_RETURN(std::vector<ParsedEntry> entries,
+                       ParseCommaSeq<ParsedEntry>(parse_entry,
                                                   TokenKind::kCBrace));
+
+  const bool has_payload_syntax = absl::c_any_of(
+      entries, [](const ParsedEntry& entry) {
+        return entry.payload_kind != SumVariant::PayloadKind::kUnit;
+      });
+  const bool is_semantic_sum =
+      has_payload_syntax || (entries.empty() && type_annotation == nullptr);
+  const bool has_discriminants = absl::c_any_of(
+      entries, [](const ParsedEntry& entry) {
+        return entry.discriminant != nullptr;
+      });
+  const bool all_have_discriminants = absl::c_all_of(
+      entries, [](const ParsedEntry& entry) {
+        return entry.discriminant != nullptr;
+      });
+
+  if (!is_semantic_sum) {
+    if (!parametric_bindings.empty()) {
+      return ParseErrorStatus(
+          name_def->span(),
+          "Parametric bindings are only supported on semantic sums.");
+    }
+    if (!all_have_discriminants) {
+      return ParseErrorStatus(
+          name_def->span(),
+          absl::StrFormat("Numeric enum `%s` requires a value for every member.",
+                          name_def->identifier()));
+    }
+    std::vector<EnumMember> enum_members;
+    enum_members.reserve(entries.size());
+    for (const ParsedEntry& entry : entries) {
+      enum_members.push_back(EnumMember{
+          .name_def = entry.name_def,
+          .value = entry.discriminant,
+      });
+    }
+    auto* enum_def =
+        module_->Make<EnumDef>(Span(start_pos, GetPos()), name_def,
+                               type_annotation, std::move(enum_members),
+                               is_public);
+    bindings.Add(name_def->identifier(), enum_def);
+    name_def->set_definer(enum_def);
+    return enum_def;
+  }
+
+  if (!entries.empty() && has_discriminants != all_have_discriminants) {
+    return ParseErrorStatus(
+        name_def->span(),
+        absl::StrFormat(
+            "Semantic sum `%s` must use either all implicit or all explicit "
+            "discriminants.",
+            name_def->identifier()));
+  }
+
+  std::vector<SumVariant*> variants;
+  variants.reserve(entries.size());
+  for (ParsedEntry& entry : entries) {
+    variants.push_back(module_->Make<SumVariant>(
+        entry.span, entry.name_def, entry.payload_kind,
+        std::move(entry.tuple_members), std::move(entry.struct_members),
+        entry.discriminant));
+  }
   absl::flat_hash_set<std::string> seen_variant_names;
   for (SumVariant* variant : variants) {
     if (!seen_variant_names.insert(variant->identifier()).second) {
@@ -4335,9 +4387,9 @@ absl::StatusOr<SumDef*> Parser::ParseSumDef(const Pos& start_pos, bool is_public
     }
   }
 
-  auto* sum_def = module_->Make<SumDef>(Span(start_pos, GetPos()), name_def,
-                                        std::move(parametric_bindings),
-                                        std::move(variants), is_public);
+  auto* sum_def = module_->Make<SumDef>(
+      Span(start_pos, GetPos()), name_def, std::move(parametric_bindings),
+      std::move(variants), is_public, type_annotation);
   bindings.Add(name_def->identifier(), sum_def);
   name_def->set_definer(sum_def);
   return sum_def;
