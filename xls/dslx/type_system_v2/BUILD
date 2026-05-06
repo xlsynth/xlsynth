@@ -209,6 +209,7 @@ cc_library(
         ":inference_table_converter",
         ":inference_table_utils",
         ":module_trait_manager",
+        ":parametric_type_annotation_utils",
         ":parametric_struct_instantiator",
         ":populate_table_visitor",
         ":simplified_type_annotation_cache",
@@ -436,7 +437,9 @@ cc_library(
         ":inference_table",
         ":inference_table_converter",
         ":inference_table_converter_impl",
+        ":import_utils",
         ":populate_table",
+        ":sum_instance_canonicalizer",
         ":trait_deriver",
         ":type_inference_error_handler",
         ":type_system_tracer",
@@ -447,6 +450,8 @@ cc_library(
         "//xls/dslx:warning_collector",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:ast_node",
+        "//xls/dslx/frontend:ast_node_visitor_with_default",
+        "//xls/dslx/frontend:bindings",
         "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:semantics_analysis",
         "//xls/dslx/type_system:type",
@@ -457,6 +462,24 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_library(
+    name = "sum_instance_canonicalizer",
+    srcs = ["sum_instance_canonicalizer.cc"],
+    hdrs = ["sum_instance_canonicalizer.h"],
+    deps = [
+        ":import_utils",
+        "//xls/common/status:ret_check",
+        "//xls/common/status:status_macros",
+        "//xls/dslx:import_data",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:ast_cloner",
+        "//xls/dslx/frontend:module",
+        "@com_google_absl//absl/base",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status:statusor",
     ],
 )
 
@@ -723,6 +746,27 @@ cc_library(
 )
 
 cc_library(
+    name = "parametric_type_annotation_utils",
+    srcs = ["parametric_type_annotation_utils.cc"],
+    hdrs = ["parametric_type_annotation_utils.h"],
+    deps = [
+        ":inference_table",
+        ":inference_table_utils",
+        ":populate_table_visitor",
+        ":type_annotation_utils",
+        "//xls/common/status:status_macros",
+        "//xls/dslx:import_data",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:ast_cloner",
+        "//xls/dslx/frontend:ast_utils",
+        "@com_google_absl//absl/base",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_library(
     name = "type_annotation_utils",
     srcs = ["type_annotation_utils.cc"],
     hdrs = ["type_annotation_utils.h"],
@@ -929,6 +973,7 @@ cc_library(
         ":import_utils",
         ":inference_table",
         ":inference_table_utils",
+        ":parametric_type_annotation_utils",
         ":parametric_struct_instantiator",
         ":simplified_type_annotation_cache",
         ":type_annotation_filter",

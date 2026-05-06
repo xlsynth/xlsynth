@@ -23,6 +23,9 @@ from xls.common import test_base
 RUN_FUZZ_MULTIPROCESS_PATH = runfiles.get_path(
     'xls/fuzzer/run_fuzz_multiprocess'
 )
+SEED_MANIFEST_PATH = runfiles.get_path(
+    'xls/fuzzer/testdata/semantic_sum_phase1/manifest.textproto'
+)
 
 
 class RunFuzzMultiprocessTest(test_base.TestCase):
@@ -122,6 +125,42 @@ class RunFuzzMultiprocessTest(test_base.TestCase):
 
     # Samples directory should have at least one sample in it.
     self.assertGreater(len(os.listdir(samples_path)), 0)
+
+  def test_semantic_sum_seed_manifest_replay(self):
+    crasher_path = self.create_tempdir().full_path
+    samples_path = self.create_tempdir().full_path
+    summaries_path = self.create_tempdir().full_path
+
+    subprocess.check_call([
+        RUN_FUZZ_MULTIPROCESS_PATH,
+        '--seed=42',
+        '--seed_manifest=' + SEED_MANIFEST_PATH,
+        '--require_sum_type',
+        '--crash_path=' + crasher_path,
+        '--save_temps_path=' + samples_path,
+        '--summary_path=' + summaries_path,
+        '--sample_count=1',
+        '--calls_per_sample=2',
+        '--worker_count=1',
+    ])
+
+    sample_dirs = os.listdir(samples_path)
+    self.assertIn(
+        'seed-source_exhaustive_constructor_match_without_wildcard',
+        sample_dirs,
+    )
+    self.assertIn('seed-source_or_pattern_binding_nonfinal', sample_dirs)
+    self.assertIn('worker0-sample0', sample_dirs)
+
+    self.assertIn(
+        'diagnostic.txt',
+        os.listdir(
+            os.path.join(
+                samples_path, 'seed-source_or_pattern_binding_nonfinal'
+            )
+        ),
+    )
+    self.assertIn('source_seed_replay.binarypb', os.listdir(summaries_path))
 
   def test_codegen_and_simulate(self):
     crasher_path = self.create_tempdir().full_path

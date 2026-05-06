@@ -545,6 +545,9 @@ xls_dslx_module_member_kind xls_dslx_module_member_get_kind(
           [](xls::dslx::EnumDef*&) -> xls_dslx_module_member_kind {
             return xls_dslx_module_member_kind_enum_def;
           },
+          [](xls::dslx::SumDef*&) -> xls_dslx_module_member_kind {
+            return xls_dslx_module_member_kind_sum_def;
+          },
           [](xls::dslx::Import*&) -> xls_dslx_module_member_kind {
             return xls_dslx_module_member_kind_import;
           },
@@ -599,6 +602,13 @@ struct xls_dslx_enum_def* xls_dslx_module_member_get_enum_def(
   return reinterpret_cast<xls_dslx_enum_def*>(cpp_enum_def);
 }
 
+struct xls_dslx_sum_def* xls_dslx_module_member_get_sum_def(
+    struct xls_dslx_module_member* member) {
+  auto* cpp_member = reinterpret_cast<xls::dslx::ModuleMember*>(member);
+  auto* cpp_sum_def = std::get<xls::dslx::SumDef*>(*cpp_member);
+  return reinterpret_cast<xls_dslx_sum_def*>(cpp_sum_def);
+}
+
 struct xls_dslx_type_alias* xls_dslx_module_member_get_type_alias(
     struct xls_dslx_module_member* member) {
   auto* cpp_member = reinterpret_cast<xls::dslx::ModuleMember*>(member);
@@ -635,6 +645,13 @@ struct xls_dslx_module_member* xls_dslx_module_member_from_enum_def(
     struct xls_dslx_enum_def* enum_def) {
   auto* cpp_enum_def = reinterpret_cast<xls::dslx::EnumDef*>(enum_def);
   xls::dslx::ModuleMember* member = FindModuleMemberForNode(cpp_enum_def);
+  return reinterpret_cast<xls_dslx_module_member*>(member);
+}
+
+struct xls_dslx_module_member* xls_dslx_module_member_from_sum_def(
+    struct xls_dslx_sum_def* sum_def) {
+  auto* cpp_sum_def = reinterpret_cast<xls::dslx::SumDef*>(sum_def);
+  xls::dslx::ModuleMember* member = FindModuleMemberForNode(cpp_sum_def);
   return reinterpret_cast<xls_dslx_module_member*>(member);
 }
 
@@ -1160,6 +1177,9 @@ xls_dslx_type_definition_kind xls_dslx_module_get_type_definition_kind(
                          [](const xls::dslx::EnumDef*) {
                            return xls_dslx_type_definition_kind_enum_def;
                          },
+                         [](const xls::dslx::SumDef*) {
+                           return xls_dslx_type_definition_kind_sum_def;
+                         },
                          [](const xls::dslx::TypeAlias*) {
                            return xls_dslx_type_definition_kind_type_alias;
                          },
@@ -1200,6 +1220,15 @@ struct xls_dslx_enum_def* xls_dslx_module_get_type_definition_as_enum_def(
       cpp_module->GetTypeDefinitions().at(i);
   auto* cpp_enum_def = std::get<xls::dslx::EnumDef*>(cpp_type_definition);
   return reinterpret_cast<xls_dslx_enum_def*>(cpp_enum_def);
+}
+
+struct xls_dslx_sum_def* xls_dslx_module_get_type_definition_as_sum_def(
+    struct xls_dslx_module* module, int64_t i) {
+  auto* cpp_module = reinterpret_cast<xls::dslx::Module*>(module);
+  xls::dslx::TypeDefinition cpp_type_definition =
+      cpp_module->GetTypeDefinitions().at(i);
+  auto* cpp_sum_def = std::get<xls::dslx::SumDef*>(cpp_type_definition);
+  return reinterpret_cast<xls_dslx_sum_def*>(cpp_sum_def);
 }
 
 struct xls_dslx_type_alias* xls_dslx_module_get_type_definition_as_type_alias(
@@ -1410,6 +1439,26 @@ char* xls_dslx_enum_def_to_string(struct xls_dslx_enum_def* n) {
   return xls::ToOwnedCString(cpp_enum_def->ToString());
 }
 
+char* xls_dslx_sum_def_get_identifier(struct xls_dslx_sum_def* n) {
+  auto* cpp_sum_def = reinterpret_cast<xls::dslx::SumDef*>(n);
+  return xls::ToOwnedCString(cpp_sum_def->identifier());
+}
+
+bool xls_dslx_sum_def_is_parametric(struct xls_dslx_sum_def* n) {
+  auto* cpp_sum_def = reinterpret_cast<xls::dslx::SumDef*>(n);
+  return cpp_sum_def->IsParametric();
+}
+
+int64_t xls_dslx_sum_def_get_variant_count(struct xls_dslx_sum_def* n) {
+  auto* cpp_sum_def = reinterpret_cast<xls::dslx::SumDef*>(n);
+  return cpp_sum_def->variants().size();
+}
+
+char* xls_dslx_sum_def_to_string(struct xls_dslx_sum_def* n) {
+  auto* cpp_sum_def = reinterpret_cast<xls::dslx::SumDef*>(n);
+  return xls::ToOwnedCString(cpp_sum_def->ToString());
+}
+
 struct xls_dslx_module* xls_dslx_expr_get_owner_module(
     struct xls_dslx_expr* expr) {
   auto* cpp_expr = reinterpret_cast<xls::dslx::Expr*>(expr);
@@ -1440,6 +1489,12 @@ const struct xls_dslx_type* xls_dslx_type_info_get_type_struct_member(
 const struct xls_dslx_type* xls_dslx_type_info_get_type_enum_def(
     struct xls_dslx_type_info* type_info, struct xls_dslx_enum_def* enum_def) {
   auto* node = reinterpret_cast<xls::dslx::AstNode*>(enum_def);
+  return GetMetaTypeHelper(type_info, node);
+}
+
+const struct xls_dslx_type* xls_dslx_type_info_get_type_sum_def(
+    struct xls_dslx_type_info* type_info, struct xls_dslx_sum_def* sum_def) {
+  auto* node = reinterpret_cast<xls::dslx::AstNode*>(sum_def);
   return GetMetaTypeHelper(type_info, node);
 }
 

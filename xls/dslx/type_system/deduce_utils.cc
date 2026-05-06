@@ -83,6 +83,12 @@ class FormatMacroArgumentValidator : public TypeVisitor {
   absl::Status HandleStruct(const StructType& t) override {
     return absl::OkStatus();
   }
+  absl::Status HandleSum(const SumType& t) override {
+    return TypeInferenceErrorStatus(
+        span_, &t,
+        ": Cannot format an expression with semantic sum type in Phase 1",
+        file_table_);
+  }
   absl::Status HandleProc(const ProcType& t) override {
     return absl::OkStatus();
   }
@@ -116,6 +122,35 @@ class FormatMacroArgumentValidator : public TypeVisitor {
   const FileTable& file_table_;
   const Span& span_;
 };
+
+bool TypeContainsSum(const Type& type) {
+  if (dynamic_cast<const SumType*>(&type) != nullptr) {
+    return true;
+  }
+  if (const auto* array_type = dynamic_cast<const ArrayType*>(&type);
+      array_type != nullptr) {
+    return TypeContainsSum(array_type->element_type());
+  }
+  if (const auto* tuple_type = dynamic_cast<const TupleType*>(&type);
+      tuple_type != nullptr) {
+    for (int64_t i = 0; i < tuple_type->size(); ++i) {
+      if (TypeContainsSum(tuple_type->GetMemberType(i))) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (const auto* struct_type = dynamic_cast<const StructType*>(&type);
+      struct_type != nullptr) {
+    for (int64_t i = 0; i < struct_type->size(); ++i) {
+      if (TypeContainsSum(struct_type->GetMemberType(i))) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return false;
+}
 
 }  // namespace
 
@@ -317,6 +352,12 @@ absl::Status ValidateNumber(const Number& number, const Type& type) {
 
 absl::Status ValidateFormatMacroArgument(const Type& type, const Span& span,
                                          const FileTable& file_table) {
+  if (TypeContainsSum(type)) {
+    return TypeInferenceErrorStatus(
+        span, &type,
+        ": Cannot format an expression with semantic sum type in Phase 1",
+        file_table);
+  }
   FormatMacroArgumentValidator validator(file_table, span);
   return type.Accept(validator);
 }
@@ -607,6 +648,11 @@ absl::StatusOr<InterpValue> GetBitCountAsInterpValue(const Type* type) {
   if (type->IsMeta()) {
     XLS_ASSIGN_OR_RETURN(type, UnwrapMetaType(*type));
   }
+  if (TypeContainsSum(*type)) {
+    return absl::InvalidArgumentError(
+        "Cannot query bit_count for a type containing semantic sums in Phase "
+        "1");
+  }
   XLS_ASSIGN_OR_RETURN(TypeDim bit_count_ctd, type->GetTotalBitCount());
   XLS_ASSIGN_OR_RETURN(int64_t bit_count,
                        bit_count_ctd.value().GetBitValueViaSign());
@@ -616,6 +662,11 @@ absl::StatusOr<InterpValue> GetBitCountAsInterpValue(const Type* type) {
 absl::StatusOr<InterpValue> GetElementCountAsInterpValue(const Type* type) {
   if (type->IsMeta()) {
     XLS_ASSIGN_OR_RETURN(type, UnwrapMetaType(*type));
+  }
+  if (TypeContainsSum(*type)) {
+    return absl::InvalidArgumentError(
+        "Cannot query element_count for a type containing semantic sums in "
+        "Phase 1");
   }
   if (const auto* array_type = dynamic_cast<const ArrayType*>(type)) {
     XLS_ASSIGN_OR_RETURN(int64_t size, array_type->size().GetAsInt64());

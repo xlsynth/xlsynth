@@ -1323,6 +1323,30 @@ TEST(AstClonerTest, ReplacerCreatesNodesInTargetModule) {
   EXPECT_EQ(value, 42u);
 }
 
+TEST(AstClonerTest, CloneAstAcrossModulesRebindsBuiltinNameRefs) {
+  constexpr std::string_view kProgram = R"(fn main() -> u8 { clz(u8:1) })";
+
+  FileTable src_file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(auto src_module, ParseModule(kProgram, "src_path.x",
+                                                        "src", src_file_table));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * main_fn,
+                           src_module->GetMemberOrError<Function>("main"));
+
+  FileTable dst_file_table;
+  Module dst_module("dst", /*fs_path=*/std::nullopt, dst_file_table);
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto pairs,
+      CloneAstAndGetAllPairs(main_fn, &dst_module, &NoopCloneReplacer));
+  auto* cloned_main = absl::down_cast<Function*>(pairs.at(main_fn));
+  std::optional<NameRef*> cloned_clz =
+      FindFirstNameRefWithId(cloned_main, "clz");
+  ASSERT_TRUE(cloned_clz.has_value());
+  ASSERT_TRUE((*cloned_clz)->IsBuiltin());
+  EXPECT_EQ(std::get<BuiltinNameDef*>((*cloned_clz)->name_def()),
+            dst_module.GetOrCreateBuiltinNameDef("clz"));
+}
+
 TEST(AstClonerTest, ReplacerUsesOldToNewMappingForNameRef) {
   constexpr std::string_view kProgram = R"(fn main() -> u32 {
   let b = u32:7;

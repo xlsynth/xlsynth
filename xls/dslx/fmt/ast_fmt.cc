@@ -149,8 +149,10 @@ std::string StripAnyDotModifier(std::string_view s) {
 // Forward decls.
 // keep-sorted start
 DocRef Fmt(const ColonRef& n, Comments& comments, DocArena& arena);
+DocRef Fmt(const ConstructorPattern& n, Comments& comments, DocArena& arena);
 DocRef Fmt(const Expr& n, Comments& comments, DocArena& arena);
 DocRef Fmt(const NameDefTree& n, Comments& comments, DocArena& arena);
+DocRef Fmt(const SumInstance& n, Comments& comments, DocArena& arena);
 DocRef Fmt(const TypeAnnotation& n, Comments& comments, DocArena& arena);
 DocRef FmtBlockedExprLeader(const Expr& e, Comments& comments, DocArena& arena);
 DocRef FmtExpr(const Expr& n, Comments& comments, DocArena& arena,
@@ -1662,6 +1664,41 @@ DocRef Fmt(const StructInstance& n, Comments& comments, DocArena& arena) {
       leader, arena.MakeGroup(arena.MakeFlatChoice(on_flat, on_break)));
 }
 
+DocRef Fmt(const SumInstance& n, Comments& comments, DocArena& arena) {
+  if (n.is_unit()) {
+    return Fmt(*n.constructor(), comments, arena);
+  } else if (n.is_tuple()) {
+    DocRef args = FmtJoin<Expr*>(
+        n.positional_args(), Joiner::kCommaBreak1AsGroupNoTrailingComma,
+        FmtExprPtr, comments, arena);
+    return ConcatNGroup(arena,
+                        {Fmt(*n.constructor(), comments, arena),
+                         arena.oparen(), args, arena.cparen()});
+  } else {
+    std::vector<DocRef> pieces = {Fmt(*n.constructor(), comments, arena),
+                                  arena.space(), arena.ocurl()};
+    if (n.named_args().empty()) {
+      pieces.push_back(arena.space());
+    } else {
+      pieces.push_back(arena.space());
+      for (int64_t i = 0; i < n.named_args().size(); ++i) {
+        const auto& [name, arg] = n.named_args()[i];
+        pieces.push_back(arena.MakeText(name));
+        pieces.push_back(arena.colon());
+        pieces.push_back(arena.space());
+        pieces.push_back(Fmt(*arg, comments, arena));
+        if (i != n.named_args().size() - 1) {
+          pieces.push_back(arena.comma());
+          pieces.push_back(arena.break1());
+        }
+      }
+      pieces.push_back(arena.space());
+    }
+    pieces.push_back(arena.ccurl());
+    return ConcatNGroup(arena, pieces);
+  }
+}
+
 DocRef Fmt(const SplatStructInstance& n, Comments& comments, DocArena& arena) {
   DocRef leader = FmtStructLeader(n.struct_ref(), comments, arena);
   DocRef splatted = Fmt(n.splatted(), comments, arena);
@@ -1849,6 +1886,7 @@ DocRef Fmt(const Range& n, Comments& comments, DocArena& arena) {
 DocRef Fmt(const NameDefTree::Leaf& n, Comments& comments, DocArena& arena) {
   return absl::visit(
       Visitor{
+          [&](const ConstructorPattern* n) { return Fmt(*n, comments, arena); },
           [&](const NameDef* n) { return Fmt(*n, comments, arena); },
           [&](const NameRef* n) { return Fmt(*n, comments, arena); },
           [&](const WildcardPattern* n) { return Fmt(*n, comments, arena); },
@@ -1858,6 +1896,42 @@ DocRef Fmt(const NameDefTree::Leaf& n, Comments& comments, DocArena& arena) {
           [&](const Range* n) { return Fmt(*n, comments, arena); },
       },
       n);
+}
+
+DocRef Fmt(const ConstructorPattern& n, Comments& comments, DocArena& arena) {
+  std::vector<DocRef> pieces = {Fmt(*n.constructor(), comments, arena)};
+  if (n.is_tuple()) {
+    pieces.push_back(arena.oparen());
+    pieces.push_back(FmtJoin<NameDefTree*>(
+        n.positional_patterns(), Joiner::kCommaBreak1AsGroupTrailingCommaOnBreak,
+        [&](NameDefTree* pattern, Comments& comments, DocArena& arena) {
+          return Fmt(*pattern, comments, arena);
+        },
+        comments, arena));
+    pieces.push_back(arena.cparen());
+    return ConcatNGroup(arena, pieces);
+  }
+
+  pieces.push_back(arena.space());
+  pieces.push_back(arena.ocurl());
+  if (!n.named_patterns().empty()) {
+    pieces.push_back(arena.break1());
+    pieces.push_back(FmtJoin<ConstructorPattern::NamedPattern>(
+        n.named_patterns(), Joiner::kCommaBreak1AsGroupTrailingCommaOnBreak,
+        [&](const ConstructorPattern::NamedPattern& field, Comments& comments,
+            DocArena& arena) {
+          const auto& [name, pattern] = field;
+          return ConcatNGroup(
+              arena, {arena.MakeText(name), arena.colon(), arena.space(),
+                      Fmt(*pattern, comments, arena)});
+        },
+        comments, arena));
+    pieces.push_back(arena.break1());
+  } else {
+    pieces.push_back(arena.space());
+  }
+  pieces.push_back(arena.ccurl());
+  return ConcatNGroup(arena, pieces);
 }
 
 DocRef Fmt(const NameDefTree& n, Comments& comments, DocArena& arena) {
@@ -1959,6 +2033,15 @@ DocRef FmtBlockedExprLeader(const Expr& e, Comments& comments,
     case AstNodeKind::kStructInstance: {
       const StructInstance& n = static_cast<const StructInstance&>(e);
       return ConcatN(arena, {FmtStructLeader(n.struct_ref(), comments, arena),
+                             arena.space(), arena.ocurl()});
+    }
+    case AstNodeKind::kSumInstance: {
+      const SumInstance& n = static_cast<const SumInstance&>(e);
+      if (n.is_tuple()) {
+        return arena.MakeConcat(Fmt(*n.constructor(), comments, arena),
+                                arena.oparen());
+      }
+      return ConcatN(arena, {Fmt(*n.constructor(), comments, arena),
                              arena.space(), arena.ocurl()});
     }
     case AstNodeKind::kSplatStructInstance: {
@@ -2896,6 +2979,96 @@ DocRef Formatter::Format(const EnumDef& n) {
   return JoinWithAttrs(attrs, ConcatN(arena_, pieces), arena_);
 }
 
+DocRef Formatter::Format(const SumDef& n) {
+  std::vector<DocRef> pieces;
+  std::vector<DocRef> attrs;
+  for (const Attribute* attribute : n.attributes()) {
+    attrs.push_back(FmtAttribute(*attribute, arena_));
+  }
+  if (n.is_public()) {
+    pieces.push_back(arena_.Make(Keyword::kPub));
+    pieces.push_back(arena_.space());
+  }
+  pieces.push_back(arena_.Make(Keyword::kEnum));
+  pieces.push_back(arena_.space());
+  pieces.push_back(arena_.MakeText(n.identifier()));
+
+  if (!n.parametric_bindings().empty()) {
+    pieces.push_back(arena_.oangle());
+    pieces.push_back(FmtJoin<const ParametricBinding*>(
+        n.parametric_bindings(), Joiner::kCommaSpace,
+        [&](const ParametricBinding* binding, Comments& comments,
+            DocArena& arena) { return Format(binding); },
+        comments_, arena_));
+    pieces.push_back(arena_.cangle());
+  }
+
+  pieces.push_back(arena_.space());
+  if (n.tag_type_annotation() != nullptr) {
+    pieces.push_back(arena_.colon());
+    pieces.push_back(arena_.space());
+    pieces.push_back(Fmt(*n.tag_type_annotation(), comments_, arena_));
+    pieces.push_back(arena_.space());
+  }
+  pieces.push_back(arena_.ocurl());
+  pieces.push_back(arena_.hard_line());
+
+  std::vector<DocRef> nested;
+  nested.reserve(n.variants().size() * 2);
+  for (size_t i = 0; i < n.variants().size(); ++i) {
+    const SumVariant* variant = n.variants()[i];
+    std::vector<DocRef> variant_pieces = {
+        arena_.MakeText(variant->identifier())};
+    if (variant->is_tuple()) {
+      variant_pieces.push_back(arena_.oparen());
+      variant_pieces.push_back(FmtJoin<TypeAnnotation*>(
+          variant->tuple_members(),
+          Joiner::kCommaBreak1AsGroupTrailingCommaOnBreak,
+          [&](TypeAnnotation* member, Comments& comments, DocArena& arena) {
+            return Fmt(*member, comments, arena);
+          },
+          comments_, arena_));
+      variant_pieces.push_back(arena_.cparen());
+    } else if (variant->is_struct()) {
+      variant_pieces.push_back(arena_.space());
+      variant_pieces.push_back(arena_.ocurl());
+      if (!variant->struct_members().empty()) {
+        variant_pieces.push_back(arena_.break1());
+        variant_pieces.push_back(FmtJoin<const StructMemberNode*>(
+            variant->struct_members(),
+            Joiner::kCommaBreak1AsGroupTrailingCommaOnBreak,
+            [&](const StructMemberNode* member, Comments& comments,
+                DocArena& arena) {
+              return ConcatNGroup(
+                  arena, {arena.MakeText(member->name()), arena.colon(),
+                          arena.space(), Fmt(*member->type(), comments, arena)});
+            },
+            comments_, arena_));
+        variant_pieces.push_back(arena_.break1());
+      } else {
+        variant_pieces.push_back(arena_.space());
+      }
+      variant_pieces.push_back(arena_.ccurl());
+    }
+    if (variant->discriminant() != nullptr) {
+      variant_pieces.push_back(arena_.space());
+      variant_pieces.push_back(arena_.equals());
+      variant_pieces.push_back(arena_.space());
+      variant_pieces.push_back(Fmt(*variant->discriminant(), comments_, arena_));
+    }
+    variant_pieces.push_back(arena_.comma());
+    nested.push_back(ConcatNGroup(arena_, variant_pieces));
+    if (i + 1 != n.variants().size()) {
+      nested.push_back(arena_.hard_line());
+    }
+  }
+
+  pieces.push_back(arena_.MakeNest(ConcatN(arena_, nested)));
+  pieces.push_back(arena_.hard_line());
+  pieces.push_back(arena_.ccurl());
+  return JoinWithAttrs(attrs, ConcatN(arena_, pieces), arena_);
+}
+
 DocRef Formatter::Format(const Import& n) {
   std::vector<DocRef> dotted_pieces;
   for (size_t i = 0; i < n.subject().size(); ++i) {
@@ -3080,6 +3253,7 @@ DocRef Formatter::Format(const ModuleMember& n) {
             return arena_.MakeConcat(Format(*n), arena_.semi());
           },
           [&](const StructDef* n) { return Format(*n); },
+          [&](const SumDef* n) { return Format(*n); },
           [&](const ProcDef* n) { return Format(*n); },
           [&](const Impl* n) { return Format(*n); },
           [&](const Trait* n) { return Format(*n); },

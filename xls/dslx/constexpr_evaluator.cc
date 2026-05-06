@@ -518,6 +518,17 @@ absl::Status ConstexprEvaluator::HandleStructInstance(
   return InterpretExpr(expr);
 }
 
+absl::Status ConstexprEvaluator::HandleSumInstance(const SumInstance* expr) {
+  // A sum instance is constexpr iff all active payload members are constexpr.
+  for (Expr* arg : expr->positional_args()) {
+    EVAL_AS_CONSTEXPR_OR_RETURN(arg);
+  }
+  for (const auto& [name, arg] : expr->named_args()) {
+    EVAL_AS_CONSTEXPR_OR_RETURN(arg);
+  }
+  return InterpretExpr(expr);
+}
+
 absl::Status ConstexprEvaluator::HandleConditional(const Conditional* expr) {
   // Simple enough that we don't need to invoke the interpreter.
   EVAL_AS_CONSTEXPR_OR_RETURN(expr->test());

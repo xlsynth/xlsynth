@@ -34,6 +34,7 @@
 #include "xls/fuzzer/ast_generator.h"
 #include "xls/fuzzer/run_fuzz_multiprocess.h"
 #include "xls/fuzzer/sample.h"
+#include "xls/fuzzer/semantic_sum_source_seed_replay.h"
 #include "xls/fuzzer/sample.pb.h"
 
 ABSL_FLAG(absl::Duration, duration, absl::InfiniteDuration(),
@@ -47,6 +48,10 @@ ABSL_FLAG(
     bool, force_failure, false,
     "Forces the samples to fail. Can be used to test failure code paths.");
 ABSL_FLAG(bool, generate_proc, false, "Generate a proc sample.");
+ABSL_FLAG(bool, require_sum_type, false,
+          "Require each generated function sample to include a semantic sum "
+          "definition and constructor use. Not supported with "
+          "`--generate_proc`.");
 ABSL_FLAG(int64_t, max_width_aggregate_types, 1024,
           "The maximum width of aggregate types (tuples and arrays) in the "
           "generated samples.");
@@ -63,6 +68,9 @@ ABSL_FLAG(std::optional<std::string>, save_temps_path, std::nullopt,
 ABSL_FLAG(std::optional<int64_t>, seed, std::nullopt,
           "Seed value for generation. By default, a nondetermistic seed is "
           "used; if a seed is provided, it is used for determinism");
+ABSL_FLAG(std::optional<std::string>, seed_manifest, std::nullopt,
+          "Manifest of semantic-sum source seeds to replay before random "
+          "sample generation.");
 ABSL_FLAG(bool, simulate, false, "Run Verilog simulation.");
 ABSL_FLAG(std::optional<std::string>, simulator, std::nullopt,
           "Verilog simulator to use.");
@@ -97,12 +105,14 @@ struct Options {
   bool emit_loops;
   bool force_failure;
   bool generate_proc;
+  bool require_sum_type;
   int64_t max_width_aggregate_types;
   int64_t max_width_bits_types;
   int64_t proc_ticks;
   std::optional<int64_t> sample_count;
   std::optional<std::filesystem::path> save_temps_path;
   std::optional<int64_t> seed;
+  std::optional<std::filesystem::path> seed_manifest;
   bool simulate;
   std::optional<std::string> simulator;
   std::optional<std::filesystem::path> summary_path;
@@ -114,11 +124,7 @@ struct Options {
 };
 
 absl::Status CheckOrCreateWritableDirectory(const std::filesystem::path& path) {
-  if (!std::filesystem::exists(path) &&
-      !std::filesystem::create_directory(path)) {
-    return absl::InvalidArgumentError(
-        absl::StrCat(path.string(), " could not be created"));
-  }
+  XLS_RETURN_IF_ERROR(RecursivelyCreateDir(path));
   if (!std::filesystem::is_directory(path)) {
     return absl::InvalidArgumentError(
         absl::StrCat(path.string(), " is not a directory"));
@@ -128,6 +134,10 @@ absl::Status CheckOrCreateWritableDirectory(const std::filesystem::path& path) {
 }
 
 absl::Status RealMain(const Options& options) {
+  if (options.generate_proc && options.require_sum_type) {
+    return absl::InvalidArgumentError(
+        "require_sum_type is only supported for function samples.");
+  }
   if (options.crash_path.has_value()) {
     XLS_RETURN_IF_ERROR(CheckOrCreateWritableDirectory(*options.crash_path));
   }
@@ -149,6 +159,7 @@ absl::Status RealMain(const Options& options) {
   ast_generator_options.max_width_aggregate_types =
       options.max_width_aggregate_types;
   ast_generator_options.generate_proc = options.generate_proc;
+  ast_generator_options.require_sum_type = options.require_sum_type;
 
   SampleOptions sample_options;
   sample_options.set_calls_per_sample(
@@ -172,6 +183,26 @@ absl::Status RealMain(const Options& options) {
   sample_options.set_use_jit(options.use_llvm_jit);
   sample_options.set_use_system_verilog(options.use_system_verilog);
   sample_options.set_with_valid_holdoff(options.with_valid_holdoff);
+
+  if (options.seed_manifest.has_value()) {
+    if (options.generate_proc) {
+      return absl::InvalidArgumentError(
+          "seed_manifest replay is only supported for function samples.");
+    }
+    std::optional<std::filesystem::path> summary_file;
+    if (options.summary_path.has_value()) {
+      summary_file = *options.summary_path / "source_seed_replay.binarypb";
+    }
+    XLS_ASSIGN_OR_RETURN(
+        SemanticSumSourceReplayStats replay_stats,
+        ReplaySemanticSumSourceSeeds(*options.seed_manifest, sample_options,
+                                     options.seed, options.save_temps_path,
+                                     summary_file));
+    LOG(INFO) << "Replayed " << replay_stats.passing_seed_count
+              << " passing semantic-sum source seeds and verified "
+              << replay_stats.failing_seed_count
+              << " failing semantic-sum source seeds.";
+  }
 
   return ParallelGenerateAndRunSamples(
       worker_count, ast_generator_options, sample_options, options.seed,
@@ -206,6 +237,7 @@ int main(int argc, char** argv) {
       .emit_loops = absl::GetFlag(FLAGS_emit_loops),
       .force_failure = absl::GetFlag(FLAGS_force_failure),
       .generate_proc = absl::GetFlag(FLAGS_generate_proc),
+      .require_sum_type = absl::GetFlag(FLAGS_require_sum_type),
       .max_width_aggregate_types =
           absl::GetFlag(FLAGS_max_width_aggregate_types),
       .max_width_bits_types = absl::GetFlag(FLAGS_max_width_bits_types),
@@ -213,6 +245,7 @@ int main(int argc, char** argv) {
       .sample_count = absl::GetFlag(FLAGS_sample_count),
       .save_temps_path = absl::GetFlag(FLAGS_save_temps_path),
       .seed = absl::GetFlag(FLAGS_seed),
+      .seed_manifest = absl::GetFlag(FLAGS_seed_manifest),
       .simulate = absl::GetFlag(FLAGS_simulate),
       .simulator = absl::GetFlag(FLAGS_simulator),
       .summary_path = absl::GetFlag(FLAGS_summary_path),

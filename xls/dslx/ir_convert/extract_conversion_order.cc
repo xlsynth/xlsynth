@@ -241,7 +241,10 @@ class InvocationVisitor : public ExprVisitor {
       callee_info = CalleeInfo{callee->owner(), const_cast<Function*>(callee),
                                invocation_ti};
     } else {
-      XLS_RET_CHECK(IsBuiltinFn(node->callee()));
+      // Sum constructors are special syntax, not real callable values, so TI
+      // does not record invocation data for them.
+      XLS_RET_CHECK(dynamic_cast<const ColonRef*>(node->callee()) != nullptr ||
+                    IsBuiltinFn(node->callee()));
       return absl::OkStatus();
     }
 
@@ -350,6 +353,16 @@ class InvocationVisitor : public ExprVisitor {
 
   absl::Status HandleStructInstance(const StructInstance* expr) override {
     for (const auto& member : expr->GetUnorderedMembers()) {
+      XLS_RETURN_IF_ERROR(member.second->AcceptExpr(this));
+    }
+    return absl::OkStatus();
+  }
+
+  absl::Status HandleSumInstance(const SumInstance* expr) override {
+    for (const Expr* arg : expr->positional_args()) {
+      XLS_RETURN_IF_ERROR(arg->AcceptExpr(this));
+    }
+    for (const auto& member : expr->named_args()) {
       XLS_RETURN_IF_ERROR(member.second->AcceptExpr(this));
     }
     return absl::OkStatus();
@@ -774,6 +787,7 @@ absl::StatusOr<std::vector<ConversionRecord>> GetOrder(Module* module,
             [](ProcAlias*) { return absl::OkStatus(); },
             [](Impl*) { return absl::OkStatus(); },
             [](EnumDef*) { return absl::OkStatus(); },
+            [](SumDef*) { return absl::OkStatus(); },
             [](Import*) { return absl::OkStatus(); },
             [](Trait*) { return absl::OkStatus(); },
             [](Use*) { return absl::OkStatus(); },

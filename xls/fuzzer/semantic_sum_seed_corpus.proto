@@ -1,0 +1,49 @@
+// Copyright 2026 The XLS Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package xls.fuzzer;
+
+enum SemanticSumSeedSurface {
+  SEMANTIC_SUM_SEED_SURFACE_UNSPECIFIED = 0;
+  SEMANTIC_SUM_SEED_SURFACE_SOURCE = 1;
+  SEMANTIC_SUM_SEED_SURFACE_NEGATIVE_MUTATION = 2;
+  SEMANTIC_SUM_SEED_SURFACE_RAW_BOUNDARY = 3;
+  SEMANTIC_SUM_SEED_SURFACE_INHABITANCE = 4;
+  SEMANTIC_SUM_SEED_SURFACE_TYPEINFO_LAYOUT = 5;
+}
+
+enum SemanticSumSeedOutcome {
+  SEMANTIC_SUM_SEED_OUTCOME_UNSPECIFIED = 0;
+  SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS = 1;
+  SEMANTIC_SUM_SEED_OUTCOME_SHOULD_FAIL = 2;
+}
+
+message SemanticSumSeed {
+  string seed_id = 1;
+  repeated SemanticSumSeedSurface surfaces = 2;
+  string relative_path = 3;
+  string review_artifact_path = 4;
+  string expected_stage_or_failure_class = 5;
+  SemanticSumSeedOutcome outcome = 6;
+  string expected_diagnostic_substr = 7;
+  string raw_ir_value_text = 8;
+  string notes = 9;
+  repeated string sample_args = 10;
+}
+
+message SemanticSumSeedManifest {
+  repeated SemanticSumSeed seeds = 1;
+}
