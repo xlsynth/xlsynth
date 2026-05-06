@@ -104,11 +104,14 @@ absl::StatusOr<AstNode*> CloneAst(const AstNode* root,
 // Variant that returns all the old->new pairs in the cloned subtree.
 // If a `target_module` is specified, then cloned nodes will be created in that
 // module; otherwise, clones will be created "in place", i.e. in the module that
-// owns the original counterpart.
+// owns the original counterpart. `initial_old_to_new` seeds the clone with
+// already-created replacements that references outside the subtree should reuse.
 absl::StatusOr<absl::flat_hash_map<const AstNode*, AstNode*>>
 CloneAstAndGetAllPairs(const AstNode* root,
                        std::optional<Module*> target_module,
-                       CloneReplacer replacer = &NoopCloneReplacer);
+                       CloneReplacer replacer = &NoopCloneReplacer,
+                       absl::flat_hash_map<const AstNode*, AstNode*>
+                           initial_old_to_new = {});
 
 absl::StatusOr<std::unique_ptr<Module>> CloneModule(
     const Module& module, CloneReplacer replacer = &NoopCloneReplacer);
@@ -119,6 +122,13 @@ absl::StatusOr<std::unique_ptr<Module>> CloneModule(
 // resulting dangling references.
 absl::StatusOr<std::unique_ptr<Module>> CloneModuleRemovingMembers(
     const Module& module, absl::Span<const AstNode* const> members_to_remove);
+
+// Rebuilds every visible top-level member in `module` in place, applying
+// `replacer` while preserving references between cloned members.
+//
+// This is useful for normalization passes that need to replace arbitrary nested
+// AST subtrees without relying on parent-specific mutation hooks.
+absl::Status RewriteModuleInPlace(Module& module, CloneReplacer replacer);
 
 // Returns a CloneReplacer that runs `first` and then runs `second` on the
 // preliminary result, short-circuiting if `first` returns an error.

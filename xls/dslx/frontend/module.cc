@@ -416,6 +416,18 @@ absl::Status Module::InsertTopAfter(
   return InsertTopAt(member, insert_it);
 }
 
+absl::Status Module::ReplaceTop(std::vector<ModuleMember> members) {
+  top_.clear();
+  top_set_.clear();
+  top_by_name_.clear();
+  top_.reserve(members.size());
+  for (ModuleMember member : members) {
+    XLS_RETURN_IF_ERROR(CheckForCollision(member, /*make_collision_error=*/nullptr));
+    XLS_RETURN_IF_ERROR(InsertTopAt(member, top_.end()));
+  }
+  return absl::OkStatus();
+}
+
 std::string_view GetModuleMemberTypeName(const ModuleMember& module_member) {
   return absl::visit(Visitor{
                          [](Function*) { return "function"; },
