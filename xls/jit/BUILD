@@ -77,10 +77,16 @@ cc_library(
 )
 
 cc_library(
+    name = "jit_callback_abi",
+    hdrs = ["jit_callback_abi.h"],
+)
+
+cc_library(
     name = "jit_callbacks",
     srcs = ["jit_callbacks.cc"],
     hdrs = ["jit_callbacks.h"],
     deps = [
+        ":jit_callback_abi",
         ":jit_channel_queue",
         ":jit_runtime",
         ":observer",

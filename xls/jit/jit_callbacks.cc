@@ -113,18 +113,11 @@ void DeallocateBuffer(InstanceContext* thiz, void* ptr) { free(ptr); }
 }  // namespace
 
 InstanceContextVTable::InstanceContextVTable()
-    : perform_string_step(&PerformStringStep),
-      perform_format_step(&PerformFormatStep),
-      record_trace(&RecordTrace),
-      create_trace_buffer(&CreateTraceBuffer),
-      record_assertion(&RecordAssertion),
-      queue_receive_wrapper(&QueueReceiveWrapper),
-      queue_send_wrapper(&QueueSendWrapper),
-      record_active_next_value(&RecordActiveNextValue),
-      record_node_result(&RecordNodeResult),
-      allocate_buffer(&AllocateBuffer),
-      deallocate_buffer(&DeallocateBuffer),
-      record_active_register_write(&RecordActiveRegisterWrite) {}
+    : InstanceContextVTable(
+          &PerformStringStep, &PerformFormatStep, &RecordTrace,
+          &CreateTraceBuffer, &RecordAssertion, &QueueReceiveWrapper,
+          &QueueSendWrapper, &RecordActiveNextValue, &RecordNodeResult,
+          &AllocateBuffer, &DeallocateBuffer, &RecordActiveRegisterWrite) {}
 
 Type* InstanceContext::ParseTypeFromProto(absl::Span<uint8_t const> data) {
   TypeProto proto;

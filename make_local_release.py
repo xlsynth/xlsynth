@@ -36,6 +36,9 @@ COMMON_TARGETS = [
     "//xls/tools:block_to_verilog_main"
 ]
 
+STATIC_AOT_RUNTIME_TARGET = "//xls/public:xls_aot_runtime"
+STATIC_AOT_RUNTIME_ARCHIVE = "bazel-bin/xls/public/libxls_aot_runtime.a"
+
 LINUX_TARGETS = COMMON_TARGETS + ["//xls/public:libxls.so"]
 MACOS_TARGETS = COMMON_TARGETS + ["//xls/public:libxls.dylib"]
 
@@ -148,7 +151,7 @@ def make_local_release(
 
     # Build the targets using Bazel; adjust flags based on the mode.
     # Include the smoke test targets in the build to ensure they compile with the rest.
-    build_targets = targets
+    build_targets = targets + [STATIC_AOT_RUNTIME_TARGET]
     if mode == "dbg-asan":
         build_command = [
             "bazel", "build", "-c", "dbg", "--config=asan"
@@ -222,6 +225,14 @@ def make_local_release(
         except PermissionError as e:
             print(f"Permission denied while copying {binary_path}: {e}")
             sys.exit(1)
+
+    static_aot_runtime_dest = os.path.join(output_dir, "libxls_aot_runtime.a")
+    try:
+        shutil.copy2(STATIC_AOT_RUNTIME_ARCHIVE, static_aot_runtime_dest)
+        print(f"Copied {STATIC_AOT_RUNTIME_ARCHIVE} to {static_aot_runtime_dest}")
+    except (FileNotFoundError, PermissionError) as e:
+        print(f"Failed to copy standalone AOT runtime archive: {e}")
+        sys.exit(1)
 
     if "//xls/public:libxls.so" in targets:
         primary_dso_path = os.path.join(output_dir, "libxls.so")

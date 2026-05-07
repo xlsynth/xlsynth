@@ -316,6 +316,26 @@ cc_library(
 )
 
 cc_library(
+    name = "xls_aot_runtime",
+    srcs = ["standalone_aot_runtime.cc"],
+    hdrs = ["standalone_aot_runtime.h"],
+    deps = [
+        "//xls/jit:jit_callback_abi",
+    ],
+)
+
+cc_test(
+    name = "standalone_aot_runtime_test",
+    srcs = ["standalone_aot_runtime_test.cc"],
+    deps = [
+        ":xls_aot_runtime",
+        "//xls/common:xls_gunit_main",
+        "//xls/jit:jit_callback_abi",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
     name = "c_api",
     srcs = ["c_api.cc"],
     hdrs = ["c_api.h"],
