@@ -36,6 +36,9 @@ COMMON_TARGETS = [
     "//xls/tools:block_to_verilog_main"
 ]
 
+# Local releases always carry the static standalone runtime alongside the usual
+# compiler/tool artifacts so consumers can link copied AOT payloads without a
+# runtime `libxls` DSO dependency.
 STATIC_AOT_RUNTIME_TARGET = "//xls/public:xls_aot_runtime"
 STATIC_AOT_RUNTIME_ARCHIVE = "bazel-bin/xls/public/libxls_aot_runtime.a"
 
@@ -140,6 +143,7 @@ def make_local_release(
     release_target=None,
     allow_release_target_mismatch=False,
 ):
+    """Builds a local release bundle including the standalone AOT archive."""
     # Ensure the output directory exists and is writable
     if os.path.exists(output_dir):
         try:
@@ -149,8 +153,8 @@ def make_local_release(
             sys.exit(1)
     os.makedirs(output_dir, exist_ok=True)
 
-    # Build the targets using Bazel; adjust flags based on the mode.
-    # Include the smoke test targets in the build to ensure they compile with the rest.
+    # Build the requested tool payload plus the standalone runtime archive that
+    # downstream AOT consumers need at link time.
     build_targets = targets + [STATIC_AOT_RUNTIME_TARGET]
     if mode == "dbg-asan":
         build_command = [
@@ -226,6 +230,8 @@ def make_local_release(
             print(f"Permission denied while copying {binary_path}: {e}")
             sys.exit(1)
 
+    # Keep one stable archive name in local releases so downstream packagers do
+    # not need to infer it from the requested DSO target or host platform.
     static_aot_runtime_dest = os.path.join(output_dir, "libxls_aot_runtime.a")
     try:
         shutil.copy2(STATIC_AOT_RUNTIME_ARCHIVE, static_aot_runtime_dest)

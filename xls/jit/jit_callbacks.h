@@ -34,12 +34,20 @@
 
 namespace xls {
 
-// Data structure passed to the JITted function which contains instance-specific
-// execution-relevant information and function pointers. Used for JITted procs.
+// Full in-process execution context used by ordinary JIT evaluation.
+//
+// The ABI-visible callback prefix now lives in `jit_callback_abi.h` so
+// standalone runtimes can satisfy generated code without depending on the rest
+// of this type. The remaining fields here are intentionally heavyweight JIT
+// state for proc/block execution, type materialization, and observers.
 struct InstanceContext {
  public:
+  // Creates the minimal full-JIT context used by function evaluation.
   static InstanceContext CreateForFunc() { return InstanceContext(); }
+  // Creates the minimal full-JIT context used by block evaluation.
   static InstanceContext CreateForBlock() { return InstanceContext(); }
+  // Creates a proc context with the instance and compile-time queue ordering
+  // expected by generated send/receive callbacks.
   static InstanceContext CreateForProc(ProcInstance* inst,
                                        std::vector<JitChannelQueue*> queues) {
     InstanceContext ret;
@@ -48,7 +56,7 @@ struct InstanceContext {
     return ret;
   }
 
-  // Offsets in the vtable the LLVM can use to grab the actual function pointer.
+  // Offsets in the ABI prefix that LLVM-generated code uses to load callbacks.
   static constexpr int64_t kPerformStringStepOffset =
       offsetof(InstanceContextVTable, perform_string_step);
   static constexpr int64_t kPerformFormatStepOffset =
@@ -76,6 +84,7 @@ struct InstanceContext {
   static constexpr int64_t kVTableLength = InstanceContextVTable::kVTableLength;
   using VTableArrayType = InstanceContextVTable::VTableArrayType;
 
+  // Returns whether an offset is one of the ABI-visible callback slots.
   static constexpr bool IsVtableOffset(int64_t v) {
     return v == kPerformFormatStepOffset || v == kPerformStringStepOffset ||
            v == kRecordTraceOffset || v == kCreateTraceBufferOffset ||
@@ -85,6 +94,8 @@ struct InstanceContext {
            v == kDeallocateBufferOffset || v == kRecordActiveRegisterWrite;
   }
 
+  // Materializes the serialized type needed by format callbacks for this
+  // in-process runtime instance.
   Type* ParseTypeFromProto(absl::Span<uint8_t const> data);
 
   InstanceContextVTable vtable;

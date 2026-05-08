@@ -112,6 +112,8 @@ void DeallocateBuffer(InstanceContext* thiz, void* ptr) { free(ptr); }
 
 }  // namespace
 
+// Installs the full-JIT implementations behind the ABI-only constructor shape
+// declared in `jit_callback_abi.h`.
 InstanceContextVTable::InstanceContextVTable()
     : InstanceContextVTable(
           &PerformStringStep, &PerformFormatStep, &RecordTrace,

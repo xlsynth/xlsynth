@@ -23,6 +23,8 @@
 
 namespace {
 
+// Minimal generated-function stand-in that exercises the direct-call path and
+// one supported assertion callback.
 int64_t FakeAssertEntrypoint(const uint8_t* const* inputs,
                              uint8_t* const* outputs, void* temp_buffer,
                              xls::InterpreterEvents* events,
@@ -35,6 +37,8 @@ int64_t FakeAssertEntrypoint(const uint8_t* const* inputs,
   return 0;
 }
 
+// Minimal generated-function stand-in that checks the standalone heap callback
+// still honors over-aligned allocation requests.
 int64_t FakeAlignedAllocationEntrypoint(
     const uint8_t* const* inputs, uint8_t* const* outputs, void* temp_buffer,
     xls::InterpreterEvents* events, xls::InstanceContext* instance_context,
@@ -47,6 +51,8 @@ int64_t FakeAlignedAllocationEntrypoint(
   return 0;
 }
 
+// Verifies: direct-call artifacts run and retain assertion messages.
+// Catches: regressions that disconnect the trampoline or assertion callback.
 TEST(XlsStandaloneAotRuntimeTest, RunsDirectFunctionAndCollectsAssertions) {
   xls_standalone_aot_runtime* runtime = nullptr;
   ASSERT_EQ(
@@ -80,6 +86,8 @@ TEST(XlsStandaloneAotRuntimeTest, RunsDirectFunctionAndCollectsAssertions) {
   xls_standalone_aot_runtime_free(runtime);
 }
 
+// Verifies: generated-code heap allocations preserve requested alignment.
+// Catches: regressions that round size without honoring over-aligned requests.
 TEST(XlsStandaloneAotRuntimeTest, PreservesRequestedHeapAlignment) {
   xls_standalone_aot_runtime* runtime = nullptr;
   ASSERT_EQ(
@@ -107,6 +115,7 @@ TEST(XlsStandaloneAotRuntimeTest, PreservesRequestedHeapAlignment) {
   xls_standalone_aot_runtime_free(runtime);
 }
 
+// Negative test: validates error handling for unsupported trace requirements.
 TEST(XlsStandaloneAotRuntimeTest, RejectsFutureTraceRequirementForNow) {
   xls_standalone_aot_runtime* runtime = nullptr;
   EXPECT_EQ(xls_standalone_aot_runtime_create(
@@ -116,6 +125,7 @@ TEST(XlsStandaloneAotRuntimeTest, RejectsFutureTraceRequirementForNow) {
   EXPECT_EQ(runtime, nullptr);
 }
 
+// Negative test: validates error handling for mismatched ABI versions.
 TEST(XlsStandaloneAotRuntimeTest, RejectsUnknownAbiVersion) {
   xls_standalone_aot_runtime* runtime = nullptr;
   EXPECT_EQ(xls_standalone_aot_runtime_create(

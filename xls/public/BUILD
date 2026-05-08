@@ -315,6 +315,8 @@ cc_library(
     ],
 )
 
+# Public static archive linked into copied standalone AOT executables so they do
+# not need a runtime `libxls` DSO.
 cc_library(
     name = "xls_aot_runtime",
     srcs = ["standalone_aot_runtime.cc"],
@@ -324,6 +326,8 @@ cc_library(
     ],
 )
 
+# Locks down the direct-call/assertion contract and future trace rejection for
+# the static standalone runtime surface.
 cc_test(
     name = "standalone_aot_runtime_test",
     srcs = ["standalone_aot_runtime_test.cc"],

@@ -27,18 +27,23 @@
 
 namespace {
 
+// Native function shape emitted for function-only standalone AOT artifacts.
 using StandaloneEntrypoint = int64_t (*)(
     const uint8_t* const* inputs, uint8_t* const* outputs, void* temp_buffer,
     xls::InterpreterEvents* events, xls::InstanceContext* instance_context,
     xls::JitRuntime* jit_runtime, int64_t continuation_point);
 
+// Fails fast if generated code reaches a callback that the negotiated feature
+// set promised would be unreachable in this first standalone runtime.
 [[noreturn]] void UnsupportedCallback() { std::abort(); }
 
+// Trace string fragments are unsupported until trace lowering is added here.
 void UnsupportedPerformStringStep(xls::InstanceContext* thiz, char* step_string,
                                   std::string* buffer) {
   UnsupportedCallback();
 }
 
+// Trace value formatting still depends on the full JIT runtime today.
 void UnsupportedPerformFormatStep(xls::InstanceContext* thiz,
                                   xls::JitRuntime* runtime,
                                   const uint8_t* type_proto_data,
@@ -48,43 +53,53 @@ void UnsupportedPerformFormatStep(xls::InstanceContext* thiz,
   UnsupportedCallback();
 }
 
+// Completed traces are not part of the assertion-only runtime contract.
 void UnsupportedRecordTrace(xls::InstanceContext* thiz, std::string* buffer,
                             int64_t verbosity,
                             xls::InterpreterEvents* events) {
   UnsupportedCallback();
 }
 
+// Trace buffers are intentionally unavailable until trace support lands.
 std::string* UnsupportedCreateTraceBuffer(xls::InstanceContext* thiz) {
   UnsupportedCallback();
 }
 
+// Records one assertion failure into runtime-owned storage.
 void RecordAssertion(xls::InstanceContext* thiz, const char* msg,
                      xls::InterpreterEvents* events);
 
+// Proc queue operations are invalid for function-only standalone artifacts.
 bool UnsupportedQueueReceiveWrapper(xls::InstanceContext* thiz,
                                     int64_t queue_index, uint8_t* buffer) {
   UnsupportedCallback();
 }
 
+// Proc queue operations are invalid for function-only standalone artifacts.
 void UnsupportedQueueSendWrapper(xls::InstanceContext* thiz,
                                  int64_t queue_index, const uint8_t* data) {
   UnsupportedCallback();
 }
 
+// Proc bookkeeping is invalid for function-only standalone artifacts.
 void UnsupportedRecordActiveNextValue(xls::InstanceContext* thiz,
                                       int64_t param_id, int64_t next_id) {
   UnsupportedCallback();
 }
 
+// Observer callbacks are outside the standalone runtime contract.
 void UnsupportedRecordNodeResult(xls::InstanceContext* thiz, int64_t node_ptr,
                                  const uint8_t* data) {
   UnsupportedCallback();
 }
 
+// Returns whether `value` is a valid power-of-two alignment.
 bool IsPowerOfTwo(uint64_t value) {
   return value != 0 && (value & (value - 1)) == 0;
 }
 
+// Allocates generated-code scratch storage while preserving the requested
+// alignment on both ordinary and over-aligned paths.
 void* AllocateBuffer(xls::InstanceContext* thiz, int64_t byte_size,
                      int64_t alignment) {
   if (byte_size < 0 || alignment <= 0 ||
@@ -110,16 +125,21 @@ void* AllocateBuffer(xls::InstanceContext* thiz, int64_t byte_size,
   }
 }
 
+// Releases storage previously returned by `AllocateBuffer`.
 void DeallocateBuffer(xls::InstanceContext* thiz, void* buffer) {
   std::free(buffer);
 }
 
+// Block bookkeeping is invalid for function-only standalone artifacts.
 void UnsupportedRecordActiveRegisterWrite(xls::InstanceContext* thiz,
                                           int64_t register_no,
                                           int64_t register_write_no) {
   UnsupportedCallback();
 }
 
+// Callback table installed behind the ABI-visible prefix of the runtime
+// object. Unsupported slots stay present so generated-code offsets remain ABI
+// compatible, but they abort if a non-negotiated feature somehow reaches them.
 struct StandaloneRuntimeVTable final : xls::InstanceContextVTable {
   StandaloneRuntimeVTable()
       : xls::InstanceContextVTable(
@@ -131,11 +151,14 @@ struct StandaloneRuntimeVTable final : xls::InstanceContextVTable {
             &UnsupportedRecordActiveRegisterWrite) {}
 };
 
+// Feature bits this first standalone runtime can actually execute.
 constexpr uint32_t kSupportedFeatures =
     XLS_STANDALONE_AOT_RUNTIME_FEATURE_ASSERTIONS;
 
 }  // namespace
 
+// Runtime object whose first bytes are the callback table seen by generated
+// code. The assertion vector owns copied message strings until clear/free.
 struct xls_standalone_aot_runtime {
   StandaloneRuntimeVTable vtable;
   char** assert_messages;
@@ -145,6 +168,8 @@ struct xls_standalone_aot_runtime {
 
 namespace {
 
+// Copies one assertion message into runtime-owned storage that remains valid
+// until the next clear/free operation.
 void RecordAssertion(xls::InstanceContext* thiz, const char* msg,
                      xls::InterpreterEvents* events) {
   auto* runtime = reinterpret_cast<xls_standalone_aot_runtime*>(thiz);
@@ -178,6 +203,8 @@ void RecordAssertion(xls::InstanceContext* thiz, const char* msg,
 
 }  // namespace
 
+// Validates feature negotiation before allocating the standalone runtime
+// object, so unreachable callbacks remain a construction-time contract.
 enum xls_standalone_aot_runtime_status xls_standalone_aot_runtime_create(
     uint32_t abi_version, uint32_t required_features,
     struct xls_standalone_aot_runtime** out) {
@@ -203,6 +230,7 @@ enum xls_standalone_aot_runtime_status xls_standalone_aot_runtime_create(
   }
 }
 
+// Releases runtime-owned assertion storage and then the runtime object itself.
 void xls_standalone_aot_runtime_free(
     struct xls_standalone_aot_runtime* runtime) {
   xls_standalone_aot_runtime_clear_events(runtime);
@@ -211,6 +239,8 @@ void xls_standalone_aot_runtime_free(
   std::free(runtime);
 }
 
+// Clears event payloads without shrinking capacity so repeated calls can reuse
+// one runtime allocation.
 void xls_standalone_aot_runtime_clear_events(
     struct xls_standalone_aot_runtime* runtime) {
   for (size_t i = 0; i < runtime->assert_messages_count; ++i) {
@@ -219,11 +249,14 @@ void xls_standalone_aot_runtime_clear_events(
   runtime->assert_messages_count = 0;
 }
 
+// Exposes the number of assertion messages currently retained by the runtime.
 size_t xls_standalone_aot_runtime_get_assert_message_count(
     const struct xls_standalone_aot_runtime* runtime) {
   return runtime->assert_messages_count;
 }
 
+// Returns one retained assertion message, or null when the caller asks past the
+// retained range.
 const char* xls_standalone_aot_runtime_get_assert_message(
     const struct xls_standalone_aot_runtime* runtime, size_t index) {
   if (index >= runtime->assert_messages_count) {
@@ -233,6 +266,8 @@ const char* xls_standalone_aot_runtime_get_assert_message(
   }
 }
 
+// Calls one metadata-matched direct-call artifact through the standalone ABI
+// and reports the assertion count observed after that invocation.
 int64_t xls_standalone_aot_entrypoint_trampoline(
     uintptr_t function_ptr, const uint8_t* const* inputs,
     uint8_t* const* outputs, void* temp_buffer,
@@ -241,8 +276,8 @@ int64_t xls_standalone_aot_entrypoint_trampoline(
   StandaloneEntrypoint entrypoint =
       std::bit_cast<StandaloneEntrypoint>(function_ptr);
   // Assertion-only artifacts need the callback table but do not require the
-  // full InterpreterEvents object. Trace support is the expected future
-  // reason to add a real event sink back to this standalone runtime.
+  // full InterpreterEvents object. Trace support is the expected future reason
+  // to add a real event sink back to this standalone runtime.
   int64_t continuation = entrypoint(
       inputs, outputs, temp_buffer, /*events=*/nullptr,
       reinterpret_cast<xls::InstanceContext*>(&runtime->vtable),

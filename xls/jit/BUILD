@@ -76,6 +76,8 @@ cc_library(
     ],
 )
 
+# ABI-only callback layout shared with runtimes that must not depend on the full
+# JIT implementation, such as the standalone AOT static runtime.
 cc_library(
     name = "jit_callback_abi",
     hdrs = ["jit_callback_abi.h"],
