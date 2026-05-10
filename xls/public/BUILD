@@ -18,6 +18,7 @@ load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("//xls/build_rules:py_oss_defs.bzl", "pytype_strict_binary")
+load("//xls/build_rules:xls_static_library_bundle.bzl", "xls_static_library_bundle")
 load("//xls/public:xls_public_macros.oss.bzl", "libxls_dylib_binary", "py_test_c_api_symbols")
 
 package(
@@ -316,13 +317,20 @@ cc_library(
 )
 
 # Public static archive linked into copied standalone AOT executables so they do
-# not need a runtime `libxls` DSO.
-cc_library(
+# not need a runtime `libxls` DSO. This deliberately bundles the LLVM-free
+# runtime closure into one archive instead of asking downstream consumers to
+# reconstruct the same link line independently.
+xls_static_library_bundle(
     name = "xls_aot_runtime",
     srcs = ["standalone_aot_runtime.cc"],
     hdrs = ["standalone_aot_runtime.h"],
     deps = [
+        "//xls/ir:events",
+        "//xls/ir:value",
+        "//xls/jit:aot_runtime",
+        "//xls/jit:aot_runtime_callbacks",
         "//xls/jit:jit_callback_abi",
+        "//xls/jit:type_layout",
     ],
 )
 
@@ -331,11 +339,12 @@ cc_library(
 cc_test(
     name = "standalone_aot_runtime_test",
     srcs = ["standalone_aot_runtime_test.cc"],
+    linkstatic = True,
     deps = [
         ":xls_aot_runtime",
-        "//xls/common:xls_gunit_main",
         "//xls/jit:jit_callback_abi",
         "@googletest//:gtest",
+        "@googletest//:gtest_main",
     ],
 )
 

@@ -84,15 +84,26 @@ cc_library(
 )
 
 cc_library(
+    name = "aot_runtime_callbacks",
+    srcs = ["aot_runtime_callbacks.cc"],
+    hdrs = ["aot_runtime_callbacks.h"],
+    deps = [
+        "//xls/common:math_util",
+        "//xls/ir:events",
+        "@com_google_absl//absl/log:check",
+    ],
+)
+
+cc_library(
     name = "jit_callbacks",
     srcs = ["jit_callbacks.cc"],
     hdrs = ["jit_callbacks.h"],
     deps = [
+        ":aot_runtime_callbacks",
         ":jit_callback_abi",
         ":jit_channel_queue",
         ":jit_runtime",
         ":observer",
-        "//xls/common:math_util",
         "//xls/ir:events",
         "//xls/ir:format_preference",
         "//xls/ir:proc_elaboration",

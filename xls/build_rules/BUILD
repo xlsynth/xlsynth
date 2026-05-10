@@ -28,9 +28,15 @@ package(
 filegroup(
     name = "release_files",
     srcs = glob(["*.bzl"]) + [
+        ":bundle_static_library",
         ":default_xls_toolchain",
         ":xls_macros_bzl",
     ],
+)
+
+sh_binary(
+    name = "bundle_static_library",
+    srcs = ["bundle_static_library.sh"],
 )
 
 exports_files(

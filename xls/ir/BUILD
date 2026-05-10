@@ -566,7 +566,10 @@ cc_library(
 
 cc_library(
     name = "events",
-    srcs = ["events.cc"],
+    srcs = [
+        "events.cc",
+        "events_assertions.cc",
+    ],
     hdrs = ["events.h"],
     deps = [
         ":evaluator_result_cc_proto",

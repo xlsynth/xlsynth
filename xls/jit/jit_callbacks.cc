@@ -22,12 +22,12 @@
 #include "absl/log/check.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
-#include "xls/common/math_util.h"
 #include "xls/ir/events.h"
 #include "xls/ir/format_preference.h"
 #include "xls/ir/type.h"
 #include "xls/ir/value.h"
 #include "xls/ir/xls_type.pb.h"
+#include "xls/jit/aot_runtime_callbacks.h"
 #include "xls/jit/jit_runtime.h"
 
 namespace xls {
@@ -60,11 +60,6 @@ void RecordTrace(InstanceContext* thiz, std::string* buffer, int64_t verbosity,
 std::string* CreateTraceBuffer(InstanceContext* thiz) {
   return new std::string();
 }
-void RecordAssertion(InstanceContext* thiz, const char* msg,
-                     InterpreterEvents* events) {
-  events->AddAssertMessage(msg);
-}
-
 bool QueueReceiveWrapper(InstanceContext* thiz, int64_t queue_index,
                          uint8_t* buffer) {
   return thiz->channel_queues[queue_index]->ReadRaw(buffer);
@@ -92,24 +87,6 @@ void RecordActiveRegisterWrite(InstanceContext* thiz, int64_t register_no,
   thiz->active_register_writes[register_no].push_back(register_write_no);
 }
 
-void* AllocateBuffer(InstanceContext* thiz, int64_t byte_size,
-                     int64_t alignment) {
-  // The c11 std §7.22.3 states that std::aligned_alloc must be called with
-  // size as a multiple of the alignment. The c17 standard removes this
-  // simply saying that bad alignments fail. For all allocators except the ASAN
-  // one the looser rules are followed and any relatively normal alignment llvm
-  // supports is allowed for any size but asan specifically follows the older
-  // spec. Overallocate to support this behavior.
-  int64_t adj_size = RoundUpToNearest(byte_size, alignment);
-  void* res = std::aligned_alloc(alignment, adj_size);
-  CHECK(res != nullptr) << "Null alloc with " << byte_size
-                        << " (adjusted to: " << adj_size
-                        << ") aligned at: " << alignment;
-  return res;
-}
-
-void DeallocateBuffer(InstanceContext* thiz, void* ptr) { free(ptr); }
-
 }  // namespace
 
 // Installs the full-JIT implementations behind the ABI-only constructor shape
@@ -117,9 +94,12 @@ void DeallocateBuffer(InstanceContext* thiz, void* ptr) { free(ptr); }
 InstanceContextVTable::InstanceContextVTable()
     : InstanceContextVTable(
           &PerformStringStep, &PerformFormatStep, &RecordTrace,
-          &CreateTraceBuffer, &RecordAssertion, &QueueReceiveWrapper,
+          &CreateTraceBuffer, &aot_runtime_callbacks::RecordAssertion,
+          &QueueReceiveWrapper,
           &QueueSendWrapper, &RecordActiveNextValue, &RecordNodeResult,
-          &AllocateBuffer, &DeallocateBuffer, &RecordActiveRegisterWrite) {}
+          &aot_runtime_callbacks::AllocateBuffer,
+          &aot_runtime_callbacks::DeallocateBuffer,
+          &RecordActiveRegisterWrite) {}
 
 Type* InstanceContext::ParseTypeFromProto(absl::Span<uint8_t const> data) {
   TypeProto proto;
