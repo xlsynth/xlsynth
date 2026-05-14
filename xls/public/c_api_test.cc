@@ -52,6 +52,7 @@
 
 namespace {
 
+using ::testing::ElementsAre;
 using ::testing::HasSubstr;
 
 // Smoke test for `xls_convert_dslx_to_ir` C API.
@@ -2381,6 +2382,12 @@ top fn add_one(tok: token, x: bits[32]) -> bits[32] {
 TEST(XlsCApiTest, AotCompileFunction) {
   const std::string_view kIr = R"(package my_package
 
+fn noisy_sibling(tok: token, x: bits[32]) -> bits[32] {
+  always_on: bits[1] = literal(value=1)
+  traced_tok: token = trace(tok, always_on, format="x: {}", data_operands=[x])
+  ret out: bits[32] = identity(x)
+}
+
 top fn add_one(x: bits[32]) -> bits[32] {
   one: bits[32] = literal(value=1)
   ret result: bits[32] = add(x, one)
@@ -2420,6 +2427,69 @@ top fn add_one(x: bits[32]) -> bits[32] {
             xls::AotEntrypointProto::FUNCTION);
   EXPECT_TRUE(entrypoints.entrypoint(0).has_function_symbol());
   EXPECT_TRUE(entrypoints.entrypoint(0).has_packed_function_symbol());
+  ASSERT_TRUE(entrypoints.entrypoint(0)
+                  .has_standalone_runtime_feature_requirements());
+  EXPECT_EQ(entrypoints.entrypoint(0)
+                .standalone_runtime_feature_requirements()
+                .required_feature_size(),
+            0);
+}
+
+TEST(XlsCApiTest, AotCompileFunctionRecordsStandaloneRuntimeFeatures) {
+  const std::string_view kIr = R"(package feature_pkg
+
+fn featureful(tok: token, pred: bits[1], x: bits[8]) -> bits[8] {
+  asserted_tok: token = assert(tok, pred, message="pred must hold")
+  always_on: bits[1] = literal(value=1)
+  traced_tok: token = trace(asserted_tok, always_on, format="x: {}", data_operands=[x])
+  covered: () = cover(pred, label="pred_is_one")
+  ret out: bits[8] = identity(x)
+}
+
+top fn calls_featureful(tok: token, pred: bits[1], x: bits[8]) -> bits[8] {
+  ret out: bits[8] = invoke(tok, pred, x, to_apply=featureful)
+}
+)";
+
+  char* error = nullptr;
+  xls_package* package = nullptr;
+  ASSERT_TRUE(xls_parse_ir_package(kIr.data(), "test.ir", &error, &package))
+      << "error: " << error;
+  ASSERT_NE(package, nullptr);
+  absl::Cleanup free_package([=] { xls_package_free(package); });
+
+  xls_function* function = nullptr;
+  ASSERT_TRUE(
+      xls_package_get_function(package, "calls_featureful", &error, &function));
+  ASSERT_NE(function, nullptr);
+
+  uint8_t* object_bytes = nullptr;
+  size_t object_byte_count = 0;
+  uint8_t* proto_bytes = nullptr;
+  size_t proto_byte_count = 0;
+  ASSERT_TRUE(xls_aot_compile_function(function, &error, &object_bytes,
+                                       &object_byte_count, &proto_bytes,
+                                       &proto_byte_count))
+      << "error: " << error;
+  ASSERT_GT(object_byte_count, 0);
+  absl::Cleanup free_object_bytes(
+      [=] { xls_aot_object_code_free(object_bytes); });
+  ASSERT_GT(proto_byte_count, 0);
+  absl::Cleanup free_proto_bytes(
+      [=] { xls_aot_entrypoints_proto_free(proto_bytes); });
+
+  xls::AotPackageEntrypointsProto entrypoints;
+  ASSERT_TRUE(entrypoints.ParseFromArray(proto_bytes, proto_byte_count));
+  ASSERT_EQ(entrypoints.entrypoint_size(), 1);
+  ASSERT_TRUE(entrypoints.entrypoint(0)
+                  .has_standalone_runtime_feature_requirements());
+  EXPECT_THAT(entrypoints.entrypoint(0)
+                  .standalone_runtime_feature_requirements()
+                  .required_feature(),
+              ElementsAre(
+                  xls::AotRuntimeFeatureRequirementsProto::ASSERTIONS,
+                  xls::AotRuntimeFeatureRequirementsProto::TRACES,
+                  xls::AotRuntimeFeatureRequirementsProto::COVERS));
 }
 
 TEST(XlsCApiTest, AotEntrypointTrampoline) {
