@@ -61,6 +61,8 @@ class InterpreterEvents {
   const ::google::protobuf::RepeatedPtrField<TraceMessageProto>& GetTraceMessages() const;
   std::vector<std::string> GetTraceMessageStrings() const;
   std::vector<std::string> GetAssertMessages() const;
+  int64_t GetAssertMessageCount() const;
+  const std::string* GetAssertMessage(int64_t index) const;
 
   void Clear() { proto_.Clear(); }
 
