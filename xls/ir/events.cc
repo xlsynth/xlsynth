@@ -118,22 +118,6 @@ void InterpreterEvents::AddTraceCallReturnMessage(
   }
 }
 
-void InterpreterEvents::AddAssertMessage(
-    std::string_view msg, std::optional<SourceInfo> source_info,
-    std::optional<std::string> source_filename) {
-  AssertMessageProto* am = proto_.add_assert_msgs();
-  am->set_message(std::string{msg});
-  if (source_info.has_value() && !source_info->locations.empty()) {
-    const SourceLocation& loc = source_info->locations.front();
-    auto* locp = am->mutable_location();
-    if (source_filename.has_value()) {
-      locp->set_filename(*source_filename);
-    }
-    locp->set_line(loc.lineno().value());
-    locp->set_column(loc.colno().value());
-  }
-}
-
 const ::google::protobuf::RepeatedPtrField<TraceMessageProto>&
 InterpreterEvents::GetTraceMessages() const {
   return proto_.trace_msgs();
@@ -146,15 +130,6 @@ std::vector<std::string> InterpreterEvents::GetTraceMessageStrings() const {
     messages.push_back(t.message());
   }
   return messages;
-}
-
-std::vector<std::string> InterpreterEvents::GetAssertMessages() const {
-  std::vector<std::string> asserts;
-  asserts.reserve(proto_.assert_msgs_size());
-  for (const AssertMessageProto& a : proto_.assert_msgs()) {
-    asserts.push_back(a.message());
-  }
-  return asserts;
 }
 
 void InterpreterEvents::AppendFrom(const InterpreterEvents& other) {
