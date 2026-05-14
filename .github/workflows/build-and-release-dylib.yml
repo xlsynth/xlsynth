@@ -70,6 +70,8 @@ jobs:
         # dylib payload copied beside executables.
         cp bazel-bin/xls/public/libxls_aot_runtime.a osx-artifacts-arm64/libxls_aot_runtime-arm64.a
         shasum -a 256 osx-artifacts-arm64/libxls_aot_runtime-arm64.a > osx-artifacts-arm64/libxls_aot_runtime-arm64.a.sha256
+        cp xls/public/libxls_aot_runtime_link.toml osx-artifacts-arm64/libxls_aot_runtime_link-arm64.toml
+        shasum -a 256 osx-artifacts-arm64/libxls_aot_runtime_link-arm64.toml > osx-artifacts-arm64/libxls_aot_runtime_link-arm64.toml.sha256
 
         cp bazel-bin/xls/dslx/interpreter_main              osx-artifacts-arm64/dslx_interpreter_main-arm64
         shasum -a 256 osx-artifacts-arm64/dslx_interpreter_main-arm64 > osx-artifacts-arm64/dslx_interpreter_main-arm64.sha256
@@ -198,6 +200,8 @@ jobs:
         # DSO payload copied beside executables.
         cp bazel-bin/xls/public/libxls_aot_runtime.a rocky8-artifacts/libxls_aot_runtime-rocky8.a
         sha256sum rocky8-artifacts/libxls_aot_runtime-rocky8.a > rocky8-artifacts/libxls_aot_runtime-rocky8.a.sha256
+        cp xls/public/libxls_aot_runtime_link.toml rocky8-artifacts/libxls_aot_runtime_link-rocky8.toml
+        sha256sum rocky8-artifacts/libxls_aot_runtime_link-rocky8.toml > rocky8-artifacts/libxls_aot_runtime_link-rocky8.toml.sha256
         python3 dist/package_runtime_closure.py --libxls bazel-bin/xls/public/libxls.so --output-dir rocky8-artifacts --release-target rocky8
         sha256sum rocky8-artifacts/libxls-runtime-rocky8.tar.gz > rocky8-artifacts/libxls-runtime-rocky8.tar.gz.sha256
         sha256sum rocky8-artifacts/libxls-runtime-rocky8-manifest.json > rocky8-artifacts/libxls-runtime-rocky8-manifest.json.sha256
@@ -361,6 +365,8 @@ jobs:
         # DSO payload copied beside executables.
         cp bazel-bin/xls/public/libxls_aot_runtime.a ubuntu2004-artifacts/libxls_aot_runtime-ubuntu2004.a
         sha256sum ubuntu2004-artifacts/libxls_aot_runtime-ubuntu2004.a > ubuntu2004-artifacts/libxls_aot_runtime-ubuntu2004.a.sha256
+        cp xls/public/libxls_aot_runtime_link.toml ubuntu2004-artifacts/libxls_aot_runtime_link-ubuntu2004.toml
+        sha256sum ubuntu2004-artifacts/libxls_aot_runtime_link-ubuntu2004.toml > ubuntu2004-artifacts/libxls_aot_runtime_link-ubuntu2004.toml.sha256
         python3 dist/package_runtime_closure.py --libxls bazel-bin/xls/public/libxls.so --output-dir ubuntu2004-artifacts --release-target ubuntu2004
         sha256sum ubuntu2004-artifacts/libxls-runtime-ubuntu2004.tar.gz > ubuntu2004-artifacts/libxls-runtime-ubuntu2004.tar.gz.sha256
         sha256sum ubuntu2004-artifacts/libxls-runtime-ubuntu2004-manifest.json > ubuntu2004-artifacts/libxls-runtime-ubuntu2004-manifest.json.sha256
@@ -465,6 +471,8 @@ jobs:
           osx-artifacts-arm64/libxls-arm64.dylib.sha256 \
           osx-artifacts-arm64/libxls_aot_runtime-arm64.a \
           osx-artifacts-arm64/libxls_aot_runtime-arm64.a.sha256 \
+          osx-artifacts-arm64/libxls_aot_runtime_link-arm64.toml \
+          osx-artifacts-arm64/libxls_aot_runtime_link-arm64.toml.sha256 \
           osx-artifacts-arm64/dslx_interpreter_main-arm64 \
           osx-artifacts-arm64/dslx_interpreter_main-arm64.sha256 \
           osx-artifacts-arm64/dslx_ls-arm64 \
@@ -496,6 +504,8 @@ jobs:
           ubuntu2004-artifacts/libxls-ubuntu2004.so.sha256 \
           ubuntu2004-artifacts/libxls_aot_runtime-ubuntu2004.a \
           ubuntu2004-artifacts/libxls_aot_runtime-ubuntu2004.a.sha256 \
+          ubuntu2004-artifacts/libxls_aot_runtime_link-ubuntu2004.toml \
+          ubuntu2004-artifacts/libxls_aot_runtime_link-ubuntu2004.toml.sha256 \
           ubuntu2004-artifacts/libxls-runtime-ubuntu2004.tar.gz \
           ubuntu2004-artifacts/libxls-runtime-ubuntu2004.tar.gz.sha256 \
           ubuntu2004-artifacts/libxls-runtime-ubuntu2004-manifest.json \
@@ -529,6 +539,8 @@ jobs:
           rocky8-artifacts/libxls-rocky8.so.sha256 \
           rocky8-artifacts/libxls_aot_runtime-rocky8.a \
           rocky8-artifacts/libxls_aot_runtime-rocky8.a.sha256 \
+          rocky8-artifacts/libxls_aot_runtime_link-rocky8.toml \
+          rocky8-artifacts/libxls_aot_runtime_link-rocky8.toml.sha256 \
           rocky8-artifacts/libxls-runtime-rocky8.tar.gz \
           rocky8-artifacts/libxls-runtime-rocky8.tar.gz.sha256 \
           rocky8-artifacts/libxls-runtime-rocky8-manifest.json \
