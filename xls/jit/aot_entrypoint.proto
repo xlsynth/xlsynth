@@ -20,6 +20,19 @@ import "xls/ir/xls_ir_interface.proto";
 import "xls/ir/xls_type.proto";
 import "xls/jit/type_layout.proto";
 
+// Runtime features that a standalone AOT consumer must be prepared to service
+// when invoking one XLS-produced entrypoint.
+message AotRuntimeFeatureRequirementsProto {
+  enum Feature {
+    INVALID = 0;
+    ASSERTIONS = 1;
+    TRACES = 2;
+    COVERS = 3;
+  }
+
+  repeated Feature required_feature = 1;
+}
+
 // Proto version of the jittedFunctionBase information needed to call a AOTd
 // function.
 message AotEntrypointProto {
@@ -103,6 +116,13 @@ message AotEntrypointProto {
   optional TypeLayoutsProto outputs_layout = 19;
   repeated string inputs_names = 20;
   repeated string outputs_names = 21;
+
+  // Presence is semantic: newer XLS producers always emit this envelope, even
+  // when no standalone runtime features are required. Consumers can therefore
+  // distinguish "new producer, empty requirements" from "older producer that
+  // predates runtime-feature metadata".
+  optional AotRuntimeFeatureRequirementsProto
+      standalone_runtime_feature_requirements = 26;
 }
 
 // A single object file can have entrypoints for many different targets. This is
