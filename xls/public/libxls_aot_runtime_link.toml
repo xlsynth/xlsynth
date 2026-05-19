@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Link-time requirements for binaries that consume libxls_aot_runtime.a.
+#
+# These are host-system libraries and frameworks required after the XLS runtime
+# closure has been flattened into the static archive. They are not runtime
+# sidecar artifacts shipped beside copied executables.
+format_version = 1
+
+[targets.macos]
+system_libraries = ["c++"]
+frameworks = ["CoreFoundation"]
+
+[targets.linux]
+system_libraries = ["c++", "c++abi", "unwind", "pthread", "dl"]
+frameworks = []
