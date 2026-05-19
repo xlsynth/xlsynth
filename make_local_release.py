@@ -41,6 +41,7 @@ COMMON_TARGETS = [
 # runtime `libxls` DSO dependency.
 STATIC_AOT_RUNTIME_TARGET = "//xls/public:xls_aot_runtime"
 STATIC_AOT_RUNTIME_ARCHIVE = "bazel-bin/xls/public/libxls_aot_runtime.a"
+STATIC_AOT_RUNTIME_LINK_CONFIG = "xls/public/libxls_aot_runtime_link.toml"
 
 LINUX_TARGETS = COMMON_TARGETS + ["//xls/public:libxls.so"]
 MACOS_TARGETS = COMMON_TARGETS + ["//xls/public:libxls.dylib"]
@@ -230,14 +231,28 @@ def make_local_release(
             print(f"Permission denied while copying {binary_path}: {e}")
             sys.exit(1)
 
-    # Keep one stable archive name in local releases so downstream packagers do
-    # not need to infer it from the requested DSO target or host platform.
+    # Keep stable artifact names in local releases so downstream packagers do
+    # not need to infer them from the requested DSO target or host platform.
     static_aot_runtime_dest = os.path.join(output_dir, "libxls_aot_runtime.a")
+    static_aot_runtime_link_config_dest = os.path.join(
+        output_dir,
+        "libxls_aot_runtime_link.toml",
+    )
     try:
         shutil.copy2(STATIC_AOT_RUNTIME_ARCHIVE, static_aot_runtime_dest)
         print(f"Copied {STATIC_AOT_RUNTIME_ARCHIVE} to {static_aot_runtime_dest}")
+        shutil.copy2(
+            STATIC_AOT_RUNTIME_LINK_CONFIG,
+            static_aot_runtime_link_config_dest,
+        )
+        print(
+            "Copied {} to {}".format(
+                STATIC_AOT_RUNTIME_LINK_CONFIG,
+                static_aot_runtime_link_config_dest,
+            )
+        )
     except (FileNotFoundError, PermissionError) as e:
-        print(f"Failed to copy standalone AOT runtime archive: {e}")
+        print(f"Failed to copy standalone AOT runtime artifacts: {e}")
         sys.exit(1)
 
     if "//xls/public:libxls.so" in targets:
