@@ -16,6 +16,7 @@
 
 #include "xls/common/status/ret_check.h"
 #include "xls/dev_tools/extract_interface.h"
+#include "xls/ir/call_graph.h"
 #include "xls/ir/function.h"
 #include "xls/ir/function_base.h"
 #include "xls/ir/nodes.h"
@@ -24,6 +25,50 @@
 #include "xls/jit/llvm_type_converter.h"
 
 namespace xls {
+namespace {
+
+void PopulateStandaloneRuntimeFeatureRequirements(
+    FunctionBase* function_base, AotEntrypointProto* proto) {
+  bool has_assertions = false;
+  bool has_traces = false;
+  bool has_covers = false;
+
+  for (FunctionBase* dependency :
+       GetDependentFunctions(function_base, /*include_procs=*/true)) {
+    for (Node* node : dependency->nodes()) {
+      switch (node->op()) {
+        case Op::kAssert:
+          has_assertions = true;
+          break;
+        case Op::kTrace:
+          has_traces = true;
+          break;
+        case Op::kCover:
+          has_covers = true;
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
+  AotRuntimeFeatureRequirementsProto* requirements =
+      proto->mutable_standalone_runtime_feature_requirements();
+  if (has_assertions) {
+    requirements->add_required_feature(
+        AotRuntimeFeatureRequirementsProto::ASSERTIONS);
+  }
+  if (has_traces) {
+    requirements->add_required_feature(
+        AotRuntimeFeatureRequirementsProto::TRACES);
+  }
+  if (has_covers) {
+    requirements->add_required_feature(
+        AotRuntimeFeatureRequirementsProto::COVERS);
+  }
+}
+
+}  // namespace
 
 absl::StatusOr<AotEntrypointProto> GenerateAotEntrypointProto(
     Package* package, const FunctionEntrypoint& entrypoint, bool include_msan,
@@ -122,6 +167,7 @@ absl::StatusOr<AotEntrypointProto> GenerateAotEntrypointProto(
 
   proto.set_temp_buffer_size(object_code.temp_buffer_size());
   proto.set_temp_buffer_alignment(object_code.temp_buffer_alignment());
+  PopulateStandaloneRuntimeFeatureRequirements(func, &proto);
   return proto;
 }
 
