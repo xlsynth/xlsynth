@@ -341,6 +341,7 @@ jobs:
           //xls/public:libxls.so \
           //xls/public:c_api \
           //xls/public:xls_aot_runtime \
+          //xls/public:standalone_aot_runtime_source_archive \
           //xls/dslx:interpreter_main \
           //xls/dslx/lsp:dslx_ls \
           //xls/tools:opt_main \
