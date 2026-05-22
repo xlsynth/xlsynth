@@ -1,0 +1,3 @@
+module(name = "xls_standalone_aot_runtime_source")
+
+bazel_dep(name = "rules_cc", version = "0.2.11")
