@@ -175,6 +175,7 @@ jobs:
           //xls/public:libxls.so \
           //xls/public:c_api \
           //xls/public:xls_aot_runtime \
+          //xls/public:standalone_aot_runtime_source_archive \
           //xls/dslx:interpreter_main \
           //xls/dslx/lsp:dslx_ls \
           //xls/tools:opt_main \
@@ -367,6 +368,8 @@ jobs:
         sha256sum ubuntu2004-artifacts/libxls_aot_runtime-ubuntu2004.a > ubuntu2004-artifacts/libxls_aot_runtime-ubuntu2004.a.sha256
         cp xls/public/libxls_aot_runtime_link.toml ubuntu2004-artifacts/libxls_aot_runtime_link-ubuntu2004.toml
         sha256sum ubuntu2004-artifacts/libxls_aot_runtime_link-ubuntu2004.toml > ubuntu2004-artifacts/libxls_aot_runtime_link-ubuntu2004.toml.sha256
+        cp bazel-bin/xls/public/xls-aot-runtime-source.tar.gz ubuntu2004-artifacts/xls-aot-runtime-source.tar.gz
+        sha256sum ubuntu2004-artifacts/xls-aot-runtime-source.tar.gz > ubuntu2004-artifacts/xls-aot-runtime-source.tar.gz.sha256
         python3 dist/package_runtime_closure.py --libxls bazel-bin/xls/public/libxls.so --output-dir ubuntu2004-artifacts --release-target ubuntu2004
         sha256sum ubuntu2004-artifacts/libxls-runtime-ubuntu2004.tar.gz > ubuntu2004-artifacts/libxls-runtime-ubuntu2004.tar.gz.sha256
         sha256sum ubuntu2004-artifacts/libxls-runtime-ubuntu2004-manifest.json > ubuntu2004-artifacts/libxls-runtime-ubuntu2004-manifest.json.sha256
@@ -506,6 +509,8 @@ jobs:
           ubuntu2004-artifacts/libxls_aot_runtime-ubuntu2004.a.sha256 \
           ubuntu2004-artifacts/libxls_aot_runtime_link-ubuntu2004.toml \
           ubuntu2004-artifacts/libxls_aot_runtime_link-ubuntu2004.toml.sha256 \
+          ubuntu2004-artifacts/xls-aot-runtime-source.tar.gz \
+          ubuntu2004-artifacts/xls-aot-runtime-source.tar.gz.sha256 \
           ubuntu2004-artifacts/libxls-runtime-ubuntu2004.tar.gz \
           ubuntu2004-artifacts/libxls-runtime-ubuntu2004.tar.gz.sha256 \
           ubuntu2004-artifacts/libxls-runtime-ubuntu2004-manifest.json \
