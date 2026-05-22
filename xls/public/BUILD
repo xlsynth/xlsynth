@@ -17,6 +17,8 @@
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("@rules_pkg//pkg:mappings.bzl", "pkg_files", "strip_prefix")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 load("//xls/build_rules:py_oss_defs.bzl", "pytype_strict_binary")
 load("//xls/build_rules:xls_static_library_bundle.bzl", "xls_static_library_bundle")
 load("//xls/public:xls_public_macros.oss.bzl", "libxls_dylib_binary", "py_test_c_api_symbols")
@@ -316,22 +318,24 @@ cc_library(
     ],
 )
 
+# Bazel-native source owner for the standalone runtime implementation. Released
+# source bundles package this target for mixed Bazel final links, while the
+# archive below flattens the same implementation for direct native consumers.
+cc_library(
+    name = "standalone_aot_runtime",
+    srcs = ["standalone_aot_runtime.cc"],
+    hdrs = ["standalone_aot_runtime.h"],
+    deps = ["//xls/jit:generated_code_callback_abi"],
+)
+
 # Public static archive linked into copied standalone AOT executables so they do
-# not need a runtime `libxls` DSO. This deliberately bundles the LLVM-free
-# runtime closure into one archive instead of asking downstream consumers to
+# not need a runtime `libxls` DSO. This deliberately bundles the standalone
+# source target into one archive instead of asking direct native consumers to
 # reconstruct the same link line independently.
 xls_static_library_bundle(
     name = "xls_aot_runtime",
-    srcs = ["standalone_aot_runtime.cc"],
     hdrs = ["standalone_aot_runtime.h"],
-    deps = [
-        "//xls/ir:events",
-        "//xls/ir:value",
-        "//xls/jit:aot_runtime",
-        "//xls/jit:generated_code_callbacks",
-        "//xls/jit:generated_code_callback_abi",
-        "//xls/jit:type_layout",
-    ],
+    deps = [":standalone_aot_runtime"],
 )
 
 # Locks down the direct-call/assertion contract and future trace rejection for
@@ -346,6 +350,57 @@ cc_test(
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
+)
+
+# Locks down the importable source target that downstream Bazel consumers load
+# from the released source tarball.
+cc_test(
+    name = "standalone_aot_runtime_surface_test",
+    srcs = ["standalone_aot_runtime_surface_test.cc"],
+    deps = [
+        ":standalone_aot_runtime",
+        "//xls/jit:generated_code_callback_abi",
+    ],
+)
+
+pkg_files(
+    name = "standalone_aot_runtime_source_repo_files",
+    srcs = [
+        "standalone_aot_runtime_source.BUILD.bazel",
+        "standalone_aot_runtime_source.MODULE.bazel",
+    ],
+    renames = {
+        "standalone_aot_runtime_source.BUILD.bazel": "BUILD.bazel",
+        "standalone_aot_runtime_source.MODULE.bazel": "MODULE.bazel",
+    },
+)
+
+pkg_files(
+    name = "standalone_aot_runtime_source_public_files",
+    srcs = [
+        "standalone_aot_runtime.cc",
+        "standalone_aot_runtime.h",
+    ],
+    prefix = "/xls/public",
+    strip_prefix = strip_prefix.from_pkg(),
+)
+
+pkg_files(
+    name = "standalone_aot_runtime_source_jit_files",
+    srcs = ["//xls/jit:generated_code_callback_abi.h"],
+    prefix = "/xls/jit",
+    strip_prefix = strip_prefix.from_pkg(),
+)
+
+pkg_tar(
+    name = "standalone_aot_runtime_source_archive",
+    srcs = [
+        ":standalone_aot_runtime_source_jit_files",
+        ":standalone_aot_runtime_source_public_files",
+        ":standalone_aot_runtime_source_repo_files",
+    ],
+    extension = "tar.gz",
+    package_file_name = "xls-aot-runtime-source.tar.gz",
 )
 
 cc_library(
