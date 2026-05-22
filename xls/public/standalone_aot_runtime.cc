@@ -19,10 +19,11 @@
 #include <cstdlib>
 #include <new>
 #include <string>
+#include <vector>
 
-#include "xls/ir/events.h"
 #include "xls/jit/generated_code_callback_abi.h"
-#include "xls/jit/generated_code_callbacks.h"
+
+struct xls_standalone_aot_runtime;
 
 namespace {
 
@@ -95,20 +96,23 @@ void UnsupportedRecordActiveRegisterWrite(xls::InstanceContext* thiz,
   UnsupportedCallback();
 }
 
-// Callback table installed behind the ABI-visible prefix of the runtime
-// object. Unsupported slots stay present so generated-code offsets remain ABI
+void RecordAssertion(xls::InstanceContext* thiz, const char* msg,
+                     xls::InterpreterEvents* events);
+void* AllocateBuffer(xls::InstanceContext* thiz, int64_t byte_size,
+                     int64_t alignment);
+void DeallocateBuffer(xls::InstanceContext* thiz, void* ptr);
+
+// Callback table installed behind the ABI-visible prefix of the runtime object.
+// Unsupported slots stay present so generated-code offsets remain ABI
 // compatible, but they abort if a non-negotiated feature somehow reaches them.
 struct StandaloneAotCallbackTable final : xls::InstanceContextVTable {
   StandaloneAotCallbackTable()
       : xls::InstanceContextVTable(
             &UnsupportedPerformStringStep, &UnsupportedPerformFormatStep,
             &UnsupportedRecordTrace, &UnsupportedCreateTraceBuffer,
-            &xls::generated_code_callbacks::RecordAssertion,
-            &UnsupportedQueueReceiveWrapper,
+            &RecordAssertion, &UnsupportedQueueReceiveWrapper,
             &UnsupportedQueueSendWrapper, &UnsupportedRecordActiveNextValue,
-            &UnsupportedRecordNodeResult,
-            &xls::generated_code_callbacks::AllocateBuffer,
-            &xls::generated_code_callbacks::DeallocateBuffer,
+            &UnsupportedRecordNodeResult, &AllocateBuffer, &DeallocateBuffer,
             &UnsupportedRecordActiveRegisterWrite) {}
 };
 
@@ -116,15 +120,51 @@ struct StandaloneAotCallbackTable final : xls::InstanceContextVTable {
 constexpr uint32_t kSupportedFeatures =
     XLS_STANDALONE_AOT_RUNTIME_FEATURE_ASSERTIONS;
 
+int64_t RoundUpToAlignment(int64_t byte_size, int64_t alignment) {
+  int64_t remainder = byte_size % alignment;
+  if (remainder == 0) {
+    return byte_size;
+  } else {
+    return byte_size + alignment - remainder;
+  }
+}
+
 }  // namespace
 
 // Runtime object whose first bytes are the callback table seen by generated
-// code. Assertion storage reuses the same `InterpreterEvents` path as the full
-// JIT runtime so standalone execution does not grow a second event model.
+// code. The standalone source bundle owns its assertion storage instead of
+// depending on XLS event types that would pull a wider native closure into
+// mixed Bazel final links.
 struct xls_standalone_aot_runtime {
   StandaloneAotCallbackTable vtable;
-  xls::InterpreterEvents events;
+  std::vector<std::string> assert_messages;
 };
+
+namespace {
+
+xls_standalone_aot_runtime* RuntimeFromContext(xls::InstanceContext* thiz) {
+  return reinterpret_cast<xls_standalone_aot_runtime*>(thiz);
+}
+
+void RecordAssertion(xls::InstanceContext* thiz, const char* msg,
+                     xls::InterpreterEvents* events) {
+  RuntimeFromContext(thiz)->assert_messages.push_back(msg);
+}
+
+void* AllocateBuffer(xls::InstanceContext* thiz, int64_t byte_size,
+                     int64_t alignment) {
+  int64_t adjusted_size = RoundUpToAlignment(byte_size, alignment);
+  void* buffer = std::aligned_alloc(alignment, adjusted_size);
+  if (buffer == nullptr) {
+    std::abort();
+  } else {
+    return buffer;
+  }
+}
+
+void DeallocateBuffer(xls::InstanceContext* thiz, void* ptr) { std::free(ptr); }
+
+}  // namespace
 
 // Validates feature negotiation before allocating the standalone runtime
 // object, so unreachable callbacks remain a construction-time contract.
@@ -142,9 +182,10 @@ enum xls_standalone_aot_runtime_status xls_standalone_aot_runtime_create(
     if (runtime == nullptr) {
       *out = nullptr;
       return XLS_STANDALONE_AOT_RUNTIME_STATUS_ALLOCATION_FAILED;
+    } else {
+      *out = runtime;
+      return XLS_STANDALONE_AOT_RUNTIME_STATUS_OK;
     }
-    *out = runtime;
-    return XLS_STANDALONE_AOT_RUNTIME_STATUS_OK;
   }
 }
 
@@ -157,24 +198,23 @@ void xls_standalone_aot_runtime_free(
 // Clears event payloads while keeping one reusable runtime object alive.
 void xls_standalone_aot_runtime_clear_events(
     struct xls_standalone_aot_runtime* runtime) {
-  runtime->events.Clear();
+  runtime->assert_messages.clear();
 }
 
 // Exposes the number of assertion messages currently retained by the runtime.
 size_t xls_standalone_aot_runtime_get_assert_message_count(
     const struct xls_standalone_aot_runtime* runtime) {
-  return runtime->events.GetAssertMessageCount();
+  return runtime->assert_messages.size();
 }
 
 // Returns one retained assertion message, or null when the caller asks past the
 // retained range.
 const char* xls_standalone_aot_runtime_get_assert_message(
     const struct xls_standalone_aot_runtime* runtime, size_t index) {
-  const std::string* message = runtime->events.GetAssertMessage(index);
-  if (message == nullptr) {
+  if (index >= runtime->assert_messages.size()) {
     return nullptr;
   } else {
-    return message->c_str();
+    return runtime->assert_messages[index].c_str();
   }
 }
 
@@ -188,9 +228,9 @@ int64_t xls_standalone_aot_entrypoint_trampoline(
   StandaloneAotFunctionEntrypoint entrypoint =
       std::bit_cast<StandaloneAotFunctionEntrypoint>(function_ptr);
   int64_t continuation = entrypoint(
-      inputs, outputs, temp_buffer, &runtime->events,
+      inputs, outputs, temp_buffer, /*events=*/nullptr,
       reinterpret_cast<xls::InstanceContext*>(&runtime->vtable),
       /*jit_runtime=*/nullptr, continuation_point);
-  *assert_messages_count_out = runtime->events.GetAssertMessageCount();
+  *assert_messages_count_out = runtime->assert_messages.size();
   return continuation;
 }

@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import glob
+import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
-import glob
-import re
 
 import release_runtime_closure
 
@@ -42,6 +43,8 @@ COMMON_TARGETS = [
 STATIC_AOT_RUNTIME_TARGET = "//xls/public:xls_aot_runtime"
 STATIC_AOT_RUNTIME_ARCHIVE = "bazel-bin/xls/public/libxls_aot_runtime.a"
 STATIC_AOT_RUNTIME_LINK_CONFIG = "xls/public/libxls_aot_runtime_link.toml"
+STATIC_AOT_RUNTIME_SOURCE_TARGET = "//xls/public:standalone_aot_runtime_source_archive"
+STATIC_AOT_RUNTIME_SOURCE_ARCHIVE = "bazel-bin/xls/public/xls-aot-runtime-source.tar.gz"
 
 LINUX_TARGETS = COMMON_TARGETS + ["//xls/public:libxls.so"]
 MACOS_TARGETS = COMMON_TARGETS + ["//xls/public:libxls.dylib"]
@@ -123,6 +126,17 @@ def copy_flattened_protos(output_dir, root_proto):
             dst.write(content)
         print(f"Copied {proto_path} to {destination}")
 
+
+def write_sha256sum(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as artifact:
+        for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
+            digest.update(chunk)
+    checksum_path = "{}.sha256".format(path)
+    with open(checksum_path, "w", encoding="utf-8") as checksum_file:
+        checksum_file.write("{}  {}\n".format(digest.hexdigest(), os.path.basename(path)))
+    return checksum_path
+
 # Function to get the current git hash and cleanliness status
 def get_git_info():
     try:
@@ -144,7 +158,7 @@ def make_local_release(
     release_target=None,
     allow_release_target_mismatch=False,
 ):
-    """Builds a local release bundle including the standalone AOT archive."""
+    """Builds a local release bundle including standalone AOT artifacts."""
     # Ensure the output directory exists and is writable
     if os.path.exists(output_dir):
         try:
@@ -156,7 +170,10 @@ def make_local_release(
 
     # Build the requested tool payload plus the standalone runtime archive that
     # downstream AOT consumers need at link time.
-    build_targets = targets + [STATIC_AOT_RUNTIME_TARGET]
+    build_targets = targets + [
+        STATIC_AOT_RUNTIME_TARGET,
+        STATIC_AOT_RUNTIME_SOURCE_TARGET,
+    ]
     if mode == "dbg-asan":
         build_command = [
             "bazel", "build", "-c", "dbg", "--config=asan"
@@ -238,6 +255,10 @@ def make_local_release(
         output_dir,
         "libxls_aot_runtime_link.toml",
     )
+    static_aot_runtime_source_dest = os.path.join(
+        output_dir,
+        "xls-aot-runtime-source.tar.gz",
+    )
     try:
         shutil.copy2(STATIC_AOT_RUNTIME_ARCHIVE, static_aot_runtime_dest)
         print(f"Copied {STATIC_AOT_RUNTIME_ARCHIVE} to {static_aot_runtime_dest}")
@@ -251,6 +272,15 @@ def make_local_release(
                 static_aot_runtime_link_config_dest,
             )
         )
+        shutil.copy2(STATIC_AOT_RUNTIME_SOURCE_ARCHIVE, static_aot_runtime_source_dest)
+        print(
+            "Copied {} to {}".format(
+                STATIC_AOT_RUNTIME_SOURCE_ARCHIVE,
+                static_aot_runtime_source_dest,
+            )
+        )
+        checksum_path = write_sha256sum(static_aot_runtime_source_dest)
+        print(f"Wrote {checksum_path}")
     except (FileNotFoundError, PermissionError) as e:
         print(f"Failed to copy standalone AOT runtime artifacts: {e}")
         sys.exit(1)

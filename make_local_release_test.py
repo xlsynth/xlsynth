@@ -14,6 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
+from pathlib import Path
+import tempfile
 import unittest
 
 import make_local_release
@@ -67,6 +70,35 @@ class MakeLocalReleaseTest(unittest.TestCase):
                     "/tmp/output",
                 ]
             )
+
+    def test_write_sha256sum_uses_release_asset_basename(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            archive = Path(tmp_dir) / "xls-aot-runtime-source.tar.gz"
+            archive.write_bytes(b"runtime-source")
+
+            checksum_path = Path(make_local_release.write_sha256sum(str(archive)))
+
+            self.assertEqual(
+                checksum_path.read_text(encoding="utf-8"),
+                "{}  xls-aot-runtime-source.tar.gz\n".format(
+                    hashlib.sha256(b"runtime-source").hexdigest()
+                ),
+            )
+
+    def test_release_workflow_uploads_runtime_source_asset(self):
+        workflow = (
+            Path(__file__).parent
+            / ".github"
+            / "workflows"
+            / "build-and-release-dylib.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("//xls/public:standalone_aot_runtime_source_archive", workflow)
+        self.assertIn("ubuntu2004-artifacts/xls-aot-runtime-source.tar.gz", workflow)
+        self.assertIn(
+            "ubuntu2004-artifacts/xls-aot-runtime-source.tar.gz.sha256",
+            workflow,
+        )
 
 
 if __name__ == "__main__":
