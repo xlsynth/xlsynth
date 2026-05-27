@@ -143,9 +143,9 @@ absl::Status ValidatePhase1SumPayloadMemberType(
   return TypeInferenceErrorStatusForAnnotation(
       member_annotation->span(), member_annotation,
       absl::Substitute(
-          "Phase 1 semantic sum payload members must be bits-like or enum "
-          "typed; sum `$0` constructor `$1` has unsupported payload member "
-          "type `$2`.",
+          "Phase 1 semantic sum payload members must be bits-like, enum typed, "
+          "or empty semantic sums; sum `$0` constructor `$1` has unsupported "
+          "payload member type `$2`.",
           sum_def.identifier(), variant.identifier(), member_type.ToString()),
       file_table);
 }

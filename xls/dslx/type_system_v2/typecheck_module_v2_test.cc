@@ -3460,8 +3460,8 @@ enum MaybePoint {
 const X = MaybePoint::None;
 )",
       TypecheckFails(AllOf(
-          HasSubstr("Phase 1 semantic sum payload members must be bits-like or "
-                    "enum typed"),
+          HasSubstr("Phase 1 semantic sum payload members must be bits-like, "
+                    "enum typed, or empty semantic sums"),
           HasSubstr("constructor `Some`"), HasSubstr("Point"))));
 }
 
@@ -3475,8 +3475,8 @@ enum PairBox {
 const X = PairBox::Pair { xy: (u32:1, u32:2) };
 )",
       TypecheckFails(AllOf(
-          HasSubstr("Phase 1 semantic sum payload members must be bits-like or "
-                    "enum typed"),
+          HasSubstr("Phase 1 semantic sum payload members must be bits-like, "
+                    "enum typed, or empty semantic sums"),
           HasSubstr("constructor `Pair`"), HasSubstr("(uN[32], uN[32])"))));
 }
 
