@@ -1522,6 +1522,15 @@ const struct xls_dslx_type* xls_dslx_type_info_get_type_type_annotation(
 bool xls_dslx_type_get_total_bit_count(const struct xls_dslx_type* type,
                                        char** error_out, int64_t* result_out) {
   const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  if (xls::dslx::TypeContainsSemanticSum(*cpp_type)) {
+    *result_out = 0;
+    *error_out = xls::ToOwnedCString(
+        absl::InvalidArgumentError(
+            "Cannot query total bit count for a type containing semantic sums "
+            "in Phase 1")
+            .ToString());
+    return false;
+  }
   absl::StatusOr<xls::dslx::TypeDim> bit_count = cpp_type->GetTotalBitCount();
   if (!bit_count.ok()) {
     *result_out = 0;

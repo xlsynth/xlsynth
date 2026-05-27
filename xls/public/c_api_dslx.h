@@ -711,6 +711,8 @@ struct xls_dslx_function* xls_dslx_invocation_data_get_caller(
 
 // -- type (deduced type information)
 
+// Returns false for a semantic sum or a type containing a semantic sum: Phase 1
+// does not expose the temporary semantic sum representation layout.
 bool xls_dslx_type_get_total_bit_count(const struct xls_dslx_type*,
                                        char** error_out, int64_t* result_out);
 

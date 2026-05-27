@@ -1244,4 +1244,44 @@ bool IsKnownU32(const BitsLikeProperties& properties) {
   return signedness == false && bit_count == 32;
 }
 
+bool TypeContainsSemanticSum(const Type& type) {
+  if (type.IsSum()) {
+    return true;
+  } else if (const auto* array_type = dynamic_cast<const ArrayType*>(&type);
+             array_type != nullptr) {
+    return TypeContainsSemanticSum(array_type->element_type());
+  } else if (const auto* tuple_type = dynamic_cast<const TupleType*>(&type);
+             tuple_type != nullptr) {
+    for (int64_t i = 0; i < tuple_type->size(); ++i) {
+      if (TypeContainsSemanticSum(tuple_type->GetMemberType(i))) {
+        return true;
+      }
+    }
+    return false;
+  } else if (const auto* struct_type =
+                 dynamic_cast<const StructTypeBase*>(&type);
+             struct_type != nullptr) {
+    for (int64_t i = 0; i < struct_type->size(); ++i) {
+      if (TypeContainsSemanticSum(struct_type->GetMemberType(i))) {
+        return true;
+      }
+    }
+    return false;
+  } else if (const auto* function_type =
+                 dynamic_cast<const FunctionType*>(&type);
+             function_type != nullptr) {
+    for (const std::unique_ptr<Type>& param : function_type->params()) {
+      if (TypeContainsSemanticSum(*param)) {
+        return true;
+      }
+    }
+    return TypeContainsSemanticSum(function_type->return_type());
+  } else if (const auto* channel_type = dynamic_cast<const ChannelType*>(&type);
+             channel_type != nullptr) {
+    return TypeContainsSemanticSum(channel_type->payload_type());
+  } else {
+    return false;
+  }
+}
+
 }  // namespace xls::dslx

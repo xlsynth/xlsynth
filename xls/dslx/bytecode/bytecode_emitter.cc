@@ -676,12 +676,16 @@ absl::Status BytecodeEmitter::HandleBuiltinTrace(const Invocation* node) {
   }
 
   XLS_RETURN_IF_ERROR(node->args().at(0)->AcceptExpr(this));
+  XLS_ASSIGN_OR_RETURN(Type * argument_type,
+                       type_info_->GetItemOrError(node->args().at(0)));
 
   std::vector<FormatStep> steps;
   steps.push_back(absl::StrCat("trace of ", node->args()[0]->ToString(), ": "));
   steps.push_back(options_.format_preference);
-  bytecode_.push_back(Bytecode(node->span(), Bytecode::Op::kTraceArg,
-                               Bytecode::TraceData(std::move(steps), {})));
+  bytecode_.push_back(
+      Bytecode(node->span(), Bytecode::Op::kTraceArg,
+               Bytecode::TraceData(std::move(steps), {},
+                                   {TypeContainsSemanticSum(*argument_type)})));
   return absl::OkStatus();
 }
 

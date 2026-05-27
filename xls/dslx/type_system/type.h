@@ -1265,6 +1265,11 @@ inline bool IsBool(const Type& t) {
 // type, is signed.
 absl::StatusOr<bool> IsSigned(const Type& c);
 
+// Returns whether a type is, or recursively contains, a semantic sum type.
+// This is used at Phase 1 public observer boundaries where semantic sum values
+// and representation details must remain opaque.
+bool TypeContainsSemanticSum(const Type& type);
+
 }  // namespace xls::dslx
 
 #endif  // XLS_DSLX_TYPE_SYSTEM_TYPE_H_

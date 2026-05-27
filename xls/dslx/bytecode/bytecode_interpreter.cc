@@ -68,6 +68,9 @@
 namespace xls::dslx {
 namespace {
 
+constexpr std::string_view kOpaqueSemanticSumValue =
+    "<semantic sum value omitted in Phase 1>";
+
 // Returns the given InterpValue formatted using the given format descriptor (if
 // it is not null).
 absl::StatusOr<std::string> ToStringMaybeFormatted(
@@ -1557,7 +1560,9 @@ absl::Status BytecodeInterpreter::EvalSwap(const Bytecode& bytecode) {
       pieces.push_back(std::get<std::string>(trace_element));
     } else {
       const InterpValue& value = args.at(argno);
-      if (argno < trace_data.value_fmt_descs().size()) {
+      if (trace_data.redact_value(argno)) {
+        pieces.push_back(std::string(kOpaqueSemanticSumValue));
+      } else if (argno < trace_data.value_fmt_descs().size()) {
         XLS_ASSIGN_OR_RETURN(
             std::string formatted,
             value.ToFormattedString(trace_data.value_fmt_descs()[argno]));
@@ -1677,7 +1682,14 @@ absl::Status BytecodeInterpreter::RunBuiltinFn(const Bytecode& bytecode,
       return RunBuiltinEnumerate(bytecode, stack_);
     case Builtin::kFail: {
       XLS_ASSIGN_OR_RETURN(InterpValue value, Pop());
-      std::string message{value.ToString()};
+      XLS_ASSIGN_OR_RETURN(Bytecode::InvocationData invocation_data,
+                           bytecode.invocation_data());
+      XLS_ASSIGN_OR_RETURN(Type * value_type,
+                           frames_.back().type_info()->GetItemOrError(
+                               invocation_data.invocation()->args()[1]));
+      std::string message = TypeContainsSemanticSum(*value_type)
+                                ? std::string(kOpaqueSemanticSumValue)
+                                : value.ToString();
       XLS_ASSIGN_OR_RETURN(InterpValue label, Pop());
       XLS_ASSIGN_OR_RETURN(std::string label_as_string,
                            InterpValueAsString(label));

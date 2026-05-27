@@ -1511,6 +1511,10 @@ enum MySum {
     Nothing,
     Count(u8),
 }
+
+struct MySumHolder {
+    value: MySum,
+}
 )";
   const char* additional_search_paths[] = {};
 
@@ -1540,7 +1544,7 @@ enum MySum {
 
   int64_t type_definition_count =
       xls_dslx_module_get_type_definition_count(module);
-  ASSERT_EQ(type_definition_count, 3);
+  ASSERT_EQ(type_definition_count, 4);
 
   xls_dslx_type_definition_kind kind0 =
       xls_dslx_module_get_type_definition_kind(module, 0);
@@ -1548,9 +1552,12 @@ enum MySum {
       xls_dslx_module_get_type_definition_kind(module, 1);
   xls_dslx_type_definition_kind kind2 =
       xls_dslx_module_get_type_definition_kind(module, 2);
+  xls_dslx_type_definition_kind kind3 =
+      xls_dslx_module_get_type_definition_kind(module, 3);
   EXPECT_EQ(kind0, xls_dslx_type_definition_kind_struct_def);
   EXPECT_EQ(kind1, xls_dslx_type_definition_kind_enum_def);
   EXPECT_EQ(kind2, xls_dslx_type_definition_kind_sum_def);
+  EXPECT_EQ(kind3, xls_dslx_type_definition_kind_struct_def);
 
   {
     xls_dslx_sum_def* sum_def =
@@ -1565,11 +1572,15 @@ enum MySum {
     const xls_dslx_type* sum_def_type =
         xls_dslx_type_info_get_type_sum_def(type_info, sum_def);
     int64_t total_bit_count = 0;
-    ASSERT_TRUE(xls_dslx_type_get_total_bit_count(sum_def_type, &error,
-                                                  &total_bit_count))
-        << "got not-ok result from get-total-bit-count; error: " << error;
-    ASSERT_EQ(error, nullptr);
-    EXPECT_EQ(total_bit_count, 1 + 8);
+    ASSERT_FALSE(xls_dslx_type_get_total_bit_count(sum_def_type, &error,
+                                                   &total_bit_count));
+    ASSERT_NE(error, nullptr);
+    EXPECT_THAT(std::string_view{error},
+                HasSubstr("Cannot query total bit count for a type containing "
+                          "semantic sums in Phase 1"));
+    EXPECT_EQ(total_bit_count, 0);
+    xls_c_str_free(error);
+    error = nullptr;
 
     xls_dslx_module_member* sum_member =
         xls_dslx_module_member_from_sum_def(sum_def);
@@ -1577,6 +1588,23 @@ enum MySum {
     EXPECT_EQ(xls_dslx_module_member_get_kind(sum_member),
               xls_dslx_module_member_kind_sum_def);
     EXPECT_EQ(xls_dslx_module_member_get_sum_def(sum_member), sum_def);
+  }
+
+  {
+    xls_dslx_struct_def* struct_def =
+        xls_dslx_module_get_type_definition_as_struct_def(module, 3);
+    const xls_dslx_type* struct_def_type =
+        xls_dslx_type_info_get_type_struct_def(type_info, struct_def);
+    int64_t total_bit_count = -1;
+    ASSERT_FALSE(xls_dslx_type_get_total_bit_count(struct_def_type, &error,
+                                                   &total_bit_count));
+    ASSERT_NE(error, nullptr);
+    EXPECT_THAT(std::string_view{error},
+                HasSubstr("Cannot query total bit count for a type containing "
+                          "semantic sums in Phase 1"));
+    EXPECT_EQ(total_bit_count, 0);
+    xls_c_str_free(error);
+    error = nullptr;
   }
 
   {

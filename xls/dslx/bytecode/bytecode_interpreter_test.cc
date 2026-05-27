@@ -69,6 +69,7 @@ absl::StatusOr<TypecheckedModule> ParseAndTypecheckOrPrintError(
 using ::absl_testing::IsOkAndHolds;
 using ::absl_testing::StatusIs;
 using ::testing::HasSubstr;
+using ::testing::Not;
 
 class BytecodeInterpreterTest : public ::testing::Test {
  public:
@@ -195,6 +196,29 @@ fn main() -> () {
                 nullptr, &events));
   EXPECT_THAT(events.GetTraceMessageStrings(),
               testing::ElementsAre("trace of u32:42: 0x2a"));
+  EXPECT_EQ(value, InterpValue::MakeUnit());
+}
+
+TEST_F(BytecodeInterpreterTest, TraceSemanticSumValueIsOpaqueInPhase1) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn main() -> () {
+  let x = Option::Some(u32:42);
+  trace!(x);
+}
+)";
+  DslxInterpreterEvents events;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue value,
+      Interpret(kProgram, "main", /*args=*/{}, BytecodeInterpreterOptions(),
+                nullptr, &events));
+  EXPECT_THAT(
+      events.GetTraceMessageStrings(),
+      ElementsAre("trace of x: <semantic sum value omitted in Phase 1>"));
   EXPECT_EQ(value, InterpValue::MakeUnit());
 }
 
@@ -2316,10 +2340,35 @@ fn doomed() {
   absl::StatusOr<InterpValue> value = Interpret(kProgram, "doomed");
   EXPECT_THAT(value.status(),
               StatusIs(absl::StatusCode::kInternal,
-                       AllOf(HasSubstr("were not equal"),
-                             HasSubstr("Option::Pair {"),
-                             HasSubstr("<     rhs: u32:2"),
-                             HasSubstr(">     rhs: u32:3"))));
+                       AllOf(HasSubstr("lhs and rhs were not equal; values "
+                                       "containing semantic sums are not "
+                                       "formatted in Phase 1"),
+                             Not(HasSubstr("Option::Pair")),
+                             Not(HasSubstr("rhs: u32:2")),
+                             Not(HasSubstr("rhs: u32:3")))));
+}
+
+TEST_F(BytecodeInterpreterTest,
+       AssertEqAggregateContainingSemanticSumIsOpaqueInPhase1) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn doomed() {
+  let a = Option[1]:[Option::Some(u32:2)];
+  let b = Option[1]:[Option::Some(u32:3)];
+  assert_eq(a, b)
+})";
+
+  absl::StatusOr<InterpValue> value = Interpret(kProgram, "doomed");
+  EXPECT_THAT(value.status(),
+              StatusIs(absl::StatusCode::kInternal,
+                       AllOf(HasSubstr("values containing semantic sums are "
+                                       "not formatted in Phase 1"),
+                             Not(HasSubstr("first differing index")),
+                             Not(HasSubstr("Option::Some")))));
 }
 
 TEST_F(BytecodeInterpreterTest, CheckedCastSnToSn) {
@@ -2877,6 +2926,26 @@ fn main() -> (u32, u32, bool, bool) {
               ElementsAre(InterpValue::MakeU32(7), InterpValue::MakeU32(7),
                           InterpValue::MakeBool(true),
                           InterpValue::MakeBool(true)));
+}
+
+TEST_F(BytecodeInterpreterTest, FailSemanticSumValueIsOpaqueInPhase1) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn doomed() -> Option {
+  let x = Option::Some(u32:42);
+  fail!("failure", x)
+}
+)";
+  absl::StatusOr<InterpValue> value = Interpret(kProgram, "doomed");
+  EXPECT_THAT(value.status(),
+              StatusIs(absl::StatusCode::kInternal,
+                       AllOf(HasSubstr("<semantic sum value omitted in Phase "
+                                       "1>"),
+                             Not(HasSubstr("u32:42")))));
 }
 
 TEST_F(BytecodeInterpreterTest, ZeroMacroSemanticSumUsesZeroDiscriminant) {
