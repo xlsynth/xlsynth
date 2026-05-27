@@ -194,6 +194,134 @@ absl::StatusOr<int64_t> EvaluateDimExpr(const dslx::Expr* dim) {
   return ParseNumberAsInt64(number->text());
 }
 
+enum class AnnotationInhabitance {
+  kInhabited,
+  kUninhabited,
+  // Preserve existing deferred failures for annotations this source generator
+  // cannot classify before random selection.
+  kUnknown,
+};
+
+AnnotationInhabitance TypeAnnotationInhabitance(TypeAnnotation* type);
+
+AnnotationInhabitance SumVariantAnnotationInhabitance(
+    const dslx::SumVariant& variant) {
+  if (variant.is_unit()) {
+    return AnnotationInhabitance::kInhabited;
+  }
+  bool has_unknown_member = false;
+  if (variant.is_tuple()) {
+    for (TypeAnnotation* member_type : variant.tuple_members()) {
+      AnnotationInhabitance member_inhabitance =
+          TypeAnnotationInhabitance(member_type);
+      if (member_inhabitance == AnnotationInhabitance::kUninhabited) {
+        return AnnotationInhabitance::kUninhabited;
+      }
+      has_unknown_member |=
+          member_inhabitance == AnnotationInhabitance::kUnknown;
+    }
+    return has_unknown_member ? AnnotationInhabitance::kUnknown
+                              : AnnotationInhabitance::kInhabited;
+  }
+  for (const dslx::StructMemberNode* member : variant.struct_members()) {
+    AnnotationInhabitance member_inhabitance =
+        TypeAnnotationInhabitance(member->type());
+    if (member_inhabitance == AnnotationInhabitance::kUninhabited) {
+      return AnnotationInhabitance::kUninhabited;
+    }
+    has_unknown_member |=
+        member_inhabitance == AnnotationInhabitance::kUnknown;
+  }
+  return has_unknown_member ? AnnotationInhabitance::kUnknown
+                            : AnnotationInhabitance::kInhabited;
+}
+
+AnnotationInhabitance TypeAnnotationInhabitance(TypeAnnotation* type) {
+  if (dslx::ExtractBitVectorMetadata(type).has_value()) {
+    return AnnotationInhabitance::kInhabited;
+  }
+  if (auto* array_type = dynamic_cast<dslx::ArrayTypeAnnotation*>(type);
+      array_type != nullptr) {
+    absl::StatusOr<int64_t> array_size = EvaluateDimExpr(array_type->dim());
+    if (!array_size.ok()) {
+      return AnnotationInhabitance::kUnknown;
+    }
+    if (*array_size == 0) {
+      return AnnotationInhabitance::kInhabited;
+    }
+    return TypeAnnotationInhabitance(array_type->element_type());
+  }
+  if (auto* tuple_type = dynamic_cast<dslx::TupleTypeAnnotation*>(type);
+      tuple_type != nullptr) {
+    bool has_unknown_member = false;
+    for (TypeAnnotation* member_type : tuple_type->members()) {
+      AnnotationInhabitance member_inhabitance =
+          TypeAnnotationInhabitance(member_type);
+      if (member_inhabitance == AnnotationInhabitance::kUninhabited) {
+        return AnnotationInhabitance::kUninhabited;
+      }
+      has_unknown_member |=
+          member_inhabitance == AnnotationInhabitance::kUnknown;
+    }
+    return has_unknown_member ? AnnotationInhabitance::kUnknown
+                              : AnnotationInhabitance::kInhabited;
+  }
+
+  auto* typeref_type = dynamic_cast<dslx::TypeRefTypeAnnotation*>(type);
+  if (typeref_type == nullptr) {
+    return AnnotationInhabitance::kUnknown;
+  }
+  return absl::visit(
+      Visitor{
+          [&](dslx::TypeAlias* type_alias) -> AnnotationInhabitance {
+            return TypeAnnotationInhabitance(&type_alias->type_annotation());
+          },
+          [&](dslx::StructDef* struct_def) -> AnnotationInhabitance {
+            bool has_unknown_member = false;
+            for (const dslx::StructMemberNode* member : struct_def->members()) {
+              AnnotationInhabitance member_inhabitance =
+                  TypeAnnotationInhabitance(member->type());
+              if (member_inhabitance == AnnotationInhabitance::kUninhabited) {
+                return AnnotationInhabitance::kUninhabited;
+              }
+              has_unknown_member |=
+                  member_inhabitance == AnnotationInhabitance::kUnknown;
+            }
+            return has_unknown_member ? AnnotationInhabitance::kUnknown
+                                      : AnnotationInhabitance::kInhabited;
+          },
+          [&](dslx::ProcDef* proc_def) -> AnnotationInhabitance {
+            return AnnotationInhabitance::kUnknown;
+          },
+          [&](dslx::EnumDef* enum_def) -> AnnotationInhabitance {
+            return enum_def->values().empty()
+                       ? AnnotationInhabitance::kUninhabited
+                       : AnnotationInhabitance::kInhabited;
+          },
+          [&](dslx::SumDef* sum_def) -> AnnotationInhabitance {
+            bool has_unknown_variant = false;
+            for (const dslx::SumVariant* variant : sum_def->variants()) {
+              AnnotationInhabitance variant_inhabitance =
+                  SumVariantAnnotationInhabitance(*variant);
+              if (variant_inhabitance == AnnotationInhabitance::kInhabited) {
+                return AnnotationInhabitance::kInhabited;
+              }
+              has_unknown_variant |=
+                  variant_inhabitance == AnnotationInhabitance::kUnknown;
+            }
+            return has_unknown_variant ? AnnotationInhabitance::kUnknown
+                                       : AnnotationInhabitance::kUninhabited;
+          },
+          [&](dslx::ColonRef* colon_ref) -> AnnotationInhabitance {
+            return AnnotationInhabitance::kUnknown;
+          },
+          [&](dslx::UseTreeEntry* use_tree_entry) -> AnnotationInhabitance {
+            return AnnotationInhabitance::kUnknown;
+          },
+      },
+      typeref_type->type_ref()->type_definition());
+}
+
 // Returns a number n in the range [0, limit), where Pr(n == k) is proportional
 // to (limit - k); the distribution density is "uniformly decreasing", so the
 // result is biased toward zero.
@@ -395,9 +523,23 @@ absl::StatusOr<Expr*> GenerateDslxConstant(absl::BitGenRef bit_gen,
                   "Cannot generate a constant for an empty sum type.");
             }
 
-            int64_t variant_index = absl::Uniform(
-                bit_gen, size_t{0}, sum_def->variants().size());
-            dslx::SumVariant* variant = sum_def->variants().at(variant_index);
+            std::vector<dslx::SumVariant*> potentially_inhabited_variants;
+            potentially_inhabited_variants.reserve(sum_def->variants().size());
+            for (dslx::SumVariant* variant : sum_def->variants()) {
+              if (SumVariantAnnotationInhabitance(*variant) !=
+                  AnnotationInhabitance::kUninhabited) {
+                potentially_inhabited_variants.push_back(variant);
+              }
+            }
+            if (potentially_inhabited_variants.empty()) {
+              return absl::InvalidArgumentError(
+                  "Cannot generate a constant for an uninhabited sum type.");
+            }
+
+            size_t variant_index = absl::Uniform(
+                bit_gen, size_t{0}, potentially_inhabited_variants.size());
+            dslx::SumVariant* variant =
+                potentially_inhabited_variants.at(variant_index);
             auto* sum_type_ref = module->Make<dslx::TypeRef>(fake_span, sum_def);
             auto* sum_type_annotation =
                 module->Make<dslx::TypeRefTypeAnnotation>(

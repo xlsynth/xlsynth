@@ -655,6 +655,15 @@ enum StructOnly {
 }
 
 enum Empty {}
+
+enum MaybeImpossible {
+  Unit,
+  Impossible(Empty),
+}
+
+enum ImpossibleOnly {
+  Impossible(Empty),
+}
 )",
                         "test.x", "test", file_table));
 
@@ -666,6 +675,10 @@ enum Empty {}
                            MakeTypeAnnotation(module.get(), "StructOnly"));
   XLS_ASSERT_OK_AND_ASSIGN(dslx::TypeRefTypeAnnotation * empty_type,
                            MakeTypeAnnotation(module.get(), "Empty"));
+  XLS_ASSERT_OK_AND_ASSIGN(dslx::TypeRefTypeAnnotation * maybe_impossible_type,
+                           MakeTypeAnnotation(module.get(), "MaybeImpossible"));
+  XLS_ASSERT_OK_AND_ASSIGN(dslx::TypeRefTypeAnnotation * impossible_only_type,
+                           MakeTypeAnnotation(module.get(), "ImpossibleOnly"));
 
   std::mt19937_64 unit_rng{0};
   XLS_ASSERT_OK_AND_ASSIGN(dslx::Expr * unit_expr,
@@ -694,6 +707,22 @@ enum Empty {}
   EXPECT_THAT(GenerateDslxConstant(empty_rng, module.get(), empty_type),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        HasSubstr("empty sum type")));
+
+  for (uint64_t seed = 0; seed < 64; ++seed) {
+    SCOPED_TRACE(seed);
+    std::mt19937_64 partially_inhabited_rng{seed};
+    XLS_ASSERT_OK_AND_ASSIGN(
+        dslx::Expr * partially_inhabited_expr,
+        GenerateDslxConstant(partially_inhabited_rng, module.get(),
+                             maybe_impossible_type));
+    EXPECT_EQ(partially_inhabited_expr->ToString(), "MaybeImpossible::Unit");
+  }
+
+  std::mt19937_64 uninhabited_rng{4};
+  EXPECT_THAT(
+      GenerateDslxConstant(uninhabited_rng, module.get(), impossible_only_type),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("uninhabited sum type")));
 }
 
 }  // namespace
