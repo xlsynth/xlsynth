@@ -4192,22 +4192,22 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
     std::vector<TypeAnnotation*> tuple_members;
     std::vector<StructMemberNode*> struct_members;
     Expr* discriminant;
+    std::optional<Span> payload_span;
+    std::optional<Span> discriminant_equals_span;
   };
 
   auto parse_struct_member =
       [this, &enum_bindings]() -> absl::StatusOr<StructMemberNode*> {
     Pos node_start_pos = GetPos();
     XLS_ASSIGN_OR_RETURN(NameDef * member_name, ParseNameDefNoBind());
-    Pos colon_start_pos = GetPos();
-    XLS_RETURN_IF_ERROR(
-        DropTokenOrError(TokenKind::kColon, /*start=*/nullptr,
-                         "Expect type annotation on semantic-sum variant field"));
-    Pos colon_end_pos = GetPos();
+    XLS_ASSIGN_OR_RETURN(
+        Token colon,
+        PopTokenOrError(TokenKind::kColon, /*start=*/nullptr,
+                        "Expect type annotation on semantic-sum variant field"));
     XLS_ASSIGN_OR_RETURN(TypeAnnotation * type,
                          ParseTypeAnnotation(enum_bindings));
     return module_->Make<StructMemberNode>(
-        Span(node_start_pos, GetPos()), member_name,
-        Span(colon_start_pos, colon_end_pos), type);
+        Span(node_start_pos, GetPos()), member_name, colon.span(), type);
   };
 
   auto parse_entry =
@@ -4216,19 +4216,25 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
     Pos variant_start = GetPos();
     XLS_ASSIGN_OR_RETURN(NameDef * variant_name, ParseNameDefNoBind());
 
-    XLS_ASSIGN_OR_RETURN(bool dropped_oparen, TryDropToken(TokenKind::kOParen));
-    if (dropped_oparen) {
+    XLS_ASSIGN_OR_RETURN(std::optional<Token> oparen,
+                         TryPopToken(TokenKind::kOParen));
+    if (oparen.has_value()) {
       auto parse_payload =
           [this, &enum_bindings]() -> absl::StatusOr<TypeAnnotation*> {
         return ParseTypeAnnotation(enum_bindings);
       };
+      Pos payload_limit;
       XLS_ASSIGN_OR_RETURN(
           std::vector<TypeAnnotation*> tuple_members,
-          ParseCommaSeq<TypeAnnotation*>(parse_payload, TokenKind::kCParen));
-      XLS_ASSIGN_OR_RETURN(bool dropped_equals,
-                           TryDropToken(TokenKind::kEquals));
+          ParseCommaSeq<TypeAnnotation*>(parse_payload, TokenKind::kCParen,
+                                         &payload_limit));
+      const Span payload_span(oparen->span().start(), payload_limit);
+      XLS_ASSIGN_OR_RETURN(std::optional<Token> equals,
+                           TryPopToken(TokenKind::kEquals));
       Expr* discriminant = nullptr;
-      if (dropped_equals) {
+      std::optional<Span> discriminant_equals_span;
+      if (equals.has_value()) {
+        discriminant_equals_span = equals->span();
         XLS_ASSIGN_OR_RETURN(discriminant, ParseExpression(enum_bindings));
       }
       return ParsedEntry{
@@ -4238,15 +4244,20 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
           .tuple_members = std::move(tuple_members),
           .struct_members = {},
           .discriminant = discriminant,
+          .payload_span = payload_span,
+          .discriminant_equals_span = discriminant_equals_span,
       };
     }
 
-    XLS_ASSIGN_OR_RETURN(bool dropped_obrace, TryDropToken(TokenKind::kOBrace));
-    if (dropped_obrace) {
+    XLS_ASSIGN_OR_RETURN(std::optional<Token> obrace,
+                         TryPopToken(TokenKind::kOBrace));
+    if (obrace.has_value()) {
+      Pos payload_limit;
       XLS_ASSIGN_OR_RETURN(
           std::vector<StructMemberNode*> struct_members,
           ParseCommaSeq<StructMemberNode*>(parse_struct_member,
-                                           TokenKind::kCBrace));
+                                           TokenKind::kCBrace,
+                                           &payload_limit));
       absl::flat_hash_set<std::string> seen_member_names;
       for (StructMemberNode* struct_member : struct_members) {
         if (!seen_member_names.insert(struct_member->name()).second) {
@@ -4258,10 +4269,13 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
                               name_def->identifier()));
         }
       }
-      XLS_ASSIGN_OR_RETURN(bool dropped_equals,
-                           TryDropToken(TokenKind::kEquals));
+      const Span payload_span(obrace->span().start(), payload_limit);
+      XLS_ASSIGN_OR_RETURN(std::optional<Token> equals,
+                           TryPopToken(TokenKind::kEquals));
       Expr* discriminant = nullptr;
-      if (dropped_equals) {
+      std::optional<Span> discriminant_equals_span;
+      if (equals.has_value()) {
+        discriminant_equals_span = equals->span();
         XLS_ASSIGN_OR_RETURN(discriminant, ParseExpression(enum_bindings));
       }
       return ParsedEntry{
@@ -4271,12 +4285,17 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
           .tuple_members = {},
           .struct_members = std::move(struct_members),
           .discriminant = discriminant,
+          .payload_span = payload_span,
+          .discriminant_equals_span = discriminant_equals_span,
       };
     }
 
-    XLS_ASSIGN_OR_RETURN(bool dropped_equals, TryDropToken(TokenKind::kEquals));
+    XLS_ASSIGN_OR_RETURN(std::optional<Token> equals,
+                         TryPopToken(TokenKind::kEquals));
     Expr* discriminant = nullptr;
-    if (dropped_equals) {
+    std::optional<Span> discriminant_equals_span;
+    if (equals.has_value()) {
+      discriminant_equals_span = equals->span();
       XLS_ASSIGN_OR_RETURN(discriminant, ParseExpression(enum_bindings));
     }
     return ParsedEntry{
@@ -4286,6 +4305,8 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
         .tuple_members = {},
         .struct_members = {},
         .discriminant = discriminant,
+        .payload_span = std::nullopt,
+        .discriminant_equals_span = discriminant_equals_span,
     };
   };
 
@@ -4351,7 +4372,8 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
     variants.push_back(module_->Make<SumVariant>(
         entry.span, entry.name_def, entry.payload_kind,
         std::move(entry.tuple_members), std::move(entry.struct_members),
-        entry.discriminant));
+        entry.discriminant, entry.payload_span,
+        entry.discriminant_equals_span));
   }
   absl::flat_hash_set<std::string> seen_variant_names;
   for (SumVariant* variant : variants) {

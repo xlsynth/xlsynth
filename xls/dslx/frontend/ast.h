@@ -3279,7 +3279,9 @@ class SumVariant : public AstNode {
              PayloadKind payload_kind,
              std::vector<TypeAnnotation*> tuple_members,
              std::vector<StructMemberNode*> struct_members,
-             Expr* discriminant = nullptr);
+             Expr* discriminant = nullptr,
+             std::optional<Span> payload_span = std::nullopt,
+             std::optional<Span> discriminant_equals_span = std::nullopt);
 
   ~SumVariant() override;
 
@@ -3305,6 +3307,11 @@ class SumVariant : public AstNode {
   bool is_tuple() const { return payload_kind_ == PayloadKind::kTuple; }
   bool is_struct() const { return payload_kind_ == PayloadKind::kStruct; }
   Expr* discriminant() const { return discriminant_; }
+  // These source-only spans are absent for synthesized variants.
+  const std::optional<Span>& payload_span() const { return payload_span_; }
+  const std::optional<Span>& discriminant_equals_span() const {
+    return discriminant_equals_span_;
+  }
 
   const std::vector<TypeAnnotation*>& tuple_members() const {
     return tuple_members_;
@@ -3318,6 +3325,8 @@ class SumVariant : public AstNode {
   NameDef* name_def_;
   PayloadKind payload_kind_;
   Expr* discriminant_;
+  std::optional<Span> payload_span_;
+  std::optional<Span> discriminant_equals_span_;
   std::vector<TypeAnnotation*> tuple_members_;
   std::vector<StructMemberNode*> struct_members_;
 };

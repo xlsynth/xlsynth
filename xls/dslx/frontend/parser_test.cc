@@ -2464,7 +2464,13 @@ TEST_F(ParserTest, SemanticSumSupportsExplicitDiscriminants) {
   ASSERT_TRUE(std::holds_alternative<SumDef*>(*maybe_member.value()));
   const auto* sum_def = std::get<SumDef*>(*maybe_member.value());
   ASSERT_TRUE(sum_def->GetVariant("Idle").has_value());
-  EXPECT_NE((*sum_def->GetVariant("Idle"))->discriminant(), nullptr);
+  const SumVariant* idle = *sum_def->GetVariant("Idle");
+  const SumVariant* request = *sum_def->GetVariant("Request");
+  EXPECT_NE(idle->discriminant(), nullptr);
+  EXPECT_TRUE(idle->payload_span().has_value());
+  EXPECT_TRUE(idle->discriminant_equals_span().has_value());
+  EXPECT_TRUE(request->payload_span().has_value());
+  EXPECT_TRUE(request->discriminant_equals_span().has_value());
   EXPECT_EQ(sum_def->tag_type_annotation()->ToString(), "u3");
 }
 

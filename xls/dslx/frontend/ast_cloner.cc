@@ -392,7 +392,8 @@ class AstCloner : public AstNodeVisitor {
         std::move(new_struct_members),
         n->discriminant() == nullptr
             ? nullptr
-            : absl::down_cast<Expr*>(old_to_new_.at(n->discriminant())));
+            : absl::down_cast<Expr*>(old_to_new_.at(n->discriminant())),
+        n->payload_span(), n->discriminant_equals_span());
     return absl::OkStatus();
   }
 

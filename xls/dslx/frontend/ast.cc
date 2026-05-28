@@ -1522,12 +1522,15 @@ SumVariant::SumVariant(Module* owner, Span span, NameDef* name_def,
                        PayloadKind payload_kind,
                        std::vector<TypeAnnotation*> tuple_members,
                        std::vector<StructMemberNode*> struct_members,
-                       Expr* discriminant)
+                       Expr* discriminant, std::optional<Span> payload_span,
+                       std::optional<Span> discriminant_equals_span)
     : AstNode(owner),
       span_(std::move(span)),
       name_def_(name_def),
       payload_kind_(payload_kind),
       discriminant_(discriminant),
+      payload_span_(std::move(payload_span)),
+      discriminant_equals_span_(std::move(discriminant_equals_span)),
       tuple_members_(std::move(tuple_members)),
       struct_members_(std::move(struct_members)) {
   if (payload_kind_ == PayloadKind::kUnit) {
@@ -1539,6 +1542,7 @@ SumVariant::SumVariant(Module* owner, Span span, NameDef* name_def,
     CHECK_EQ(payload_kind_, PayloadKind::kStruct);
     CHECK(tuple_members_.empty());
   }
+  CHECK(!discriminant_equals_span_.has_value() || discriminant_ != nullptr);
 }
 
 SumVariant::~SumVariant() = default;
