@@ -198,6 +198,13 @@ class Module : public AstNode {
       const AstNode* target_member, ModuleMember member,
       const MakeCollisionError& make_collision_error = nullptr);
 
+  // Replaces the module's visible top-level member list with `members`.
+  //
+  // This is intended for whole-module rewrites that have already rebuilt a
+  // self-consistent member graph. Existing nodes remain allocated in the module
+  // arena, but nodes no longer reachable from `top()` are treated as synthetic.
+  absl::Status ReplaceTop(std::vector<ModuleMember> members);
+
   // Gets the element in this module with the given target_name, or returns a
   // NotFoundError.
   template <typename T>
@@ -232,12 +239,16 @@ class Module : public AstNode {
   // internal nodes in some contexts, e.g. in language server adapter
   // functionality.
   bool IsSyntheticNode(const AstNode* node) const {
-    // It's synthetic if it's a top-level node that is not in the top set (the
-    // set is populated by the parser). Note that ColonRef is a special case
-    // here, because when it's the definition in a `TypeRef`, the parser
-    // actually creates it as a disconnected node.
-    if (node->parent() == nullptr && node->kind() != AstNodeKind::kColonRef &&
-        !top_set_.contains(node)) {
+    // It's synthetic if its lexical root is a top-level node that is not in the
+    // top set (the set is populated by the parser and whole-module rewrites).
+    // Note that ColonRef is a special case here, because when it's the
+    // definition in a `TypeRef`, the parser actually creates it as a
+    // disconnected node.
+    const AstNode* root = node;
+    while (root->parent() != nullptr) {
+      root = root->parent();
+    }
+    if (root->kind() != AstNodeKind::kColonRef && !top_set_.contains(root)) {
       return true;
     }
 

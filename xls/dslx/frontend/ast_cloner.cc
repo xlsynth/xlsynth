@@ -46,8 +46,12 @@ namespace {
 
 class AstCloner : public AstNodeVisitor {
  public:
-  explicit AstCloner(std::optional<Module*> module, CloneReplacer replacer)
-      : module_(module), replacer_(std::move(replacer)) {}
+  explicit AstCloner(
+      std::optional<Module*> module, CloneReplacer replacer,
+      absl::flat_hash_map<const AstNode*, AstNode*> initial_old_to_new = {})
+      : module_(module),
+        replacer_(std::move(replacer)),
+        old_to_new_(std::move(initial_old_to_new)) {}
 
   Module* module(const AstNode* n) const {
     return module_.has_value() ? *module_ : n->owner();
@@ -1508,20 +1512,22 @@ CloneReplacer NameRefReplacer(
 absl::StatusOr<absl::flat_hash_map<const AstNode*, AstNode*>>
 CloneAstAndGetAllPairs(const AstNode* root,
                        std::optional<Module*> target_module,
-                       CloneReplacer replacer) {
+                       CloneReplacer replacer,
+                       absl::flat_hash_map<const AstNode*, AstNode*>
+                           initial_old_to_new) {
   if (root->kind() == AstNodeKind::kModule) {
     return absl::InvalidArgumentError("Clone a module via 'CloneModule'.");
   }
   Module* new_module =
       target_module.has_value() ? *target_module : root->owner();
-  absl::flat_hash_map<const AstNode*, AstNode*> empty_old_to_new;
   XLS_ASSIGN_OR_RETURN(std::optional<AstNode*> root_replacement,
-                       replacer(root, new_module, empty_old_to_new));
+                       replacer(root, new_module, initial_old_to_new));
   if (root_replacement.has_value()) {
-    return absl::flat_hash_map<const AstNode*, AstNode*>{
-        {root, *root_replacement}};
+    initial_old_to_new[root] = *root_replacement;
+    return initial_old_to_new;
   }
-  AstCloner cloner(target_module, std::move(replacer));
+  AstCloner cloner(target_module, std::move(replacer),
+                   std::move(initial_old_to_new));
   XLS_RETURN_IF_ERROR(root->Accept(&cloner));
   return cloner.old_to_new();
 }
@@ -1646,6 +1652,52 @@ absl::StatusOr<std::unique_ptr<Module>> CloneModuleRemovingMembers(
   }
 
   return new_module;
+}
+
+absl::Status RewriteModuleInPlace(Module& module, CloneReplacer replacer) {
+  std::vector<ModuleMember> original_members(module.top().begin(),
+                                             module.top().end());
+  std::vector<ModuleMember> rewritten_members;
+  rewritten_members.reserve(original_members.size());
+  absl::flat_hash_map<const AstNode*, AstNode*> global_map;
+
+  for (const ModuleMember& member : original_members) {
+    const AstNode* original_node = ToAstNode(member);
+    CloneReplacer reuse_existing =
+        [&](const AstNode* node, Module* target,
+            const absl::flat_hash_map<const AstNode*, AstNode*>& old_to_new)
+        -> absl::StatusOr<std::optional<AstNode*>> {
+      if (auto cached = global_map.find(node); cached != global_map.end()) {
+        return cached->second;
+      }
+
+      if (node->kind() == AstNodeKind::kNameRef) {
+        const auto* name_ref = absl::down_cast<const NameRef*>(node);
+        if (std::holds_alternative<const NameDef*>(name_ref->name_def())) {
+          const NameDef* def = std::get<const NameDef*>(name_ref->name_def());
+          if (auto def_it = global_map.find(def); def_it != global_map.end()) {
+            auto* new_def = absl::down_cast<NameDef*>(def_it->second);
+            return target->Make<NameRef>(name_ref->span(),
+                                         name_ref->identifier(), new_def,
+                                         name_ref->in_parens());
+          }
+        }
+      }
+
+      return replacer(node, target, old_to_new);
+    };
+
+    XLS_ASSIGN_OR_RETURN(
+        auto old_to_new,
+        CloneAstAndGetAllPairs(original_node, &module, std::move(reuse_existing),
+                               global_map));
+    global_map.insert(old_to_new.begin(), old_to_new.end());
+    XLS_ASSIGN_OR_RETURN(ModuleMember rewritten_member,
+                         MakeClonedModuleMember(member, old_to_new));
+    rewritten_members.push_back(rewritten_member);
+  }
+
+  return module.ReplaceTop(std::move(rewritten_members));
 }
 
 CloneReplacer ChainCloneReplacers(CloneReplacer first, CloneReplacer second) {
