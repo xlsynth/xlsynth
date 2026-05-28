@@ -1,0 +1,140 @@
+diff --git dependency_support/com_icarus_iverilog/bundled.BUILD.bazel dependency_support/com_icarus_iverilog/bundled.BUILD.bazel
+index 4e215..4a9dbe4 100644
+--- dependency_support/com_icarus_iverilog/bundled.BUILD.bazel
++++ dependency_support/com_icarus_iverilog/bundled.BUILD.bazel
+@@ -125,12 +125,11 @@ cc_binary(
+     includes = [
+         "libmisc",
+         ".",
+     ],
+-    linkopts = [
+-        "-ldl",
+-        "-Wl,--export-dynamic",
+-        "-Wl,-no-pie",
+-    ],
++    linkopts = ["-ldl"] + select({
++        "@platforms//os:macos": ["-Wl,-export_dynamic"],
++        "//conditions:default": ["-Wl,--export-dynamic", "-Wl,-no-pie"],
++    }),
+     deps = [
+         ":ivl-misc",
+@@ -226,11 +225,11 @@ cc_binary(
+     includes = [
+         "vvp_gen",
+         "vvp",
+         ".",
+     ],
+-    linkopts = [
+-        "-ldl",
+-        "-Wl,--export-dynamic",
+-    ],
++    linkopts = ["-ldl"] + select({
++        "@platforms//os:macos": ["-Wl,-export_dynamic"],
++        "//conditions:default": ["-Wl,--export-dynamic"],
++    }),
+     deps = [
+         ":vpi_user",
+@@ -363,6 +363,9 @@ vpi_binary(
+         ".",
+         "vpi",
+     ],
++    linkopts = [
++        "-lpthread",
++    ],
+     # The code has atrocious const hygiene. Produces mounds of warnings.
+     deps = [
+         ":vpi_user",
+diff --git dependency_support/com_icarus_iverilog/build-plugins.bzl dependency_support/com_icarus_iverilog/build-plugins.bzl
+index 06a5cd9..8618629 100644
+--- dependency_support/com_icarus_iverilog/build-plugins.bzl
++++ dependency_support/com_icarus_iverilog/build-plugins.bzl
+@@ -21,11 +21,18 @@ def vpi_binary(name, out, srcs, **kwargs):
+     All the extra arguments are passed directly to cc_binary.
+     """
+     cc_target = name + "_shared"
++    kwargs["linkopts"] = kwargs.get("linkopts", []) + select({
++        # VPI plugins are loaded into iverilog/vvp and intentionally reference
++        # host symbols that resolve when the module is dlopen'ed.
++        "@platforms//os:macos": ["-Wl,-undefined,dynamic_lookup"],
++        "//conditions:default": [],
++    })
++
+     cc_binary(
+         name = cc_target,
+         srcs = srcs,
+         linkshared = 1,
+         **kwargs
+     )
+
+     native.genrule(
+diff --git dependency_support/com_icarus_iverilog/com_icarus_iverilog.bzl dependency_support/com_icarus_iverilog/com_icarus_iverilog.bzl
+--- dependency_support/com_icarus_iverilog/com_icarus_iverilog.bzl
++++ dependency_support/com_icarus_iverilog/com_icarus_iverilog.bzl
+@@ -26,4 +26,8 @@ def com_icarus_iverilog():
+         strip_prefix = "iverilog-12_0",
+         sha256 = "a68cb1ef7c017ef090ebedb2bc3e39ef90ecc70a3400afb4aa94303bc3beaa7d",
+         build_file = Label("//dependency_support:com_icarus_iverilog/bundled.BUILD.bazel"),
++        patches = [
++            Label("@rules_hdl//dependency_support/com_icarus_iverilog:macos.patch"),
++        ],
++        patch_args = ["-p1"],
+     )
+diff --git dependency_support/com_icarus_iverilog/macos.patch dependency_support/com_icarus_iverilog/macos.patch
+new file mode 100644
+--- /dev/null
++++ dependency_support/com_icarus_iverilog/macos.patch
+@@ -0,0 +1,19 @@
++diff --git a/driver/main.c b/driver/main.c
++--- a/driver/main.c
+++++ b/driver/main.c
++@@ -74,3 +74,7 @@
+++#ifdef __APPLE__
+++#include <mach-o/dyld.h>
+++#endif
+++
++ #ifdef HAVE_GETOPT_H
++ #include <getopt.h>
++ #endif
++diff --git a/vvp/config.h.in b/vvp/config.h.in
++--- a/vvp/config.h.in
+++++ b/vvp/config.h.in
++@@ -86,3 +86,3 @@ typedef uint64_t vvp_time64_t;
++-# ifdef UINT64_T_AND_ULONG_SAME
+++# if defined(UINT64_T_AND_ULONG_SAME) && !defined(__APPLE__)
++ #  define UL_AND_TIME64_SAME
++ # endif
+diff --git dependency_support/pseudo_configure.bzl dependency_support/pseudo_configure.bzl
+index c4a4ac7..73b7420 100644
+--- dependency_support/pseudo_configure.bzl
++++ dependency_support/pseudo_configure.bzl
+@@ -33,12 +33,12 @@ def pseudo_configure(name, out, src = None, defs = [], mappings = {}, additional
+     else:
+         cmd += "echo"
+     all_defs = ""
+     for def_ in defs:
+-        cmd += r"| sed 's/#\s*undef \b\(" + def_ + r"\)\b/#define \1 1/'"
++        cmd += r"| sed 's/#[[:space:]]*undef[[:space:]][[:space:]]*\(" + def_ + r"\)[[:space:]]*$$/#define \1 1/'"
+         all_defs += "#define " + def_ + " 1\\n"
+     for key, value in mappings.items():
+-        cmd += r"| sed 's/#\s*undef \b" + key + r"\b/#define " + str(key) + " " + str(value) + "/'"
+-        cmd += r"| sed 's/#\s*define \b\(" + key + r"\)\b 0/#define \1 " + str(value) + "/'"
++        cmd += r"| sed 's/#[[:space:]]*undef[[:space:]][[:space:]]*" + key + r"[[:space:]]*$$/#define " + str(key) + " " + str(value) + "/'"
++        cmd += r"| sed 's/#[[:space:]]*define[[:space:]][[:space:]]*\(" + key + r"\)[[:space:]][[:space:]]*0[[:space:]]*$$/#define \1 " + str(value) + "/'"
+         all_defs += "#define " + key + " " + value + "\\n"
+     cmd += r"| sed 's/\@DEFS\@/" + all_defs + "/'"
+     cmd += " >> $@"
+diff --git dependency_support/net_zlib/bundled.BUILD.bazel dependency_support/net_zlib/bundled.BUILD.bazel
+index b55f3ac..21b0785 100644
+--- dependency_support/net_zlib/bundled.BUILD.bazel
++++ dependency_support/net_zlib/bundled.BUILD.bazel
+@@ -69,6 +69,10 @@ cc_library(
+     copts = [
+         "-Wno-unused-variable",
+         "-Wno-implicit-function-declaration",
++        # Modern Apple clang predefines TARGET_OS_MAC for Darwin. zlib 1.2.11
++        # interprets that as the old classic-Mac path and rewrites fdopen.
++        # Keep the classic MACOS branch available without misdetecting Darwin.
++        "-UTARGET_OS_MAC",
+     ],
+     includes = ["zlib/include/"],
+     visibility = ["//visibility:public"],

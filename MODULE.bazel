@@ -10,7 +10,14 @@ bazel_dep(name = "toolchains_llvm", version = "1.4.0")
 llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
 llvm.toolchain(
     cxx_standard = {"": "c++20"},
-    llvm_version = "19.1.7",
+    llvm_versions = {
+        "": "19.1.7",
+        "darwin-aarch64": "19.1.7",
+        "darwin-x86_64": "19.1.7",
+        "linux-x86_64": "18.1.8",
+        "ubuntu-20.04-x86_64": "18.1.8",
+        "ubuntu-24.04-x86_64": "19.1.7",
+    },
 )
 use_repo(llvm, "llvm_toolchain")
 
@@ -148,6 +155,14 @@ maven.artifact(
 # Used both by XLS and rules_hdl.
 bazel_dep(name = "eigen", version = "4.0.0-20241125.bcr.2")
 bazel_dep(name = "rules_pkg", version = "1.2.0")
+
+# Bazel's generated macOS wrapped_clang currently fails dyld without LC_UUID.
+single_version_override(
+    module_name = "apple_support",
+    version = "1.17.1",
+    patch_strip = 1,
+    patches = ["//dependency_support:apple_support_no_uuid.patch"],
+)
 
 # Workaround suggested by a Bazel team member; only needed for WORKSPACE to work correctly.
 # TODO: https://github.com/google/xls/issues/931 - Remove this workaround once the WORKSPACE file is migrated to MODULE.bazel.
