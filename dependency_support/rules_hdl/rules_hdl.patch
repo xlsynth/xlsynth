@@ -2,6 +2,38 @@ diff --git dependency_support/com_icarus_iverilog/bundled.BUILD.bazel dependency
 index 4e215..4a9dbe4 100644
 --- dependency_support/com_icarus_iverilog/bundled.BUILD.bazel
 +++ dependency_support/com_icarus_iverilog/bundled.BUILD.bazel
+@@ -125,12 +125,11 @@ cc_binary(
+     includes = [
+         "libmisc",
+         ".",
+     ],
+-    linkopts = [
+-        "-ldl",
+-        "-Wl,--export-dynamic",
+-        "-Wl,-no-pie",
+-    ],
++    linkopts = ["-ldl"] + select({
++        "@platforms//os:macos": ["-Wl,-export_dynamic"],
++        "//conditions:default": ["-Wl,--export-dynamic", "-Wl,-no-pie"],
++    }),
+     deps = [
+         ":ivl-misc",
+@@ -226,11 +225,11 @@ cc_binary(
+     includes = [
+         "vvp_gen",
+         "vvp",
+         ".",
+     ],
+-    linkopts = [
+-        "-ldl",
+-        "-Wl,--export-dynamic",
+-    ],
++    linkopts = ["-ldl"] + select({
++        "@platforms//os:macos": ["-Wl,-export_dynamic"],
++        "//conditions:default": ["-Wl,--export-dynamic"],
++    }),
+     deps = [
+         ":vpi_user",
 @@ -363,6 +363,9 @@ vpi_binary(
          ".",
          "vpi",
@@ -35,6 +67,42 @@ index 06a5cd9..8618629 100644
      )
 
      native.genrule(
+diff --git dependency_support/com_icarus_iverilog/com_icarus_iverilog.bzl dependency_support/com_icarus_iverilog/com_icarus_iverilog.bzl
+--- dependency_support/com_icarus_iverilog/com_icarus_iverilog.bzl
++++ dependency_support/com_icarus_iverilog/com_icarus_iverilog.bzl
+@@ -26,4 +26,8 @@ def com_icarus_iverilog():
+         strip_prefix = "iverilog-12_0",
+         sha256 = "a68cb1ef7c017ef090ebedb2bc3e39ef90ecc70a3400afb4aa94303bc3beaa7d",
+         build_file = Label("//dependency_support:com_icarus_iverilog/bundled.BUILD.bazel"),
++        patches = [
++            Label("@rules_hdl//dependency_support/com_icarus_iverilog:macos.patch"),
++        ],
++        patch_args = ["-p1"],
+     )
+diff --git dependency_support/com_icarus_iverilog/macos.patch dependency_support/com_icarus_iverilog/macos.patch
+new file mode 100644
+--- /dev/null
++++ dependency_support/com_icarus_iverilog/macos.patch
+@@ -0,0 +1,19 @@
++diff --git a/driver/main.c b/driver/main.c
++--- a/driver/main.c
+++++ b/driver/main.c
++@@ -74,3 +74,7 @@
+++#ifdef __APPLE__
+++#include <mach-o/dyld.h>
+++#endif
+++
++ #ifdef HAVE_GETOPT_H
++ #include <getopt.h>
++ #endif
++diff --git a/vvp/config.h.in b/vvp/config.h.in
++--- a/vvp/config.h.in
+++++ b/vvp/config.h.in
++@@ -86,3 +86,3 @@ typedef uint64_t vvp_time64_t;
++-# ifdef UINT64_T_AND_ULONG_SAME
+++# if defined(UINT64_T_AND_ULONG_SAME) && !defined(__APPLE__)
++ #  define UL_AND_TIME64_SAME
++ # endif
 diff --git dependency_support/pseudo_configure.bzl dependency_support/pseudo_configure.bzl
 index c4a4ac7..73b7420 100644
 --- dependency_support/pseudo_configure.bzl
