@@ -1897,6 +1897,31 @@ type Box8 = Box<u32:8>;
   absl::Cleanup free_parametric_value_str(
       [&] { xls_c_str_free(parametric_value_str); });
   EXPECT_EQ(std::string_view{parametric_value_str}, "u32:8");
+
+  const xls_dslx_type* box8_type =
+      xls_dslx_type_info_get_type_type_annotation(type_info, rhs);
+  ASSERT_NE(box8_type, nullptr);
+  ASSERT_TRUE(xls_dslx_type_is_struct(box8_type));
+  ASSERT_EQ(xls_dslx_type_struct_get_member_count(box8_type), 1);
+
+  const xls_dslx_type* value_type =
+      xls_dslx_type_struct_get_member_type(box8_type, 0);
+  ASSERT_NE(value_type, nullptr);
+  xls_dslx_type_dim* is_signed = nullptr;
+  xls_dslx_type_dim* size = nullptr;
+  ASSERT_TRUE(xls_dslx_type_is_bits_like(
+      const_cast<xls_dslx_type*>(value_type), &is_signed, &size));
+  absl::Cleanup free_type_dims([&] {
+    xls_dslx_type_dim_free(is_signed);
+    xls_dslx_type_dim_free(size);
+  });
+  bool is_signed_value = true;
+  ASSERT_TRUE(
+      xls_dslx_type_dim_get_as_bool(is_signed, &error, &is_signed_value));
+  EXPECT_FALSE(is_signed_value);
+  int64_t value_bit_count = 0;
+  ASSERT_TRUE(xls_dslx_type_dim_get_as_int64(size, &error, &value_bit_count));
+  EXPECT_EQ(value_bit_count, 8);
 }
 
 TEST(XlsCApiTest, DslxInspectImportModuleMember) {
