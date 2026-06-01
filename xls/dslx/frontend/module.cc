@@ -362,7 +362,9 @@ absl::Status Module::InsertTopAt(ModuleMember member, It insert_it) {
     insert_it = top_.insert(insert_it, member);
   }
 
-  top_set_.insert(ToAstNode(member));
+  const AstNode* node = ToAstNode(member);
+  top_set_.insert(node);
+  displaced_top_set_.erase(node);
   for (const std::string& member_name : GetMemberNames(member)) {
     top_by_name_.insert({member_name, member});
   }
@@ -417,6 +419,9 @@ absl::Status Module::InsertTopAfter(
 }
 
 absl::Status Module::ReplaceTop(std::vector<ModuleMember> members) {
+  for (ModuleMember member : top_) {
+    displaced_top_set_.insert(ToAstNode(member));
+  }
   top_.clear();
   top_set_.clear();
   top_by_name_.clear();

@@ -202,7 +202,8 @@ class Module : public AstNode {
   //
   // This is intended for whole-module rewrites that have already rebuilt a
   // self-consistent member graph. Existing nodes remain allocated in the module
-  // arena, but nodes no longer reachable from `top()` are treated as synthetic.
+  // arena, but displaced top-level nodes and their descendants are treated as
+  // synthetic.
   absl::Status ReplaceTop(std::vector<ModuleMember> members);
 
   // Gets the element in this module with the given target_name, or returns a
@@ -239,16 +240,22 @@ class Module : public AstNode {
   // internal nodes in some contexts, e.g. in language server adapter
   // functionality.
   bool IsSyntheticNode(const AstNode* node) const {
-    // It's synthetic if its lexical root is a top-level node that is not in the
-    // top set (the set is populated by the parser and whole-module rewrites).
-    // Note that ColonRef is a special case here, because when it's the
-    // definition in a `TypeRef`, the parser actually creates it as a
-    // disconnected node.
+    // It's synthetic if it's a top-level node that is not in the top set (the
+    // set is populated by the parser and whole-module rewrites). Note that
+    // ColonRef is a special case here, because when it's the definition in a
+    // `TypeRef`, the parser actually creates it as a disconnected node.
+    if (node->parent() == nullptr && node->kind() != AstNodeKind::kColonRef &&
+        !top_set_.contains(node)) {
+      return true;
+    }
+
+    // Whole-module rewrites leave displaced nodes allocated in the arena.
+    // Descendants of those explicitly displaced roots are also synthetic.
     const AstNode* root = node;
     while (root->parent() != nullptr) {
       root = root->parent();
     }
-    if (root->kind() != AstNodeKind::kColonRef && !top_set_.contains(root)) {
+    if (displaced_top_set_.contains(root)) {
       return true;
     }
 
@@ -453,6 +460,10 @@ class Module : public AstNode {
 
   // Same as `top_` but as a set, for quick contains() checks.
   absl::flat_hash_set<const AstNode*> top_set_;
+
+  // Former top-level members displaced by ReplaceTop(). Their descendants
+  // remain allocated in the arena but should not be surfaced as source AST.
+  absl::flat_hash_set<const AstNode*> displaced_top_set_;
 
   // Map of top-level module member name to the member itself.
   absl::flat_hash_map<std::string, ModuleMember> top_by_name_;

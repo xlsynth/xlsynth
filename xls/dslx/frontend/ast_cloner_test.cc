@@ -1619,6 +1619,30 @@ fn main() -> u32 {
   EXPECT_NE(std::get<const NameDef*>(callee->name_def()), old_id->name_def());
 }
 
+TEST(AstClonerTest, ReplaceTopPreservesRetainedMemberVisibility) {
+  constexpr std::string_view kProgram = R"(fn id(x: u32) -> u32 {
+    x
+}
+
+fn main() -> u32 {
+    id(u32:1)
+})";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(auto module, ParseModule(kProgram, "fake_path.x",
+                                                    "the_module", file_table));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * id,
+                           module->GetMemberOrError<Function>("id"));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * main,
+                           module->GetMemberOrError<Function>("main"));
+
+  XLS_ASSERT_OK(module->ReplaceTop(std::vector<ModuleMember>{main}));
+
+  EXPECT_TRUE(module->IsSyntheticNode(id));
+  EXPECT_TRUE(module->IsSyntheticNode(id->body()));
+  EXPECT_FALSE(module->IsSyntheticNode(main));
+}
+
 TEST(AstClonerTest, IndexVariants) {
   constexpr std::string_view kProgram = R"(fn main() {
     let array = u32[5]:[u32:0, u32:1, u32:2, u32:3, u32:4];
