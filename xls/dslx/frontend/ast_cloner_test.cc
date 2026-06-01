@@ -1696,6 +1696,41 @@ fn main() -> u32 {
   EXPECT_FALSE(module->IsSyntheticNode(main));
 }
 
+TEST(AstClonerTest, ReplaceTopFailurePreservesOriginalMembers) {
+  constexpr std::string_view kProgram = R"(fn id(x: u32) -> u32 {
+    x
+}
+
+fn main() -> u32 {
+    id(u32:1)
+})";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(auto module, ParseModule(kProgram, "fake_path.x",
+                                                    "the_module", file_table));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * id,
+                           module->GetMemberOrError<Function>("id"));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * main,
+                           module->GetMemberOrError<Function>("main"));
+
+  EXPECT_THAT(module->ReplaceTop(std::vector<ModuleMember>{id, id}),
+              StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("id")));
+
+  ASSERT_EQ(module->top().size(), 2);
+  EXPECT_EQ(ToAstNode(module->top()[0]), id);
+  EXPECT_EQ(ToAstNode(module->top()[1]), main);
+  XLS_ASSERT_OK_AND_ASSIGN(Function * visible_id,
+                           module->GetMemberOrError<Function>("id"));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * visible_main,
+                           module->GetMemberOrError<Function>("main"));
+  EXPECT_EQ(visible_id, id);
+  EXPECT_EQ(visible_main, main);
+  EXPECT_FALSE(module->IsSyntheticNode(id));
+  EXPECT_FALSE(module->IsSyntheticNode(id->body()));
+  EXPECT_FALSE(module->IsSyntheticNode(main));
+  EXPECT_FALSE(module->IsSyntheticNode(main->body()));
+}
+
 TEST(AstClonerTest, IndexVariants) {
   constexpr std::string_view kProgram = R"(fn main() {
     let array = u32[5]:[u32:0, u32:1, u32:2, u32:3, u32:4];

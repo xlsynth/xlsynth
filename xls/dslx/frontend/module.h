@@ -442,7 +442,8 @@ class Module : public AstNode {
   std::vector<std::string> GetMemberNames(const ModuleMember& member) const;
 
   absl::Status CheckForCollision(
-      ModuleMember member, const MakeCollisionError& make_collision_error);
+      ModuleMember member, const MakeCollisionError& make_collision_error,
+      const absl::flat_hash_map<std::string, ModuleMember>& top_by_name) const;
 
   template <typename It>
   absl::Status InsertTopAt(ModuleMember member, It it);

@@ -25,6 +25,7 @@
 
 #include "absl/base/casts.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -335,10 +336,11 @@ absl::StatusOr<TypeDefinition> Module::GetTypeDefinition(
 }
 
 absl::Status Module::CheckForCollision(
-    ModuleMember member, const MakeCollisionError& make_collision_error) {
+    ModuleMember member, const MakeCollisionError& make_collision_error,
+    const absl::flat_hash_map<std::string, ModuleMember>& top_by_name) const {
   for (const std::string& member_name : GetMemberNames(member)) {
-    if (top_by_name_.contains(member_name)) {
-      const AstNode* node = ToAstNode(top_by_name_.at(member_name));
+    if (top_by_name.contains(member_name)) {
+      const AstNode* node = ToAstNode(top_by_name.at(member_name));
       const Span existing_span = node->GetSpan().value();
       const AstNode* new_node = ToAstNode(member);
       const Span new_span = new_node->GetSpan().value();
@@ -373,7 +375,8 @@ absl::Status Module::InsertTopAt(ModuleMember member, It insert_it) {
 
 absl::Status Module::AddTop(ModuleMember member,
                             const MakeCollisionError& make_collision_error) {
-  XLS_RETURN_IF_ERROR(CheckForCollision(member, make_collision_error));
+  XLS_RETURN_IF_ERROR(
+      CheckForCollision(member, make_collision_error, top_by_name_));
   return InsertTopAt(member, top_.end());
 }
 
@@ -386,7 +389,8 @@ absl::Status Module::InsertTopBefore(
         absl::StrFormat("Target member is not part of module %s", name_));
   }
 
-  XLS_RETURN_IF_ERROR(CheckForCollision(member, make_collision_error));
+  XLS_RETURN_IF_ERROR(
+      CheckForCollision(member, make_collision_error, top_by_name_));
 
   auto insert_it = top_.end();
   for (auto it = top_.begin(); it != top_.end(); ++it) {
@@ -406,7 +410,8 @@ absl::Status Module::InsertTopAfter(
     return absl::NotFoundError(
         absl::StrFormat("Target member is not part of module %s", name_));
   }
-  XLS_RETURN_IF_ERROR(CheckForCollision(member, make_collision_error));
+  XLS_RETURN_IF_ERROR(
+      CheckForCollision(member, make_collision_error, top_by_name_));
 
   auto insert_it = top_.end();
   for (auto it = top_.begin(); it != top_.end(); ++it) {
@@ -419,17 +424,32 @@ absl::Status Module::InsertTopAfter(
 }
 
 absl::Status Module::ReplaceTop(std::vector<ModuleMember> members) {
+  std::vector<ModuleMember> new_top;
+  new_top.reserve(members.size());
+  absl::flat_hash_set<const AstNode*> new_top_set;
+  absl::flat_hash_set<const AstNode*> new_displaced_top_set =
+      displaced_top_set_;
+  absl::flat_hash_map<std::string, ModuleMember> new_top_by_name;
+
   for (ModuleMember member : top_) {
-    displaced_top_set_.insert(ToAstNode(member));
+    new_displaced_top_set.insert(ToAstNode(member));
   }
-  top_.clear();
-  top_set_.clear();
-  top_by_name_.clear();
-  top_.reserve(members.size());
   for (ModuleMember member : members) {
-    XLS_RETURN_IF_ERROR(CheckForCollision(member, /*make_collision_error=*/nullptr));
-    XLS_RETURN_IF_ERROR(InsertTopAt(member, top_.end()));
+    XLS_RETURN_IF_ERROR(CheckForCollision(member, /*make_collision_error=*/nullptr,
+                                          new_top_by_name));
+    new_top.push_back(member);
+    const AstNode* node = ToAstNode(member);
+    new_top_set.insert(node);
+    new_displaced_top_set.erase(node);
+    for (const std::string& member_name : GetMemberNames(member)) {
+      new_top_by_name.insert({member_name, member});
+    }
   }
+
+  top_.swap(new_top);
+  top_set_.swap(new_top_set);
+  displaced_top_set_.swap(new_displaced_top_set);
+  top_by_name_.swap(new_top_by_name);
   return absl::OkStatus();
 }
 
