@@ -198,6 +198,14 @@ class Module : public AstNode {
       const AstNode* target_member, ModuleMember member,
       const MakeCollisionError& make_collision_error = nullptr);
 
+  // Replaces the module's visible top-level member list with `members`.
+  //
+  // This is intended for whole-module rewrites that have already rebuilt a
+  // self-consistent member graph. Existing nodes remain allocated in the module
+  // arena, but displaced top-level nodes and their descendants are treated as
+  // synthetic.
+  absl::Status ReplaceTop(std::vector<ModuleMember> members);
+
   // Gets the element in this module with the given target_name, or returns a
   // NotFoundError.
   template <typename T>
@@ -233,11 +241,21 @@ class Module : public AstNode {
   // functionality.
   bool IsSyntheticNode(const AstNode* node) const {
     // It's synthetic if it's a top-level node that is not in the top set (the
-    // set is populated by the parser). Note that ColonRef is a special case
-    // here, because when it's the definition in a `TypeRef`, the parser
-    // actually creates it as a disconnected node.
+    // set is populated by the parser and whole-module rewrites). Note that
+    // ColonRef is a special case here, because when it's the definition in a
+    // `TypeRef`, the parser actually creates it as a disconnected node.
     if (node->parent() == nullptr && node->kind() != AstNodeKind::kColonRef &&
         !top_set_.contains(node)) {
+      return true;
+    }
+
+    // Whole-module rewrites leave displaced nodes allocated in the arena.
+    // Descendants of those explicitly displaced roots are also synthetic.
+    const AstNode* root = node;
+    while (root->parent() != nullptr) {
+      root = root->parent();
+    }
+    if (displaced_top_set_.contains(root)) {
       return true;
     }
 
@@ -424,7 +442,8 @@ class Module : public AstNode {
   std::vector<std::string> GetMemberNames(const ModuleMember& member) const;
 
   absl::Status CheckForCollision(
-      ModuleMember member, const MakeCollisionError& make_collision_error);
+      ModuleMember member, const MakeCollisionError& make_collision_error,
+      const absl::flat_hash_map<std::string, ModuleMember>& top_by_name) const;
 
   template <typename It>
   absl::Status InsertTopAt(ModuleMember member, It it);
@@ -442,6 +461,10 @@ class Module : public AstNode {
 
   // Same as `top_` but as a set, for quick contains() checks.
   absl::flat_hash_set<const AstNode*> top_set_;
+
+  // Former top-level members displaced by ReplaceTop(). Their descendants
+  // remain allocated in the arena but should not be surfaced as source AST.
+  absl::flat_hash_set<const AstNode*> displaced_top_set_;
 
   // Map of top-level module member name to the member itself.
   absl::flat_hash_map<std::string, ModuleMember> top_by_name_;

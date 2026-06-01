@@ -1519,6 +1519,218 @@ proc my_proc {
   XLS_ASSERT_OK(VerifyClone(module.get(), clone.get(), file_table));
 }
 
+TEST(AstClonerTest, RewriteModuleInPlace) {
+  constexpr std::string_view kProgram = R"(fn id(x: u32) -> u32 {
+    x
+}
+
+fn main() -> u32 {
+    id(u32:1)
+})";
+
+  constexpr std::string_view kExpected = R"(fn id(x: u32) -> u32 {
+    x
+}
+fn main() -> u32 {
+    id(42)
+})";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(auto module, ParseModule(kProgram, "fake_path.x",
+                                                    "the_module", file_table));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * old_id,
+                           module->GetMemberOrError<Function>("id"));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * old_main,
+                           module->GetMemberOrError<Function>("main"));
+  std::optional<Number*> old_number = FindFirstNumber(old_main);
+  ASSERT_TRUE(old_number.has_value());
+
+  XLS_ASSERT_OK(RewriteModuleInPlace(
+      *module,
+      [&](const AstNode* node, Module* new_module,
+          const absl::flat_hash_map<const AstNode*, AstNode*>&)
+          -> absl::StatusOr<std::optional<AstNode*>> {
+        if (node->kind() == AstNodeKind::kNumber) {
+          return new_module->Make<Number>(Span::Fake(), "42",
+                                          NumberKind::kOther,
+                                          /*type_annotation=*/nullptr);
+        }
+        return std::nullopt;
+      }));
+
+  EXPECT_EQ(kExpected, module->ToString());
+  XLS_ASSERT_OK_AND_ASSIGN(Function * new_id,
+                           module->GetMemberOrError<Function>("id"));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * new_main,
+                           module->GetMemberOrError<Function>("main"));
+  EXPECT_NE(new_id, old_id);
+  EXPECT_NE(new_main, old_main);
+  EXPECT_TRUE(module->IsSyntheticNode(old_main));
+  EXPECT_TRUE(module->IsSyntheticNode(*old_number));
+
+  std::optional<NameRef*> id_ref = FindFirstNameRefWithId(new_main, "id");
+  ASSERT_TRUE(id_ref.has_value());
+  ASSERT_TRUE(std::holds_alternative<const NameDef*>((*id_ref)->name_def()));
+  EXPECT_EQ(std::get<const NameDef*>((*id_ref)->name_def()), new_id->name_def());
+}
+
+TEST(AstClonerTest, RewriteModuleInPlaceSeedsNestedClones) {
+  constexpr std::string_view kProgram = R"(fn id(x: u32) -> u32 {
+    x
+}
+
+fn main() -> u32 {
+    id(u32:1)
+})";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(auto module, ParseModule(kProgram, "fake_path.x",
+                                                    "the_module", file_table));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * old_id,
+                           module->GetMemberOrError<Function>("id"));
+
+  XLS_ASSERT_OK(RewriteModuleInPlace(
+      *module,
+      [&](const AstNode* node, Module* target_module,
+          const absl::flat_hash_map<const AstNode*, AstNode*>& old_to_new)
+          -> absl::StatusOr<std::optional<AstNode*>> {
+        if (node->kind() != AstNodeKind::kInvocation) {
+          return std::nullopt;
+        }
+        XLS_ASSIGN_OR_RETURN(
+            auto cloned_pairs,
+            CloneAstAndGetAllPairs(node, target_module, &NoopCloneReplacer,
+                                   old_to_new));
+        return std::optional<AstNode*>{cloned_pairs.at(node)};
+      }));
+
+  XLS_ASSERT_OK_AND_ASSIGN(Function * new_id,
+                           module->GetMemberOrError<Function>("id"));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * new_main,
+                           module->GetMemberOrError<Function>("main"));
+  const Statement* body_expr = new_main->body()->statements().back();
+  ASSERT_TRUE(std::holds_alternative<Expr*>(body_expr->wrapped()));
+  const auto* invocation =
+      dynamic_cast<const Invocation*>(std::get<Expr*>(body_expr->wrapped()));
+  ASSERT_NE(invocation, nullptr);
+  const auto* callee = dynamic_cast<const NameRef*>(invocation->callee());
+  ASSERT_NE(callee, nullptr);
+  EXPECT_EQ(std::get<const NameDef*>(callee->name_def()), new_id->name_def());
+  EXPECT_NE(std::get<const NameDef*>(callee->name_def()), old_id->name_def());
+}
+
+TEST(AstClonerTest, RewriteModuleInPlaceOffersCrossMemberNameRefsToReplacer) {
+  constexpr std::string_view kProgram = R"(fn id(x: u32) -> u32 {
+    x
+}
+
+fn alt(x: u32) -> u32 {
+    x
+}
+
+fn main() -> u32 {
+    id(u32:1)
+})";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(auto module, ParseModule(kProgram, "fake_path.x",
+                                                    "the_module", file_table));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * old_alt,
+                           module->GetMemberOrError<Function>("alt"));
+  bool replaced_id_ref = false;
+
+  XLS_ASSERT_OK(RewriteModuleInPlace(
+      *module,
+      [&](const AstNode* node, Module* target_module,
+          const absl::flat_hash_map<const AstNode*, AstNode*>& old_to_new)
+          -> absl::StatusOr<std::optional<AstNode*>> {
+        if (node->kind() != AstNodeKind::kNameRef) {
+          return std::nullopt;
+        }
+        const auto* name_ref = absl::down_cast<const NameRef*>(node);
+        if (name_ref->identifier() != "id") {
+          return std::nullopt;
+        }
+        auto alt_it = old_to_new.find(old_alt->name_def());
+        XLS_RET_CHECK(alt_it != old_to_new.end());
+        replaced_id_ref = true;
+        return target_module->Make<NameRef>(
+            name_ref->span(), "alt",
+            absl::down_cast<NameDef*>(alt_it->second), name_ref->in_parens());
+      }));
+
+  EXPECT_TRUE(replaced_id_ref);
+  XLS_ASSERT_OK_AND_ASSIGN(Function * new_alt,
+                           module->GetMemberOrError<Function>("alt"));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * new_main,
+                           module->GetMemberOrError<Function>("main"));
+  EXPECT_FALSE(FindFirstNameRefWithId(new_main, "id").has_value());
+  std::optional<NameRef*> alt_ref = FindFirstNameRefWithId(new_main, "alt");
+  ASSERT_TRUE(alt_ref.has_value());
+  ASSERT_TRUE(std::holds_alternative<const NameDef*>((*alt_ref)->name_def()));
+  EXPECT_EQ(std::get<const NameDef*>((*alt_ref)->name_def()),
+            new_alt->name_def());
+}
+
+TEST(AstClonerTest, ReplaceTopPreservesRetainedMemberVisibility) {
+  constexpr std::string_view kProgram = R"(fn id(x: u32) -> u32 {
+    x
+}
+
+fn main() -> u32 {
+    id(u32:1)
+})";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(auto module, ParseModule(kProgram, "fake_path.x",
+                                                    "the_module", file_table));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * id,
+                           module->GetMemberOrError<Function>("id"));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * main,
+                           module->GetMemberOrError<Function>("main"));
+
+  XLS_ASSERT_OK(module->ReplaceTop(std::vector<ModuleMember>{main}));
+
+  EXPECT_TRUE(module->IsSyntheticNode(id));
+  EXPECT_TRUE(module->IsSyntheticNode(id->body()));
+  EXPECT_FALSE(module->IsSyntheticNode(main));
+}
+
+TEST(AstClonerTest, ReplaceTopFailurePreservesOriginalMembers) {
+  constexpr std::string_view kProgram = R"(fn id(x: u32) -> u32 {
+    x
+}
+
+fn main() -> u32 {
+    id(u32:1)
+})";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(auto module, ParseModule(kProgram, "fake_path.x",
+                                                    "the_module", file_table));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * id,
+                           module->GetMemberOrError<Function>("id"));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * main,
+                           module->GetMemberOrError<Function>("main"));
+
+  EXPECT_THAT(module->ReplaceTop(std::vector<ModuleMember>{id, id}),
+              StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("id")));
+
+  ASSERT_EQ(module->top().size(), 2);
+  EXPECT_EQ(ToAstNode(module->top()[0]), id);
+  EXPECT_EQ(ToAstNode(module->top()[1]), main);
+  XLS_ASSERT_OK_AND_ASSIGN(Function * visible_id,
+                           module->GetMemberOrError<Function>("id"));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * visible_main,
+                           module->GetMemberOrError<Function>("main"));
+  EXPECT_EQ(visible_id, id);
+  EXPECT_EQ(visible_main, main);
+  EXPECT_FALSE(module->IsSyntheticNode(id));
+  EXPECT_FALSE(module->IsSyntheticNode(id->body()));
+  EXPECT_FALSE(module->IsSyntheticNode(main));
+  EXPECT_FALSE(module->IsSyntheticNode(main->body()));
+}
+
 TEST(AstClonerTest, IndexVariants) {
   constexpr std::string_view kProgram = R"(fn main() {
     let array = u32[5]:[u32:0, u32:1, u32:2, u32:3, u32:4];
