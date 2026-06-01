@@ -78,6 +78,23 @@ TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest, IdentityFunction) {
   DoRun(program);
 }
 
+TEST(TypeInfoToProtoTest, RetainsSourceTypeAnnotations) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck("fn id(x: u32) -> u32 { x }", "fake.x", "fake",
+                        &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto tip, TypeInfoToProto(*tm.type_info));
+
+  int type_annotation_count = 0;
+  for (const AstNodeTypeInfoProto& node : tip.nodes()) {
+    if (node.kind() == AST_NODE_KIND_TYPE_ANNOTATION) {
+      ++type_annotation_count;
+    }
+  }
+  EXPECT_EQ(type_annotation_count, 2);
+}
+
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        ParametricIdentityFunction) {
   std::string program = R"(
