@@ -737,6 +737,14 @@ bool xls_dslx_type_is_struct(const struct xls_dslx_type*);
 
 bool xls_dslx_type_is_array(const struct xls_dslx_type*);
 
+// Precondition: xls_dslx_type_is_struct
+int64_t xls_dslx_type_struct_get_member_count(
+    const struct xls_dslx_type* type);
+
+// Precondition: xls_dslx_type_is_struct
+const struct xls_dslx_type* xls_dslx_type_struct_get_member_type(
+    const struct xls_dslx_type* type, int64_t index);
+
 // Precondition: xls_dslx_type_is_enum
 struct xls_dslx_enum_def* xls_dslx_type_get_enum_def(struct xls_dslx_type*);
 

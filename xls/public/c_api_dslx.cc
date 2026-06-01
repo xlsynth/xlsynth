@@ -1788,6 +1788,22 @@ bool xls_dslx_type_is_array(const struct xls_dslx_type* type) {
   return cpp_type->IsArray();
 }
 
+int64_t xls_dslx_type_struct_get_member_count(
+    const struct xls_dslx_type* type) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  CHECK(cpp_type->IsStruct());
+  return cpp_type->AsStruct().size();
+}
+
+const struct xls_dslx_type* xls_dslx_type_struct_get_member_type(
+    const struct xls_dslx_type* type, int64_t index) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  CHECK(cpp_type->IsStruct());
+  const xls::dslx::Type& cpp_member_type =
+      cpp_type->AsStruct().GetMemberType(index);
+  return reinterpret_cast<const xls_dslx_type*>(&cpp_member_type);
+}
+
 struct xls_dslx_type* xls_dslx_type_array_get_element_type(
     struct xls_dslx_type* type) {
   const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
