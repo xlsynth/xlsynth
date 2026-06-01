@@ -1671,19 +1671,6 @@ absl::Status RewriteModuleInPlace(Module& module, CloneReplacer replacer) {
         return cached->second;
       }
 
-      if (node->kind() == AstNodeKind::kNameRef) {
-        const auto* name_ref = absl::down_cast<const NameRef*>(node);
-        if (std::holds_alternative<const NameDef*>(name_ref->name_def())) {
-          const NameDef* def = std::get<const NameDef*>(name_ref->name_def());
-          if (auto def_it = global_map.find(def); def_it != global_map.end()) {
-            auto* new_def = absl::down_cast<NameDef*>(def_it->second);
-            return target->Make<NameRef>(name_ref->span(),
-                                         name_ref->identifier(), new_def,
-                                         name_ref->in_parens());
-          }
-        }
-      }
-
       return replacer(node, target, old_to_new);
     };
 

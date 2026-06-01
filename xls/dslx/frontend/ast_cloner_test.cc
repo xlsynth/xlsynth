@@ -1619,6 +1619,59 @@ fn main() -> u32 {
   EXPECT_NE(std::get<const NameDef*>(callee->name_def()), old_id->name_def());
 }
 
+TEST(AstClonerTest, RewriteModuleInPlaceOffersCrossMemberNameRefsToReplacer) {
+  constexpr std::string_view kProgram = R"(fn id(x: u32) -> u32 {
+    x
+}
+
+fn alt(x: u32) -> u32 {
+    x
+}
+
+fn main() -> u32 {
+    id(u32:1)
+})";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(auto module, ParseModule(kProgram, "fake_path.x",
+                                                    "the_module", file_table));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * old_alt,
+                           module->GetMemberOrError<Function>("alt"));
+  bool replaced_id_ref = false;
+
+  XLS_ASSERT_OK(RewriteModuleInPlace(
+      *module,
+      [&](const AstNode* node, Module* target_module,
+          const absl::flat_hash_map<const AstNode*, AstNode*>& old_to_new)
+          -> absl::StatusOr<std::optional<AstNode*>> {
+        if (node->kind() != AstNodeKind::kNameRef) {
+          return std::nullopt;
+        }
+        const auto* name_ref = absl::down_cast<const NameRef*>(node);
+        if (name_ref->identifier() != "id") {
+          return std::nullopt;
+        }
+        auto alt_it = old_to_new.find(old_alt->name_def());
+        XLS_RET_CHECK(alt_it != old_to_new.end());
+        replaced_id_ref = true;
+        return target_module->Make<NameRef>(
+            name_ref->span(), "alt",
+            absl::down_cast<NameDef*>(alt_it->second), name_ref->in_parens());
+      }));
+
+  EXPECT_TRUE(replaced_id_ref);
+  XLS_ASSERT_OK_AND_ASSIGN(Function * new_alt,
+                           module->GetMemberOrError<Function>("alt"));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * new_main,
+                           module->GetMemberOrError<Function>("main"));
+  EXPECT_FALSE(FindFirstNameRefWithId(new_main, "id").has_value());
+  std::optional<NameRef*> alt_ref = FindFirstNameRefWithId(new_main, "alt");
+  ASSERT_TRUE(alt_ref.has_value());
+  ASSERT_TRUE(std::holds_alternative<const NameDef*>((*alt_ref)->name_def()));
+  EXPECT_EQ(std::get<const NameDef*>((*alt_ref)->name_def()),
+            new_alt->name_def());
+}
+
 TEST(AstClonerTest, ReplaceTopPreservesRetainedMemberVisibility) {
   constexpr std::string_view kProgram = R"(fn id(x: u32) -> u32 {
     x
