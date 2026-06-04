@@ -51,6 +51,11 @@ bool IsAbstractStructOrProcRef(const StructOrProcRef& ref) {
          ref.parametrics.size();
 }
 
+bool IsAbstractSumRef(const SumRef& ref) {
+  return GetRequiredParametricBindings(ref.def->parametric_bindings()).size() >
+         ref.parametrics.size();
+}
+
 }  // namespace
 
 absl::StatusOr<Number*> MakeTypeCheckedNumber(
@@ -102,6 +107,7 @@ bool IsColonRefWithTypeTarget(const InferenceTable& table, const Expr* expr) {
   return colon_ref_target.has_value() &&
          ((*colon_ref_target)->kind() == AstNodeKind::kTypeAlias ||
           (*colon_ref_target)->kind() == AstNodeKind::kEnumDef ||
+          (*colon_ref_target)->kind() == AstNodeKind::kSumDef ||
           (*colon_ref_target)->kind() == AstNodeKind::kTypeAnnotation);
 }
 
@@ -161,12 +167,17 @@ CloneReplacer NameRefMapper(
 absl::StatusOr<bool> IsReferenceToAbstractType(const AstNode* node,
                                                const ImportData& import_data,
                                                const InferenceTable& table) {
-  std::optional<StructOrProcRef> ref;
+  std::optional<StructOrProcRef> struct_or_proc_ref;
+  std::optional<SumRef> sum_ref;
   if (node->kind() == AstNodeKind::kColonRef &&
       IsColonRefWithTypeTarget(table, absl::down_cast<const ColonRef*>(node))) {
     XLS_ASSIGN_OR_RETURN(
-        ref, GetStructOrProcRef(absl::down_cast<const ColonRef*>(node),
-                                import_data));
+        struct_or_proc_ref,
+        GetStructOrProcRef(absl::down_cast<const ColonRef*>(node),
+                           import_data));
+    XLS_ASSIGN_OR_RETURN(
+        sum_ref,
+        GetSumRef(absl::down_cast<const ColonRef*>(node), import_data));
   } else if (node->kind() == AstNodeKind::kTypeAlias ||
              (node->kind() == AstNodeKind::kNameDef &&
               node->parent() != nullptr &&
@@ -176,9 +187,14 @@ absl::StatusOr<bool> IsReferenceToAbstractType(const AstNode* node,
             ? absl::down_cast<const TypeAlias*>(node)
             : absl::down_cast<const TypeAlias*>(node->parent());
     XLS_ASSIGN_OR_RETURN(
-        ref, GetStructOrProcRef(&alias->type_annotation(), import_data));
+        struct_or_proc_ref,
+        GetStructOrProcRef(&alias->type_annotation(), import_data));
+    XLS_ASSIGN_OR_RETURN(sum_ref,
+                         GetSumRef(&alias->type_annotation(), import_data));
   }
-  return ref.has_value() && IsAbstractStructOrProcRef(*ref);
+  return (struct_or_proc_ref.has_value() &&
+          IsAbstractStructOrProcRef(*struct_or_proc_ref)) ||
+         (sum_ref.has_value() && IsAbstractSumRef(*sum_ref));
 }
 
 absl::StatusOr<ColonRef*> ConvertGenericColonRefToDirect(
@@ -213,6 +229,19 @@ absl::StatusOr<ColonRef*> ConvertGenericColonRefToDirect(
                 const_cast<StructDef*>(absl::down_cast<const StructDef*>(
                     struct_or_proc_ref->def))),
             struct_or_proc_ref->parametrics),
+        colon_ref->attr());
+  }
+
+  XLS_ASSIGN_OR_RETURN(std::optional<SumRef> sum_ref,
+                       GetSumRef(actual_type, import_data));
+  if (sum_ref.has_value()) {
+    return name_def->owner()->Make<ColonRef>(
+        Span::None(),
+        name_def->owner()->Make<TypeRefTypeAnnotation>(
+            Span::None(),
+            name_def->owner()->Make<TypeRef>(
+                Span::None(), const_cast<SumDef*>(sum_ref->def)),
+            sum_ref->parametrics),
         colon_ref->attr());
   }
 

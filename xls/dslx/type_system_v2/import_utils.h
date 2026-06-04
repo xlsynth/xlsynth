@@ -46,6 +46,35 @@ absl::StatusOr<std::optional<StructOrProcRef>> GetStructOrProcRef(
 absl::StatusOr<std::optional<StructOrProcRef>> GetStructOrProcRefForSubject(
     const ColonRef* colon_ref, const ImportData& import_data);
 
+// Resolves the definition and parametrics for the sum type referred to by
+// `annotation`.
+absl::StatusOr<std::optional<SumRef>> GetSumRef(
+    const TypeAnnotation* annotation, const ImportData& import_data);
+
+// Variant that takes a `ColonRef`. This will only yield a sum ref if the
+// `ColonRef` itself refers to an actual sum or alias of one. It will yield
+// `nullopt` for a `ColonRef` to a constructor of a sum.
+absl::StatusOr<std::optional<SumRef>> GetSumRef(
+    const ColonRef* colon_ref, const ImportData& import_data);
+
+// Variant that operates on the subject of a `ColonRef`, where the whole thing
+// refers to a constructor of a sum.
+absl::StatusOr<std::optional<SumRef>> GetSumRefForSubject(
+    const ColonRef* colon_ref, const ImportData& import_data);
+
+struct SumConstructorRef {
+  SumRef sum_ref;
+  const SumVariant* variant;
+};
+
+// Resolves a `ColonRef` that may refer to a sum constructor.
+absl::StatusOr<std::optional<SumConstructorRef>> ResolveSumConstructor(
+    const ColonRef* colon_ref, const ImportData& import_data);
+
+// Resolves a type annotation that may refer to a sum constructor.
+absl::StatusOr<std::optional<SumConstructorRef>> ResolveSumConstructor(
+    const TypeAnnotation* annotation, const ImportData& import_data);
+
 // Resolves the struct base definition for the struct or proc type referred to
 // by `annotation`.
 absl::StatusOr<std::optional<const StructDefBase*>> GetStructOrProcDef(
@@ -73,6 +102,10 @@ absl::StatusOr<std::optional<const EnumDef*>> GetEnumDef(
 // Returns whether `f` is a `next` function in an impl-style proc.
 absl::StatusOr<bool> IsProcDefNextFunction(const Function* f,
                                            const ImportData& import_data);
+
+// Gets the sum definition for the sum type referred to by `annotation`.
+absl::StatusOr<std::optional<const SumDef*>> GetSumDef(
+    const TypeAnnotation* annotation, const ImportData& import_data);
 
 // Returns whether `colon_ref` is imported from a different module.
 bool IsImport(const ColonRef* colon_ref);

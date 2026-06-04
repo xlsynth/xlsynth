@@ -19,10 +19,10 @@
 #include <optional>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/frontend/ast.h"
@@ -62,21 +62,16 @@ SumType MakeTuplePayloadSumType(Module& module) {
       kFakeSpan, BuiltinType::kU32,
       module.GetOrCreateBuiltinNameDef(dslx::BuiltinType::kU32));
 
-  auto* none =
-      module.Make<SumVariant>(kFakeSpan, none_name,
-                              SumVariant::PayloadKind::kUnit,
-                              std::vector<TypeAnnotation*>{},
-                              std::vector<StructMemberNode*>{});
-  auto* left =
-      module.Make<SumVariant>(kFakeSpan, left_name,
-                              SumVariant::PayloadKind::kTuple,
-                              std::vector<TypeAnnotation*>{u8_type},
-                              std::vector<StructMemberNode*>{});
-  auto* pair =
-      module.Make<SumVariant>(kFakeSpan, pair_name,
-                              SumVariant::PayloadKind::kTuple,
-                              std::vector<TypeAnnotation*>{u16_type, u32_type},
-                              std::vector<StructMemberNode*>{});
+  auto* none = module.Make<SumVariant>(
+      kFakeSpan, none_name, SumVariant::PayloadShape::kUnit,
+      std::vector<TypeAnnotation*>{}, std::vector<StructMemberNode*>{});
+  auto* left = module.Make<SumVariant>(
+      kFakeSpan, left_name, SumVariant::PayloadShape::kTuple,
+      std::vector<TypeAnnotation*>{u8_type}, std::vector<StructMemberNode*>{});
+  auto* pair = module.Make<SumVariant>(
+      kFakeSpan, pair_name, SumVariant::PayloadShape::kTuple,
+      std::vector<TypeAnnotation*>{u16_type, u32_type},
+      std::vector<StructMemberNode*>{});
   auto* sum_def = module.Make<SumDef>(
       kFakeSpan, sum_name, std::vector<ParametricBinding*>{},
       std::vector<SumVariant*>{none, left, pair}, /*is_public=*/false);
@@ -103,8 +98,8 @@ TEST(Phase1SumTypeEncodingTest, VisitsPayloadSlotsInDeclarationOrder) {
   std::vector<int64_t> slot_indexes;
   std::vector<int64_t> bit_counts;
   int64_t slot_index = 0;
-  XLS_ASSERT_OK(encoding.ForEachPayloadType(
-      [&](const Type& type) -> absl::Status {
+  XLS_ASSERT_OK(
+      encoding.ForEachPayloadType([&](const Type& type) -> absl::Status {
         slot_indexes.push_back(slot_index++);
         XLS_ASSIGN_OR_RETURN(int64_t bit_count, GetBitCount(type));
         bit_counts.push_back(bit_count);
@@ -170,21 +165,17 @@ TEST(Phase1SumTypeEncodingTest, RejectsMismatchedVariantInfoIndex) {
                            encoding.GetVariant("Pair"));
   pair_variant.variant_index = 0;
 
-  EXPECT_THAT(
-      encoding.ForEachActivePayloadSlot(
-          pair_variant,
-          [](int64_t, int64_t, const Type&) -> absl::Status {
-            return absl::OkStatus();
-          }),
-      StatusIs(absl::StatusCode::kInvalidArgument));
-  EXPECT_THAT(
-      encoding.VisitPayloadAssemblyOrder(
-          pair_variant,
-          [](int64_t) -> absl::Status { return absl::OkStatus(); },
-          [](const Type&) -> absl::Status {
-            return absl::OkStatus();
-          }),
-      StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(encoding.ForEachActivePayloadSlot(
+                  pair_variant,
+                  [](int64_t, int64_t, const Type&) -> absl::Status {
+                    return absl::OkStatus();
+                  }),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(encoding.VisitPayloadAssemblyOrder(
+                  pair_variant,
+                  [](int64_t) -> absl::Status { return absl::OkStatus(); },
+                  [](const Type&) -> absl::Status { return absl::OkStatus(); }),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(Phase1SumTypeEncodingTest, RejectsMismatchedVariantInfoPayloadStart) {
@@ -197,21 +188,17 @@ TEST(Phase1SumTypeEncodingTest, RejectsMismatchedVariantInfoPayloadStart) {
                            encoding.GetVariant("Pair"));
   pair_variant.payload_start = 0;
 
-  EXPECT_THAT(
-      encoding.ForEachActivePayloadSlot(
-          pair_variant,
-          [](int64_t, int64_t, const Type&) -> absl::Status {
-            return absl::OkStatus();
-          }),
-      StatusIs(absl::StatusCode::kInvalidArgument));
-  EXPECT_THAT(
-      encoding.VisitPayloadAssemblyOrder(
-          pair_variant,
-          [](int64_t) -> absl::Status { return absl::OkStatus(); },
-          [](const Type&) -> absl::Status {
-            return absl::OkStatus();
-          }),
-      StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(encoding.ForEachActivePayloadSlot(
+                  pair_variant,
+                  [](int64_t, int64_t, const Type&) -> absl::Status {
+                    return absl::OkStatus();
+                  }),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(encoding.VisitPayloadAssemblyOrder(
+                  pair_variant,
+                  [](int64_t) -> absl::Status { return absl::OkStatus(); },
+                  [](const Type&) -> absl::Status { return absl::OkStatus(); }),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(Phase1SumTypeEncodingTest, VisitsStoredLeafTypesWithDenseTagFirst) {
@@ -232,8 +219,8 @@ TEST(Phase1SumTypeEncodingTest, VisitsStoredLeafTypesWithDenseTagFirst) {
 
   EXPECT_THAT(bit_counts, ElementsAre(2, 8, 16, 32));
   EXPECT_THAT(dense_max_values,
-              ElementsAre(std::optional<int64_t>(2), std::nullopt,
-                          std::nullopt, std::nullopt));
+              ElementsAre(std::optional<int64_t>(2), std::nullopt, std::nullopt,
+                          std::nullopt));
 }
 
 }  // namespace

@@ -62,10 +62,10 @@ CloneReplacer NameRefMapper(
     std::optional<Module*> target_module = std::nullopt,
     bool add_parametric_binding_type_annotation = false);
 
-// Returns whether the given node is a reference to a parametric struct or proc
-// without sufficient parametrics specified (i.e. abstract and non-concretizable
-// in the parametric sense). A node meeting the criteria can be a `TypeAlias`,
-// the `NameDef` of a `TypeAlias`, or a `ColonRef`.
+// Returns whether the given node is a reference to a parametric struct, proc, or
+// sum without sufficient parametrics specified (i.e. abstract and
+// non-concretizable in the parametric sense). A node meeting the criteria can
+// be a `TypeAlias`, the `NameDef` of a `TypeAlias`, or a `ColonRef`.
 absl::StatusOr<bool> IsReferenceToAbstractType(const AstNode* node,
                                                const ImportData& import_data,
                                                const InferenceTable& table);
