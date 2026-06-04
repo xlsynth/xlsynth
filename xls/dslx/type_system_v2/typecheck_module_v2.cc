@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -84,6 +85,7 @@ absl::StatusOr<std::unique_ptr<ModuleInfo>> TypecheckModuleV2(
     std::unique_ptr<SemanticsAnalysis> semantics_analysis,
     TypeInferenceErrorHandler error_handler,
     std::optional<TraitDeriver*> trait_deriver) {
+  std::string module_name(module->name());
   const bool top_module = !import_data->HasInferenceTable();
   if (top_module) {
     VLOG(3) << "Using type system v2 for type checking of " << path;
@@ -113,10 +115,10 @@ absl::StatusOr<std::unique_ptr<ModuleInfo>> TypecheckModuleV2(
   if (canonical_module.has_value()) {
     module = std::move(*canonical_module);
   }
-  std::string_view module_name = module->name();
   if (semantics_analysis != nullptr) {
-    XLS_RETURN_IF_ERROR(semantics_analysis->RunPreTypeCheckPass(
-        *module, *warnings, *import_data, typecheck_imported_module));
+    XLS_ASSIGN_OR_RETURN(module, semantics_analysis->RunPreTypeCheckPass(
+                                     std::move(module), *warnings, *import_data,
+                                     typecheck_imported_module));
   }
   XLS_ASSIGN_OR_RETURN(TypecheckFlagsProto flags, GetTypecheckFlagsProto());
   std::unique_ptr<TypeSystemTracer> tracer =

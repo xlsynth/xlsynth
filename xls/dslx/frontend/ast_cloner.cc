@@ -45,13 +45,21 @@
 namespace xls::dslx {
 namespace {
 
+enum class ConditionalCloneMode {
+  kPreserve,
+  kLowerIfLets,
+};
+
 class AstCloner : public AstNodeVisitor {
  public:
-  explicit AstCloner(std::optional<Module*> module, CloneReplacer replacer,
-                     ClonePostReplacer post_replacer = nullptr)
+  explicit AstCloner(
+      std::optional<Module*> module, CloneReplacer replacer,
+      ClonePostReplacer post_replacer = nullptr,
+      ConditionalCloneMode conditional_mode = ConditionalCloneMode::kPreserve)
       : module_(module),
         replacer_(std::move(replacer)),
-        post_replacer_(std::move(post_replacer)) {}
+        post_replacer_(std::move(post_replacer)),
+        conditional_mode_(conditional_mode) {}
 
   Module* module(const AstNode* n) const {
     return module_.has_value() ? *module_ : n->owner();
@@ -800,9 +808,10 @@ class AstCloner : public AstNodeVisitor {
         new_name_def = old_def;
       }
     } else {
-      const BuiltinNameDef* old_def = std::get<BuiltinNameDef*>(n->name_def());
+      BuiltinNameDef* old_name_def = std::get<BuiltinNameDef*>(n->name_def());
+      XLS_RETURN_IF_ERROR(ReplaceOrVisit(old_name_def));
       new_name_def =
-          module(n)->GetOrCreateBuiltinNameDef(old_def->identifier());
+          absl::down_cast<BuiltinNameDef*>(old_to_new_.at(old_name_def));
     }
     old_to_new_[n] = module(n)->Make<NameRef>(n->span(), n->identifier(),
                                               new_name_def, n->in_parens());
@@ -1028,21 +1037,19 @@ class AstCloner : public AstNodeVisitor {
     for (const StructMemberNode* member : n->members()) {
       XLS_RETURN_IF_ERROR(ReplaceOrVisit(member->name_def()));
       XLS_RETURN_IF_ERROR(ReplaceOrVisit(member->type()));
+      XLS_RETURN_IF_ERROR(ReplaceOrVisit(member->non_state_wrapped_type()));
       XLS_ASSIGN_OR_RETURN(
           TypeAnnotation * new_type,
           CastIfNotVerbatim<TypeAnnotation*>(old_to_new_.at(member->type())));
+      XLS_ASSIGN_OR_RETURN(TypeAnnotation * new_non_state_wrapped_type,
+                           CastIfNotVerbatim<TypeAnnotation*>(old_to_new_.at(
+                               member->non_state_wrapped_type())));
       XLS_ASSIGN_OR_RETURN(
           NameDef * new_name,
           CastIfNotVerbatim<NameDef*>(old_to_new_.at(member->name_def())));
       auto* new_member = m->Make<StructMemberNode>(
           member->span(), new_name, member->colon_span(), new_type);
-      if (member->non_state_wrapped_type() != member->type()) {
-        XLS_RETURN_IF_ERROR(ReplaceOrVisit(member->non_state_wrapped_type()));
-        XLS_ASSIGN_OR_RETURN(TypeAnnotation * new_non_state_wrapped_type,
-                             CastIfNotVerbatim<TypeAnnotation*>(old_to_new_.at(
-                                 member->non_state_wrapped_type())));
-        new_member->set_non_state_wrapped_type(new_non_state_wrapped_type);
-      }
+      new_member->set_non_state_wrapped_type(new_non_state_wrapped_type);
       XLS_ASSIGN_OR_RETURN(std::vector<Attribute*> new_attributes,
                            CloneAttributes(member->attributes()));
       new_member->SetAttributes(new_attributes);
@@ -1117,6 +1124,7 @@ class AstCloner : public AstNodeVisitor {
       } else {
         new_members.push_back(absl::down_cast<VerbatimNode*>(new_node));
       }
+      new_node->SetParentNonLexical(new_impl);
     }
     new_impl->set_members(new_members);
     new_impl->SetParentage();
@@ -1140,10 +1148,14 @@ class AstCloner : public AstNodeVisitor {
 
   absl::Status HandleStructMemberNode(const StructMemberNode* n) override {
     XLS_RETURN_IF_ERROR(VisitChildren(n));
+    XLS_RETURN_IF_ERROR(ReplaceOrVisit(n->non_state_wrapped_type()));
     StructMemberNode* new_struct_member = module(n)->Make<StructMemberNode>(
         n->span(), absl::down_cast<NameDef*>(old_to_new_.at(n->name_def())),
         n->colon_span(),
         absl::down_cast<TypeAnnotation*>(old_to_new_.at(n->type())));
+    new_struct_member->set_non_state_wrapped_type(
+        absl::down_cast<TypeAnnotation*>(
+            old_to_new_.at(n->non_state_wrapped_type())));
     old_to_new_[n] = new_struct_member;
     return absl::OkStatus();
   }
@@ -1200,12 +1212,50 @@ class AstCloner : public AstNodeVisitor {
   absl::Status HandleConditional(const Conditional* n) override {
     XLS_RETURN_IF_ERROR(VisitChildren(n));
 
+    if (conditional_mode_ == ConditionalCloneMode::kLowerIfLets &&
+        n->IsIfLet()) {
+      XLS_RET_CHECK(!n->IsConst());
+      XLS_RET_CHECK(n->HasElse());
+      XLS_RET_CHECK(n->if_let_pattern() != nullptr);
+
+      PatternTree pattern = ClonePattern(*n->if_let_pattern());
+      auto* consequent =
+          absl::down_cast<StatementBlock*>(old_to_new_.at(n->consequent()));
+      auto* alternate =
+          absl::down_cast<Expr*>(old_to_new_.at(ToAstNode(n->alternate())));
+
+      Span first_arm_span(GetPatternSpan(pattern).start(),
+                          consequent->span().limit());
+      MatchArm* first_arm = module(n)->Make<MatchArm>(
+          first_arm_span, std::vector<PatternTree>{pattern}, consequent);
+
+      Span wildcard_span(alternate->span().start(), alternate->span().start());
+      WildcardPattern* wildcard =
+          module(n)->Make<WildcardPattern>(wildcard_span);
+      Span fallback_arm_span(wildcard_span.start(), alternate->span().limit());
+      MatchArm* fallback_arm = module(n)->Make<MatchArm>(
+          fallback_arm_span, std::vector<PatternTree>{wildcard}, alternate);
+
+      old_to_new_[n] = module(n)->Make<Match>(
+          n->span(), absl::down_cast<Expr*>(old_to_new_.at(n->test())),
+          std::vector<MatchArm*>{first_arm, fallback_arm}, n->in_parens(),
+          /*is_const=*/false);
+      return absl::OkStatus();
+    }
+
     std::variant<StatementBlock*, Conditional*> new_alternate;
     AstNode* new_alternate_node = old_to_new_.at(ToAstNode(n->alternate()));
     if (new_alternate_node->kind() == AstNodeKind::kStatementBlock) {
       new_alternate = absl::down_cast<StatementBlock*>(new_alternate_node);
     } else if (new_alternate_node->kind() == AstNodeKind::kConditional) {
       new_alternate = absl::down_cast<Conditional*>(new_alternate_node);
+    } else if (conditional_mode_ == ConditionalCloneMode::kLowerIfLets &&
+               new_alternate_node->kind() == AstNodeKind::kMatch) {
+      auto* alternate_expr = absl::down_cast<Expr*>(new_alternate_node);
+      new_alternate = module(n)->Make<StatementBlock>(
+          alternate_expr->span(),
+          std::vector<Statement*>{module(n)->Make<Statement>(alternate_expr)},
+          /*trailing_semi=*/false, /*has_braces=*/true);
     } else {
       return absl::InternalError("Unexpected Conditional alternate node type.");
     }
@@ -1329,14 +1379,18 @@ class AstCloner : public AstNodeVisitor {
 
     // A TypeRef doesn't own its referenced type definition, so we have to
     // explicitly visit it.
-    XLS_RETURN_IF_ERROR(absl::visit(Visitor{[&](auto* ref) -> absl::Status {
-                                      XLS_RETURN_IF_ERROR(ReplaceOrVisit(ref));
-                                      new_type_definition =
-                                          absl::down_cast<decltype(ref)>(
-                                              old_to_new_.at(ref));
-                                      return absl::OkStatus();
-                                    }},
-                                    n->type_definition()));
+    XLS_RETURN_IF_ERROR(absl::visit(
+        Visitor{[&](auto* ref) -> absl::Status {
+          if (source_module_ != nullptr && ref->owner() != source_module_) {
+            new_type_definition = ref;
+            return absl::OkStatus();
+          }
+          XLS_RETURN_IF_ERROR(ReplaceOrVisit(ref));
+          new_type_definition =
+              absl::down_cast<decltype(ref)>(old_to_new_.at(ref));
+          return absl::OkStatus();
+        }},
+        n->type_definition()));
 
     old_to_new_[n] = module(n)->Make<TypeRef>(n->span(), new_type_definition);
     return absl::OkStatus();
@@ -1361,7 +1415,8 @@ class AstCloner : public AstNodeVisitor {
       const TypeVariableTypeAnnotation* n) override {
     XLS_RETURN_IF_ERROR(ReplaceOrVisit(n->type_variable()));
     old_to_new_[n] = module(n)->Make<TypeVariableTypeAnnotation>(
-        absl::down_cast<const NameRef*>(old_to_new_[n->type_variable()]));
+        absl::down_cast<const NameRef*>(old_to_new_[n->type_variable()]),
+        n->internal());
     return absl::OkStatus();
   }
 
@@ -1501,11 +1556,16 @@ class AstCloner : public AstNodeVisitor {
 
   absl::Status HandleInvalidPattern(const InvalidPattern* n) override {
     XLS_RETURN_IF_ERROR(VisitChildren(n));
-    old_to_new_[n] = module(n)->Make<InvalidPattern>(
-        n->span(),
+    NameDef* new_raw_name_def =
         n->raw_name_def() == nullptr
             ? nullptr
-            : absl::down_cast<NameDef*>(old_to_new_.at(n->raw_name_def())));
+            : absl::down_cast<NameDef*>(old_to_new_.at(n->raw_name_def()));
+    auto* new_pattern =
+        module(n)->Make<InvalidPattern>(n->span(), new_raw_name_def);
+    if (new_raw_name_def != nullptr) {
+      new_raw_name_def->set_definer(new_pattern);
+    }
+    old_to_new_[n] = new_pattern;
     return absl::OkStatus();
   }
 
@@ -1615,6 +1675,7 @@ class AstCloner : public AstNodeVisitor {
   const Module* source_module_ = nullptr;
   CloneReplacer replacer_;
   ClonePostReplacer post_replacer_;
+  ConditionalCloneMode conditional_mode_;
   absl::flat_hash_map<const AstNode*, AstNode*> old_to_new_;
 };
 
@@ -1779,6 +1840,20 @@ absl::StatusOr<std::unique_ptr<Module>> CloneModule(
   AstCloner cloner(new_module.get(), std::move(replacer),
                    std::move(post_replacer));
   XLS_RETURN_IF_ERROR(module.Accept(&cloner));
+  return new_module;
+}
+
+absl::StatusOr<std::unique_ptr<Module>> CloneModuleWithIfLetsLowered(
+    const Module& module) {
+  XLS_ASSIGN_OR_RETURN(std::unique_ptr<Module> new_module,
+                       CloneModuleMetadata(module));
+  AstCloner cloner(new_module.get(), &NoopCloneReplacer,
+                   /*post_replacer=*/nullptr,
+                   ConditionalCloneMode::kLowerIfLets);
+  XLS_RETURN_IF_ERROR(module.Accept(&cloner));
+  XLS_RETURN_IF_ERROR(
+      VerifyClone(&module, new_module.get(), *module.file_table()));
+  XLS_RETURN_IF_ERROR(VerifyParentage(new_module.get()));
   return new_module;
 }
 
