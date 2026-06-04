@@ -148,7 +148,7 @@ absl::Status VerifySumMetadata(std::string_view case_name,
         return absl::FailedPreconditionError(
             "SumTypeProto variant kind did not match AST declaration kind.");
       }
-      XLS_ASSIGN_OR_RETURN(TypeDim payload_bit_count,
+      XLS_ASSIGN_OR_RETURN(dslx::TypeDim payload_bit_count,
                            sum_type->variants().at(i).GetTotalBitCount());
       XLS_ASSIGN_OR_RETURN(int64_t payload_bit_count_value,
                            payload_bit_count.GetAsInt64());
@@ -173,7 +173,7 @@ absl::Status VerifySumMetadata(std::string_view case_name,
           }
           XLS_ASSIGN_OR_RETURN(int64_t encoded_payload_bit_count,
                                variant.payload_bit_count());
-          XLS_ASSIGN_OR_RETURN(TypeDim concrete_payload_bit_count,
+          XLS_ASSIGN_OR_RETURN(dslx::TypeDim concrete_payload_bit_count,
                                variant.variant->GetTotalBitCount());
           XLS_ASSIGN_OR_RETURN(int64_t expected_payload_bit_count,
                                concrete_payload_bit_count.GetAsInt64());
