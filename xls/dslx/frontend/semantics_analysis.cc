@@ -790,6 +790,91 @@ class PreTypecheckPass : public AstNodeVisitorWithDefault {
   const FileTable& file_table_;
 };
 
+class ContainsIfLetVisitor : public AstNodeVisitorWithDefault {
+ public:
+  bool contains_if_let() const { return contains_if_let_; }
+
+  absl::Status HandleConditional(const Conditional* node) override {
+    if (node->IsIfLet()) {
+      contains_if_let_ = true;
+      return absl::OkStatus();
+    }
+    return DefaultHandler(node);
+  }
+
+  absl::Status DefaultHandler(const AstNode* node) override {
+    for (const AstNode* child : node->GetChildren(/*want_types=*/true)) {
+      XLS_RETURN_IF_ERROR(child->Accept(this));
+      if (contains_if_let_) {
+        break;
+      }
+    }
+    return absl::OkStatus();
+  }
+
+ private:
+  bool contains_if_let_ = false;
+};
+
+absl::StatusOr<Match*> LowerIfLetConditional(Conditional* conditional,
+                                             Module* module) {
+  XLS_RET_CHECK(conditional->IsIfLet());
+  XLS_RET_CHECK(!conditional->IsConst());
+  XLS_RET_CHECK(conditional->HasElse());
+  XLS_RET_CHECK(conditional->if_let_pattern() != nullptr);
+
+  Expr* alternate = ToExprNode(conditional->alternate());
+  Span first_arm_span(conditional->if_let_pattern()->span().start(),
+                      conditional->consequent()->span().limit());
+  MatchArm* first_arm = module->Make<MatchArm>(
+      first_arm_span, std::vector<NameDefTree*>{conditional->if_let_pattern()},
+      conditional->consequent());
+
+  Span wildcard_span(alternate->span().start(), alternate->span().start());
+  NameDefTree* wildcard = module->Make<NameDefTree>(
+      wildcard_span, module->Make<WildcardPattern>(wildcard_span));
+  Span fallback_arm_span(wildcard_span.start(), alternate->span().limit());
+  MatchArm* fallback_arm = module->Make<MatchArm>(
+      fallback_arm_span, std::vector<NameDefTree*>{wildcard}, alternate);
+
+  return module->Make<Match>(
+      conditional->span(), conditional->test(),
+      std::vector<MatchArm*>{first_arm, fallback_arm},
+      conditional->in_parens(), /*is_const=*/false);
+}
+
+absl::Status NormalizeIfLets(Module& module) {
+  while (true) {
+    ContainsIfLetVisitor contains_if_let;
+    XLS_RETURN_IF_ERROR(module.Accept(&contains_if_let));
+    if (!contains_if_let.contains_if_let()) {
+      return absl::OkStatus();
+    }
+
+    XLS_RETURN_IF_ERROR(RewriteModuleInPlace(
+        module,
+        [](const AstNode* node, Module* target_module,
+           const absl::flat_hash_map<const AstNode*, AstNode*>& old_to_new)
+            -> absl::StatusOr<std::optional<AstNode*>> {
+          const auto* conditional = dynamic_cast<const Conditional*>(node);
+          if (conditional == nullptr || !conditional->IsIfLet()) {
+            return std::nullopt;
+          }
+
+          XLS_ASSIGN_OR_RETURN(
+              auto cloned_pairs,
+              CloneAstAndGetAllPairs(conditional, target_module,
+                                     &NoopCloneReplacer, old_to_new));
+          auto* cloned_conditional =
+              absl::down_cast<Conditional*>(cloned_pairs.at(conditional));
+          XLS_ASSIGN_OR_RETURN(
+              Match * lowered,
+              LowerIfLetConditional(cloned_conditional, target_module));
+          return std::optional<AstNode*>{lowered};
+        }));
+  }
+}
+
 class CollectUseDef : public AstNodeVisitorWithDefault {
  public:
   absl::Status HandleNameDef(const NameDef* node) override {
@@ -958,31 +1043,35 @@ absl::Status SemanticsAnalysis::RunPreTypeCheckPass(
   AddSpawnTraitToProcDefs add_spawn_trait;
   XLS_RETURN_IF_ERROR(module.Accept(&add_spawn_trait));
 
-  if (suppress_warnings_) {
-    return absl::OkStatus();
+  if (!suppress_warnings_) {
+    PreTypecheckPass pass(warning_collector, import_data.file_table());
+    XLS_RETURN_IF_ERROR(module.Accept(&pass));
   }
-  PreTypecheckPass pass(warning_collector, import_data.file_table());
 
-  for (const ModuleMember& top : module.top()) {
-    if (const Function* const* func = std::get_if<Function*>(&top)) {
-      CollectUseDef visitor;
-      XLS_RETURN_IF_ERROR((*func)->body()->Accept(&visitor));
+  XLS_RETURN_IF_ERROR(NormalizeIfLets(module));
 
-      maybe_unreferenced_defs.emplace_back(
-          std::make_pair(*func, std::vector<const NameDef*>()));
-      std::vector<const NameDef*>& defs_in_func =
-          maybe_unreferenced_defs.back().second;
+  if (!suppress_warnings_) {
+    for (const ModuleMember& top : module.top()) {
+      if (const Function* const* func = std::get_if<Function*>(&top)) {
+        CollectUseDef visitor;
+        XLS_RETURN_IF_ERROR((*func)->body()->Accept(&visitor));
 
-      for (const NameDef* def : visitor.Defs()) {
-        if (!visitor.Uses().contains(def)) {
-          defs_in_func.emplace_back(def);
-          def_to_type_.try_emplace(def, nullptr);
+        maybe_unreferenced_defs.emplace_back(
+            std::make_pair(*func, std::vector<const NameDef*>()));
+        std::vector<const NameDef*>& defs_in_func =
+            maybe_unreferenced_defs.back().second;
+
+        for (const NameDef* def : visitor.Defs()) {
+          if (!visitor.Uses().contains(def)) {
+            defs_in_func.emplace_back(def);
+            def_to_type_.try_emplace(def, nullptr);
+          }
         }
       }
     }
   }
 
-  return module.Accept(&pass);
+  return absl::OkStatus();
 }
 
 // If a possibly unused def is concretized to a non-token type at any possible

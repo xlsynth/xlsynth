@@ -154,6 +154,10 @@ class SyntheticSpanAllocator {
       const_cast<Span&>(name_def_tree->span()) = span;
       return absl::OkStatus();
     }
+    if (auto* invalid_pattern = dynamic_cast<InvalidPattern*>(node)) {
+      const_cast<Span&>(invalid_pattern->span()) = span;
+      return absl::OkStatus();
+    }
     if (auto* wildcard = dynamic_cast<WildcardPattern*>(node)) {
       const_cast<Span&>(wildcard->span()) = span;
       return absl::OkStatus();

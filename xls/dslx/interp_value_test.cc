@@ -14,6 +14,7 @@
 
 #include "xls/dslx/interp_value.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -369,8 +370,8 @@ TEST(InterpValueTest, FormatEnum) {
 }
 
 TEST(InterpValueTest, FormatSemanticSum) {
-  ValueFormatDescriptor leaf =
-      ValueFormatDescriptor::MakeLeafValue(FormatPreference::kDefault);
+  ValueFormatDescriptor leaf = ValueFormatDescriptor::MakeLeafValue(
+      FormatPreference::kDefault, /*bit_count=*/32, /*is_signed=*/false);
   std::vector<ValueFormatSumVariantDescriptor> variants = {
       ValueFormatSumVariantDescriptor::MakeUnit("None"),
       ValueFormatSumVariantDescriptor::MakeTuple("Some", {leaf}),
@@ -379,23 +380,22 @@ TEST(InterpValueTest, FormatSemanticSum) {
   };
   ValueFormatDescriptor fmt_desc =
       ValueFormatDescriptor::MakeSum("Option", variants,
-                                     FormatPreference::kDefault);
+                                     FormatPreference::kDefault,
+                                     /*tag_bit_count=*/2,
+                                     /*payload_slot_bit_count=*/64);
 
   InterpValue none = InterpValue::MakeTuple(
       {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/0),
-       InterpValue::MakeTuple(
-           {InterpValue::MakeU32(0), InterpValue::MakeU32(0),
-            InterpValue::MakeU32(0)})});
+       InterpValue::MakeTuple({InterpValue::MakeUBits(
+           /*bit_count=*/64, /*value=*/0xffff'ffff'ffff'ffff)})});
   InterpValue some = InterpValue::MakeTuple(
       {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/1),
        InterpValue::MakeTuple(
-           {InterpValue::MakeU32(7), InterpValue::MakeU32(0),
-            InterpValue::MakeU32(0)})});
+           {InterpValue::MakeUBits(/*bit_count=*/64, /*value=*/7)})});
   InterpValue pair = InterpValue::MakeTuple(
       {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/2),
-       InterpValue::MakeTuple(
-           {InterpValue::MakeU32(0), InterpValue::MakeU32(3),
-            InterpValue::MakeU32(4)})});
+       InterpValue::MakeTuple({InterpValue::MakeUBits(
+           /*bit_count=*/64, /*value=*/(uint64_t{3} << 32) | uint64_t{4})})});
 
   EXPECT_EQ(none.ToFormattedString(fmt_desc, /*include_type_prefix=*/true)
                 .value(),
@@ -412,8 +412,8 @@ TEST(InterpValueTest, FormatSemanticSum) {
 }
 
 TEST(InterpValueTest, SemanticSumVariantViewMatchesFlattenedLayout) {
-  ValueFormatDescriptor leaf =
-      ValueFormatDescriptor::MakeLeafValue(FormatPreference::kDefault);
+  ValueFormatDescriptor leaf = ValueFormatDescriptor::MakeLeafValue(
+      FormatPreference::kDefault, /*bit_count=*/32, /*is_signed=*/false);
   std::vector<ValueFormatSumVariantDescriptor> variants = {
       ValueFormatSumVariantDescriptor::MakeUnit("None"),
       ValueFormatSumVariantDescriptor::MakeTuple("Some", {leaf}),
@@ -422,7 +422,9 @@ TEST(InterpValueTest, SemanticSumVariantViewMatchesFlattenedLayout) {
   };
   ValueFormatDescriptor fmt_desc =
       ValueFormatDescriptor::MakeSum("Option", variants,
-                                     FormatPreference::kDefault);
+                                     FormatPreference::kDefault,
+                                     /*tag_bit_count=*/2,
+                                     /*payload_slot_bit_count=*/64);
 
   const ValueFormatSumVariantView none = fmt_desc.sum_variant(0);
   const ValueFormatSumVariantView some = fmt_desc.sum_variant(1);
@@ -455,11 +457,13 @@ TEST(InterpValueTest, FormatSemanticSumEmptyStruct) {
       "Option", {ValueFormatSumVariantDescriptor::MakeStruct(
                     "EmptyStruct", /*field_names=*/{},
                     /*payload_formats=*/{})},
-      FormatPreference::kDefault);
+      FormatPreference::kDefault, /*tag_bit_count=*/1,
+      /*payload_slot_bit_count=*/0);
 
   InterpValue empty_struct = InterpValue::MakeTuple(
       {InterpValue::MakeUBits(/*bit_count=*/1, /*value=*/0),
-       InterpValue::MakeTuple({})});
+       InterpValue::MakeTuple({InterpValue::MakeUBits(
+           /*bit_count=*/0, /*value=*/0)})});
 
   EXPECT_EQ(empty_struct.ToFormattedString(fmt_desc, /*include_type_prefix=*/true)
                 .value(),
@@ -474,16 +478,63 @@ TEST(InterpValueTest, FormatSemanticSumEmptyStructVariant) {
   };
   ValueFormatDescriptor fmt_desc =
       ValueFormatDescriptor::MakeSum("Option", variants,
-                                     FormatPreference::kDefault);
+                                     FormatPreference::kDefault,
+                                     /*tag_bit_count=*/1,
+                                     /*payload_slot_bit_count=*/0);
 
   InterpValue empty_struct = InterpValue::MakeTuple(
       {InterpValue::MakeUBits(/*bit_count=*/1, /*value=*/1),
-       InterpValue::MakeTuple({})});
+       InterpValue::MakeTuple({InterpValue::MakeUBits(
+           /*bit_count=*/0, /*value=*/0)})});
 
   EXPECT_EQ(empty_struct.ToFormattedString(fmt_desc,
                                            /*include_type_prefix=*/true)
                 .value(),
             "Option::EmptyStruct { }");
+}
+
+TEST(InterpValueTest, FormatSemanticSumUsesExplicitDiscriminants) {
+  ValueFormatDescriptor leaf = ValueFormatDescriptor::MakeLeafValue(
+      FormatPreference::kDefault, /*bit_count=*/32, /*is_signed=*/false);
+  std::vector<ValueFormatSumVariantDescriptor> variants = {
+      ValueFormatSumVariantDescriptor::MakeUnit("None"),
+      ValueFormatSumVariantDescriptor::MakeTuple("Some", {leaf}),
+  };
+  std::vector<Bits> variant_tag_bits = {UBits(3, 5), UBits(17, 5)};
+  ValueFormatDescriptor fmt_desc = ValueFormatDescriptor::MakeSum(
+      "Option", variants, FormatPreference::kDefault,
+      /*tag_bit_count=*/5, /*payload_slot_bit_count=*/32, variant_tag_bits);
+
+  InterpValue some = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/5, /*value=*/17),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeUBits(/*bit_count=*/32, /*value=*/7)})});
+
+  EXPECT_EQ(some.ToFormattedString(fmt_desc, /*include_type_prefix=*/true)
+                .value(),
+            "Option::Some(u32:7)");
+}
+
+TEST(InterpValueTest, FormatSemanticSumRejectsMalformedTag) {
+  ValueFormatDescriptor leaf = ValueFormatDescriptor::MakeLeafValue(
+      FormatPreference::kDefault, /*bit_count=*/32, /*is_signed=*/false);
+  ValueFormatDescriptor fmt_desc = ValueFormatDescriptor::MakeSum(
+      "Option",
+      {ValueFormatSumVariantDescriptor::MakeUnit("None"),
+       ValueFormatSumVariantDescriptor::MakeTuple("Some", {leaf})},
+      FormatPreference::kDefault, /*tag_bit_count=*/2,
+      /*payload_slot_bit_count=*/32);
+
+  InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeUBits(/*bit_count=*/32, /*value=*/7)})});
+
+  EXPECT_THAT(
+      malformed.ToFormattedString(fmt_desc, /*include_type_prefix=*/true),
+      absl_testing::StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          testing::HasSubstr("Sum tag u2:3 is not declared for `Option`")));
 }
 
 TEST(InterpValueTest, AsProtoBits) {

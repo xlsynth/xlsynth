@@ -247,6 +247,7 @@ cc_library(
     deps = [
         "//xls/common/status:status_macros",
         "//xls/dslx/type_system:type",
+        "//xls/ir:bits",
         "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -362,6 +363,7 @@ cc_library(
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
@@ -884,6 +886,7 @@ cc_library(
     hdrs = ["make_value_format_descriptor.h"],
     deps = [
         ":interp_value",
+        ":sum_type_encoding",
         ":value_format_descriptor",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",

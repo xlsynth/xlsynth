@@ -59,18 +59,17 @@ class DslxInterpreterEvents {
   virtual void AddTraceStatementMessage(const FileTable& file_table,
                                         const Span& source_location,
                                         std::string_view msg);
-  virtual void AddTraceCallMessage(const FileTable& file_table,
-                                   const Span& source_location,
-                                   std::string_view function_name,
-                                   absl::Span<const InterpValue> args,
-                                   int64_t call_depth,
-                                   FormatPreference format_preference);
-  virtual void AddTraceCallReturnMessage(const FileTable& file_table,
-                                         const Span& source_location,
-                                         std::string_view function_name,
-                                         int64_t call_depth,
-                                         FormatPreference format_preference,
-                                         const InterpValue& return_value);
+  virtual absl::Status AddTraceCallMessage(
+      const FileTable& file_table, const Span& source_location,
+      std::string_view function_name, absl::Span<const InterpValue> args,
+      absl::Span<const ValueFormatDescriptor> arg_format_descriptors,
+      int64_t call_depth, FormatPreference format_preference);
+  virtual absl::Status AddTraceCallReturnMessage(
+      const FileTable& file_table, const Span& source_location,
+      std::string_view function_name, int64_t call_depth,
+      const ValueFormatDescriptor& return_format_descriptor,
+      FormatPreference format_preference,
+      const InterpValue& return_value);
   virtual void AddTraceChannelMessage(
       const FileTable& file_table, const Span& source_location,
       std::string_view channel_name, const InterpValue& value,
@@ -244,6 +243,7 @@ class BytecodeInterpreter {
   absl::Status EvalMul(const Bytecode& bytecode, bool is_signed);
 
   absl::Status EvalAnd(const Bytecode& bytecode);
+  absl::Status EvalAssertWellFormed(const Bytecode& bytecode);
   absl::Status EvalCall(const Bytecode& bytecode);
   absl::Status EvalCast(const Bytecode& bytecode, bool is_checked = false);
   absl::Status EvalConcat(const Bytecode& bytecode);
@@ -293,6 +293,10 @@ class BytecodeInterpreter {
   absl::Status EvalTraceArg(const Bytecode& bytecode);
   absl::Status EvalWidthSlice(const Bytecode& bytecode);
   absl::Status EvalXor(const Bytecode& bytecode);
+
+  absl::Status ValidateWellFormedObserverValue(
+      const Bytecode& bytecode, const Type& type, const InterpValue& value,
+      std::string_view observer);
 
   absl::Status EvalBinop(
       const std::function<absl::StatusOr<InterpValue>(

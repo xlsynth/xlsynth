@@ -1147,10 +1147,19 @@ class AstCloner : public AstNodeVisitor {
       return absl::InternalError("Unexpected Conditional alternate node type.");
     }
 
-    old_to_new_[n] = module(n)->Make<Conditional>(
+    auto* new_conditional = module(n)->Make<Conditional>(
         n->span(), absl::down_cast<Expr*>(old_to_new_.at(n->test())),
         absl::down_cast<StatementBlock*>(old_to_new_.at(n->consequent())),
-        new_alternate, n->in_parens(), n->HasElse(), n->IsConst());
+        new_alternate,
+        n->if_let_pattern() == nullptr
+            ? nullptr
+            : absl::down_cast<NameDefTree*>(
+                  old_to_new_.at(n->if_let_pattern())),
+        n->in_parens(), n->HasElse(), n->IsConst());
+    for (StatementBlock* block : new_conditional->GatherBlocks()) {
+      block->SetEnclosing(new_conditional);
+    }
+    old_to_new_[n] = new_conditional;
     return absl::OkStatus();
   }
 
@@ -1420,6 +1429,16 @@ class AstCloner : public AstNodeVisitor {
 
   absl::Status HandleWildcardPattern(const WildcardPattern* n) override {
     old_to_new_[n] = module(n)->Make<WildcardPattern>(n->span());
+    return absl::OkStatus();
+  }
+
+  absl::Status HandleInvalidPattern(const InvalidPattern* n) override {
+    XLS_RETURN_IF_ERROR(VisitChildren(n));
+    old_to_new_[n] = module(n)->Make<InvalidPattern>(
+        n->span(),
+        n->raw_name_def() == nullptr
+            ? nullptr
+            : absl::down_cast<NameDef*>(old_to_new_.at(n->raw_name_def())));
     return absl::OkStatus();
   }
 

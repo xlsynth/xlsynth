@@ -1335,14 +1335,45 @@ absl::StatusOr<Conditional*> Parser::ParseConditionalNode(
   };
 
   XLS_ASSIGN_OR_RETURN(Token if_kw, PopKeywordOrError(Keyword::kIf));
+  XLS_ASSIGN_OR_RETURN(bool is_if_let, PeekTokenIs(Keyword::kLet));
+  Bindings consequent_bindings(&bindings);
+  NameDefTree* if_let_pattern = nullptr;
+  Expr* test;
+  if (is_if_let) {
+    if (is_const) {
+      return ParseErrorStatus(if_kw.span(), "`const if let` is not supported");
+    }
+    XLS_RETURN_IF_ERROR(DropKeywordOrError(Keyword::kLet));
+    XLS_ASSIGN_OR_RETURN(
+        if_let_pattern,
+        ParsePattern(consequent_bindings, /*within_tuple_pattern=*/false));
+    if (!if_let_pattern->is_leaf() ||
+        (!std::holds_alternative<ColonRef*>(if_let_pattern->leaf()) &&
+         !std::holds_alternative<SumVariantPayloadPattern*>(
+             if_let_pattern->leaf()))) {
+      return ParseErrorStatus(
+          if_let_pattern->span(),
+          "`if let` requires a top-level sum constructor pattern.");
+    }
+    XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kEquals));
+    XLS_ASSIGN_OR_RETURN(
+        test,
+        ParseExpression(bindings,
+                        MakeRestrictions({ExprRestriction::kNoStructLiteral})));
+  } else {
+    XLS_ASSIGN_OR_RETURN(
+        test,
+        ParseExpression(bindings,
+                        MakeRestrictions({ExprRestriction::kNoStructLiteral})));
+  }
   XLS_ASSIGN_OR_RETURN(
-      Expr * test,
-      ParseExpression(bindings,
-                      MakeRestrictions({ExprRestriction::kNoStructLiteral})));
-  XLS_ASSIGN_OR_RETURN(StatementBlock * consequent,
-                       ParseBlockExpression(bindings));
+      StatementBlock * consequent,
+      ParseBlockExpression(is_if_let ? consequent_bindings : bindings));
 
   XLS_ASSIGN_OR_RETURN(bool has_else, PeekTokenIs(Keyword::kElse));
+  if (is_if_let && !has_else) {
+    return ParseErrorStatus(if_kw.span(), "`if let` requires an `else` arm");
+  }
 
   std::variant<StatementBlock*, Conditional*> alternate;
   if (has_else) {
@@ -1365,7 +1396,7 @@ absl::StatusOr<Conditional*> Parser::ParseConditionalNode(
 
   auto* outer_conditional = module_->Make<Conditional>(
       Span(if_kw.span().start(), GetPos()), test, consequent, alternate,
-      /*in_parens=*/false, has_else, is_const);
+      if_let_pattern, /*in_parens=*/false, has_else, is_const);
   for (StatementBlock* block : outer_conditional->GatherBlocks()) {
     block->SetEnclosing(outer_conditional);
   }
@@ -2148,6 +2179,26 @@ absl::StatusOr<NameDefTree*> Parser::ParsePattern(Bindings& bindings,
   XLS_ASSIGN_OR_RETURN(const Token* peek, PeekToken());
   if (peek->kind() == TokenKind::kIdentifier) {
     XLS_ASSIGN_OR_RETURN(Token tok, PopTokenOrError(TokenKind::kIdentifier));
+    if (*tok.GetValue() == "invalid!") {
+      XLS_ASSIGN_OR_RETURN(bool peek_is_oparen,
+                           PeekTokenIs(TokenKind::kOParen));
+      if (!peek_is_oparen) {
+        auto* pattern = module_->Make<InvalidPattern>(tok.span(), nullptr);
+        return module_->Make<NameDefTree>(
+            tok.span(), static_cast<WildcardPattern*>(pattern));
+      }
+      XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kOParen));
+      XLS_ASSIGN_OR_RETURN(Token raw_tok,
+                           PopTokenOrError(TokenKind::kIdentifier));
+      XLS_ASSIGN_OR_RETURN(NameDef * raw_name_def, TokenToNameDef(raw_tok));
+      bindings.Add(raw_name_def->identifier(), raw_name_def);
+      XLS_ASSIGN_OR_RETURN(Token cparen, PopTokenOrError(TokenKind::kCParen));
+      Span span(tok.span().start(), cparen.span().limit());
+      auto* pattern = module_->Make<InvalidPattern>(span, raw_name_def);
+      raw_name_def->set_definer(pattern);
+      return module_->Make<NameDefTree>(span,
+                                        static_cast<WildcardPattern*>(pattern));
+    }
     if (*tok.GetValue() == "_") {
       return module_->Make<NameDefTree>(
           tok.span(), module_->Make<WildcardPattern>(tok.span()));
@@ -4386,14 +4437,6 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
         absl::StrFormat(
             "Semantic sum `%s` must use either all implicit or all explicit "
             "discriminants.",
-            name_def->identifier()));
-  } else if (type_annotation != nullptr && !entries.empty() &&
-             !all_have_discriminants) {
-    return ParseErrorStatus(
-        name_def->span(),
-        absl::StrFormat(
-            "Semantic sum `%s` with a tag type annotation requires explicit "
-            "discriminants on every variant in Phase 1.",
             name_def->identifier()));
   }
 

@@ -283,8 +283,7 @@ FunctionTypeAnnotation* CreateFunctionTypeAnnotation(Module& module,
     param_types.push_back(param->type_annotation());
   }
   return module.Make<FunctionTypeAnnotation>(
-      param_types,
-      const_cast<TypeAnnotation*>(GetReturnType(module, function)));
+      param_types, const_cast<TypeAnnotation*>(GetReturnType(module, function)));
 }
 
 const TypeAnnotation* GetReturnType(Module& module, const Function& fn) {

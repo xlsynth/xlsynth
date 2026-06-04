@@ -2531,15 +2531,21 @@ TEST_F(ParserTest, SemanticSumRejectsMixedDiscriminants) {
                                  "discriminants")));
 }
 
-TEST_F(ParserTest, SemanticSumRejectsImplicitDiscriminantsWithTagAnnotation) {
-  constexpr std::string_view kProgram = R"(enum Option : u1 {
+TEST_F(ParserTest, SemanticSumSupportsImplicitDiscriminantsWithTagAnnotation) {
+  std::unique_ptr<Module> module = RoundTrip(R"(enum Option : u1 {
     None(),
     Some(u8),
-})";
-  EXPECT_THAT(Parse(kProgram),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("with a tag type annotation requires explicit "
-                                 "discriminants on every variant in Phase 1")));
+})");
+  std::optional<ModuleMember*> maybe_member =
+      module->FindMemberWithName("Option");
+  ASSERT_TRUE(maybe_member.has_value());
+  ASSERT_TRUE(std::holds_alternative<SumDef*>(*maybe_member.value()));
+  const auto* sum_def = std::get<SumDef*>(*maybe_member.value());
+  EXPECT_EQ(sum_def->tag_type_annotation()->ToString(), "u1");
+  ASSERT_TRUE(sum_def->GetVariant("None").has_value());
+  ASSERT_TRUE(sum_def->GetVariant("Some").has_value());
+  EXPECT_EQ((*sum_def->GetVariant("None"))->discriminant(), nullptr);
+  EXPECT_EQ((*sum_def->GetVariant("Some"))->discriminant(), nullptr);
 }
 
 TEST_F(ParserTest, BareUnitEnumWithoutValuesIsStillRejected) {
@@ -3350,6 +3356,76 @@ TEST_F(ParserTest, LadderedConditional) {
 })",
       {"really_long_identifier_so_that_this_is_too_many_chars",
        "another_really_long_identifier_so_that_this_is_too_many_chars"});
+}
+
+TEST_F(ParserTest, IfLetConditional) {
+  RoundTrip(R"(enum Option {
+    None,
+    Some(u8),
+}
+fn f(x: Option) -> u8 {
+    if let Option::Some(v) = x { v } else { u8:0 }
+})");
+}
+
+TEST_F(ParserTest, IfLetElseIfChain) {
+  RoundTrip(R"(enum Option {
+    None,
+    Some(u8),
+}
+fn f(x: Option, y: Option) -> u8 {
+    if let Option::Some(v) = x {
+        v
+    } else if let Option::Some(w) = y { w } else { u8:0 }
+})");
+}
+
+TEST_F(ParserTest, IfLetRequiresElse) {
+  constexpr std::string_view kProgram = R"(enum Option {
+    None,
+    Some(u8),
+}
+fn f(x: Option) -> u8 {
+    if let Option::Some(v) = x { v }
+})";
+  EXPECT_THAT(Parse(kProgram),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("`if let` requires an `else` arm")));
+}
+
+TEST_F(ParserTest, IfLetRequiresConstructorPattern) {
+  constexpr std::string_view kProgram = R"(fn f(x: u8) -> u8 {
+    if let _ = x { x } else { u8:0 }
+})";
+  EXPECT_THAT(
+      Parse(kProgram),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("`if let` requires a top-level sum constructor "
+                         "pattern.")));
+}
+
+TEST_F(ParserTest, IfLetAllowsUnitConstructorPattern) {
+  RoundTrip(R"(enum Option {
+    None,
+    Some(u8),
+}
+fn f(x: Option) -> u8 {
+    if let Option::None = x { u8:0 } else { u8:1 }
+})");
+}
+
+TEST_F(ParserTest, InvalidPatternRoundTrips) {
+  RoundTrip(R"(enum Option {
+    None,
+    Some(u8),
+}
+fn f(x: Option) -> u8 {
+    match x {
+        Option::Some(v) => v,
+        _ => u8:0,
+        invalid!(raw) => raw[0+:u8],
+    }
+})");
 }
 
 TEST_F(ParserTest, TernaryWithComparisonTest) {

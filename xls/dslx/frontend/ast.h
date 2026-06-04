@@ -99,6 +99,7 @@
   X(FuzzTestFunction)               \
   X(Impl)                           \
   X(Import)                         \
+  X(InvalidPattern)                 \
   X(Let)                            \
   X(MatchArm)                       \
   X(Module)                         \
@@ -1085,6 +1086,39 @@ class WildcardPattern : public AstNode {
 
  private:
   Span span_;
+};
+
+// Represents the malformed-value pattern forms `invalid!` and
+// `invalid!(raw)`.
+//
+// `NameDefTree::Leaf` intentionally stores this through the existing
+// `WildcardPattern*` alternative so parser/type-system support can land before
+// the later lowering/runtime slices learn about malformed values.
+class InvalidPattern : public WildcardPattern {
+ public:
+  InvalidPattern(Module* owner, Span span, NameDef* raw_name_def)
+      : WildcardPattern(owner, std::move(span)), raw_name_def_(raw_name_def) {}
+
+  ~InvalidPattern() override;
+
+  AstNodeKind kind() const override { return AstNodeKind::kInvalidPattern; }
+
+  absl::Status Accept(AstNodeVisitor* v) const override {
+    return v->HandleInvalidPattern(this);
+  }
+
+  std::string_view GetNodeTypeName() const override {
+    return "InvalidPattern";
+  }
+  std::string ToString() const override;
+
+  std::vector<AstNode*> GetChildren(bool want_types) const override;
+
+  NameDef* raw_name_def() const { return raw_name_def_; }
+  bool binds_raw_bits() const { return raw_name_def_ != nullptr; }
+
+ private:
+  NameDef* raw_name_def_;
 };
 
 // Represents the definition of a name (identifier).
@@ -2363,6 +2397,7 @@ class Conditional : public Expr {
  public:
   Conditional(Module* owner, Span span, Expr* test, StatementBlock* consequent,
               std::variant<StatementBlock*, Conditional*> alternate,
+              NameDefTree* if_let_pattern = nullptr,
               bool in_parens = false, bool has_else = true,
               bool is_const = false);
 
@@ -2382,9 +2417,7 @@ class Conditional : public Expr {
 
   std::string_view GetNodeTypeName() const override { return "Conditional"; }
 
-  std::vector<AstNode*> GetChildren(bool want_types) const override {
-    return {test_, consequent_, ToAstNode(alternate_)};
-  }
+  std::vector<AstNode*> GetChildren(bool want_types) const override;
 
   Expr* test() const { return test_; }
   StatementBlock* consequent() const { return consequent_; }
@@ -2393,6 +2426,8 @@ class Conditional : public Expr {
   }
 
   bool IsConst() const { return is_const_; }
+  bool IsIfLet() const { return if_let_pattern_ != nullptr; }
+  NameDefTree* if_let_pattern() const { return if_let_pattern_; }
 
   bool HasElse() const { return has_else_; }
 
@@ -2420,6 +2455,7 @@ class Conditional : public Expr {
   Expr* test_;
   StatementBlock* consequent_;
   std::variant<StatementBlock*, Conditional*> alternate_;
+  NameDefTree* if_let_pattern_;
   bool has_else_;
   bool is_const_;
 };
@@ -4677,12 +4713,16 @@ class NameDefTree : public AstNode {
     auto leaves = Flatten();
     return std::all_of(leaves.begin(), leaves.end(), [](Leaf leaf) {
       return std::holds_alternative<NameDef*>(leaf) ||
-             std::holds_alternative<WildcardPattern*>(leaf);
+             (std::holds_alternative<WildcardPattern*>(leaf) &&
+              std::get<WildcardPattern*>(leaf)->kind() !=
+                  AstNodeKind::kInvalidPattern);
     });
   }
 
   bool IsWildcardLeaf() const {
-    return is_leaf() && std::holds_alternative<WildcardPattern*>(leaf());
+    return is_leaf() && std::holds_alternative<WildcardPattern*>(leaf()) &&
+           std::get<WildcardPattern*>(leaf())->kind() !=
+               AstNodeKind::kInvalidPattern;
   }
 
   bool IsRestOfTupleLeaf() const {

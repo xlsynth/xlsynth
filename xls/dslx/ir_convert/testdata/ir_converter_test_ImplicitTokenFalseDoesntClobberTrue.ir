@@ -3,23 +3,25 @@ package test_module
 file_number 0 "test_module.x"
 
 fn __test_module__bar() -> () {
-  ret tuple.7: () = tuple(id=7)
+  ret tuple.9: () = tuple(id=9)
 }
 
 fn __itok__test_module__foo(__token: token id=1, __activated: bits[1] id=2, x: bits[32] id=3) -> (token, bits[32]) {
-  trace.4: token = trace(__token, __activated, format="x is {}", data_operands=[x], id=4)
-  after_all.5: token = after_all(trace.4, id=5)
-  ret tuple.6: (token, bits[32]) = tuple(after_all.5, x, id=6)
+  trace.6: token = trace(__token, __activated, format="x is {}", data_operands=[x], id=6)
+  after_all.7: token = after_all(trace.6, id=7)
+  literal.4: bits[1] = literal(value=1, id=4)
+  literal.5: bits[1] = literal(value=1, id=5)
+  ret tuple.8: (token, bits[32]) = tuple(after_all.7, x, id=8)
 }
 
-fn __itok__test_module__main(__token: token id=8, __activated: bits[1] id=9) -> (token, ()) {
-  literal.11: bits[32] = literal(value=2, id=11)
-  invoke.12: (token, bits[32]) = invoke(__token, __activated, literal.11, to_apply=__itok__test_module__foo, id=12)
-  tuple_index.13: token = tuple_index(invoke.12, index=0, id=13)
-  after_all.17: token = after_all(tuple_index.13, id=17)
-  tuple.16: () = tuple(id=16)
-  invoke.10: () = invoke(to_apply=__test_module__bar, id=10)
-  tuple_index.14: bits[32] = tuple_index(invoke.12, index=1, id=14)
-  invoke.15: () = invoke(to_apply=__test_module__bar, id=15)
-  ret tuple.18: (token, ()) = tuple(after_all.17, tuple.16, id=18)
+fn __itok__test_module__main(__token: token id=10, __activated: bits[1] id=11) -> (token, ()) {
+  literal.13: bits[32] = literal(value=2, id=13)
+  invoke.14: (token, bits[32]) = invoke(__token, __activated, literal.13, to_apply=__itok__test_module__foo, id=14)
+  tuple_index.15: token = tuple_index(invoke.14, index=0, id=15)
+  after_all.19: token = after_all(tuple_index.15, id=19)
+  tuple.18: () = tuple(id=18)
+  invoke.12: () = invoke(to_apply=__test_module__bar, id=12)
+  tuple_index.16: bits[32] = tuple_index(invoke.14, index=1, id=16)
+  invoke.17: () = invoke(to_apply=__test_module__bar, id=17)
+  ret tuple.20: (token, ()) = tuple(after_all.19, tuple.18, id=20)
 }

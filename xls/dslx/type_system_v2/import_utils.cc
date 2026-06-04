@@ -107,7 +107,13 @@ class TypeRefUnwrapper : public AstNodeVisitorWithDefault {
   }
 
   absl::Status HandleSumDef(const SumDef* def) override {
-    type_def_ = const_cast<SumDef*>(def);
+    // Canonicalization may clone an imported module after its first typecheck
+    // pass. Rebind imported sum references through ImportData so later pointer
+    // comparisons observe the stored canonical module definition instead of a
+    // stale pre-canonicalization clone.
+    absl::StatusOr<const SumDef*> canonical = import_data_.FindSumDef(def->span());
+    type_def_ = canonical.ok() ? const_cast<SumDef*>(*canonical)
+                               : const_cast<SumDef*>(def);
     return absl::OkStatus();
   }
 

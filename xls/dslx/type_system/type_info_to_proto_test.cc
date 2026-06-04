@@ -226,6 +226,42 @@ fn f(x: bool) -> E {
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       SemanticSumPreservesConcreteTagLayout) {
+  std::string program = R"(
+enum Message: u3 {
+  Idle = 0,
+  Request(u8) = 3,
+  Response(u32) = 7,
+}
+
+fn f(x: Message) -> Message { x }
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "fake.x", "fake", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto tip, TypeInfoToProto(*tm.type_info));
+
+  const AstNodeTypeInfoProto* sum_node = FindSumTypeInfoNode(tip, "Message");
+  ASSERT_NE(sum_node, nullptr);
+  const SumTypeProto& sum_type = sum_node->type().sum_type();
+  ASSERT_TRUE(sum_type.has_tag_bit_count());
+  ASSERT_TRUE(sum_type.tag_bit_count().has_interp_value());
+  EXPECT_EQ(sum_type.tag_bit_count().interp_value().bits().bit_count(), 32);
+  EXPECT_EQ(sum_type.tag_bit_count().interp_value().bits().data(),
+            std::string("\000\000\000\003", 4));
+  ASSERT_EQ(sum_type.discriminants_size(), 3);
+  EXPECT_EQ(sum_type.discriminants(0).bits().bit_count(), 3);
+  EXPECT_EQ(sum_type.discriminants(0).bits().data(), std::string("\000", 1));
+  EXPECT_EQ(sum_type.discriminants(1).bits().bit_count(), 3);
+  EXPECT_EQ(sum_type.discriminants(1).bits().data(), std::string("\003", 1));
+  EXPECT_EQ(sum_type.discriminants(2).bits().bit_count(), 3);
+  EXPECT_EQ(sum_type.discriminants(2).bits().data(), std::string("\007", 1));
+  XLS_EXPECT_OK(ToHumanString(*sum_node, import_data, import_data.file_table()));
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        RejectsReorderedSumVariantsInProtoImport) {
   std::string program = R"(
 enum Option {

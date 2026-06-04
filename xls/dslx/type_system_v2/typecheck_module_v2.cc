@@ -235,7 +235,7 @@ absl::StatusOr<std::unique_ptr<ModuleInfo>> TypecheckModuleV2(
     }
     return module_info;
   } else {
-    import_data->RetainSupersededModuleInfo(std::move(module_info));
+    import_data->RetainTransientModuleInfo(std::move(module_info));
     std::unique_ptr<SemanticsAnalysis> canonical_semantics_analysis =
         std::make_unique<SemanticsAnalysis>(suppress_warnings);
     return TypecheckModuleV2Once(

@@ -588,6 +588,7 @@ cc_library(
         "//xls/ir:format_preference",
         "//xls/ir:format_strings",
         "//xls/ir:function_builder",
+        "//xls/ir:node_util",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",

@@ -391,11 +391,8 @@ class FunctionConverter {
   // Helpers for HandleBinop().
   absl::StatusOr<BValue> BuildEqByType(const Type& type, BValue lhs, BValue rhs,
                                        const SourceInfo& loc);
-  absl::StatusOr<BValue> BuildPhase1WellFormedPredicateByType(
-      const Type& type, BValue value, const SourceInfo& loc);
-  absl::Status AssertPhase1SemanticSumValueIsWellFormed(
-      const Type& type, BValue value, const SourceInfo& loc, const Span& span,
-      std::string_view message_observer, std::string_view label_suffix);
+  absl::StatusOr<BValue> BuildSemanticSumTagIsDeclaredPredicate(
+      const SumType& sum_type, BValue value, const SourceInfo& loc);
   absl::Status HandleConcat(const Binop* node, BValue lhs, BValue rhs);
   absl::Status HandleEq(const Binop* node, BValue lhs, BValue rhs);
   absl::Status HandleNe(const Binop* node, BValue lhs, BValue rhs);

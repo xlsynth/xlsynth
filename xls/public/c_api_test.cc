@@ -1573,15 +1573,11 @@ struct MySumHolder {
     const xls_dslx_type* sum_def_type =
         xls_dslx_type_info_get_type_sum_def(type_info, sum_def);
     int64_t total_bit_count = 0;
-    ASSERT_FALSE(xls_dslx_type_get_total_bit_count(sum_def_type, &error,
-                                                   &total_bit_count));
-    ASSERT_NE(error, nullptr);
-    EXPECT_THAT(std::string_view{error},
-                HasSubstr("Cannot query total bit count for a type containing "
-                          "semantic sums in Phase 1"));
-    EXPECT_EQ(total_bit_count, 0);
-    xls_c_str_free(error);
-    error = nullptr;
+    ASSERT_TRUE(xls_dslx_type_get_total_bit_count(sum_def_type, &error,
+                                                  &total_bit_count))
+        << "got not-ok result from get-total-bit-count; error: " << error;
+    ASSERT_EQ(error, nullptr);
+    EXPECT_EQ(total_bit_count, 1 + 8);
 
     xls_dslx_module_member* sum_member =
         xls_dslx_module_member_from_sum_def(sum_def);
@@ -1597,15 +1593,11 @@ struct MySumHolder {
     const xls_dslx_type* struct_def_type =
         xls_dslx_type_info_get_type_struct_def(type_info, struct_def);
     int64_t total_bit_count = -1;
-    ASSERT_FALSE(xls_dslx_type_get_total_bit_count(struct_def_type, &error,
-                                                   &total_bit_count));
-    ASSERT_NE(error, nullptr);
-    EXPECT_THAT(std::string_view{error},
-                HasSubstr("Cannot query total bit count for a type containing "
-                          "semantic sums in Phase 1"));
-    EXPECT_EQ(total_bit_count, 0);
-    xls_c_str_free(error);
-    error = nullptr;
+    ASSERT_TRUE(xls_dslx_type_get_total_bit_count(struct_def_type, &error,
+                                                  &total_bit_count))
+        << "got not-ok result from get-total-bit-count; error: " << error;
+    ASSERT_EQ(error, nullptr);
+    EXPECT_EQ(total_bit_count, 1 + 8);
   }
 
   {

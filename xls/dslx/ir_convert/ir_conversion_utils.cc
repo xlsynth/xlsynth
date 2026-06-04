@@ -98,18 +98,12 @@ absl::StatusOr<xls::Type*> TypeToIr(Package* package, const Type& type,
     absl::Status HandleSum(const SumType& t) override {
       const Phase1SumTypeEncoding encoding(t);
       XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
-      std::vector<xls::Type*> payload_members;
-      payload_members.reserve(encoding.payload_slot_count());
-      XLS_RETURN_IF_ERROR(encoding.ForEachPayloadType(
-          [&](const Type& member) -> absl::Status {
-            XLS_ASSIGN_OR_RETURN(xls::Type * type,
-                                 TypeToIr(package_, member, bindings_));
-            payload_members.push_back(type);
-            return absl::OkStatus();
-          }));
+      XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                           encoding.payload_slot_bit_count());
       retval_ = package_->GetTupleType(
           {package_->GetBitsType(tag_bit_count),
-           package_->GetTupleType(payload_members)});
+           package_->GetTupleType(
+               {package_->GetBitsType(payload_slot_bit_count)})});
       return absl::OkStatus();
     }
     absl::Status HandleProc(const ProcType& t) override {

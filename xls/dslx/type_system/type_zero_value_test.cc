@@ -18,7 +18,6 @@
 #include <optional>
 #include <vector>
 
-#include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -30,8 +29,7 @@
 
 namespace xls::dslx {
 namespace {
-using ::absl_testing::StatusIs;
-using ::testing::HasSubstr;
+using ::absl_testing::IsOk;
 
 SumType MakeOuterSumWithInhabitedNestedSumPayload(Module& module) {
   const Span kFakeSpan = Span::Fake();
@@ -69,15 +67,13 @@ SumType MakeOuterSumWithInhabitedNestedSumPayload(Module& module) {
   return SumType(*outer_def, std::move(outer_variants));
 }
 
-TEST(TypeZeroValueTest, RejectsNestedSumPayload) {
+TEST(TypeZeroValueTest, AcceptsNestedSumPayload) {
   FileTable file_table;
   Module module("test", /*fs_path=*/std::nullopt, file_table);
   SumType outer_type = MakeOuterSumWithInhabitedNestedSumPayload(module);
   ImportData import_data = CreateImportDataForTest();
 
-  EXPECT_THAT(MakeZeroValue(outer_type, import_data, Span::Fake()),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("aggregate type containing a semantic sum")));
+  EXPECT_THAT(MakeZeroValue(outer_type, import_data, Span::Fake()), IsOk());
 }
 
 }  // namespace

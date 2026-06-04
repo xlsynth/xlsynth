@@ -30,7 +30,6 @@ enum class SemanticSumNegativeMutationKind : unsigned char {
   kWildcardConstructorMix,
   kTooManyPayloadPatterns,
   kMissingPayloadPattern,
-  kAggregateZeroMaterialization,
 };
 
 struct SemanticSumNegativeMutation {

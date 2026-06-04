@@ -437,7 +437,7 @@ proc tester_proc {
                            "`tester_proc->incrementer#0::out_ch`:\n  u32:101"));
 }
 
-TEST_F(ProcHierarchyInterpreterTest, TraceChannelsRedactsSemanticSums) {
+TEST_F(ProcHierarchyInterpreterTest, TraceChannelsFormatsSemanticSums) {
   constexpr std::string_view kProgram = R"(
 enum Option {
   None,
@@ -489,8 +489,7 @@ proc tester_proc {
       std::unique_ptr<ProcHierarchyInterpreter> interpreter,
       Create(test_proc, options));
   XLS_ASSERT_OK(Run(*interpreter, options));
-  constexpr std::string_view kOpaqueValue =
-      "<semantic sum value omitted in Phase 1>";
+  constexpr std::string_view kSumValue = "Option::Some(42)";
   EXPECT_THAT(
       GetProcInstance(*interpreter, "tester_proc:0")
           .value()
@@ -498,9 +497,9 @@ proc tester_proc {
           .GetTraceMessageStrings(),
       testing::ElementsAre(
           absl::StrCat("Sent data on channel `tester_proc::data_out`:\n  ",
-                       kOpaqueValue),
+                       kSumValue),
           absl::StrCat("Received data on channel `tester_proc::data_in`:\n  ",
-                       kOpaqueValue),
+                       kSumValue),
           "Sent data on channel `tester_proc::terminator`:\n  u1:1"));
   EXPECT_THAT(
       GetProcInstance(*interpreter, "tester_proc->passthrough:0")
@@ -510,10 +509,10 @@ proc tester_proc {
       testing::ElementsAre(
           absl::StrCat("Received data on channel "
                        "`tester_proc->passthrough#0::in_ch`:\n  ",
-                       kOpaqueValue),
+                       kSumValue),
           absl::StrCat("Sent data on channel "
                        "`tester_proc->passthrough#0::out_ch`:\n  ",
-                       kOpaqueValue)));
+                       kSumValue)));
 }
 
 TEST_F(ProcHierarchyInterpreterTest, TraceChannelsHexValues) {

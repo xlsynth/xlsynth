@@ -152,6 +152,7 @@ DocRef Fmt(const ColonRef& n, Comments& comments, DocArena& arena);
 DocRef Fmt(const SumVariantPayloadPattern& n, Comments& comments,
            DocArena& arena);
 DocRef Fmt(const Expr& n, Comments& comments, DocArena& arena);
+DocRef Fmt(const InvalidPattern& n, Comments& comments, DocArena& arena);
 DocRef Fmt(const NameDefTree& n, Comments& comments, DocArena& arena);
 DocRef Fmt(const SumInstance& n, Comments& comments, DocArena& arena);
 DocRef Fmt(const TypeAnnotation& n, Comments& comments, DocArena& arena);
@@ -575,7 +576,15 @@ DocRef Fmt(const Number& n, Comments& comments, DocArena& arena) {
 }
 
 DocRef Fmt(const WildcardPattern& n, Comments& comments, DocArena& arena) {
+  if (const auto* invalid = dynamic_cast<const InvalidPattern*>(&n);
+      invalid != nullptr) {
+    return Fmt(*invalid, comments, arena);
+  }
   return arena.underscore();
+}
+
+DocRef Fmt(const InvalidPattern& n, Comments& comments, DocArena& arena) {
+  return arena.MakeText(n.ToString());
 }
 
 DocRef Fmt(const RestOfTuple& n, Comments& comments, DocArena& arena) {
@@ -1738,6 +1747,14 @@ DocRef MakeConditionalTest(const Conditional& n, Comments& comments,
   }
   pieces.push_back(arena.Make(Keyword::kIf));
   pieces.push_back(arena.space());
+  if (n.IsIfLet()) {
+    pieces.push_back(arena.Make(Keyword::kLet));
+    pieces.push_back(arena.space());
+    pieces.push_back(Fmt(*n.if_let_pattern(), comments, arena));
+    pieces.push_back(arena.space());
+    pieces.push_back(arena.equals());
+    pieces.push_back(arena.space());
+  }
   pieces.push_back(
       FmtExpr(*n.test(), comments, arena, /*suppress_parens=*/true));
   pieces.push_back(arena.space());

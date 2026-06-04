@@ -167,13 +167,6 @@ class ImportData {
   absl::StatusOr<ModuleInfo*> Put(const ImportTokens& subject,
                                   std::unique_ptr<ModuleInfo> module_info);
 
-  // Retains a typechecked module whose visible replacement is subsequently
-  // stored via Put(). TIv2 corpus state holds pointers into typechecked module
-  // arenas, so superseded arenas must remain live until this ImportData dies.
-  void RetainSupersededModuleInfo(std::unique_ptr<ModuleInfo> module_info) {
-    superseded_module_infos_.push_back(std::move(module_info));
-  }
-
   // Returns the `TraitDeriver` to use for traits that are declared in the
   // builtins module.
   TraitDeriver* GetBuiltinTraitDeriver() const {
@@ -210,6 +203,11 @@ class ImportData {
   // imported with type inference v2.
   absl::StatusOr<InferenceTableConverter*> GetInferenceTableConverter(
       std::string_view module_name);
+
+  // Keeps a canonicalization-pass module alive after it stops being the active
+  // corpus module. Shared TIv2 state can still retain AST pointers and constant
+  // bindings from the first pass until the ImportData itself is destroyed.
+  void RetainTransientModuleInfo(std::unique_ptr<ModuleInfo> module_info);
   absl::StatusOr<Module*> GetBuiltinStubsModule() const;
 
   TypeInfoOwner& type_info_owner() { return type_info_owner_; }
@@ -322,12 +320,12 @@ class ImportData {
 
   FileTable file_table_;
   absl::flat_hash_map<ImportTokens, std::unique_ptr<ModuleInfo>> modules_;
-  std::vector<std::unique_ptr<ModuleInfo>> superseded_module_infos_;
   absl::flat_hash_map<std::string, ModuleInfo*> path_to_module_info_;
   absl::flat_hash_map<Module*, std::unique_ptr<InterpBindings>>
       top_level_bindings_;
   absl::flat_hash_set<Module*> top_level_bindings_done_;
   absl::flat_hash_map<Module*, AstNode*> typecheck_wip_;
+  std::vector<std::unique_ptr<ModuleInfo>> transient_module_infos_;
   TypeInfoOwner type_info_owner_;
   const std::filesystem::path stdlib_path_;
   std::vector<std::filesystem::path> additional_search_paths_;
