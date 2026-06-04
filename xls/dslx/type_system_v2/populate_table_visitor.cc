@@ -700,11 +700,98 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
 
   absl::Status HandleSumVariantPayloadPattern(
       const SumVariantPayloadPattern* node) override {
-    return TypeInferenceErrorStatus(
-        node->span(), nullptr,
-        ": Semantic sum constructor patterns require the Phase 1 pattern "
-        "layer.",
-        file_table_);
+    VLOG(5) << "HandleSumVariantPayloadPattern: " << node->ToString();
+    XLS_ASSIGN_OR_RETURN(
+        std::optional<SumConstructorRef> sum_constructor_ref,
+        ResolveSumConstructor(node->constructor_ref(), import_data_));
+    if (!sum_constructor_ref.has_value()) {
+      return TypeInferenceErrorStatus(
+          node->span(), nullptr,
+          absl::Substitute("Constructor pattern `$0` does not refer to a sum "
+                           "constructor.",
+                           node->constructor_ref()->ToString()),
+          file_table_);
+    }
+    XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(
+        node,
+        CreateSumConstructorValueAnnotation(sum_constructor_ref->sum_ref)));
+    ++allow_non_unit_sum_constructor_depth_;
+    absl::Status constructor_status = node->constructor_ref()->Accept(this);
+    --allow_non_unit_sum_constructor_depth_;
+    XLS_RETURN_IF_ERROR(constructor_status);
+
+    const SumVariant* variant = sum_constructor_ref->variant;
+    const NameRef* matched_type_variable = *table_.GetTypeVariable(node);
+    const TypeAnnotation* sum_value_type =
+        module_.Make<TypeVariableTypeAnnotation>(matched_type_variable);
+    const TypeAnnotation* constructor_type = module_.Make<MemberTypeAnnotation>(
+        node->constructor_ref()->span(),
+        const_cast<TypeAnnotation*>(sum_value_type), variant->identifier());
+    if (variant->is_unit()) {
+      if (!node->tuple_payload_patterns().empty() ||
+          !node->struct_payload_field_patterns().empty()) {
+        return TypeInferenceErrorStatus(
+            node->span(), nullptr,
+            absl::Substitute("Unit constructor `$0` does not take payload "
+                             "patterns.",
+                             node->constructor_ref()->ToString()),
+            file_table_);
+      }
+      return absl::OkStatus();
+    }
+
+    if (variant->is_tuple()) {
+      if (!node->struct_payload_field_patterns().empty()) {
+        return TypeInferenceErrorStatus(
+            node->span(), nullptr,
+            absl::Substitute("Tuple constructor `$0` does not support named "
+                             "payload patterns.",
+                             node->constructor_ref()->ToString()),
+            file_table_);
+      }
+      if (node->tuple_payload_patterns().size() !=
+          variant->tuple_members().size()) {
+        return ArgCountMismatchErrorStatus(
+            node->span(),
+            absl::Substitute("Constructor pattern `$0` expects $1 payload "
+                             "pattern(s), got $2.",
+                             node->constructor_ref()->ToString(),
+                             variant->tuple_members().size(),
+                             node->tuple_payload_patterns().size()),
+            file_table_);
+      }
+      for (int64_t i = 0; i < node->tuple_payload_patterns().size(); ++i) {
+        const TypeAnnotation* payload_type = module_.Make<ParamTypeAnnotation>(
+            const_cast<TypeAnnotation*>(constructor_type), i);
+        XLS_RETURN_IF_ERROR(
+            BindPatternToType(node->tuple_payload_patterns()[i], payload_type));
+      }
+      return absl::OkStatus();
+    }
+
+    if (!node->tuple_payload_patterns().empty()) {
+      return TypeInferenceErrorStatus(
+          node->span(), nullptr,
+          absl::Substitute(
+              "Struct constructor `$0` does not support positional "
+              "payload patterns.",
+              node->constructor_ref()->ToString()),
+          file_table_);
+    }
+    XLS_RETURN_IF_ERROR(
+        ValidateStructPatternNames(*node, *variant, node->constructor_ref()));
+    absl::flat_hash_map<std::string, const StructMemberNode*> member_map;
+    for (const StructMemberNode* member : variant->struct_members()) {
+      member_map.emplace(member->name(), member);
+    }
+    for (const auto& [name, pattern] : node->struct_payload_field_patterns()) {
+      const StructMemberNode* member = member_map.at(name);
+      const TypeAnnotation* payload_type = module_.Make<MemberTypeAnnotation>(
+          member->name_def()->span(),
+          const_cast<TypeAnnotation*>(constructor_type), member->name());
+      XLS_RETURN_IF_ERROR(BindPatternToType(pattern, payload_type));
+    }
+    return absl::OkStatus();
   }
 
   absl::Status HandleXlsTuple(const XlsTuple* node) override {
