@@ -75,6 +75,7 @@
   X(StatementBlock)                \
   X(String)                        \
   X(StructInstance)                \
+  X(SumInstance)                   \
   X(TupleIndex)                    \
   X(Unop)                          \
   X(VerbatimNode)                  \
@@ -92,6 +93,7 @@
   X(BuiltinNameDef)                 \
   X(ConstAssert)                    \
   X(ConstantDef)                    \
+  X(ConstructorPattern)             \
   X(EnumDef)                        \
   X(Function)                       \
   X(FuzzTestFunction)               \
@@ -114,6 +116,8 @@
   X(Statement)                      \
   X(StructDef)                      \
   X(StructMemberNode)               \
+  X(SumDef)                         \
+  X(SumVariant)                     \
   X(TestFunction)                   \
   X(TestProc)                       \
   X(Trait)                          \
@@ -1783,7 +1787,7 @@ class Array final : public Expr {
 // Several different AST nodes define types that can be referred to by a
 // TypeRef.
 using TypeDefinition = std::variant<TypeAlias*, StructDef*, ProcDef*, EnumDef*,
-                                    ColonRef*, UseTreeEntry*>;
+                                    SumDef*, ColonRef*, UseTreeEntry*>;
 
 // Returns the name definition that (most locally) defined this type definition
 // AST node.
@@ -2665,6 +2669,67 @@ class MatchArm : public AstNode {
   Expr* expr_;  // Expression that is executed if one of the patterns matches.
 };
 
+// Represents a payload-carrying sum-constructor pattern such as:
+//
+//   Option::Some(value)
+//   Message::Point { x: px, y: py }
+//
+// The constructor itself is always spelled as a `ColonRef`.
+//
+// `payload_kind()` is the source of truth for tuple-vs-struct spelling. Empty
+// child vectors are valid for both `Case()` and `Case { }`, so callers must
+// not recover the shape from vector emptiness alone.
+class ConstructorPattern : public AstNode {
+ public:
+  enum class PayloadKind : uint8_t {
+    kTuple,
+    kStruct,
+  };
+
+  using NamedPattern = std::pair<std::string, NameDefTree*>;
+
+  ConstructorPattern(Module* owner, Span span, ColonRef* constructor,
+                     PayloadKind payload_kind,
+                     std::vector<NameDefTree*> positional_patterns,
+                     std::vector<NamedPattern> named_patterns);
+
+  ~ConstructorPattern() override;
+
+  AstNodeKind kind() const override { return AstNodeKind::kConstructorPattern; }
+
+  absl::Status Accept(AstNodeVisitor* v) const override {
+    return v->HandleConstructorPattern(this);
+  }
+
+  std::string_view GetNodeTypeName() const override {
+    return "ConstructorPattern";
+  }
+
+  std::string ToString() const override;
+
+  std::vector<AstNode*> GetChildren(bool want_types) const override;
+
+  ColonRef* constructor() const { return constructor_; }
+  const std::vector<NameDefTree*>& positional_patterns() const {
+    return positional_patterns_;
+  }
+  const std::vector<NamedPattern>& named_patterns() const {
+    return named_patterns_;
+  }
+  PayloadKind payload_kind() const { return payload_kind_; }
+  bool is_tuple() const { return payload_kind_ == PayloadKind::kTuple; }
+  bool is_struct() const { return payload_kind_ == PayloadKind::kStruct; }
+  const Span& span() const { return span_; }
+  std::optional<Span> GetSpan() const override { return span_; }
+
+ private:
+  Span span_;
+  ColonRef* constructor_;
+  PayloadKind payload_kind_;
+  std::vector<NameDefTree*> positional_patterns_;
+  std::vector<NamedPattern> named_patterns_;
+};
+
 // Represents a match (pattern match) expression.
 //
 // A match expression has zero or more *arms*.
@@ -3208,6 +3273,147 @@ class EnumDef : public AstNode {
   std::optional<std::string> extern_type_name_;
 };
 
+// Represents a single constructor inside a semantic sum declaration.
+//
+// `payload_kind()` is the source of truth for unit-vs-tuple-vs-struct
+// spelling. Empty member vectors are valid for `Case()` and `Case { }`, so
+// callers must not infer unit-ness from vector emptiness alone.
+class SumVariant : public AstNode {
+ public:
+  enum class PayloadKind : uint8_t {
+    kUnit,
+    kTuple,
+    kStruct,
+  };
+
+  SumVariant(Module* owner, Span span, NameDef* name_def,
+             PayloadKind payload_kind,
+             std::vector<TypeAnnotation*> tuple_members,
+             std::vector<StructMemberNode*> struct_members,
+             Expr* discriminant = nullptr,
+             std::optional<Span> payload_span = std::nullopt,
+             std::optional<Span> discriminant_equals_span = std::nullopt);
+
+  ~SumVariant() override;
+
+  AstNodeKind kind() const override { return AstNodeKind::kSumVariant; }
+
+  absl::Status Accept(AstNodeVisitor* v) const override {
+    return v->HandleSumVariant(this);
+  }
+
+  std::string_view GetNodeTypeName() const override { return "SumVariant"; }
+
+  std::string ToString() const override;
+
+  std::vector<AstNode*> GetChildren(bool want_types) const override;
+
+  NameDef* name_def() const { return name_def_; }
+  const std::string& identifier() const { return name_def_->identifier(); }
+  const Span& span() const { return span_; }
+  std::optional<Span> GetSpan() const override { return span_; }
+
+  PayloadKind payload_kind() const { return payload_kind_; }
+  bool is_unit() const { return payload_kind_ == PayloadKind::kUnit; }
+  bool is_tuple() const { return payload_kind_ == PayloadKind::kTuple; }
+  bool is_struct() const { return payload_kind_ == PayloadKind::kStruct; }
+  Expr* discriminant() const { return discriminant_; }
+  // These source-only spans are absent for synthesized variants.
+  const std::optional<Span>& payload_span() const { return payload_span_; }
+  const std::optional<Span>& discriminant_equals_span() const {
+    return discriminant_equals_span_;
+  }
+
+  const std::vector<TypeAnnotation*>& tuple_members() const {
+    return tuple_members_;
+  }
+  const std::vector<StructMemberNode*>& struct_members() const {
+    return struct_members_;
+  }
+
+ private:
+  Span span_;
+  NameDef* name_def_;
+  PayloadKind payload_kind_;
+  Expr* discriminant_;
+  std::optional<Span> payload_span_;
+  std::optional<Span> discriminant_equals_span_;
+  std::vector<TypeAnnotation*> tuple_members_;
+  std::vector<StructMemberNode*> struct_members_;
+};
+
+// Represents a semantic sum declaration; e.g.
+//
+//   enum Option<T: type> {
+//     None,
+//     Some(T),
+//   }
+class SumDef : public AstNode {
+ public:
+  static std::string_view GetDebugTypeName() { return "sum"; }
+
+  SumDef(Module* owner, Span span, NameDef* name_def,
+         std::vector<ParametricBinding*> parametric_bindings,
+         std::vector<SumVariant*> variants, bool is_public,
+         TypeAnnotation* tag_type_annotation = nullptr);
+
+  ~SumDef() override;
+
+  AstNodeKind kind() const override { return AstNodeKind::kSumDef; }
+
+  absl::Status Accept(AstNodeVisitor* v) const override {
+    return v->HandleSumDef(this);
+  }
+
+  std::string_view GetNodeTypeName() const override { return "SumDef"; }
+
+  std::string ToString() const override;
+
+  std::vector<AstNode*> GetChildren(bool want_types) const override;
+
+  const std::string& identifier() const { return name_def_->identifier(); }
+  NameDef* name_def() const { return name_def_; }
+  const Span& span() const { return span_; }
+  std::optional<Span> GetSpan() const override { return span_; }
+
+  bool is_public() const { return is_public_; }
+  bool IsParametric() const { return !parametric_bindings_.empty(); }
+  TypeAnnotation* tag_type_annotation() const { return tag_type_annotation_; }
+
+  const std::vector<ParametricBinding*>& parametric_bindings() const {
+    return parametric_bindings_;
+  }
+  const std::vector<SumVariant*>& variants() const { return variants_; }
+
+  absl::flat_hash_set<std::string> ParametricKeys() const {
+    absl::flat_hash_set<std::string> result;
+    for (const ParametricBinding* binding : parametric_bindings_) {
+      result.emplace(binding->name_def()->identifier());
+    }
+    return result;
+  }
+
+  bool HasVariant(std::string_view target) const;
+  std::optional<SumVariant*> GetVariant(std::string_view target);
+  std::optional<const SumVariant*> GetVariant(std::string_view target) const;
+
+  void set_extern_type_name(std::string_view n) {
+    extern_type_name_ = std::string(n);
+  }
+  const std::optional<std::string>& extern_type_name() const {
+    return extern_type_name_;
+  }
+
+ private:
+  Span span_;
+  NameDef* name_def_;
+  TypeAnnotation* tag_type_annotation_;
+  std::vector<ParametricBinding*> parametric_bindings_;
+  std::vector<SumVariant*> variants_;
+  bool is_public_;
+  std::optional<std::string> extern_type_name_;
+};
+
 // Helper struct for DSLX-struct items defined inside of DSLX-structs.
 struct StructMember {
   Span name_span;
@@ -3676,6 +3882,72 @@ class StructInstance : public StructInstanceBase {
 
  private:
   std::string ToStringInternal() const final;
+};
+
+// Represents construction of a semantic sum value, such as:
+//
+//   Option::None
+//   Option::Some(value)
+//   Message::Point { x: px, y: py }
+//
+// The constructor itself is always spelled as a `ColonRef`.
+//
+// `payload_kind()` is the source of truth for unit-vs-tuple-vs-struct
+// spelling. Empty child vectors are valid for both `Case()` and `Case { }`, so
+// callers must not recover the shape from vector emptiness alone.
+class SumInstance : public Expr {
+ public:
+  enum class PayloadKind : uint8_t {
+    kUnit,
+    kTuple,
+    kStruct,
+  };
+
+  using NamedArg = std::pair<std::string, Expr*>;
+
+  SumInstance(Module* owner, Span span, ColonRef* constructor,
+              PayloadKind payload_kind, std::vector<Expr*> positional_args,
+              std::vector<NamedArg> named_args, bool in_parens = false);
+
+  ~SumInstance() override;
+
+  AstNodeKind kind() const override { return AstNodeKind::kSumInstance; }
+
+  absl::Status Accept(AstNodeVisitor* v) const override {
+    return v->HandleSumInstance(this);
+  }
+
+  absl::Status AcceptExpr(ExprVisitor* v) const override {
+    return v->HandleSumInstance(this);
+  }
+
+  std::string_view GetNodeTypeName() const override { return "SumInstance"; }
+
+  std::vector<AstNode*> GetChildren(bool want_types) const override;
+
+  ColonRef* constructor() const { return constructor_; }
+  const std::vector<Expr*>& positional_args() const {
+    return positional_args_;
+  }
+  const std::vector<NamedArg>& named_args() const { return named_args_; }
+  PayloadKind payload_kind() const { return payload_kind_; }
+  bool is_unit() const { return payload_kind_ == PayloadKind::kUnit; }
+  bool is_tuple() const { return payload_kind_ == PayloadKind::kTuple; }
+  bool is_struct() const { return payload_kind_ == PayloadKind::kStruct; }
+
+  bool IsBlockedExprWithLeader() const override { return !is_unit(); }
+
+  Precedence GetPrecedenceWithoutParens() const final {
+    return Precedence::kStrongest;
+  }
+
+ private:
+  std::string ToStringInternal() const final;
+
+  ColonRef* constructor_;
+  PayloadKind payload_kind_;
+  std::vector<Expr*> positional_args_;
+  std::vector<NamedArg> named_args_;
 };
 
 // Represents a struct instantiation as a "delta" from a 'splatted' original;
@@ -4345,7 +4617,8 @@ class NameDefTree : public AstNode {
  public:
   using Nodes = std::vector<NameDefTree*>;
   using Leaf = std::variant<NameDef*, NameRef*, WildcardPattern*, Number*,
-                            ColonRef*, Range*, RestOfTuple*>;
+                            ColonRef*, ConstructorPattern*, Range*,
+                            RestOfTuple*>;
 
   NameDefTree(Module* owner, Span span, std::variant<Nodes, Leaf> tree)
       : AstNode(owner), span_(std::move(span)), tree_(std::move(tree)) {}

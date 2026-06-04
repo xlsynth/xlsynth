@@ -355,6 +355,16 @@ class InvocationVisitor : public ExprVisitor {
     return absl::OkStatus();
   }
 
+  absl::Status HandleSumInstance(const SumInstance* expr) override {
+    for (const Expr* arg : expr->positional_args()) {
+      XLS_RETURN_IF_ERROR(arg->AcceptExpr(this));
+    }
+    for (const auto& member : expr->named_args()) {
+      XLS_RETURN_IF_ERROR(member.second->AcceptExpr(this));
+    }
+    return absl::OkStatus();
+  }
+
   absl::Status HandleConditional(const Conditional* expr) override {
     // constexpr if selects only one branch of the if to handle
     if (expr->IsConst()) {
@@ -774,6 +784,7 @@ absl::StatusOr<std::vector<ConversionRecord>> GetOrder(Module* module,
             [](ProcAlias*) { return absl::OkStatus(); },
             [](Impl*) { return absl::OkStatus(); },
             [](EnumDef*) { return absl::OkStatus(); },
+            [](SumDef*) { return absl::OkStatus(); },
             [](Import*) { return absl::OkStatus(); },
             [](Trait*) { return absl::OkStatus(); },
             [](Use*) { return absl::OkStatus(); },

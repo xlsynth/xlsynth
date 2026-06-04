@@ -518,6 +518,11 @@ absl::Status ConstexprEvaluator::HandleStructInstance(
   return InterpretExpr(expr);
 }
 
+absl::Status ConstexprEvaluator::HandleSumInstance(const SumInstance*) {
+  return absl::UnimplementedError(
+      "Semantic sum constants require the Phase 1 runtime layer.");
+}
+
 absl::Status ConstexprEvaluator::HandleConditional(const Conditional* expr) {
   // Simple enough that we don't need to invoke the interpreter.
   EVAL_AS_CONSTEXPR_OR_RETURN(expr->test());

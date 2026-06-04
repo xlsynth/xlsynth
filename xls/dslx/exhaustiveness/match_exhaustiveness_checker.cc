@@ -202,6 +202,10 @@ PatternLeaf ToPatternLeaf(const NameDefTree::Leaf& leaf) {
             return SomeWildcard();
           },
           [&](Number* number) -> PatternLeaf { return number; },
+          [&](ConstructorPattern* /*constructor_pattern*/) -> PatternLeaf {
+            LOG(FATAL) << "ConstructorPattern not yet supported in "
+                          "MatchExhaustivenessChecker";
+          },
           [&](RestOfTuple* rest_of_tuple) -> PatternLeaf {
             LOG(FATAL) << "RestOfTuple not valid for conversion to PatternLeaf";
           }},
@@ -290,6 +294,10 @@ std::vector<PatternLeaf> ExpandPatternLeaves(const NameDefTree& pattern,
               types_index += 1;
             },
             [&](const Number* n) {
+              result.push_back(ToPatternLeaf(leaf));
+              types_index += 1;
+            },
+            [&](const ConstructorPattern* /*unused*/) {
               result.push_back(ToPatternLeaf(leaf));
               types_index += 1;
             },
