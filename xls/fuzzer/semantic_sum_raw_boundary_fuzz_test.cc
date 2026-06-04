@@ -132,13 +132,9 @@ absl::StatusOr<RawBoundaryContext> LoadRawBoundaryContext(
 
 absl::StatusOr<Bits> ExtractEnumPayloadBitsFromRawValue(
     const RawBoundaryContext& context, const Value& raw_value) {
-  const dslx::Phase1SumTypeEncoding encoding(*context.sum_type);
-  XLS_ASSIGN_OR_RETURN(dslx::Phase1SumTypeEncoding::VariantInfo variant,
-                       encoding.GetVariant(context.enum_variant_name));
   const Value& payload_tuple = raw_value.elements().at(1);
-  const Value& payload_value = payload_tuple.elements().at(
-      variant.payload_start + context.enum_payload_index);
-  return payload_value.bits();
+  const Value& payload_slot = payload_tuple.elements().at(0);
+  return payload_slot.bits().Slice(0, context.enum_bit_count);
 }
 
 absl::StatusOr<dslx::InterpValue> MakeSemanticEnumPayloadValue(
@@ -164,58 +160,23 @@ absl::StatusOr<Value> MakeInvalidEnumRawValue(const RawBoundaryContext& context,
   XLS_ASSIGN_OR_RETURN(dslx::Phase1SumTypeEncoding::VariantInfo variant,
                        encoding.GetVariant(context.enum_variant_name));
   XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
-  std::vector<Value> payload_slots;
-  payload_slots.reserve(encoding.payload_slot_count());
-  XLS_RETURN_IF_ERROR(encoding.VisitPayloadAssemblyOrder(
-      variant,
-      [&](int64_t active_index) -> absl::Status {
-        if (active_index == context.enum_payload_index) {
-          payload_slots.push_back(
-              Value(UBits(invalid_member_value, context.enum_bit_count)));
-        } else {
-          XLS_ASSIGN_OR_RETURN(
-              dslx::InterpValue zero,
-              dslx::CreateZeroValueFromType(
-                  variant.variant->GetMemberType(active_index)));
-          XLS_ASSIGN_OR_RETURN(Value zero_value, zero.ConvertToIr());
-          payload_slots.push_back(std::move(zero_value));
-        }
-        return absl::OkStatus();
-      },
-      [&](const dslx::Type& inactive_type) -> absl::Status {
-        XLS_ASSIGN_OR_RETURN(dslx::InterpValue zero,
-                             dslx::CreateZeroValueFromType(inactive_type));
-        XLS_ASSIGN_OR_RETURN(Value zero_value, zero.ConvertToIr());
-        payload_slots.push_back(std::move(zero_value));
-        return absl::OkStatus();
-      }));
-  return Value::TupleOwned(
-      std::vector<Value>{Value(UBits(variant.variant_index, tag_bit_count)),
-                         Value::TupleOwned(std::move(payload_slots))});
+  XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                       encoding.payload_slot_bit_count());
+  return Value::TupleOwned(std::vector<Value>{
+      Value(UBits(variant.variant_index, tag_bit_count)),
+      Value::TupleOwned(
+          {Value(UBits(invalid_member_value, payload_slot_bit_count))})});
 }
 
-absl::StatusOr<Value> MakeInvalidTagRawValue(const RawBoundaryContext& context,
-                                             uint16_t payload_bits) {
+absl::StatusOr<Value> MakeMalformedTagRawValue(
+    const RawBoundaryContext& context, uint16_t payload_bits) {
   const dslx::Phase1SumTypeEncoding encoding(*context.sum_type);
   XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
-  std::vector<Value> payload_slots;
-  payload_slots.reserve(encoding.payload_slot_count());
-  XLS_RETURN_IF_ERROR(encoding.ForEachPayloadType(
-      [&](const dslx::Type& slot_type) -> absl::Status {
-        XLS_ASSIGN_OR_RETURN(dslx::InterpValue zero,
-                             dslx::CreateZeroValueFromType(slot_type));
-        XLS_ASSIGN_OR_RETURN(Value zero_value, zero.ConvertToIr());
-        payload_slots.push_back(std::move(zero_value));
-        return absl::OkStatus();
-      }));
-  if (payload_slots.empty()) {
-    return absl::FailedPreconditionError(
-        "Raw-boundary fixture did not contain payload slots.");
-  }
-  payload_slots.back() = Value(UBits(payload_bits, 16));
+  XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                       encoding.payload_slot_bit_count());
   return Value::TupleOwned(std::vector<Value>{
       Value(UBits(context.sum_type->variant_count(), tag_bit_count)),
-      Value::TupleOwned(std::move(payload_slots))});
+      Value::TupleOwned({Value(UBits(payload_bits, payload_slot_bit_count))})});
 }
 
 absl::Status VerifyManifestRawSeed(const RawBoundaryContext& context,
@@ -228,6 +189,19 @@ absl::Status VerifyManifestRawSeed(const RawBoundaryContext& context,
     if (!actual.ok()) {
       return actual.status();
     }
+    const dslx::Phase1SumTypeEncoding encoding(*context.sum_type);
+    absl::StatusOr<dslx::Phase1SumTypeEncoding::VariantInfo> variant =
+        encoding.GetVariantByTagBits(raw_value.elements().at(0).bits());
+    if (variant.status().code() == absl::StatusCode::kNotFound) {
+      XLS_ASSIGN_OR_RETURN(Value roundtrip, actual->ConvertToIr());
+      if (roundtrip != raw_value) {
+        return absl::FailedPreconditionError(absl::StrCat(
+            "Raw-boundary seed '", seed.seed_id(),
+            "' did not preserve malformed raw bits through roundtrip."));
+      }
+      return absl::OkStatus();
+    }
+    XLS_RETURN_IF_ERROR(variant.status());
     XLS_ASSIGN_OR_RETURN(
         Bits enum_payload_bits,
         ExtractEnumPayloadBitsFromRawValue(context, raw_value));
@@ -300,20 +274,16 @@ absl::Status VerifyUndeclaredEnumPayloadRejected(
   return absl::OkStatus();
 }
 
-absl::Status VerifyInvalidTagRejected(const RawBoundaryContext& context,
-                                      uint16_t payload_bits) {
+absl::Status VerifyMalformedTagPreservesRawImage(
+    const RawBoundaryContext& context, uint16_t payload_bits) {
   XLS_ASSIGN_OR_RETURN(Value raw_value,
-                       MakeInvalidTagRawValue(context, payload_bits));
-  absl::StatusOr<dslx::InterpValue> actual =
-      dslx::ValueToInterpValue(raw_value, context.sum_type);
-  if (actual.ok()) {
+                       MakeMalformedTagRawValue(context, payload_bits));
+  XLS_ASSIGN_OR_RETURN(dslx::InterpValue semantic_value,
+                       dslx::ValueToInterpValue(raw_value, context.sum_type));
+  XLS_ASSIGN_OR_RETURN(Value roundtrip, semantic_value.ConvertToIr());
+  if (roundtrip != raw_value) {
     return absl::FailedPreconditionError(
-        "Invalid sum tag unexpectedly converted successfully.");
-  }
-  if (!absl::StrContains(actual.status().message(), "invalid tag")) {
-    return absl::FailedPreconditionError(
-        absl::StrCat("Invalid sum tag failed with unexpected diagnostic: ",
-                     actual.status()));
+        "Malformed raw boundary tag did not preserve its raw image.");
   }
   return absl::OkStatus();
 }
@@ -352,13 +322,13 @@ void UndeclaredEnumPayloadIsRejected(uint64_t invalid_member_value) {
 FUZZ_TEST(SemanticSumRawBoundaryFuzzTest, UndeclaredEnumPayloadIsRejected)
     .WithDomains(fuzztest::ElementOf<uint64_t>({2, 3}));
 
-void InvalidSumTagIsRejected(uint16_t payload_bits) {
+void MalformedSumTagPreservesRawImage(uint16_t payload_bits) {
   XLS_ASSERT_OK_AND_ASSIGN(RawBoundaryContext context,
                            LoadRawBoundaryContext(GetManifestPath()));
-  XLS_ASSERT_OK(VerifyInvalidTagRejected(context, payload_bits));
+  XLS_ASSERT_OK(VerifyMalformedTagPreservesRawImage(context, payload_bits));
 }
 
-FUZZ_TEST(SemanticSumRawBoundaryFuzzTest, InvalidSumTagIsRejected)
+FUZZ_TEST(SemanticSumRawBoundaryFuzzTest, MalformedSumTagPreservesRawImage)
     .WithDomains(fuzztest::Arbitrary<uint16_t>());
 
 }  // namespace

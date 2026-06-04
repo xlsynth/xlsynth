@@ -102,6 +102,7 @@ enum AstNodeKindProto {
   AST_NODE_KIND_SUM_DEF = 77;
   AST_NODE_KIND_SUM_VARIANT = 78;
   AST_NODE_KIND_SUM_INSTANCE = 79;
+  AST_NODE_KIND_INVALID_PATTERN = 80;
 }
 
 message BitsValueProto {
@@ -262,6 +263,8 @@ message SumTypeVariantProto {
 message SumTypeProto {
   optional SumDefProto sum_def = 1;
   repeated SumTypeVariantProto variants = 2;
+  optional TypeDimProto tag_bit_count = 3;
+  repeated InterpValueProto discriminants = 4;
 }
 
 message MetaTypeProto {

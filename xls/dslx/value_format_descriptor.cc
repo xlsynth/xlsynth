@@ -23,6 +23,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
 #include "xls/ir/bits.h"
@@ -61,6 +62,14 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeLeafValue(
   return vfd;
 }
 
+ValueFormatDescriptor ValueFormatDescriptor::MakeLeafValue(
+    FormatPreference format, int64_t bit_count, bool is_signed) {
+  ValueFormatDescriptor vfd = MakeLeafValue(format);
+  vfd.flat_bit_count_ = bit_count;
+  vfd.is_signed_ = is_signed;
+  return vfd;
+}
+
 ValueFormatDescriptor ValueFormatDescriptor::MakeEnum(
     std::string_view enum_name,
     absl::flat_hash_map<Bits, std::string> value_to_name) {
@@ -70,11 +79,25 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeEnum(
   return vfd;
 }
 
+ValueFormatDescriptor ValueFormatDescriptor::MakeEnum(
+    std::string_view enum_name,
+    absl::flat_hash_map<Bits, std::string> value_to_name, int64_t bit_count,
+    bool is_signed) {
+  ValueFormatDescriptor vfd =
+      MakeEnum(enum_name, std::move(value_to_name));
+  vfd.flat_bit_count_ = bit_count;
+  vfd.is_signed_ = is_signed;
+  return vfd;
+}
+
 ValueFormatDescriptor ValueFormatDescriptor::MakeArray(
     const ValueFormatDescriptor& element_format, size_t size) {
   ValueFormatDescriptor vfd(ValueFormatDescriptorKind::kArray);
   vfd.children_ = {element_format};
   vfd.size_ = size;
+  if (element_format.flat_bit_count().has_value()) {
+    vfd.flat_bit_count_ = size * element_format.flat_bit_count().value();
+  }
   return vfd;
 }
 
@@ -84,6 +107,14 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeTuple(
   vfd.children_ =
       std::vector<ValueFormatDescriptor>(elements.begin(), elements.end());
   vfd.size_ = elements.size();
+  int64_t flat_bit_count = 0;
+  for (const ValueFormatDescriptor& element : elements) {
+    if (!element.flat_bit_count().has_value()) {
+      return vfd;
+    }
+    flat_bit_count += element.flat_bit_count().value();
+  }
+  vfd.flat_bit_count_ = flat_bit_count;
   return vfd;
 }
 
@@ -98,6 +129,14 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeStruct(
   vfd.size_ = field_names.size();
   vfd.struct_field_names_ =
       std::vector<std::string>(field_names.begin(), field_names.end());
+  int64_t flat_bit_count = 0;
+  for (const ValueFormatDescriptor& field : field_formats) {
+    if (!field.flat_bit_count().has_value()) {
+      return vfd;
+    }
+    flat_bit_count += field.flat_bit_count().value();
+  }
+  vfd.flat_bit_count_ = flat_bit_count;
   return vfd;
 }
 
@@ -121,12 +160,73 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
   return vfd;
 }
 
+ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
+    std::string_view sum_name,
+    absl::Span<const ValueFormatSumVariantDescriptor> variants,
+    FormatPreference tag_format, int64_t tag_bit_count,
+    int64_t payload_slot_bit_count) {
+  ValueFormatDescriptor vfd = MakeSum(sum_name, variants, tag_format);
+  vfd.sum_tag_bit_count_ = tag_bit_count;
+  vfd.sum_payload_slot_bit_count_ = payload_slot_bit_count;
+  vfd.flat_bit_count_ = tag_bit_count + payload_slot_bit_count;
+  return vfd;
+}
+
+ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
+    std::string_view sum_name,
+    absl::Span<const ValueFormatSumVariantDescriptor> variants,
+    FormatPreference tag_format, int64_t tag_bit_count,
+    int64_t payload_slot_bit_count, absl::Span<const Bits> variant_tag_bits) {
+  CHECK_EQ(variants.size(), variant_tag_bits.size());
+  ValueFormatDescriptor vfd =
+      MakeSum(sum_name, variants, tag_format, tag_bit_count,
+              payload_slot_bit_count);
+  vfd.sum_variant_tag_bits_ =
+      std::vector<Bits>(variant_tag_bits.begin(), variant_tag_bits.end());
+  return vfd;
+}
+
 ValueFormatSumVariantView ValueFormatDescriptor::sum_variant(size_t i) const {
   CHECK(IsSum());
   const SumVariantFormat& variant = sum_variants_.at(i);
   return ValueFormatSumVariantView(
       variant.name, variant.kind, absl::MakeConstSpan(variant.field_names),
       absl::MakeConstSpan(variant.payload_formats));
+}
+
+std::optional<size_t> ValueFormatDescriptor::sum_variant_index_for_tag_bits(
+    const Bits& tag_bits) const {
+  CHECK(IsSum());
+  if (!sum_variant_tag_bits_.empty()) {
+    for (size_t i = 0; i < sum_variant_tag_bits_.size(); ++i) {
+      if (sum_variant_tag_bits_[i] == tag_bits) {
+        return i;
+      }
+    }
+    return std::nullopt;
+  }
+
+  if (!sum_tag_bit_count_.has_value() ||
+      tag_bits.bit_count() != sum_tag_bit_count_.value()) {
+    return std::nullopt;
+  }
+  absl::StatusOr<uint64_t> variant_index = tag_bits.ToUint64();
+  if (!variant_index.ok() || variant_index.value() >= sum_variants_.size()) {
+    return std::nullopt;
+  }
+  return static_cast<size_t>(variant_index.value());
+}
+
+absl::StatusOr<Bits> ValueFormatDescriptor::sum_variant_tag_bits(size_t i) const {
+  CHECK(IsSum());
+  if (!sum_variant_tag_bits_.empty()) {
+    return sum_variant_tag_bits_.at(i);
+  }
+  if (!sum_tag_bit_count_.has_value()) {
+    return absl::InvalidArgumentError(
+        "Cannot synthesize dense sum tag bits without tag-width metadata.");
+  }
+  return UBits(i, sum_tag_bit_count_.value());
 }
 
 absl::Status ValueFormatDescriptor::Accept(ValueFormatVisitor& v) const {

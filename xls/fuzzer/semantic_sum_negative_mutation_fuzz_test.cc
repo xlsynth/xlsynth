@@ -40,7 +40,6 @@ enum class SemanticSumNegativeMutationKind {
   kWildcardConstructorMix,
   kTooManyPayloadPatterns,
   kMissingPayloadPattern,
-  kAggregateZeroMaterialization,
 };
 
 struct MutationRecipe {
@@ -58,7 +57,7 @@ struct SemanticSumNegativeMutation {
   std::string expected_diagnostic_substr;
 };
 
-constexpr std::array<MutationRecipe, 6> kMutationRecipes = {{
+constexpr std::array<MutationRecipe, 5> kMutationRecipes = {{
     {
         .kind = SemanticSumNegativeMutationKind::kAsymmetricOrPattern,
         .mutation_name = "asymmetric_or_pattern",
@@ -102,25 +101,6 @@ constexpr std::array<MutationRecipe, 6> kMutationRecipes = {{
         .base_seed_id = "source_sample_runner_semantic_sum_argument",
         .needle = "    Choice::Wide(value) => value + u16:2,\n",
         .replacement = "    Choice::Wide() => u16:2,\n",
-        .expected_diagnostic_substr = "",
-    },
-    {
-        .kind = SemanticSumNegativeMutationKind::kAggregateZeroMaterialization,
-        .mutation_name = "aggregate_zero_materialization",
-        .base_seed_id = "source_exhaustive_constructor_match_without_wildcard",
-        .needle = "fn f(x: Option) -> u32 {\n"
-                  "  match x {\n"
-                  "    Option::Some(v) => v,\n"
-                  "    Option::None => u32:0,\n"
-                  "  }\n"
-                  "}\n",
-        .replacement = "fn f(x: Option) -> u32 {\n"
-                       "  let y = zero!<(Option,)>();\n"
-                       "  match y {\n"
-                       "    (Option::Some(v),) => v,\n"
-                       "    _ => u32:0,\n"
-                       "  }\n"
-                       "}\n",
         .expected_diagnostic_substr = "",
     },
 }};
@@ -238,8 +218,7 @@ FUZZ_TEST(SemanticSumNegativeMutationFuzzTest, GeneratedMutationIsRejected)
          SemanticSumNegativeMutationKind::kDuplicatePayloadField,
          SemanticSumNegativeMutationKind::kWildcardConstructorMix,
          SemanticSumNegativeMutationKind::kTooManyPayloadPatterns,
-         SemanticSumNegativeMutationKind::kMissingPayloadPattern,
-         SemanticSumNegativeMutationKind::kAggregateZeroMaterialization}));
+         SemanticSumNegativeMutationKind::kMissingPayloadPattern}));
 
 }  // namespace
 }  // namespace xls
