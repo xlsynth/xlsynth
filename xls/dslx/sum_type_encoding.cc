@@ -15,6 +15,7 @@
 #include "xls/dslx/sum_type_encoding.h"
 
 #include <cstdint>
+#include <memory>
 #include <string_view>
 
 #include "absl/status/status.h"
@@ -26,27 +27,41 @@ namespace xls::dslx {
 
 Phase1SumTypeEncoding::Phase1SumTypeEncoding(const SumType& type)
     : type_(type) {
-  int64_t payload_start = 0;
   variants_.reserve(type_.variants().size());
   for (int64_t variant_index = 0; variant_index < type_.variants().size();
        ++variant_index) {
     const SumTypeVariant& variant = type_.variants().at(variant_index);
-    variants_.push_back(VariantInfo(variant_index, variant, payload_start));
-    for (int64_t member_index = 0; member_index < variant.size();
-         ++member_index) {
-      payload_slot_types_.push_back(&variant.GetMemberType(member_index));
-    }
-    payload_start += variant.size();
+    variants_.push_back(VariantInfo(variant_index, variant,
+                                    type_.GetDiscriminant(variant_index)));
   }
 }
 
+absl::StatusOr<int64_t> Phase1SumTypeEncoding::VariantInfo::payload_bit_count()
+    const {
+  XLS_ASSIGN_OR_RETURN(TypeDim payload_bit_count, variant->GetTotalBitCount());
+  return payload_bit_count.GetAsInt64();
+}
+
+absl::StatusOr<int64_t> Phase1SumTypeEncoding::payload_slot_bit_count() const {
+  XLS_ASSIGN_OR_RETURN(TypeDim payload_bit_count,
+                       type_.GetMaxPayloadBitCount());
+  return payload_bit_count.GetAsInt64();
+}
+
 absl::StatusOr<int64_t> Phase1SumTypeEncoding::tag_bit_count() const {
-  return type_.storage_tag_bit_count().GetAsInt64();
+  return type_.tag_bit_count().GetAsInt64();
 }
 
 absl::StatusOr<Phase1SumTypeEncoding::VariantInfo>
 Phase1SumTypeEncoding::GetVariant(std::string_view variant_name) const {
   XLS_ASSIGN_OR_RETURN(const VariantInfo* variant, FindVariant(variant_name));
+  return *variant;
+}
+
+absl::StatusOr<Phase1SumTypeEncoding::VariantInfo>
+Phase1SumTypeEncoding::GetVariantByTagBits(const Bits& tag_bits) const {
+  XLS_ASSIGN_OR_RETURN(const VariantInfo* variant,
+                       FindVariantByTagBits(tag_bits));
   return *variant;
 }
 
@@ -58,51 +73,40 @@ absl::Status Phase1SumTypeEncoding::ForEachVariant(
   return absl::OkStatus();
 }
 
-absl::Status Phase1SumTypeEncoding::ForEachPayloadType(
-    absl::FunctionRef<absl::Status(const Type& type)> visitor) const {
-  for (const Type* payload_type : payload_slot_types_) {
-    XLS_RETURN_IF_ERROR(visitor(*payload_type));
-  }
-  return absl::OkStatus();
+absl::Status Phase1SumTypeEncoding::ForEachStoredLeafType(
+    absl::FunctionRef<absl::Status(const StoredLeafInfo& leaf)> visitor) const {
+  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, this->tag_bit_count());
+  XLS_RETURN_IF_ERROR(visitor(
+      StoredLeafInfo::MakeDenseTag(BitsType(/*is_signed=*/false, tag_bit_count),
+                                   type_.variant_count() - 1)));
+  XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                       this->payload_slot_bit_count());
+  return visitor(StoredLeafInfo::MakePayloadBits(
+      BitsType(/*is_signed=*/false, payload_slot_bit_count)));
 }
 
-absl::Status Phase1SumTypeEncoding::VisitPayloadAssemblyOrder(
+absl::Status Phase1SumTypeEncoding::ForEachPayloadMember(
     const VariantInfo& variant,
-    absl::FunctionRef<absl::Status(int64_t active_index)> active_visitor,
-    absl::FunctionRef<absl::Status(const Type& inactive_type)> inactive_visitor)
-    const {
-  XLS_RETURN_IF_ERROR(ValidateVariantInfo(variant));
-
-  int64_t active_index = 0;
-  for (int64_t slot_index = 0; slot_index < payload_slot_types_.size();
-       ++slot_index) {
-    const bool is_active = slot_index >= variant.payload_start &&
-                           slot_index < variant.payload_end();
-    XLS_RETURN_IF_ERROR(
-        is_active ? active_visitor(active_index++)
-                  : inactive_visitor(*payload_slot_types_.at(slot_index)));
-  }
-  return absl::OkStatus();
-}
-
-absl::Status Phase1SumTypeEncoding::ForEachActivePayloadSlot(
-    const VariantInfo& variant,
-    absl::FunctionRef<absl::Status(int64_t slot_index, int64_t active_index,
-                                   const Type& type)>
+    absl::FunctionRef<absl::Status(int64_t active_index, const Type& type)>
         visitor) const {
   XLS_RETURN_IF_ERROR(ValidateVariantInfo(variant));
 
-  int64_t active_index = 0;
-  for (int64_t slot_index = variant.payload_start;
-       slot_index < variant.payload_end(); ++slot_index) {
-    XLS_RETURN_IF_ERROR(visitor(slot_index, active_index++,
-                                *payload_slot_types_.at(slot_index)));
+  for (int64_t active_index = 0; active_index < variant.payload_size();
+       ++active_index) {
+    XLS_RETURN_IF_ERROR(
+        visitor(active_index, variant.variant->GetMemberType(active_index)));
   }
   return absl::OkStatus();
 }
 
 absl::Status Phase1SumTypeEncoding::ValidateVariantInfo(
     const VariantInfo& variant) const {
+  if (variant.variant == nullptr) {
+    return absl::InvalidArgumentError("VariantInfo has a null variant.");
+  }
+  if (variant.discriminant == nullptr) {
+    return absl::InvalidArgumentError("VariantInfo has a null discriminant.");
+  }
   const int64_t variant_count = static_cast<int64_t>(variants_.size());
   if (variant.variant_index < 0 || variant.variant_index >= variant_count) {
     return absl::OutOfRangeError(absl::StrCat(
@@ -118,6 +122,14 @@ absl::Status Phase1SumTypeEncoding::ValidateVariantInfo(
         "` does not belong to sum `", type_.nominal_type().identifier(),
         "` at variant index ", variant.variant_index, "."));
   }
+  if (stored_variant.discriminant->GetBitsOrDie() !=
+      variant.discriminant->GetBitsOrDie()) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "VariantInfo for `", variant.variant->variant().identifier(),
+        "` does not match discriminant bits for variant index ",
+        variant.variant_index, " in sum `", type_.nominal_type().identifier(),
+        "`."));
+  }
   return absl::OkStatus();
 }
 
@@ -131,6 +143,18 @@ Phase1SumTypeEncoding::FindVariant(std::string_view variant_name) const {
   return absl::NotFoundError(
       absl::StrCat("No variant `", variant_name, "` in sum `",
                    type_.nominal_type().identifier(), "`."));
+}
+
+absl::StatusOr<const Phase1SumTypeEncoding::VariantInfo*>
+Phase1SumTypeEncoding::FindVariantByTagBits(const Bits& tag_bits) const {
+  for (const VariantInfo& variant : variants_) {
+    if (variant.discriminant->GetBitsOrDie() == tag_bits) {
+      return &variant;
+    }
+  }
+  return absl::NotFoundError(
+      absl::StrCat("No variant with tag bits `", tag_bits.ToDebugString(),
+                   "` in sum `", type_.nominal_type().identifier(), "`."));
 }
 
 }  // namespace xls::dslx
