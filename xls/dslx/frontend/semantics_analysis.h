@@ -21,6 +21,7 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/type_system/type.h"
@@ -38,9 +39,9 @@ class SemanticsAnalysis {
  public:
   SemanticsAnalysis(bool suppress_warnings = false);
 
-  absl::Status RunPreTypeCheckPass(Module& module,
-                                   WarningCollector& warning_collector,
-                                   ImportData& import_data);
+  absl::StatusOr<std::unique_ptr<Module>> RunPreTypeCheckPass(
+      std::unique_ptr<Module> module, WarningCollector& warning_collector,
+      ImportData& import_data);
 
   absl::Status RunPostTypeCheckPass(WarningCollector& warning_collector);
 
