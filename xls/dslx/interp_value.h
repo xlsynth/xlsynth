@@ -438,6 +438,9 @@ class InterpValue {
       int64_t indentation) const;
   absl::StatusOr<std::string> ToEnumString(
       const ValueFormatDescriptor& fmt_desc) const;
+  absl::StatusOr<std::string> ToSumString(
+      const ValueFormatDescriptor& fmt_desc, bool include_type_prefix,
+      int64_t indentation) const;
 
   std::string ToStringInternal(
       bool humanize = false,
