@@ -30,6 +30,19 @@
 namespace xls::dslx {
 namespace {
 
+bool ContainsIfLet(const AstNode* node) {
+  if (const auto* conditional = dynamic_cast<const Conditional*>(node);
+      conditional != nullptr && conditional->IsIfLet()) {
+    return true;
+  }
+  for (const AstNode* child : node->GetChildren(/*want_types=*/true)) {
+    if (ContainsIfLet(child)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 TEST(SemanticsAnalysisTest, NormalizesIfLetToMatchBeforeTypecheck) {
   constexpr std::string_view kProgram = R"(
 enum Option {
@@ -54,7 +67,12 @@ fn unwrap_or(x: Option, y: Option) -> u8 {
                                        import_data.file_table()));
   WarningCollector warnings(import_data.enabled_warnings());
   SemanticsAnalysis analysis(/*suppress_warnings=*/false);
-  XLS_ASSERT_OK(analysis.RunPreTypeCheckPass(*module, warnings, import_data));
+  Module* original_module = module.get();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      module,
+      analysis.RunPreTypeCheckPass(std::move(module), warnings, import_data));
+  EXPECT_NE(module.get(), original_module);
+  EXPECT_FALSE(ContainsIfLet(module.get()));
 
   XLS_ASSERT_OK_AND_ASSIGN(Function * unwrap_or,
                            module->GetMemberOrError<Function>("unwrap_or"));
@@ -75,6 +93,27 @@ fn unwrap_or(x: Option, y: Option) -> u8 {
   EXPECT_TRUE(std::holds_alternative<SumVariantPayloadPattern*>(
       inner_match->arms()[0]->patterns()[0]->leaf()));
   EXPECT_TRUE(inner_match->arms()[1]->patterns()[0]->IsWildcardLeaf());
+}
+
+TEST(SemanticsAnalysisTest, PreservesModuleWhenThereIsNoIfLet) {
+  constexpr std::string_view kProgram = R"(
+fn identity(x: u32) -> u32 {
+  x
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> module,
+                           ParseModule(kProgram, "fake_path.x", "the_module",
+                                       import_data.file_table()));
+  Module* original_module = module.get();
+  WarningCollector warnings(import_data.enabled_warnings());
+  SemanticsAnalysis analysis(/*suppress_warnings=*/false);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      module,
+      analysis.RunPreTypeCheckPass(std::move(module), warnings, import_data));
+
+  EXPECT_EQ(module.get(), original_module);
 }
 
 }  // namespace

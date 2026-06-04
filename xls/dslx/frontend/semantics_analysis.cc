@@ -816,63 +816,20 @@ class ContainsIfLetVisitor : public AstNodeVisitorWithDefault {
   bool contains_if_let_ = false;
 };
 
-absl::StatusOr<Match*> LowerIfLetConditional(Conditional* conditional,
-                                             Module* module) {
-  XLS_RET_CHECK(conditional->IsIfLet());
-  XLS_RET_CHECK(!conditional->IsConst());
-  XLS_RET_CHECK(conditional->HasElse());
-  XLS_RET_CHECK(conditional->if_let_pattern() != nullptr);
-
-  Expr* alternate = ToExprNode(conditional->alternate());
-  Span first_arm_span(conditional->if_let_pattern()->span().start(),
-                      conditional->consequent()->span().limit());
-  MatchArm* first_arm = module->Make<MatchArm>(
-      first_arm_span, std::vector<NameDefTree*>{conditional->if_let_pattern()},
-      conditional->consequent());
-
-  Span wildcard_span(alternate->span().start(), alternate->span().start());
-  NameDefTree* wildcard = module->Make<NameDefTree>(
-      wildcard_span, module->Make<WildcardPattern>(wildcard_span));
-  Span fallback_arm_span(wildcard_span.start(), alternate->span().limit());
-  MatchArm* fallback_arm = module->Make<MatchArm>(
-      fallback_arm_span, std::vector<NameDefTree*>{wildcard}, alternate);
-
-  return module->Make<Match>(
-      conditional->span(), conditional->test(),
-      std::vector<MatchArm*>{first_arm, fallback_arm},
-      conditional->in_parens(), /*is_const=*/false);
-}
-
-absl::Status NormalizeIfLets(Module& module) {
-  while (true) {
-    ContainsIfLetVisitor contains_if_let;
-    XLS_RETURN_IF_ERROR(module.Accept(&contains_if_let));
-    if (!contains_if_let.contains_if_let()) {
-      return absl::OkStatus();
-    }
-
-    XLS_RETURN_IF_ERROR(RewriteModuleInPlace(
-        module,
-        [](const AstNode* node, Module* target_module,
-           const absl::flat_hash_map<const AstNode*, AstNode*>& old_to_new)
-            -> absl::StatusOr<std::optional<AstNode*>> {
-          const auto* conditional = dynamic_cast<const Conditional*>(node);
-          if (conditional == nullptr || !conditional->IsIfLet()) {
-            return std::nullopt;
-          }
-
-          XLS_ASSIGN_OR_RETURN(
-              auto cloned_pairs,
-              CloneAstAndGetAllPairs(conditional, target_module,
-                                     &NoopCloneReplacer, old_to_new));
-          auto* cloned_conditional =
-              absl::down_cast<Conditional*>(cloned_pairs.at(conditional));
-          XLS_ASSIGN_OR_RETURN(
-              Match * lowered,
-              LowerIfLetConditional(cloned_conditional, target_module));
-          return std::optional<AstNode*>{lowered};
-        }));
+absl::StatusOr<std::unique_ptr<Module>> NormalizeIfLets(
+    std::unique_ptr<Module> module) {
+  ContainsIfLetVisitor contains_if_let;
+  XLS_RETURN_IF_ERROR(module->Accept(&contains_if_let));
+  if (!contains_if_let.contains_if_let()) {
+    return module;
   }
+
+  XLS_ASSIGN_OR_RETURN(std::unique_ptr<Module> normalized,
+                       CloneModuleWithIfLetsLowered(*module));
+  ContainsIfLetVisitor verify_no_if_let;
+  XLS_RETURN_IF_ERROR(normalized->Accept(&verify_no_if_let));
+  XLS_RET_CHECK(!verify_no_if_let.contains_if_let());
+  return normalized;
 }
 
 class CollectUseDef : public AstNodeVisitorWithDefault {
@@ -970,9 +927,14 @@ class ProcStateVisitor : public AstNodeVisitorWithDefault {
         node->parent()->kind() == AstNodeKind::kFunction) {
       const Function* fn = absl::down_cast<const Function*>(node->parent());
       if (fn->tag() == FunctionTag::kProcNext) {
-        const_cast<Param*>(node)->set_type_annotation(
-            CreateStateTypeAnnotation(node->owner(), node->type_annotation(),
-                                      node->type_annotation()->span()));
+        XLS_ASSIGN_OR_RETURN(
+            std::optional<const StructDefBase*> def,
+            GetStructOrProcDef(node->type_annotation(), import_data_));
+        if (!def.has_value() || *def != state_struct_def_) {
+          const_cast<Param*>(node)->set_type_annotation(
+              CreateStateTypeAnnotation(node->owner(), node->type_annotation(),
+                                        node->type_annotation()->span()));
+        }
       }
     }
     return absl::OkStatus();
@@ -989,7 +951,8 @@ class ProcStateVisitor : public AstNodeVisitorWithDefault {
       }
       XLS_ASSIGN_OR_RETURN(std::optional<const StructDefBase*> def,
                            GetStructOrProcDef(type, import_data_));
-      if (def.has_value() && (*def)->kind() == AstNodeKind::kProcDef) {
+      if (def.has_value() && (*def == state_struct_def_ ||
+                              (*def)->kind() == AstNodeKind::kProcDef)) {
         continue;
       }
 
@@ -1026,32 +989,35 @@ class ProcStateVisitor : public AstNodeVisitorWithDefault {
 SemanticsAnalysis::SemanticsAnalysis(bool suppress_warnings)
     : suppress_warnings_(suppress_warnings) {}
 
-absl::Status SemanticsAnalysis::RunPreTypeCheckPass(
-    Module& module, WarningCollector& warning_collector,
+absl::StatusOr<std::unique_ptr<Module>> SemanticsAnalysis::RunPreTypeCheckPass(
+    std::unique_ptr<Module> module, WarningCollector& warning_collector,
     ImportData& import_data) {
-  if (module.attributes().contains(ModuleAttribute::kExplicitStateAccess)) {
+  if (!suppress_warnings_) {
+    PreTypecheckPass pass(warning_collector, import_data.file_table());
+    XLS_RETURN_IF_ERROR(module->Accept(&pass));
+  }
+
+  // Normalize while the AST is still source-shaped. Later semantic
+  // transformations attach state that this source-to-source clone should not
+  // need to preserve.
+  XLS_ASSIGN_OR_RETURN(module, NormalizeIfLets(std::move(module)));
+
+  if (module->attributes().contains(ModuleAttribute::kExplicitStateAccess)) {
     XLS_ASSIGN_OR_RETURN(Module * builtins,
                          import_data.GetBuiltinStubsModule());
     XLS_ASSIGN_OR_RETURN(StructDef * state_struct_def,
                          builtins->GetMemberOrError<StructDef>("State"));
     ProcStateVisitor state_visitor(import_data, state_struct_def);
-    XLS_RETURN_IF_ERROR(module.Accept(&state_visitor));
+    XLS_RETURN_IF_ERROR(module->Accept(&state_visitor));
   }
   ReplaceLambdaWithInvocation lambda_pass(import_data.file_table());
-  XLS_RETURN_IF_ERROR(module.Accept(&lambda_pass));
+  XLS_RETURN_IF_ERROR(module->Accept(&lambda_pass));
 
   AddSpawnTraitToProcDefs add_spawn_trait;
-  XLS_RETURN_IF_ERROR(module.Accept(&add_spawn_trait));
+  XLS_RETURN_IF_ERROR(module->Accept(&add_spawn_trait));
 
   if (!suppress_warnings_) {
-    PreTypecheckPass pass(warning_collector, import_data.file_table());
-    XLS_RETURN_IF_ERROR(module.Accept(&pass));
-  }
-
-  XLS_RETURN_IF_ERROR(NormalizeIfLets(module));
-
-  if (!suppress_warnings_) {
-    for (const ModuleMember& top : module.top()) {
+    for (const ModuleMember& top : module->top()) {
       if (const Function* const* func = std::get_if<Function*>(&top)) {
         CollectUseDef visitor;
         XLS_RETURN_IF_ERROR((*func)->body()->Accept(&visitor));
@@ -1071,7 +1037,7 @@ absl::Status SemanticsAnalysis::RunPreTypeCheckPass(
     }
   }
 
-  return absl::OkStatus();
+  return module;
 }
 
 // If a possibly unused def is concretized to a non-token type at any possible

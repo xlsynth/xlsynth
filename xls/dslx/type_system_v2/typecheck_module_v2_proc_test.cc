@@ -13,12 +13,14 @@
 // limitations under the License.
 
 #include <string_view>
+#include <variant>
 
+#include "absl/status/status_matchers.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "absl/status/status_matchers.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/create_import_data.h"
+#include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/type_system/typecheck_test_utils.h"
 #include "xls/dslx/type_system_v2/matchers.h"
@@ -386,6 +388,61 @@ impl P {
                          "(chan(uN[32], dir=in), chan(uN[32], dir=out)) -> $0",
                          kProcType)),
           HasNodeWithType("next", absl::Substitute("($0) -> ()", kProcType)))));
+}
+
+TEST(TypecheckV2Test, IfLetNormalizationPreservesExplicitStateMemberMetadata) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(explicit_state_access)]
+
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn make_none() -> Option {
+  Option::None
+}
+
+fn unwrap_or_zero(option: Option) -> u32 {
+  if let Option::Some(value) = option {
+    value
+  } else {
+    u32:0
+  }
+}
+
+proc P {
+  state: u32,
+}
+
+impl P {
+  fn new() -> Self {
+    P { state: 0 }
+  }
+
+  fn next(self) {
+    let value = read(self.state);
+    write(self.state, value + u32:1);
+  }
+}
+)"));
+
+  XLS_ASSERT_OK_AND_ASSIGN(Module * builtins,
+                           result.import_data->GetBuiltinStubsModule());
+  XLS_ASSERT_OK_AND_ASSIGN(StructDef * state_struct_def,
+                           builtins->GetMemberOrError<StructDef>("State"));
+  XLS_ASSERT_OK_AND_ASSIGN(ProcDef * proc,
+                           result.tm.module->GetMemberOrError<ProcDef>("P"));
+  ASSERT_EQ(proc->members().size(), 1);
+  StructMemberNode* state_member = proc->members()[0];
+  auto* state_type = dynamic_cast<TypeRefTypeAnnotation*>(state_member->type());
+  ASSERT_NE(state_type, nullptr);
+  ASSERT_TRUE(std::holds_alternative<StructDef*>(
+      state_type->type_ref()->type_definition()));
+  EXPECT_EQ(std::get<StructDef*>(state_type->type_ref()->type_definition()),
+            state_struct_def);
+  EXPECT_NE(state_member->non_state_wrapped_type(), state_member->type());
+  EXPECT_EQ(state_member->non_state_wrapped_type()->ToString(), "u32");
 }
 
 TEST(TypecheckV2Test, ProcWithImplNextWithExtraParamFails) {
