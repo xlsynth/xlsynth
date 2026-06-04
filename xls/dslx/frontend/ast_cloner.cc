@@ -310,27 +310,31 @@ class AstCloner : public AstNodeVisitor {
     return absl::OkStatus();
   }
 
-  absl::Status HandleConstructorPattern(const ConstructorPattern* n) override {
+  absl::Status HandleSumVariantPayloadPattern(
+      const SumVariantPayloadPattern* n) override {
     XLS_RETURN_IF_ERROR(VisitChildren(n));
 
-    std::vector<NameDefTree*> new_positional_patterns;
-    new_positional_patterns.reserve(n->positional_patterns().size());
-    for (const NameDefTree* pattern : n->positional_patterns()) {
-      new_positional_patterns.push_back(
+    std::vector<NameDefTree*> new_tuple_payload_patterns;
+    new_tuple_payload_patterns.reserve(n->tuple_payload_patterns().size());
+    for (const NameDefTree* pattern : n->tuple_payload_patterns()) {
+      new_tuple_payload_patterns.push_back(
           absl::down_cast<NameDefTree*>(old_to_new_.at(pattern)));
     }
 
-    std::vector<ConstructorPattern::NamedPattern> new_named_patterns;
-    new_named_patterns.reserve(n->named_patterns().size());
-    for (const auto& [name, pattern] : n->named_patterns()) {
-      new_named_patterns.push_back(std::make_pair(
+    std::vector<SumVariantPayloadPattern::StructPayloadFieldPattern>
+        new_struct_payload_field_patterns;
+    new_struct_payload_field_patterns.reserve(
+        n->struct_payload_field_patterns().size());
+    for (const auto& [name, pattern] : n->struct_payload_field_patterns()) {
+      new_struct_payload_field_patterns.push_back(std::make_pair(
           name, absl::down_cast<NameDefTree*>(old_to_new_.at(pattern))));
     }
 
-    old_to_new_[n] = module(n)->Make<ConstructorPattern>(
-        n->span(), absl::down_cast<ColonRef*>(old_to_new_.at(n->constructor())),
-        n->payload_kind(),
-        std::move(new_positional_patterns), std::move(new_named_patterns));
+    old_to_new_[n] = module(n)->Make<SumVariantPayloadPattern>(
+        n->span(),
+        absl::down_cast<ColonRef*>(old_to_new_.at(n->constructor_ref())),
+        n->payload_shape(), std::move(new_tuple_payload_patterns),
+        std::move(new_struct_payload_field_patterns));
     return absl::OkStatus();
   }
 
@@ -384,7 +388,7 @@ class AstCloner : public AstNodeVisitor {
 
     old_to_new_[n] = module(n)->Make<SumVariant>(
         n->span(), absl::down_cast<NameDef*>(old_to_new_.at(n->name_def())),
-        n->payload_kind(), std::move(new_tuple_members),
+        n->payload_shape(), std::move(new_tuple_members),
         std::move(new_struct_members),
         n->discriminant() == nullptr
             ? nullptr
@@ -413,9 +417,8 @@ class AstCloner : public AstNodeVisitor {
     auto* new_name_def =
         absl::down_cast<NameDef*>(old_to_new_.at(n->name_def()));
     auto* new_sum_def = module(n)->Make<SumDef>(
-        n->span(), new_name_def,
-        std::move(new_parametric_bindings), std::move(new_variants),
-        n->is_public(),
+        n->span(), new_name_def, std::move(new_parametric_bindings),
+        std::move(new_variants), n->is_public(),
         n->tag_type_annotation() == nullptr
             ? nullptr
             : absl::down_cast<TypeAnnotation*>(
@@ -1107,24 +1110,27 @@ class AstCloner : public AstNodeVisitor {
   absl::Status HandleSumInstance(const SumInstance* n) override {
     XLS_RETURN_IF_ERROR(VisitChildren(n));
 
-    std::vector<Expr*> new_positional_args;
-    new_positional_args.reserve(n->positional_args().size());
-    for (const Expr* arg : n->positional_args()) {
-      new_positional_args.push_back(
+    std::vector<Expr*> new_tuple_payload_args;
+    new_tuple_payload_args.reserve(n->tuple_payload_args().size());
+    for (const Expr* arg : n->tuple_payload_args()) {
+      new_tuple_payload_args.push_back(
           absl::down_cast<Expr*>(old_to_new_.at(arg)));
     }
 
-    std::vector<SumInstance::NamedArg> new_named_args;
-    new_named_args.reserve(n->named_args().size());
-    for (const auto& [name, arg] : n->named_args()) {
-      new_named_args.push_back(std::make_pair(
-          name, absl::down_cast<Expr*>(old_to_new_.at(arg))));
+    std::vector<SumInstance::StructPayloadFieldArg>
+        new_struct_payload_field_args;
+    new_struct_payload_field_args.reserve(
+        n->struct_payload_field_args().size());
+    for (const auto& [name, arg] : n->struct_payload_field_args()) {
+      new_struct_payload_field_args.push_back(
+          std::make_pair(name, absl::down_cast<Expr*>(old_to_new_.at(arg))));
     }
 
     old_to_new_[n] = module(n)->Make<SumInstance>(
-        n->span(), absl::down_cast<ColonRef*>(old_to_new_.at(n->constructor())),
-        n->payload_kind(), std::move(new_positional_args),
-        std::move(new_named_args), n->in_parens());
+        n->span(),
+        absl::down_cast<ColonRef*>(old_to_new_.at(n->constructor_ref())),
+        n->payload_shape(), std::move(new_tuple_payload_args),
+        std::move(new_struct_payload_field_args), n->in_parens());
     return absl::OkStatus();
   }
 

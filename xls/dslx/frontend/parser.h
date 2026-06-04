@@ -541,10 +541,10 @@ class Parser : public TokenParser {
 
   absl::StatusOr<NameDefTree*> ParseTuplePattern(const Pos& start_pos,
                                                  Bindings& bindings);
-  absl::StatusOr<ConstructorPattern*> ParseTupleConstructorPattern(
-      Bindings& bindings, ColonRef* constructor);
-  absl::StatusOr<ConstructorPattern*> ParseStructConstructorPattern(
-      Bindings& bindings, ColonRef* constructor);
+  absl::StatusOr<SumVariantPayloadPattern*> ParseTupleSumVariantPayloadPattern(
+      Bindings& bindings, ColonRef* constructor_ref);
+  absl::StatusOr<SumVariantPayloadPattern*> ParseStructSumVariantPayloadPattern(
+      Bindings& bindings, ColonRef* constructor_ref);
 
   // Returns a parsed pattern; e.g. one that would guard a match arm.
   //

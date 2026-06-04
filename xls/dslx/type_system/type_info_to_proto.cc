@@ -192,8 +192,8 @@ AstNodeKindProto ToProto(AstNodeKind kind) {
       return AST_NODE_KIND_PROC_MEMBER;
     case AstNodeKind::kRestOfTuple:
       return AST_NODE_KIND_REST_OF_TUPLE;
-    case AstNodeKind::kConstructorPattern:
-      return AST_NODE_KIND_CONSTRUCTOR_PATTERN;
+    case AstNodeKind::kSumVariantPayloadPattern:
+      return AST_NODE_KIND_SUM_VARIANT_PAYLOAD_PATTERN;
     case AstNodeKind::kImpl:
       return AST_NODE_KIND_IMPL;
     case AstNodeKind::kVerbatimNode:
@@ -818,8 +818,8 @@ absl::StatusOr<AstNodeKind> FromProto(AstNodeKindProto p) {
       return AstNodeKind::kProcMember;
     case AST_NODE_KIND_REST_OF_TUPLE:
       return AstNodeKind::kRestOfTuple;
-    case AST_NODE_KIND_CONSTRUCTOR_PATTERN:
-      return AstNodeKind::kConstructorPattern;
+    case AST_NODE_KIND_SUM_VARIANT_PAYLOAD_PATTERN:
+      return AstNodeKind::kSumVariantPayloadPattern;
     case AST_NODE_KIND_IMPL:
       return AstNodeKind::kImpl;
     case AST_NODE_KIND_VERBATIM_NODE:

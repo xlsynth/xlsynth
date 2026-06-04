@@ -410,7 +410,7 @@ class FunctionConverterVisitor : public AstNodeVisitor {
   // from their parent nodes).
   // keep-sorted start
   INVALID(Attribute)
-  INVALID(ConstructorPattern)
+  INVALID(SumVariantPayloadPattern)
   INVALID(FunctionRef)
   INVALID(FuzzTestFunction)
   INVALID(MatchArm)
@@ -1580,7 +1580,7 @@ absl::StatusOr<BValue> FunctionConverter::HandleRangedForInductionVariable(
             return absl::InternalError(
                 "Induction variable cannot be a colon-reference");
           },
-          [&](ConstructorPattern*) -> absl::StatusOr<BValue> {
+          [&](SumVariantPayloadPattern*) -> absl::StatusOr<BValue> {
             return absl::InternalError(
                 "Induction variable cannot be a constructor pattern");
           },
@@ -1933,7 +1933,7 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
                 return function_builder_->Literal(UBits(1, 1), loc);
               });
             },
-            [&](ConstructorPattern*) -> absl::StatusOr<BValue> {
+            [&](SumVariantPayloadPattern*) -> absl::StatusOr<BValue> {
               return absl::UnimplementedError(
                   "Semantic sum patterns require the Phase 1 lowering layer.");
             },

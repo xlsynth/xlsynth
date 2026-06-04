@@ -22,9 +22,6 @@
 #include <variant>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest-spi.h"
-#include "gtest/gtest.h"
 #include "absl/base/casts.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
@@ -32,6 +29,9 @@
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest-spi.h"
+#include "gtest/gtest.h"
 #include "xls/common/attribute_data.h"
 #include "xls/common/file/filesystem.h"
 #include "xls/common/file/get_runfile_path.h"
@@ -2492,7 +2492,8 @@ fn f(x: Option<u32>) -> Option<u32> {
         Option<u32>::None => Option<u32>::None,
     }
 })");
-  std::optional<ModuleMember*> maybe_member = module->FindMemberWithName("Option");
+  std::optional<ModuleMember*> maybe_member =
+      module->FindMemberWithName("Option");
   ASSERT_TRUE(maybe_member.has_value());
   EXPECT_TRUE(std::holds_alternative<SumDef*>(*maybe_member.value()));
 }
@@ -2535,11 +2536,10 @@ TEST_F(ParserTest, SemanticSumRejectsImplicitDiscriminantsWithTagAnnotation) {
     None(),
     Some(u8),
 })";
-  EXPECT_THAT(
-      Parse(kProgram),
-      StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("with a tag type annotation requires explicit "
-                         "discriminants on every variant in Phase 1")));
+  EXPECT_THAT(Parse(kProgram),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("with a tag type annotation requires explicit "
+                                 "discriminants on every variant in Phase 1")));
 }
 
 TEST_F(ParserTest, BareUnitEnumWithoutValuesIsStillRejected) {
@@ -2618,7 +2618,7 @@ TEST_F(ParserTest, EmptyEnumWithTagAnnotationIsSemanticSum) {
   EXPECT_TRUE(std::holds_alternative<SumDef*>(*maybe_member.value()));
 }
 
-TEST_F(ParserTest, PreserveEmptySemanticSumPayloadKinds) {
+TEST_F(ParserTest, PreserveEmptySemanticSumPayloadShapes) {
   std::unique_ptr<Module> module = RoundTrip(R"(enum Option {
     None,
     EmptyTuple(),
@@ -2648,8 +2648,7 @@ fn f(x: Option) -> Option {
   EXPECT_TRUE((*sum_def->GetVariant("EmptyTuple"))->is_tuple());
   EXPECT_TRUE((*sum_def->GetVariant("EmptyTuple"))->tuple_members().empty());
   EXPECT_TRUE((*sum_def->GetVariant("EmptyStruct"))->is_struct());
-  EXPECT_TRUE(
-      (*sum_def->GetVariant("EmptyStruct"))->struct_members().empty());
+  EXPECT_TRUE((*sum_def->GetVariant("EmptyStruct"))->struct_members().empty());
 
   std::optional<Function*> maybe_f = module->GetFunction("f");
   ASSERT_TRUE(maybe_f.has_value());
@@ -2664,19 +2663,20 @@ fn f(x: Option) -> Option {
   const NameDefTree* tuple_tree = match->arms().at(0)->patterns().at(0);
   ASSERT_TRUE(tuple_tree->is_leaf());
   ASSERT_TRUE(
-      std::holds_alternative<ConstructorPattern*>(tuple_tree->leaf()));
-  const auto* tuple_pattern = std::get<ConstructorPattern*>(tuple_tree->leaf());
+      std::holds_alternative<SumVariantPayloadPattern*>(tuple_tree->leaf()));
+  const auto* tuple_pattern =
+      std::get<SumVariantPayloadPattern*>(tuple_tree->leaf());
   EXPECT_TRUE(tuple_pattern->is_tuple());
-  EXPECT_TRUE(tuple_pattern->positional_patterns().empty());
+  EXPECT_TRUE(tuple_pattern->tuple_payload_patterns().empty());
 
   const NameDefTree* struct_tree = match->arms().at(1)->patterns().at(0);
   ASSERT_TRUE(struct_tree->is_leaf());
   ASSERT_TRUE(
-      std::holds_alternative<ConstructorPattern*>(struct_tree->leaf()));
+      std::holds_alternative<SumVariantPayloadPattern*>(struct_tree->leaf()));
   const auto* struct_pattern =
-      std::get<ConstructorPattern*>(struct_tree->leaf());
+      std::get<SumVariantPayloadPattern*>(struct_tree->leaf());
   EXPECT_TRUE(struct_pattern->is_struct());
-  EXPECT_TRUE(struct_pattern->named_patterns().empty());
+  EXPECT_TRUE(struct_pattern->struct_payload_field_patterns().empty());
 }
 
 TEST_F(ParserTest, RejectsConstructorLevelParametricsOnSemanticSums) {
@@ -2691,9 +2691,9 @@ fn f(x: u32) -> Option<u32> {
   Option::Some<u32>(x)
 }
 )";
-  EXPECT_THAT(Parse(kExplicitOnConstructor),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("ParseError")));
+  EXPECT_THAT(
+      Parse(kExplicitOnConstructor),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("ParseError")));
 
   constexpr std::string_view kTurbofishOnConstructor = R"(#![feature(generics)]
 
@@ -2706,9 +2706,9 @@ fn f(x: u32) -> Option<u32> {
   Option::<u32>::Some(x)
 }
 )";
-  EXPECT_THAT(Parse(kTurbofishOnConstructor),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("ParseError")));
+  EXPECT_THAT(
+      Parse(kTurbofishOnConstructor),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("ParseError")));
 }
 
 TEST_F(ParserTest, RejectsDuplicateSemanticSumConstructors) {
@@ -3372,8 +3372,9 @@ fn f(x: Foo) -> Foo {
   std::unique_ptr<Module> module = ExpectParsesSuccessfully(kProgram);
   ASSERT_TRUE(module != nullptr);
   ASSERT_TRUE(module->GetFunction("f").has_value());
-  EXPECT_THAT((*module->GetFunction("f"))->body()->ToString(),
-              HasSubstr("if x == Foo::THING { Foo::OTHER } else { Foo::THING }"));
+  EXPECT_THAT(
+      (*module->GetFunction("f"))->body()->ToString(),
+      HasSubstr("if x == Foo::THING { Foo::OTHER } else { Foo::THING }"));
 }
 
 TEST_F(ParserTest, ForInWithColonRefAsRangeLimit) {
@@ -4267,11 +4268,11 @@ TEST(ParserErrorTest, BadTestTarget) {
   Scanner s{file_table, Fileno(0), std::string(kProgram)};
   Parser parser{"test", &s};
   absl::StatusOr<std::unique_ptr<Module>> module = parser.ParseModule();
-  EXPECT_THAT(module.status(),
-              IsPosError("ParseError",
-                         HasSubstr("Attributes are only supported for a "
-                                   "function, proc, struct, enum, or "
-                                   "type.")));
+  EXPECT_THAT(
+      module.status(),
+      IsPosError("ParseError", HasSubstr("Attributes are only supported for a "
+                                         "function, proc, struct, enum, or "
+                                         "type.")));
 }
 
 TEST(ParserErrorTest, BadAttributeTokenType) {

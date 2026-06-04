@@ -375,7 +375,7 @@ class TypeValidator : public AstNodeVisitorWithDefault {
       for (NameDefTree* pattern : arm->patterns()) {
         bool has_constructor_pattern = false;
         for (NameDefTree::Leaf leaf : pattern->Flatten()) {
-          if (std::holds_alternative<ConstructorPattern*>(leaf)) {
+          if (std::holds_alternative<SumVariantPayloadPattern*>(leaf)) {
             has_constructor_pattern = true;
             break;
           }

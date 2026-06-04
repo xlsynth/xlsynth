@@ -356,10 +356,10 @@ class InvocationVisitor : public ExprVisitor {
   }
 
   absl::Status HandleSumInstance(const SumInstance* expr) override {
-    for (const Expr* arg : expr->positional_args()) {
+    for (const Expr* arg : expr->tuple_payload_args()) {
       XLS_RETURN_IF_ERROR(arg->AcceptExpr(this));
     }
-    for (const auto& member : expr->named_args()) {
+    for (const auto& member : expr->struct_payload_field_args()) {
       XLS_RETURN_IF_ERROR(member.second->AcceptExpr(this));
     }
     return absl::OkStatus();

@@ -47,7 +47,7 @@ enum class AstNodeKind : uint8_t {
   kConstAssert,
   kConstFor,
   kConstantDef,
-  kConstructorPattern,
+  kSumVariantPayloadPattern,
   kEnumDef,
   kFor,
   kFormatMacro,

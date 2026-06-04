@@ -295,7 +295,7 @@ std::string_view AstNodeKindToString(AstNodeKind kind) {
       return "all-ones macro";
     case AstNodeKind::kSlice:
       return "slice";
-    case AstNodeKind::kConstructorPattern:
+    case AstNodeKind::kSumVariantPayloadPattern:
       return "constructor-pattern";
     case AstNodeKind::kEnumDef:
       return "enum definition";
@@ -1526,7 +1526,7 @@ std::string EnumDef::ToString() const {
 // -- class SumVariant
 
 SumVariant::SumVariant(Module* owner, Span span, NameDef* name_def,
-                       PayloadKind payload_kind,
+                       PayloadShape payload_shape,
                        std::vector<TypeAnnotation*> tuple_members,
                        std::vector<StructMemberNode*> struct_members,
                        Expr* discriminant, std::optional<Span> payload_span,
@@ -1534,19 +1534,19 @@ SumVariant::SumVariant(Module* owner, Span span, NameDef* name_def,
     : AstNode(owner),
       span_(std::move(span)),
       name_def_(name_def),
-      payload_kind_(payload_kind),
+      payload_shape_(payload_shape),
       discriminant_(discriminant),
       payload_span_(std::move(payload_span)),
       discriminant_equals_span_(std::move(discriminant_equals_span)),
       tuple_members_(std::move(tuple_members)),
       struct_members_(std::move(struct_members)) {
-  if (payload_kind_ == PayloadKind::kUnit) {
+  if (payload_shape_ == PayloadShape::kUnit) {
     CHECK(tuple_members_.empty());
     CHECK(struct_members_.empty());
-  } else if (payload_kind_ == PayloadKind::kTuple) {
+  } else if (payload_shape_ == PayloadShape::kTuple) {
     CHECK(struct_members_.empty());
   } else {
-    CHECK_EQ(payload_kind_, PayloadKind::kStruct);
+    CHECK_EQ(payload_shape_, PayloadShape::kStruct);
     CHECK(tuple_members_.empty());
   }
   CHECK(!discriminant_equals_span_.has_value() || discriminant_ != nullptr);
@@ -1596,8 +1596,8 @@ std::string SumVariant::ToString() const {
   if (struct_members_.empty()) {
     return discriminant_ == nullptr
                ? absl::StrCat(identifier(), " { }")
-               : absl::StrCat(identifier(), " { } = ",
-                              discriminant_->ToString());
+               : absl::StrCat(identifier(),
+                              " { } = ", discriminant_->ToString());
   }
   std::string result = absl::StrCat(
       identifier(), " { ",
@@ -1683,10 +1683,9 @@ std::string SumDef::ToString() const {
       tag_type_annotation_ == nullptr
           ? ""
           : absl::StrCat(" : ", tag_type_annotation_->ToString());
-  std::string result = absl::StrFormat("%s%senum %s%s%s {\n",
-                                       MakeExternTypeAttr(extern_type_name_),
-                                       is_public_ ? "pub " : "", identifier(),
-                                       parametric_str, tag_type);
+  std::string result = absl::StrFormat(
+      "%s%senum %s%s%s {\n", MakeExternTypeAttr(extern_type_name_),
+      is_public_ ? "pub " : "", identifier(), parametric_str, tag_type);
   for (const SumVariant* variant : variants_) {
     absl::StrAppendFormat(&result, "%s%s,\n", kRustOneIndent,
                           variant->ToString());
@@ -2197,34 +2196,35 @@ std::string StructInstance::ToStringInternal() const {
 
 // -- class SumInstance
 
-SumInstance::SumInstance(Module* owner, Span span, ColonRef* constructor,
-                         PayloadKind payload_kind,
-                         std::vector<Expr*> positional_args,
-                         std::vector<NamedArg> named_args, bool in_parens)
+SumInstance::SumInstance(
+    Module* owner, Span span, ColonRef* constructor_ref,
+    PayloadShape payload_shape, std::vector<Expr*> tuple_payload_args,
+    std::vector<StructPayloadFieldArg> struct_payload_field_args,
+    bool in_parens)
     : Expr(owner, std::move(span), in_parens),
-      constructor_(constructor),
-      payload_kind_(payload_kind),
-      positional_args_(std::move(positional_args)),
-      named_args_(std::move(named_args)) {
-  if (payload_kind_ == PayloadKind::kUnit) {
-    CHECK(positional_args_.empty());
-    CHECK(named_args_.empty());
-  } else if (payload_kind_ == PayloadKind::kTuple) {
-    CHECK(named_args_.empty());
+      constructor_ref_(constructor_ref),
+      payload_shape_(payload_shape),
+      tuple_payload_args_(std::move(tuple_payload_args)),
+      struct_payload_field_args_(std::move(struct_payload_field_args)) {
+  if (payload_shape_ == PayloadShape::kUnit) {
+    CHECK(tuple_payload_args_.empty());
+    CHECK(struct_payload_field_args_.empty());
+  } else if (payload_shape_ == PayloadShape::kTuple) {
+    CHECK(struct_payload_field_args_.empty());
   } else {
-    CHECK_EQ(payload_kind_, PayloadKind::kStruct);
-    CHECK(positional_args_.empty());
+    CHECK_EQ(payload_shape_, PayloadShape::kStruct);
+    CHECK(tuple_payload_args_.empty());
   }
 }
 
 SumInstance::~SumInstance() = default;
 
 std::vector<AstNode*> SumInstance::GetChildren(bool want_types) const {
-  std::vector<AstNode*> results = {constructor_};
-  for (Expr* arg : positional_args_) {
+  std::vector<AstNode*> results = {constructor_ref_};
+  for (Expr* arg : tuple_payload_args_) {
     results.push_back(arg);
   }
-  for (const auto& [_, arg] : named_args_) {
+  for (const auto& [_, arg] : struct_payload_field_args_) {
     results.push_back(arg);
   }
   return results;
@@ -2232,22 +2232,21 @@ std::vector<AstNode*> SumInstance::GetChildren(bool want_types) const {
 
 std::string SumInstance::ToStringInternal() const {
   if (is_unit()) {
-    return constructor_->ToString();
+    return constructor_ref_->ToString();
   } else if (is_tuple()) {
-    return absl::StrCat(
-        constructor_->ToString(), "(",
-        absl::StrJoin(positional_args_, ", ",
-                      [](std::string* out, Expr* arg) {
-                        absl::StrAppend(out, arg->ToString());
-                      }),
-        ")");
-  } else if (named_args_.empty()) {
-    return absl::StrCat(constructor_->ToString(), " { }");
+    return absl::StrCat(constructor_ref_->ToString(), "(",
+                        absl::StrJoin(tuple_payload_args_, ", ",
+                                      [](std::string* out, Expr* arg) {
+                                        absl::StrAppend(out, arg->ToString());
+                                      }),
+                        ")");
+  } else if (struct_payload_field_args_.empty()) {
+    return absl::StrCat(constructor_ref_->ToString(), " { }");
   } else {
     return absl::StrCat(
-        constructor_->ToString(), " { ",
-        absl::StrJoin(named_args_, ", ",
-                      [](std::string* out, const NamedArg& arg) {
+        constructor_ref_->ToString(), " { ",
+        absl::StrJoin(struct_payload_field_args_, ", ",
+                      [](std::string* out, const StructPayloadFieldArg& arg) {
                         absl::StrAppendFormat(out, "%s: %s", arg.first,
                                               arg.second->ToString());
                       }),
@@ -2988,60 +2987,62 @@ std::string XlsTuple::ToStringInternal() const {
   return result;
 }
 
-// -- class ConstructorPattern
+// -- class SumVariantPayloadPattern
 
-ConstructorPattern::ConstructorPattern(
-    Module* owner, Span span, ColonRef* constructor,
-    PayloadKind payload_kind,
-    std::vector<NameDefTree*> positional_patterns,
-    std::vector<NamedPattern> named_patterns)
+SumVariantPayloadPattern::SumVariantPayloadPattern(
+    Module* owner, Span span, ColonRef* constructor_ref,
+    PayloadShape payload_shape,
+    std::vector<NameDefTree*> tuple_payload_patterns,
+    std::vector<StructPayloadFieldPattern> struct_payload_field_patterns)
     : AstNode(owner),
       span_(std::move(span)),
-      constructor_(constructor),
-      payload_kind_(payload_kind),
-      positional_patterns_(std::move(positional_patterns)),
-      named_patterns_(std::move(named_patterns)) {
-  if (payload_kind_ == PayloadKind::kTuple) {
-    CHECK(named_patterns_.empty());
+      constructor_ref_(constructor_ref),
+      payload_shape_(payload_shape),
+      tuple_payload_patterns_(std::move(tuple_payload_patterns)),
+      struct_payload_field_patterns_(std::move(struct_payload_field_patterns)) {
+  if (payload_shape_ == PayloadShape::kTuple) {
+    CHECK(struct_payload_field_patterns_.empty());
   } else {
-    CHECK_EQ(payload_kind_, PayloadKind::kStruct);
-    CHECK(positional_patterns_.empty());
+    CHECK_EQ(payload_shape_, PayloadShape::kStruct);
+    CHECK(tuple_payload_patterns_.empty());
   }
 }
 
-ConstructorPattern::~ConstructorPattern() = default;
+SumVariantPayloadPattern::~SumVariantPayloadPattern() = default;
 
-std::vector<AstNode*> ConstructorPattern::GetChildren(bool want_types) const {
-  std::vector<AstNode*> results = {constructor_};
-  for (NameDefTree* pattern : positional_patterns_) {
+std::vector<AstNode*> SumVariantPayloadPattern::GetChildren(
+    bool want_types) const {
+  std::vector<AstNode*> results = {constructor_ref_};
+  for (NameDefTree* pattern : tuple_payload_patterns_) {
     results.push_back(pattern);
   }
-  for (const auto& [_, pattern] : named_patterns_) {
+  for (const auto& [_, pattern] : struct_payload_field_patterns_) {
     results.push_back(pattern);
   }
   return results;
 }
 
-std::string ConstructorPattern::ToString() const {
+std::string SumVariantPayloadPattern::ToString() const {
   if (is_tuple()) {
     return absl::StrCat(
-        constructor_->ToString(), "(",
-        absl::StrJoin(positional_patterns_, ", ",
+        constructor_ref_->ToString(), "(",
+        absl::StrJoin(tuple_payload_patterns_, ", ",
                       [](std::string* out, NameDefTree* pattern) {
                         absl::StrAppend(out, pattern->ToString());
                       }),
         ")");
   }
-  if (named_patterns_.empty()) {
-    return absl::StrCat(constructor_->ToString(), " { }");
+  if (struct_payload_field_patterns_.empty()) {
+    return absl::StrCat(constructor_ref_->ToString(), " { }");
   }
   return absl::StrCat(
-      constructor_->ToString(), " { ",
-      absl::StrJoin(named_patterns_, ", ",
-                    [](std::string* out, const NamedPattern& pattern) {
-                      absl::StrAppendFormat(out, "%s: %s", pattern.first,
-                                            pattern.second->ToString());
-                    }),
+      constructor_ref_->ToString(), " { ",
+      absl::StrJoin(
+          struct_payload_field_patterns_, ", ",
+          [](std::string* out, const StructPayloadFieldPattern& pattern) {
+            absl::StrAppendFormat(out, "%s: %s", pattern.first,
+                                  pattern.second->ToString());
+          }),
       " }");
 }
 

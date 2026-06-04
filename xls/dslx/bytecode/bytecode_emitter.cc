@@ -1249,7 +1249,7 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandleNameDefTreeExpr(
             [&](WildcardPattern* n) -> absl::StatusOr<Bytecode::MatchArmItem> {
               return Bytecode::MatchArmItem::MakeWildcard();
             },
-            [&](ConstructorPattern* /*n*/)
+            [&](SumVariantPayloadPattern* /*n*/)
                 -> absl::StatusOr<Bytecode::MatchArmItem> {
               return absl::UnimplementedError(
                   "Semantic sum patterns require the Phase 1 runtime layer.");
