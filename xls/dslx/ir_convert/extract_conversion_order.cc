@@ -241,7 +241,10 @@ class InvocationVisitor : public ExprVisitor {
       callee_info = CalleeInfo{callee->owner(), const_cast<Function*>(callee),
                                invocation_ti};
     } else {
-      XLS_RET_CHECK(IsBuiltinFn(node->callee()));
+      // Sum constructors are special syntax, not real callable values, so TI
+      // does not record invocation data for them.
+      XLS_RET_CHECK(dynamic_cast<const ColonRef*>(node->callee()) != nullptr ||
+                    IsBuiltinFn(node->callee()));
       return absl::OkStatus();
     }
 
