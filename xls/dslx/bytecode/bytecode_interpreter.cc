@@ -68,6 +68,9 @@
 namespace xls::dslx {
 namespace {
 
+constexpr std::string_view kOpaqueSemanticSumValue =
+    "<semantic sum value omitted in Phase 1>";
+
 // Returns the given InterpValue formatted using the given format descriptor (if
 // it is not null).
 absl::StatusOr<std::string> ToStringMaybeFormatted(
@@ -227,10 +230,18 @@ void DslxInterpreterEvents::AddTraceChannelMessage(
     const FileTable& file_table, const Span& source_location,
     std::string_view channel_name, const InterpValue& value,
     ChannelDirection direction,
-    const ValueFormatDescriptor& format_descriptor) {
-  std::string formatted_data =
-      ToStringMaybeFormatted(value, format_descriptor, kChannelTraceIndentation)
-          .value();
+    const ValueFormatDescriptor& format_descriptor, bool redact_value) {
+  std::string formatted_data;
+  if (redact_value) {
+    formatted_data =
+        absl::StrCat(std::string(kChannelTraceIndentation, ' '),
+                     kOpaqueSemanticSumValue);
+  } else {
+    formatted_data =
+        ToStringMaybeFormatted(value, format_descriptor,
+                               kChannelTraceIndentation)
+            .value();
+  }
   const char* verb = direction == ChannelDirection::kIn ? "Received" : "Sent";
   std::string msg = absl::StrFormat("%s data on channel `%s`:\n%s", verb,
                                     channel_name, formatted_data);
@@ -1356,7 +1367,8 @@ absl::Status BytecodeInterpreter::EvalRecvNonBlocking(
       (*events_)->AddTraceChannelMessage(
           import_data_->file_table(), bytecode.source_span(),
           FormatChannelNameForTracing(*channel_data), value,
-          ChannelDirection::kIn, channel_data->value_fmt_desc());
+          ChannelDirection::kIn, channel_data->value_fmt_desc(),
+          channel_data->redact_value());
     }
     stack_.Push(InterpValue::MakeTuple(
         {token, std::move(value), InterpValue::MakeBool(true)}));
@@ -1401,7 +1413,8 @@ absl::Status BytecodeInterpreter::EvalRecv(const Bytecode& bytecode) {
       (*events_)->AddTraceChannelMessage(
           import_data_->file_table(), bytecode.source_span(),
           FormatChannelNameForTracing(*channel_data), value,
-          ChannelDirection::kIn, channel_data->value_fmt_desc());
+          ChannelDirection::kIn, channel_data->value_fmt_desc(),
+          channel_data->redact_value());
     }
     stack_.Push(InterpValue::MakeTuple({token, std::move(value)}));
   } else {
@@ -1432,7 +1445,8 @@ absl::Status BytecodeInterpreter::EvalSend(const Bytecode& bytecode) {
       (*events_)->AddTraceChannelMessage(
           import_data_->file_table(), bytecode.source_span(),
           FormatChannelNameForTracing(*channel_data), payload,
-          ChannelDirection::kOut, channel_data->value_fmt_desc());
+          ChannelDirection::kOut, channel_data->value_fmt_desc(),
+          channel_data->redact_value());
     }
     channel.Write(payload);
   }
@@ -1557,7 +1571,9 @@ absl::Status BytecodeInterpreter::EvalSwap(const Bytecode& bytecode) {
       pieces.push_back(std::get<std::string>(trace_element));
     } else {
       const InterpValue& value = args.at(argno);
-      if (argno < trace_data.value_fmt_descs().size()) {
+      if (trace_data.redact_value(argno)) {
+        pieces.push_back(std::string(kOpaqueSemanticSumValue));
+      } else if (argno < trace_data.value_fmt_descs().size()) {
         XLS_ASSIGN_OR_RETURN(
             std::string formatted,
             value.ToFormattedString(trace_data.value_fmt_descs()[argno]));
@@ -1677,7 +1693,14 @@ absl::Status BytecodeInterpreter::RunBuiltinFn(const Bytecode& bytecode,
       return RunBuiltinEnumerate(bytecode, stack_);
     case Builtin::kFail: {
       XLS_ASSIGN_OR_RETURN(InterpValue value, Pop());
-      std::string message{value.ToString()};
+      XLS_ASSIGN_OR_RETURN(Bytecode::InvocationData invocation_data,
+                           bytecode.invocation_data());
+      XLS_ASSIGN_OR_RETURN(Type * value_type,
+                           frames_.back().type_info()->GetItemOrError(
+                               invocation_data.invocation()->args()[1]));
+      std::string message = TypeContainsSemanticSum(*value_type)
+                                ? std::string(kOpaqueSemanticSumValue)
+                                : value.ToString();
       XLS_ASSIGN_OR_RETURN(InterpValue label, Pop());
       XLS_ASSIGN_OR_RETURN(std::string label_as_string,
                            InterpValueAsString(label));
