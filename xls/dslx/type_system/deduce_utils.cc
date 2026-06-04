@@ -79,11 +79,7 @@ class FormatMacroArgumentValidator : public TypeVisitor {
   absl::Status HandleStruct(const StructType& t) override {
     return absl::OkStatus();
   }
-  absl::Status HandleSum(const SumType& t) override {
-    return TypeInferenceErrorStatus(
-        span_, &t, ": Formatting semantic sum values is not supported",
-        file_table_);
-  }
+  absl::Status HandleSum(const SumType& t) override { return absl::OkStatus(); }
   absl::Status HandleProc(const ProcType& t) override {
     return absl::OkStatus();
   }
@@ -316,11 +312,6 @@ absl::Status ValidateNumber(const Number& number, const Type& type) {
 
 absl::Status ValidateFormatMacroArgument(const Type& type, const Span& span,
                                          const FileTable& file_table) {
-  if (TypeContainsSemanticSum(type)) {
-    return TypeInferenceErrorStatus(
-        span, &type, ": Formatting semantic sum values is not supported",
-        file_table);
-  }
   FormatMacroArgumentValidator validator(file_table, span);
   return type.Accept(validator);
 }
@@ -611,11 +602,6 @@ absl::StatusOr<InterpValue> GetBitCountAsInterpValue(const Type* type) {
   if (type->IsMeta()) {
     XLS_ASSIGN_OR_RETURN(type, UnwrapMetaType(*type));
   }
-  if (TypeContainsSemanticSum(*type)) {
-    return absl::InvalidArgumentError(
-        "Querying bit_count for types containing semantic sums is not "
-        "supported.");
-  }
   XLS_ASSIGN_OR_RETURN(TypeDim bit_count_ctd, type->GetTotalBitCount());
   XLS_ASSIGN_OR_RETURN(int64_t bit_count,
                        bit_count_ctd.value().GetBitValueViaSign());
@@ -625,11 +611,6 @@ absl::StatusOr<InterpValue> GetBitCountAsInterpValue(const Type* type) {
 absl::StatusOr<InterpValue> GetElementCountAsInterpValue(const Type* type) {
   if (type->IsMeta()) {
     XLS_ASSIGN_OR_RETURN(type, UnwrapMetaType(*type));
-  }
-  if (TypeContainsSemanticSum(*type)) {
-    return absl::InvalidArgumentError(
-        "Querying element_count for types containing semantic sums is not "
-        "supported.");
   }
   if (const auto* array_type = dynamic_cast<const ArrayType*>(type)) {
     XLS_ASSIGN_OR_RETURN(int64_t size, array_type->size().GetAsInt64());

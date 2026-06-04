@@ -715,16 +715,19 @@ struct RangeData {
   }
 };
 
-// Borrowed view of the `(tag, payload_slots)` tuple carrier for an encoded
+// Borrowed view of the `(tag, (payload_slot,))` tuple carrier for an encoded
 // semantic sum. The source value must outlive the view.
 struct EncodedSumView {
   const InterpValue& tag;
-  absl::Span<const InterpValue> payload_slots;
+  const InterpValue& payload_slot;
 };
 
-// Checks that `value` is a two-element tuple whose second element is a tuple.
+// Checks that `value` has the tuple shape `(tag, (payload_slot,))`.
 // Does not validate the tag or payload values against a nominal sum type.
 absl::StatusOr<EncodedSumView> GetEncodedSumView(const InterpValue& value);
+
+// Constructs a `(tag, (payload_slot,))` tuple without validating either value.
+InterpValue CreateEncodedSumTuple(InterpValue tag, InterpValue payload_slot);
 
 }  // namespace xls::dslx
 

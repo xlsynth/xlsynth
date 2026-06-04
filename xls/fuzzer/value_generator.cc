@@ -92,66 +92,14 @@ absl::StatusOr<InterpValue> GenerateEnumValue(
   return dslx::CastBitsToEnum(enum_type.members().at(member_index), enum_type);
 }
 
-absl::StatusOr<bool> TypeIsInhabited(const dslx::Type& type);
-
 absl::StatusOr<bool> SumVariantIsInhabited(
     const dslx::SumTypeVariant& variant) {
   for (int64_t i = 0; i < variant.size(); ++i) {
     XLS_ASSIGN_OR_RETURN(bool member_is_inhabited,
-                         TypeIsInhabited(variant.GetMemberType(i)));
+                         dslx::TypeIsInhabited(variant.GetMemberType(i)));
     if (!member_is_inhabited) {
       return false;
     }
-  }
-  return true;
-}
-
-absl::StatusOr<bool> TypeIsInhabited(const dslx::Type& type) {
-  if (auto* channel_type = dynamic_cast<const dslx::ChannelType*>(&type)) {
-    return TypeIsInhabited(channel_type->payload_type());
-  }
-  if (GetBitsLike(type).has_value()) {
-    return true;
-  }
-  if (auto* tuple_type = dynamic_cast<const dslx::TupleType*>(&type)) {
-    for (const std::unique_ptr<dslx::Type>& member_type : tuple_type->members()) {
-      XLS_ASSIGN_OR_RETURN(bool member_is_inhabited,
-                           TypeIsInhabited(*member_type));
-      if (!member_is_inhabited) {
-        return false;
-      }
-    }
-    return true;
-  }
-  if (auto* struct_type = dynamic_cast<const dslx::StructTypeBase*>(&type)) {
-    for (int64_t i = 0; i < struct_type->size(); ++i) {
-      XLS_ASSIGN_OR_RETURN(bool member_is_inhabited,
-                           TypeIsInhabited(struct_type->GetMemberType(i)));
-      if (!member_is_inhabited) {
-        return false;
-      }
-    }
-    return true;
-  }
-  if (auto* array_type = dynamic_cast<const dslx::ArrayType*>(&type)) {
-    XLS_ASSIGN_OR_RETURN(int64_t size, array_type->size().GetAsInt64());
-    if (size == 0) {
-      return true;
-    }
-    return TypeIsInhabited(array_type->element_type());
-  }
-  if (auto* sum_type = dynamic_cast<const dslx::SumType*>(&type)) {
-    for (const dslx::SumTypeVariant& variant : sum_type->variants()) {
-      XLS_ASSIGN_OR_RETURN(bool variant_is_inhabited,
-                           SumVariantIsInhabited(variant));
-      if (variant_is_inhabited) {
-        return true;
-      }
-    }
-    return false;
-  }
-  if (auto* enum_type = dynamic_cast<const dslx::EnumType*>(&type)) {
-    return !enum_type->members().empty();
   }
   return true;
 }

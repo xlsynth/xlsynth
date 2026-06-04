@@ -19,9 +19,9 @@
 #include <string>
 #include <string_view>
 
+#include "absl/strings/str_format.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "absl/strings/str_format.h"
 #include "re2/re2.h"
 #include "xls/common/golden_files.h"
 #include "xls/common/status/matchers.h"
@@ -360,6 +360,118 @@ fn f(x: (E[2],)) -> Box { Box { item: E::None } }
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       SemanticSumPreservesConcreteTagLayout) {
+  std::string program = R"(
+enum Message: u3 {
+  Idle = 0,
+  Request(u8) = 3,
+  Response(u32) = 7,
+}
+
+fn f(x: Message) -> Message { x }
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "fake.x", "fake", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto tip,
+                           TypeInfoToProto(*tm.type_info, tm.module));
+
+  const AstNodeTypeInfoProto* sum_node =
+      FindSumTypeInfoNode(tip, "Message", import_data);
+  ASSERT_NE(sum_node, nullptr);
+  const SumTypeProto& sum_type = sum_node->type().sum_type();
+  ASSERT_TRUE(sum_type.has_tag_bit_count());
+  ASSERT_TRUE(sum_type.tag_bit_count().has_interp_value());
+  EXPECT_EQ(sum_type.tag_bit_count().interp_value().bits().bit_count(), 32);
+  EXPECT_EQ(sum_type.tag_bit_count().interp_value().bits().data(),
+            std::string("\000\000\000\003", 4));
+  ASSERT_EQ(sum_type.variants_size(), 3);
+  ASSERT_TRUE(sum_type.variants(0).has_discriminant());
+  EXPECT_EQ(sum_type.variants(0).discriminant().bits().bit_count(), 3);
+  EXPECT_EQ(sum_type.variants(0).discriminant().bits().data(),
+            std::string("\000", 1));
+  ASSERT_TRUE(sum_type.variants(1).has_discriminant());
+  EXPECT_EQ(sum_type.variants(1).discriminant().bits().bit_count(), 3);
+  EXPECT_EQ(sum_type.variants(1).discriminant().bits().data(),
+            std::string("\003", 1));
+  ASSERT_TRUE(sum_type.variants(2).has_discriminant());
+  EXPECT_EQ(sum_type.variants(2).discriminant().bits().bit_count(), 3);
+  EXPECT_EQ(sum_type.variants(2).discriminant().bits().data(),
+            std::string("\007", 1));
+  XLS_EXPECT_OK(
+      ToHumanString(*sum_node, import_data, import_data.file_table()));
+
+  auto mutate_message_types = [&](TypeInfoProto& proto, auto mutation) {
+    for (AstNodeTypeInfoProto& node : *proto.mutable_nodes()) {
+      if (node.has_type() && node.type().has_sum_type()) {
+        mutation(*node.mutable_type()->mutable_sum_type());
+      }
+    }
+  };
+
+  TypeInfoProto missing_discriminant = tip;
+  mutate_message_types(missing_discriminant, [](SumTypeProto& sum) {
+    sum.mutable_variants(1)->clear_discriminant();
+  });
+  EXPECT_THAT(
+      ToHumanString(missing_discriminant, import_data,
+                    import_data.file_table()),
+      absl_testing::StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          ::testing::HasSubstr("missing its bits-valued discriminant")));
+
+  TypeInfoProto wrong_discriminant_width = tip;
+  mutate_message_types(wrong_discriminant_width, [](SumTypeProto& sum) {
+    sum.mutable_variants(1)
+        ->mutable_discriminant()
+        ->mutable_bits()
+        ->set_bit_count(2);
+  });
+  EXPECT_THAT(ToHumanString(wrong_discriminant_width, import_data,
+                            import_data.file_table()),
+              absl_testing::StatusIs(
+                  absl::StatusCode::kInvalidArgument,
+                  ::testing::HasSubstr("discriminant width mismatch")));
+
+  TypeInfoProto wrong_discriminant_signedness = tip;
+  mutate_message_types(wrong_discriminant_signedness, [](SumTypeProto& sum) {
+    sum.mutable_variants(1)
+        ->mutable_discriminant()
+        ->mutable_bits()
+        ->set_is_signed(true);
+  });
+  EXPECT_THAT(ToHumanString(wrong_discriminant_signedness, import_data,
+                            import_data.file_table()),
+              absl_testing::StatusIs(
+                  absl::StatusCode::kInvalidArgument,
+                  ::testing::HasSubstr("discriminant signedness mismatch")));
+
+  TypeInfoProto duplicate_discriminant = tip;
+  mutate_message_types(duplicate_discriminant, [](SumTypeProto& sum) {
+    *sum.mutable_variants(1)->mutable_discriminant() =
+        sum.variants(0).discriminant();
+  });
+  EXPECT_THAT(
+      ToHumanString(duplicate_discriminant, import_data,
+                    import_data.file_table()),
+      absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                             ::testing::HasSubstr("duplicate discriminant")));
+
+  TypeInfoProto wrong_discriminant_value = tip;
+  mutate_message_types(wrong_discriminant_value, [](SumTypeProto& sum) {
+    sum.mutable_variants(1)->mutable_discriminant()->mutable_bits()->set_data(
+        std::string("\006", 1));
+  });
+  EXPECT_THAT(ToHumanString(wrong_discriminant_value, import_data,
+                            import_data.file_table()),
+              absl_testing::StatusIs(
+                  absl::StatusCode::kInvalidArgument,
+                  ::testing::HasSubstr("discriminant value mismatch")));
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        RejectsReorderedSumVariantsInProtoImport) {
   std::string program = R"(
 enum Option {
@@ -403,11 +515,13 @@ fn f(x: bool) -> Option {
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        SemanticSumSchemaStoresOnlyConcreteTypeFacts) {
-  EXPECT_EQ(SumTypeProto::descriptor()->field_count(), 2);
-  EXPECT_EQ(SumTypeVariantProto::descriptor()->field_count(), 1);
+  EXPECT_EQ(SumTypeProto::descriptor()->field_count(), 3);
+  EXPECT_EQ(SumTypeVariantProto::descriptor()->field_count(), 2);
   EXPECT_EQ(SumTypeProto::kSumDefSpanFieldNumber, 1);
   EXPECT_EQ(SumTypeProto::kVariantsFieldNumber, 2);
+  EXPECT_EQ(SumTypeProto::kTagBitCountFieldNumber, 3);
   EXPECT_EQ(SumTypeVariantProto::kPayloadMembersFieldNumber, 1);
+  EXPECT_EQ(SumTypeVariantProto::kDiscriminantFieldNumber, 2);
   EXPECT_EQ(TypeProto::kSumTypeFieldNumber, 13);
   EXPECT_EQ(EnumTypeProto::kMembersFieldNumber, 4);
 }
@@ -561,10 +675,57 @@ fn f() -> E { E::Pair { first: u8:1, second: u16:2 } }
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       FormatsAndValidatesNestedAggregateSumPayloads) {
+  constexpr std::string_view kProgram = R"(
+enum Tag: u3 { Empty = 5, Value(u8) = 2 }
+struct Box { item: Tag }
+enum Outer { Value((Box, u8[2], token)) }
+fn f(x: Outer) -> Outer { x }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "fake.x", "fake", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto proto,
+                           TypeInfoToProto(*tm.type_info, tm.module));
+  const AstNodeTypeInfoProto* sum_node =
+      FindSumTypeInfoNode(proto, "Outer", import_data);
+  ASSERT_NE(sum_node, nullptr);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string human,
+      ToHumanString(*sum_node, import_data, import_data.file_table()));
+  EXPECT_THAT(human,
+              ::testing::EndsWith(
+                  " :: Outer { Value((Box { item: Tag { Empty | Value(uN[8]) "
+                  "} }, uN[8][2], token)) }"));
+
+  AstNodeTypeInfoProto wrong_array_extent = *sum_node;
+  BitsValueProto* extent = wrong_array_extent.mutable_type()
+                               ->mutable_sum_type()
+                               ->mutable_variants(0)
+                               ->mutable_payload_members(0)
+                               ->mutable_tuple_type()
+                               ->mutable_members(1)
+                               ->mutable_array_type()
+                               ->mutable_size()
+                               ->mutable_interp_value()
+                               ->mutable_bits();
+  std::string extent_bytes = extent->data();
+  ASSERT_FALSE(extent_bytes.empty());
+  extent_bytes.back() = '\3';
+  extent->set_data(extent_bytes);
+  EXPECT_THAT(
+      ToHumanString(wrong_array_extent, import_data, import_data.file_table()),
+      absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                             ::testing::HasSubstr("payload type mismatch")));
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        RejectsSumPayloadsFromDifferentDeclarationsWithIdenticalText) {
   constexpr std::string_view kDeclarations = R"(
 pub enum Tag : u8 { A = 0 }
 pub enum Never {}
+pub struct Box { value: u8 }
 )";
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK_AND_ASSIGN(
@@ -578,7 +739,7 @@ pub enum Never {}
                            right.module->GetMemberOrError<EnumDef>("Tag"));
   constexpr std::string_view kProgram = R"(
 import left;
-enum E { None, Value(left::Tag), Impossible(left::Never) }
+enum E { None, Value(left::Tag), Impossible(left::Never), Boxed(left::Box) }
 fn f() -> E { E::None }
 )";
   XLS_ASSERT_OK_AND_ASSIGN(
@@ -592,9 +753,9 @@ fn f() -> E { E::None }
   XLS_ASSERT_OK_AND_ASSIGN(
       std::string human,
       ToHumanString(*sum_node, import_data, import_data.file_table()));
-  EXPECT_THAT(human,
-              ::testing::EndsWith(
-                  " :: E { None | Value(Tag) | Impossible(Never {  }) }"));
+  EXPECT_THAT(human, ::testing::EndsWith(
+                         " :: E { None | Value(Tag) | Impossible(Never {  }) | "
+                         "Boxed(Box { value: uN[8] }) }"));
 
   AstNodeTypeInfoProto wrong_enum = *sum_node;
   *wrong_enum.mutable_type()
@@ -619,6 +780,22 @@ fn f() -> E { E::None }
       right.module->GetSumDefs().front()->span(), import_data.file_table());
   EXPECT_THAT(
       ToHumanString(wrong_sum, import_data, import_data.file_table()),
+      absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                             ::testing::HasSubstr("payload type mismatch")));
+
+  XLS_ASSERT_OK_AND_ASSIGN(StructDef * right_struct,
+                           right.module->GetMemberOrError<StructDef>("Box"));
+  AstNodeTypeInfoProto wrong_struct = *sum_node;
+  *wrong_struct.mutable_type()
+       ->mutable_sum_type()
+       ->mutable_variants(3)
+       ->mutable_payload_members(0)
+       ->mutable_struct_type()
+       ->mutable_struct_def()
+       ->mutable_span() =
+      ToProto(right_struct->span(), import_data.file_table());
+  EXPECT_THAT(
+      ToHumanString(wrong_struct, import_data, import_data.file_table()),
       absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
                              ::testing::HasSubstr("payload type mismatch")));
 }

@@ -32,12 +32,6 @@
 
 namespace xls::dslx {
 
-// Rejects payload member types not supported by phase-one semantic sums.
-absl::Status ValidatePhase1SumPayloadMemberType(
-    const SumDef& sum_def, const SumVariant& variant,
-    const TypeAnnotation* member_annotation, const Type& member_type,
-    const FileTable& file_table);
-
 // Validates the formal type/value kind and returns a type annotation for a
 // type argument, including a ColonRef to an imported type. Expression arguments
 // must already be populated in `table`; returned type annotations are borrowed.
