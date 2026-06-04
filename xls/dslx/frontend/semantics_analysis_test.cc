@@ -17,10 +17,11 @@
 #include <filesystem>
 #include <memory>
 #include <string_view>
+#include <variant>
 
-#include "gtest/gtest.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/frontend/ast.h"
@@ -62,6 +63,53 @@ proc Counter {
   ASSERT_EQ(proc->members().size(), 1);
   StructMemberNode* member = proc->members()[0];
   EXPECT_EQ(member->type()->ToString(), "BuiltinProcState<u32>");
+}
+
+TEST(SemanticsAnalysisTest, NormalizesIfLetToMatchBeforeTypecheck) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u8),
+}
+
+fn unwrap_or(x: Option, y: Option) -> u8 {
+  if let Option::Some(v) = x {
+    v
+  } else if let Option::Some(w) = y {
+    w
+  } else {
+    u8:0
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> module,
+                           ParseModule(kProgram, "fake_path.x", "the_module",
+                                       import_data.file_table()));
+  WarningCollector warnings(import_data.enabled_warnings());
+  SemanticsAnalysis analysis(/*suppress_warnings=*/false);
+  XLS_ASSERT_OK(analysis.RunPreTypeCheckPass(*module, warnings, import_data));
+
+  XLS_ASSERT_OK_AND_ASSIGN(Function * unwrap_or,
+                           module->GetMemberOrError<Function>("unwrap_or"));
+  const Statement* body_expr = unwrap_or->body()->statements().back();
+  ASSERT_TRUE(std::holds_alternative<Expr*>(body_expr->wrapped()));
+  const auto* outer_match =
+      dynamic_cast<const Match*>(std::get<Expr*>(body_expr->wrapped()));
+  ASSERT_NE(outer_match, nullptr);
+  ASSERT_EQ(outer_match->arms().size(), 2);
+  EXPECT_TRUE(std::holds_alternative<SumVariantPayloadPattern*>(
+      outer_match->arms()[0]->patterns()[0]->leaf()));
+  EXPECT_TRUE(outer_match->arms()[1]->patterns()[0]->IsWildcardLeaf());
+
+  const auto* inner_match =
+      dynamic_cast<const Match*>(outer_match->arms()[1]->expr());
+  ASSERT_NE(inner_match, nullptr);
+  ASSERT_EQ(inner_match->arms().size(), 2);
+  EXPECT_TRUE(std::holds_alternative<SumVariantPayloadPattern*>(
+      inner_match->arms()[0]->patterns()[0]->leaf()));
+  EXPECT_TRUE(inner_match->arms()[1]->patterns()[0]->IsWildcardLeaf());
 }
 
 }  // namespace

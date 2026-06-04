@@ -286,6 +286,44 @@ fn test_bit_count_size() {
                                       HasNodeWithType("z", "uN[32]"))));
 }
 
+TEST(TypecheckV2BuiltinTest, BitCountSemanticSumUsesSharedRepresentation) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+const_assert!(bit_count<Option>() == 33);
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2BuiltinTest,
+     BitCountSemanticSumInfersUnsignedExplicitTagType) {
+  EXPECT_THAT(R"(
+enum Choice {
+  Low(u8) = 0,
+  High(u8) = 3,
+}
+
+const_assert!(bit_count<Choice>() == 10);
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2BuiltinTest,
+     BitCountSemanticSumInfersSignedExplicitTagType) {
+  EXPECT_THAT(R"(
+enum SignedChoice {
+  Negative() = -1,
+  Zero() = 0,
+}
+
+const_assert!(bit_count<SignedChoice>() == 1);
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
 TEST(TypecheckV2BuiltinTest, BitCountMismatch) {
   EXPECT_THAT(R"(
 const x: u31 = bit_count<u32[4]>();
@@ -550,6 +588,18 @@ struct MyPoint { x: u32, y: u32 }
 const Y = element_count<MyPoint>();
 )",
               TypecheckSucceeds(HasNodeWithType("Y", "uN[32]")));
+}
+
+TEST(TypecheckV2BuiltinTest, ElementCountSemanticSumUsesBitCount) {
+  EXPECT_THAT(R"(
+enum Singleton {
+  Only(u32),
+}
+
+const_assert!(bit_count<Singleton>() == 32);
+const_assert!(element_count<Singleton>() == 32);
+)",
+              TypecheckSucceeds(::testing::_));
 }
 
 TEST(TypecheckV2BuiltinTest, ElementCountStructArray) {

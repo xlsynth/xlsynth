@@ -16,11 +16,9 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -173,8 +171,7 @@ TEST(TypeTest, TestEnum) {
   EXPECT_EQ("<no-file>:MyEnum", t.ToStringFullyQualified(file_table));
 }
 
-TEST(TypeTest, ZeroSelectionDoesNotChangeSumIdentityOrFormatting) {
-  static_assert(!std::is_default_constructible_v<SumType::ZeroSelection>);
+TEST(TypeTest, ConcreteDiscriminantsSurviveSumCloning) {
   FileTable file_table;
   Module module("test", /*fs_path=*/std::nullopt, file_table);
   auto* name = module.Make<NameDef>(kFakeSpan, "E", nullptr);
@@ -190,21 +187,19 @@ TEST(TypeTest, ZeroSelectionDoesNotChangeSumIdentityOrFormatting) {
       module.Make<SumDef>(kFakeSpan, name, std::vector<ParametricBinding*>{},
                           std::vector<SumVariant*>{a, b}, /*is_public=*/false);
   name->set_definer(def);
-  auto make_type = [&](SumType::ZeroSelection selection) {
-    std::vector<SumTypeVariant> variants;
-    variants.push_back(SumTypeVariant::MakeUnit(*a));
-    variants.push_back(SumTypeVariant::MakeUnit(*b));
-    return SumType(*def, std::move(variants), selection);
-  };
-
-  SumType first = make_type(SumType::SelectedZeroVariant{std::cref(*a)});
-  SumType second = make_type(SumType::SelectedZeroVariant{std::cref(*b)});
-  SumType absent = make_type(SumType::NoZeroVariant{});
-  EXPECT_EQ(first, second);
-  EXPECT_EQ(first, absent);
-  EXPECT_EQ(first.ToString(), "E { A | B }");
-  EXPECT_EQ(second.ToString(), first.ToString());
-  EXPECT_EQ(absent.ToString(), first.ToString());
+  std::vector<SumTypeVariant> variants;
+  variants.push_back(SumTypeVariant::MakeUnit(*a));
+  variants.push_back(SumTypeVariant::MakeUnit(*b));
+  SumType original(
+      *def, std::move(variants), TypeDim::CreateU32(3),
+      {InterpValue::MakeUBits(3, 5), InterpValue::MakeUBits(3, 0)});
+  std::unique_ptr<Type> cloned = original.CloneToUnique();
+  ASSERT_TRUE(cloned->IsSum());
+  EXPECT_EQ(original, *cloned);
+  EXPECT_EQ(cloned->AsSum().tag_bit_count(), TypeDim::CreateU32(3));
+  EXPECT_EQ(cloned->AsSum().GetDiscriminant(0), InterpValue::MakeUBits(3, 5));
+  EXPECT_EQ(cloned->AsSum().GetDiscriminant(1), InterpValue::MakeUBits(3, 0));
+  EXPECT_EQ(cloned->ToString(), "E { A | B }");
 }
 
 TEST(TypeTest, FunctionTypeU32ToS32) {

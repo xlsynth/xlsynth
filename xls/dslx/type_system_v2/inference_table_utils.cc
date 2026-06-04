@@ -85,28 +85,6 @@ absl::StatusOr<const TypeAnnotation*> GetTypeArgumentAnnotation(
 
 }  // namespace
 
-absl::Status ValidatePhase1SumPayloadMemberType(
-    const SumDef& sum_def, const SumVariant& variant,
-    const TypeAnnotation* member_annotation, const Type& member_type,
-    const FileTable& file_table) {
-  const bool is_empty_sum =
-      member_type.IsSum() && member_type.AsSum().variants().empty();
-  if (GetBitsLike(member_type).has_value() || member_type.IsEnum() ||
-      is_empty_sum) {
-    return absl::OkStatus();
-  }
-  // TODO(dank-openai): Remove this restriction when the exhaustiveness
-  // flattener can recurse through supported aggregate payloads.
-  return TypeInferenceErrorStatusForAnnotation(
-      member_annotation->span(), member_annotation,
-      absl::Substitute(
-          "Semantic sum payload members must be bits-like, enum typed, or "
-          "empty semantic sums; sum `$0` constructor `$1` has unsupported "
-          "payload member type `$2`.",
-          sum_def.identifier(), variant.identifier(), member_type.ToString()),
-      file_table);
-}
-
 absl::StatusOr<ExprOrType> NormalizeParametricArgument(
     const ParametricBinding& binding, ExprOrType argument,
     const InferenceTable& table, const FileTable& file_table) {

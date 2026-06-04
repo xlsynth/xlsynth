@@ -81,17 +81,17 @@ absl::StatusOr<bool> HasKnownAllOnesValue(const EnumType& t,
 }
 
 const SumTypeVariant* GetZeroDiscriminantVariant(const SumType& type) {
-  if (const auto* selected =
-          std::get_if<SumType::SelectedZeroVariant>(&type.zero_selection())) {
-    auto it =
-        std::find_if(type.variants().begin(), type.variants().end(),
-                     [&](const SumTypeVariant& variant) {
-                       return &variant.variant() == &selected->variant.get();
-                     });
-    return &*it;
-  } else {
+  if (type.variant_count() == 0) {
     return nullptr;
   }
+
+  for (int64_t variant_index = 0; variant_index < type.variant_count();
+       ++variant_index) {
+    if (type.GetDiscriminant(variant_index).GetBitsOrDie().IsZero()) {
+      return &type.variants().at(variant_index);
+    }
+  }
+  return nullptr;
 }
 
 absl::StatusOr<InterpValue> ZeroOfBitsLike(const BitsLikeProperties& bits_like,
@@ -219,7 +219,7 @@ class MakeValueVisitor : public TypeVisitor {
   absl::Status HandleStruct(const StructType& t) override {
     std::vector<InterpValue> elems;
     for (const auto& member : t.members()) {
-      XLS_RETURN_IF_ERROR(AcceptAggregateChild(*member));
+      XLS_RETURN_IF_ERROR(member->Accept(*this));
       XLS_ASSIGN_OR_RETURN(InterpValue elem_value, ResultOrError());
       elems.push_back(std::move(elem_value));
     }
@@ -244,7 +244,7 @@ class MakeValueVisitor : public TypeVisitor {
     std::vector<InterpValue> payload_values;
     payload_values.reserve(zero_variant->size());
     for (int64_t i = 0; i < zero_variant->size(); ++i) {
-      XLS_RETURN_IF_ERROR(AcceptAggregateChild(zero_variant->GetMemberType(i)));
+      XLS_RETURN_IF_ERROR(zero_variant->GetMemberType(i).Accept(*this));
       XLS_ASSIGN_OR_RETURN(InterpValue payload_value, ResultOrError());
       payload_values.push_back(std::move(payload_value));
     }
@@ -263,7 +263,7 @@ class MakeValueVisitor : public TypeVisitor {
   absl::Status HandleTuple(const TupleType& t) override {
     std::vector<InterpValue> elems;
     for (const auto& m : t.members()) {
-      XLS_RETURN_IF_ERROR(AcceptAggregateChild(*m));
+      XLS_RETURN_IF_ERROR(m->Accept(*this));
       XLS_ASSIGN_OR_RETURN(InterpValue elem_value, ResultOrError());
       elems.push_back(std::move(elem_value));
     }
@@ -282,7 +282,7 @@ class MakeValueVisitor : public TypeVisitor {
       XLS_ASSIGN_OR_RETURN(result_, InterpValue::MakeArray({}));
       return absl::OkStatus();
     }
-    XLS_RETURN_IF_ERROR(AcceptAggregateChild(t.element_type()));
+    XLS_RETURN_IF_ERROR(t.element_type().Accept(*this));
     XLS_ASSIGN_OR_RETURN(InterpValue elem_value, ResultOrError());
     XLS_ASSIGN_OR_RETURN(
         result_,
@@ -312,10 +312,6 @@ class MakeValueVisitor : public TypeVisitor {
   const FileTable& file_table() const { return import_data_.file_table(); }
 
  private:
-  absl::Status AcceptAggregateChild(const Type& type) {
-    return type.Accept(*this);
-  }
-
   absl::Status HandleBitsLike(const BitsLikeProperties& bits_like) {
     // Make a BitsType with the same properties.
     XLS_ASSIGN_OR_RETURN(bool is_signed, bits_like.is_signed.GetAsBool());

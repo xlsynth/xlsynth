@@ -46,8 +46,9 @@ absl::StatusOr<InterpValue> CastBitsToEnum(const InterpValue& bits_value,
 // Creates a zero-valued InterpValue with the same structure as the input.
 absl::StatusOr<InterpValue> CreateZeroValue(const InterpValue& value);
 
-// Validates the value's representation and members against the supplied DSLX
-// type without reconstructing a nominal type from its storage representation.
+// Validates that the value has the canonical runtime representation for the
+// given DSLX type. For sum-bearing values this rejects malformed tags and
+// recursively rejects malformed nested sums.
 absl::Status ValidateInterpValueMatchesType(const InterpValue& value,
                                             const Type& type);
 
@@ -74,6 +75,11 @@ absl::StatusOr<InterpValue> CreateSumValueFromValidatedZeroPayload(
 absl::StatusOr<InterpValue> CreateSumValue(
     const SumType& type, std::string_view variant_name,
     absl::Span<const InterpValue> payload_values);
+
+// Returns the active semantic payload members carried by a canonical
+// well-formed sum value.
+absl::StatusOr<std::vector<InterpValue>> GetSumPayloadValues(
+    const SumType& type, const InterpValue& value);
 
 // Finds the first index in the LHS and RHS sequences at which values differ or
 // nullopt if the two are equal.

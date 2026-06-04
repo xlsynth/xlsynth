@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "absl/base/optimization.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -135,6 +136,8 @@ AstNodeKindProto ToProto(AstNodeKind kind) {
       return AST_NODE_KIND_TEST_PROC;
     case AstNodeKind::kWildcardPattern:
       return AST_NODE_KIND_WILDCARD_PATTERN;
+    case AstNodeKind::kInvalidPattern:
+      return AST_NODE_KIND_INVALID_PATTERN;
     case AstNodeKind::kWidthSlice:
       return AST_NODE_KIND_WIDTH_SLICE;
     case AstNodeKind::kMatchArm:
@@ -385,8 +388,16 @@ absl::StatusOr<SumTypeProto> ToProto(const SumType& sum_type,
   SumTypeProto proto;
   *proto.mutable_sum_def_span() =
       ToProto(sum_type.nominal_type().span(), file_table);
-  for (const SumTypeVariant& variant : sum_type.variants()) {
-    XLS_ASSIGN_OR_RETURN(*proto.add_variants(), ToProto(variant, file_table));
+  XLS_ASSIGN_OR_RETURN(*proto.mutable_tag_bit_count(),
+                       ToProto(sum_type.tag_bit_count(), file_table));
+  for (int64_t variant_index = 0; variant_index < sum_type.variant_count();
+       ++variant_index) {
+    XLS_ASSIGN_OR_RETURN(
+        *proto.add_variants(),
+        ToProto(sum_type.variants().at(variant_index), file_table));
+    XLS_ASSIGN_OR_RETURN(
+        *proto.mutable_variants(variant_index)->mutable_discriminant(),
+        ToProto(sum_type.GetDiscriminant(variant_index)));
   }
   VLOG(5) << "- proto: " << proto.ShortDebugString();
   return proto;
@@ -672,37 +683,147 @@ absl::StatusOr<std::unique_ptr<Type>> ScalarTypeFromProto(
   }
 }
 
-// Typechecking currently permits only bits-like values, numeric enums, and
-// empty semantic sums as sum payload members. Use Type equality for scalar
-// members so alternate bits-like representations retain their existing
-// equivalence.
+// Compare against the source-backed concrete payload without reconstructing
+// compiler sums. Scalar equality preserves equivalent bits-like forms;
+// aggregate comparisons preserve nominal identity and concrete discriminants
+// recursively.
 absl::StatusOr<bool> SumPayloadTypeMatchesProto(const TypeProto& proto,
                                                 const Type& expected_type,
                                                 const ImportData& import_data,
                                                 FileTable& file_table) {
-  if (proto.has_sum_type()) {
-    XLS_ASSIGN_OR_RETURN(const SumDef* sum_def,
-                         import_data.FindSumDef(FromProto(
-                             proto.sum_type().sum_def_span(), file_table)));
-    const auto* expected_sum = dynamic_cast<const SumType*>(&expected_type);
-    return expected_sum != nullptr &&
-           &expected_sum->nominal_type() == sum_def &&
-           expected_sum->variants().empty() &&
-           proto.sum_type().variants().empty();
-  } else if (proto.has_bits_type() || proto.has_bits_constructor_type() ||
-             proto.has_enum_type() ||
-             (proto.has_array_type() &&
-              proto.array_type().element_type().has_bits_constructor_type())) {
+  if (proto.has_bits_type() || proto.has_bits_constructor_type() ||
+      proto.has_enum_type() ||
+      (proto.has_array_type() &&
+       proto.array_type().element_type().has_bits_constructor_type())) {
     XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> type,
                          ScalarTypeFromProto(proto, import_data, file_table));
     return *type == expected_type;
+  } else if (proto.has_sum_type() && expected_type.IsSum()) {
+    const SumType& expected_sum = expected_type.AsSum();
+    const SumTypeProto& sum = proto.sum_type();
+    XLS_ASSIGN_OR_RETURN(
+        const SumDef* sum_def,
+        import_data.FindSumDef(FromProto(sum.sum_def_span(), file_table)));
+    XLS_ASSIGN_OR_RETURN(TypeDim tag_width,
+                         FromProto(sum.tag_bit_count(), file_table));
+    if (&expected_sum.nominal_type() != sum_def ||
+        sum.variants_size() != expected_sum.variant_count() ||
+        tag_width != expected_sum.tag_bit_count()) {
+      return false;
+    } else {
+      for (int64_t i = 0; i < sum.variants_size(); ++i) {
+        const SumTypeVariantProto& variant = sum.variants(i);
+        const SumTypeVariant& expected_variant = expected_sum.variants()[i];
+        XLS_ASSIGN_OR_RETURN(InterpValue discriminant,
+                             FromProto(variant.discriminant()));
+        if (discriminant != expected_sum.GetDiscriminant(i) ||
+            variant.payload_members_size() != expected_variant.size()) {
+          return false;
+        } else {
+          for (int64_t j = 0; j < variant.payload_members_size(); ++j) {
+            XLS_ASSIGN_OR_RETURN(
+                bool matches,
+                SumPayloadTypeMatchesProto(variant.payload_members(j),
+                                           expected_variant.GetMemberType(j),
+                                           import_data, file_table));
+            if (!matches) {
+              return false;
+            }
+          }
+        }
+      }
+      return true;
+    }
+  } else if (proto.has_tuple_type() && expected_type.IsTuple()) {
+    const TupleTypeProto& tuple = proto.tuple_type();
+    const TupleType& expected_tuple = expected_type.AsTuple();
+    if (tuple.members_size() != expected_tuple.size()) {
+      return false;
+    } else {
+      for (int64_t i = 0; i < tuple.members_size(); ++i) {
+        XLS_ASSIGN_OR_RETURN(
+            bool matches, SumPayloadTypeMatchesProto(
+                              tuple.members(i), expected_tuple.GetMemberType(i),
+                              import_data, file_table));
+        if (!matches) {
+          return false;
+        }
+      }
+      return true;
+    }
+  } else if (proto.has_array_type() && expected_type.IsArray()) {
+    const ArrayTypeProto& array = proto.array_type();
+    const ArrayType& expected_array = expected_type.AsArray();
+    XLS_ASSIGN_OR_RETURN(TypeDim size, FromProto(array.size(), file_table));
+    if (size != expected_array.size()) {
+      return false;
+    } else {
+      return SumPayloadTypeMatchesProto(array.element_type(),
+                                        expected_array.element_type(),
+                                        import_data, file_table);
+    }
+  } else if ((proto.has_struct_type() && expected_type.IsStruct()) ||
+             (proto.has_proc_type() && expected_type.IsProc())) {
+    const StructDefBase* definition;
+    const StructTypeBase* expected_struct;
+    if (proto.has_struct_type()) {
+      XLS_ASSIGN_OR_RETURN(
+          definition,
+          import_data.FindStructDef(
+              FromProto(proto.struct_type().struct_def().span(), file_table)));
+      expected_struct = &expected_type.AsStruct();
+    } else {
+      XLS_ASSIGN_OR_RETURN(
+          definition, import_data.FindProcDef(FromProto(
+                          proto.proc_type().proc_def().span(), file_table)));
+      expected_struct = &expected_type.AsProc();
+    }
+    const auto& members = proto.has_struct_type()
+                              ? proto.struct_type().members()
+                              : proto.proc_type().members();
+    if (&expected_struct->struct_def_base() != definition ||
+        members.size() != expected_struct->size()) {
+      return false;
+    } else {
+      for (int64_t i = 0; i < members.size(); ++i) {
+        XLS_ASSIGN_OR_RETURN(bool matches,
+                             SumPayloadTypeMatchesProto(
+                                 members[i], expected_struct->GetMemberType(i),
+                                 import_data, file_table));
+        if (!matches) {
+          return false;
+        }
+      }
+      return true;
+    }
+  } else if (proto.has_fn_type() && expected_type.IsFunction()) {
+    const FunctionTypeProto& function = proto.fn_type();
+    const FunctionType& expected_function = expected_type.AsFunction();
+    if (function.params_size() != expected_function.params().size()) {
+      return false;
+    } else {
+      for (int64_t i = 0; i < function.params_size(); ++i) {
+        XLS_ASSIGN_OR_RETURN(bool matches, SumPayloadTypeMatchesProto(
+                                               function.params(i),
+                                               *expected_function.params()[i],
+                                               import_data, file_table));
+        if (!matches) {
+          return false;
+        }
+      }
+      return SumPayloadTypeMatchesProto(function.return_type(),
+                                        expected_function.return_type(),
+                                        import_data, file_table);
+    }
+  } else if (proto.has_token_type()) {
+    return expected_type.IsToken();
   } else {
     return false;
   }
 }
 
-// Formats the dump directly: it does not contain all the facts needed to create
-// compiler types (for example, a sum's evaluated zero selection).
+// Formats the dump directly, using the source context to validate nominal
+// types.
 absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
                                           const ImportData& import_data,
                                           FileTable& file_table) {
@@ -762,8 +883,23 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
             sum_def->identifier(), stp.variants_size(),
             sum_def->variants().size()));
       }
+      if (!stp.has_tag_bit_count()) {
+        return absl::InvalidArgumentError(absl::StrFormat(
+            "Missing sum tag bit count for `%s`.", sum_def->identifier()));
+      }
+      XLS_ASSIGN_OR_RETURN(TypeDim tag_bit_count,
+                           FromProto(stp.tag_bit_count(), file_table));
+      XLS_ASSIGN_OR_RETURN(int64_t expected_tag_width,
+                           tag_bit_count.GetAsInt64());
+      if (expected_sum_type != nullptr &&
+          tag_bit_count != expected_sum_type->tag_bit_count()) {
+        return absl::InvalidArgumentError(absl::StrFormat(
+            "Sum tag bit count mismatch for `%s`.", sum_def->identifier()));
+      }
       std::vector<std::string> variants;
       variants.reserve(stp.variants_size());
+      std::vector<InterpValue> discriminants;
+      discriminants.reserve(stp.variants_size());
       for (int64_t i = 0; i < sum_def->variants().size(); ++i) {
         const SumVariant* variant = sum_def->variants()[i];
         const SumTypeVariantProto& variant_proto = stp.variants(i);
@@ -816,6 +952,52 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
                                           absl::StrJoin(payload_members, ", "),
                                           " }"));
         }
+        if (!variant_proto.has_discriminant() ||
+            !variant_proto.discriminant().has_bits()) {
+          return absl::InvalidArgumentError(absl::StrFormat(
+              "Sum variant `%s` is missing its bits-valued discriminant.",
+              variant->identifier()));
+        }
+        XLS_ASSIGN_OR_RETURN(InterpValue discriminant,
+                             FromProto(variant_proto.discriminant()));
+        XLS_ASSIGN_OR_RETURN(int64_t actual_tag_width,
+                             discriminant.GetBitCount());
+        if (actual_tag_width != expected_tag_width) {
+          return absl::InvalidArgumentError(absl::StrFormat(
+              "Sum variant `%s` discriminant width mismatch; expected %d "
+              "bits, got %d.",
+              variant->identifier(), expected_tag_width, actual_tag_width));
+        }
+        if (!discriminants.empty() &&
+            discriminant.IsSigned() != discriminants.front().IsSigned()) {
+          return absl::InvalidArgumentError(absl::StrFormat(
+              "Sum variant `%s` discriminant signedness mismatch.",
+              variant->identifier()));
+        }
+        if (expected_sum_type != nullptr &&
+            discriminant.IsSigned() !=
+                expected_sum_type->GetDiscriminant(i).IsSigned()) {
+          return absl::InvalidArgumentError(absl::StrFormat(
+              "Sum variant `%s` discriminant signedness mismatch.",
+              variant->identifier()));
+        }
+        if (std::any_of(discriminants.begin(), discriminants.end(),
+                        [&](const InterpValue& previous) {
+                          return previous.GetBitsOrDie() ==
+                                 discriminant.GetBitsOrDie();
+                        })) {
+          return absl::InvalidArgumentError(
+              absl::StrFormat("Sum variant `%s` has a duplicate discriminant.",
+                              variant->identifier()));
+        }
+        if (expected_sum_type != nullptr &&
+            discriminant.GetBitsOrDie() !=
+                expected_sum_type->GetDiscriminant(i).GetBitsOrDie()) {
+          return absl::InvalidArgumentError(
+              absl::StrFormat("Sum variant `%s` discriminant value mismatch.",
+                              variant->identifier()));
+        }
+        discriminants.push_back(std::move(discriminant));
       }
       return absl::StrCat(sum_def->identifier(), " { ",
                           absl::StrJoin(variants, " | "), " }");
@@ -989,6 +1171,8 @@ absl::StatusOr<AstNodeKind> FromProto(AstNodeKindProto p) {
       return AstNodeKind::kTestProc;
     case AST_NODE_KIND_WILDCARD_PATTERN:
       return AstNodeKind::kWildcardPattern;
+    case AST_NODE_KIND_INVALID_PATTERN:
+      return AstNodeKind::kInvalidPattern;
     case AST_NODE_KIND_WIDTH_SLICE:
       return AstNodeKind::kWidthSlice;
     case AST_NODE_KIND_MATCH_ARM:
