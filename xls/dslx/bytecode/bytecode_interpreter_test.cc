@@ -199,41 +199,6 @@ fn main() -> () {
   EXPECT_EQ(value, InterpValue::MakeUnit());
 }
 
-TEST_F(BytecodeInterpreterTest, TraceSemanticSumValueIsOpaqueInPhase1) {
-  constexpr std::string_view kProgram = R"(
-enum Option {
-  None,
-  Some(u32),
-}
-
-fn main() -> () {
-  let x = Option::Some(u32:42);
-  trace!(x);
-}
-)";
-  DslxInterpreterEvents events;
-  XLS_ASSERT_OK_AND_ASSIGN(
-      InterpValue value,
-      Interpret(kProgram, "main", /*args=*/{}, BytecodeInterpreterOptions(),
-                nullptr, &events));
-  EXPECT_THAT(
-      events.GetTraceMessageStrings(),
-      ElementsAre("trace of x: <semantic sum value omitted>"));
-  EXPECT_EQ(value, InterpValue::MakeUnit());
-}
-
-TEST_F(BytecodeInterpreterTest, TraceChannelSemanticSumValueIsOpaqueInPhase1) {
-  DslxInterpreterEvents events;
-  events.AddTraceChannelMessage(
-      import_data_->file_table(), Span::Fake(), "sum_channel",
-      InterpValue::MakeTuple(
-          {InterpValue::MakeUBits(1, 1), InterpValue::MakeU32(42)}),
-      ChannelDirection::kOut, ValueFormatDescriptor(), /*redact_value=*/true);
-  EXPECT_THAT(events.GetTraceMessageStrings(),
-              ElementsAre("Sent data on channel `sum_channel`:\n  "
-                          "<semantic sum value omitted>"));
-}
-
 TEST_F(BytecodeInterpreterTest, TraceActsAsIdentity) {
   constexpr std::string_view kProgram = R"(
 fn main() -> u32 {
@@ -242,6 +207,103 @@ fn main() -> u32 {
 )";
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue value, Interpret(kProgram, "main"));
   EXPECT_EQ(value, InterpValue::MakeU32(42 >> 1));
+}
+
+TEST_F(BytecodeInterpreterTest, TraceSemanticSumUsesSemanticFormatting) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn main() {
+  trace!(Option::Some(u32:42));
+}
+)";
+  DslxInterpreterEvents events;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue value,
+      Interpret(kProgram, "main", /*args=*/{}, BytecodeInterpreterOptions(),
+                nullptr, &events));
+  EXPECT_THAT(events.GetTraceMessageStrings(),
+              testing::ElementsAre(
+                  "trace of Option::Some(u32:42): Option::Some(42)"));
+  EXPECT_EQ(value, InterpValue::MakeUnit());
+}
+
+TEST_F(BytecodeInterpreterTest, TraceCallsUseSemanticSumFormatting) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn id(x: Option) -> Option {
+  x
+}
+
+fn main() -> Option {
+  id(Option::Some(u32:42))
+}
+)";
+  DslxInterpreterEvents events;
+  BytecodeInterpreterOptions options;
+  options.trace_calls(true);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue value,
+      Interpret(kProgram, "main", /*args=*/{}, options, nullptr, &events));
+  EXPECT_THAT(events.GetTraceMessageStrings(),
+              testing::ElementsAre(
+                  "main()",
+                  "  id(Option::Some(42))",
+                  "  id(...) => Option::Some(42)",
+                  "main(...) => Option::Some(42)"));
+  EXPECT_THAT(value.ToString(), HasSubstr("u32:42"));
+}
+
+TEST_F(BytecodeInterpreterTest, TraceSemanticSumRejectsMalformedInput) {
+  constexpr std::string_view kProgram = R"(
+enum Option: u2 {
+  None = 0,
+  Some(u32) = 1,
+}
+
+fn main(x: Option) {
+  trace!(x);
+}
+)";
+  InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeUBits(/*bit_count=*/32, /*value=*/7)})});
+  EXPECT_THAT(
+      Interpret(kProgram, "main", {malformed}),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("Sum tag u2:3 is not declared for `Option`.")));
+}
+
+TEST_F(BytecodeInterpreterTest, TraceCallsRejectMalformedSemanticSumInput) {
+  constexpr std::string_view kProgram = R"(
+enum Option: u2 {
+  None = 0,
+  Some(u32) = 1,
+}
+
+fn main(x: Option) -> Option {
+  x
+}
+)";
+  InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeUBits(/*bit_count=*/32, /*value=*/7)})});
+  DslxInterpreterEvents events;
+  BytecodeInterpreterOptions options;
+  options.trace_calls(true);
+  EXPECT_THAT(
+      Interpret(kProgram, "main", {malformed}, options, nullptr, &events),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("Sum tag u2:3 is not declared for `Option`.")));
 }
 
 TEST_F(BytecodeInterpreterTest, TraceFmtBitsValueDefaultFormat) {
@@ -2341,35 +2403,10 @@ fn doomed() {
   absl::StatusOr<InterpValue> value = Interpret(kProgram, "doomed");
   EXPECT_THAT(value.status(),
               StatusIs(absl::StatusCode::kInternal,
-                       AllOf(HasSubstr("lhs and rhs were not equal; "
-                                       "formatting values containing semantic "
-                                       "sums is not supported"),
-                             Not(HasSubstr("Option::Pair")),
-                             Not(HasSubstr("rhs: u32:2")),
-                             Not(HasSubstr("rhs: u32:3")))));
-}
-
-TEST_F(BytecodeInterpreterTest,
-       AssertEqAggregateContainingSemanticSumIsOpaqueInPhase1) {
-  constexpr std::string_view kProgram = R"(
-enum Option {
-  None,
-  Some(u32),
-}
-
-fn doomed() {
-  let a = Option[1]:[Option::Some(u32:2)];
-  let b = Option[1]:[Option::Some(u32:3)];
-  assert_eq(a, b)
-})";
-
-  absl::StatusOr<InterpValue> value = Interpret(kProgram, "doomed");
-  EXPECT_THAT(value.status(),
-              StatusIs(absl::StatusCode::kInternal,
-                       AllOf(HasSubstr("formatting values containing semantic "
-                                       "sums is not supported"),
-                             Not(HasSubstr("first differing index")),
-                             Not(HasSubstr("Option::Some")))));
+                       AllOf(HasSubstr("were not equal"),
+                             HasSubstr("Option::Pair {"),
+                             HasSubstr("<     rhs: u32:2"),
+                             HasSubstr(">     rhs: u32:3"))));
 }
 
 TEST_F(BytecodeInterpreterTest, CheckedCastSnToSn) {
@@ -3018,6 +3055,52 @@ fn main() -> (u32, u32, bool, bool) {
                           InterpValue::MakeBool(true)));
 }
 
+TEST_F(BytecodeInterpreterTest, SemanticSumEqualityRejectsMalformedInput) {
+  constexpr std::string_view kProgram = R"(
+enum Option: u2 {
+  None = 0,
+  Some(u32) = 1,
+}
+
+fn main(x: Option) -> bool {
+  x == x
+}
+)";
+  InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeUBits(/*bit_count=*/32, /*value=*/7)})});
+  EXPECT_THAT(
+      Interpret(kProgram, "main", {malformed}),
+      StatusIs(absl::StatusCode::kInternal,
+               HasSubstr("Semantic sum equality received a malformed value")));
+}
+
+TEST_F(BytecodeInterpreterTest, SemanticSumMatchRejectsMalformedInput) {
+  constexpr std::string_view kProgram = R"(
+enum Option: u2 {
+  None = 0,
+  Some(u32) = 1,
+}
+
+fn main(x: Option) -> u32 {
+  match x {
+    Option::None => u32:0,
+    Option::Some(v) => v,
+    invalid! => u32:1,
+  }
+}
+)";
+  InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeUBits(/*bit_count=*/32, /*value=*/7)})});
+  EXPECT_THAT(
+      Interpret(kProgram, "main", {malformed}),
+      StatusIs(absl::StatusCode::kInternal,
+               HasSubstr("Semantic sum observer received a malformed value")));
+}
+
 TEST_F(BytecodeInterpreterTest, FailSemanticSumValueIsOpaqueInPhase1) {
   constexpr std::string_view kProgram = R"(
 enum Option {
@@ -3035,6 +3118,52 @@ fn doomed() -> Option {
               StatusIs(absl::StatusCode::kInternal,
                        AllOf(HasSubstr("<semantic sum value omitted>"),
                              Not(HasSubstr("u32:42")))));
+}
+
+TEST_F(BytecodeInterpreterTest, SemanticSumIfLet) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn unwrap_or_zero(x: Option) -> u32 {
+  if let Option::Some(v) = x { v } else { u32:0 }
+}
+
+fn main() -> (u32, u32) {
+  (
+    unwrap_or_zero(Option::Some(u32:7)),
+    unwrap_or_zero(Option::None)
+  )
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
+  XLS_ASSERT_OK_AND_ASSIGN(const std::vector<InterpValue>* values,
+                           result.GetValues());
+  EXPECT_THAT(*values,
+              ElementsAre(InterpValue::MakeU32(7), InterpValue::MakeU32(0)));
+}
+
+TEST_F(BytecodeInterpreterTest, SemanticSumIfLetRejectsMalformedInput) {
+  constexpr std::string_view kProgram = R"(
+enum Option: u2 {
+  None = 0,
+  Some(u32) = 1,
+}
+
+fn main(x: Option) -> u32 {
+  if let Option::Some(v) = x { v } else { u32:0 }
+}
+)";
+  InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeUBits(/*bit_count=*/32, /*value=*/7)})});
+  EXPECT_THAT(
+      Interpret(kProgram, "main", {malformed}),
+      StatusIs(absl::StatusCode::kInternal,
+               HasSubstr("Semantic sum observer received a malformed value")));
 }
 
 TEST_F(BytecodeInterpreterTest, ZeroMacroSemanticSumUsesZeroDiscriminant) {
@@ -3138,8 +3267,7 @@ fn main() -> (bool, bool, bool, bool, bool, bool, bool, bool, bool) {
                           InterpValue::MakeBool(true)));
 }
 
-TEST_F(BytecodeInterpreterTest,
-       SemanticSumConstructorsRejectNestedSumPayloadsInPhase1) {
+TEST_F(BytecodeInterpreterTest, SemanticSumConstructorsAllowNestedSumPayloads) {
   constexpr std::string_view kProgram = R"(
 enum Inner {
   None,
@@ -3160,14 +3288,8 @@ fn main() -> bool {
   }
 }
 )";
-  EXPECT_THAT(
-      Interpret(kProgram, "main", {}),
-      StatusIs(absl::StatusCode::kInvalidArgument,
-               testing::AllOf(
-                   HasSubstr("Semantic sum payload members must be bits-like, "
-                             "enum typed, or empty semantic sums"),
-                   HasSubstr("constructor `Wrapped`"),
-                   HasSubstr("Inner"))));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
+  EXPECT_TRUE(result.Eq(InterpValue::MakeBool(true)));
 }
 
 TEST_F(BytecodeInterpreterTest, ImportedSumReturningFunctionCall) {
@@ -3188,6 +3310,7 @@ fn main(x: u32) -> u32 {
   match imported::make_some(x) {
     imported::Option::Some(v) => v,
     imported::Option::None => u32:0,
+    invalid! => u32:0,
   }
 }
 )";

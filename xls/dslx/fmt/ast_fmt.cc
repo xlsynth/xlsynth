@@ -534,6 +534,10 @@ DocRef Formatter::FormatNumber(const Number& n) {
 }
 
 DocRef Formatter::FormatWildcardPattern(const WildcardPattern& n) {
+  if (const auto* invalid = dynamic_cast<const InvalidPattern*>(&n);
+      invalid != nullptr) {
+    return arena_.MakeText(invalid->ToString());
+  }
   return arena_.underscore();
 }
 
@@ -1785,6 +1789,14 @@ DocRef Formatter::FormatMakeConditionalTest(const Conditional& n) {
   }
   pieces.push_back(arena_.Make(Keyword::kIf));
   pieces.push_back(arena_.space());
+  if (n.IsIfLet()) {
+    pieces.push_back(arena_.Make(Keyword::kLet));
+    pieces.push_back(arena_.space());
+    pieces.push_back(FormatPatternTree(*n.if_let_pattern()));
+    pieces.push_back(arena_.space());
+    pieces.push_back(arena_.equals());
+    pieces.push_back(arena_.space());
+  }
   pieces.push_back(FormatExpr(*n.test(), /*suppress_parens=*/true));
   pieces.push_back(arena_.space());
   pieces.push_back(arena_.ocurl());

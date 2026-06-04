@@ -319,6 +319,8 @@ std::string_view AstNodeKindToString(AstNodeKind kind) {
       return "width slice";
     case AstNodeKind::kWildcardPattern:
       return "wildcard pattern";
+    case AstNodeKind::kInvalidPattern:
+      return "invalid pattern";
     case AstNodeKind::kMatchArm:
       return "match arm";
     case AstNodeKind::kMatch:
@@ -740,15 +742,25 @@ NameDef::~NameDef() = default;
 Conditional::Conditional(Module* owner, Span span, Expr* test,
                          StatementBlock* consequent,
                          std::variant<StatementBlock*, Conditional*> alternate,
+                         std::optional<PatternTree> if_let_pattern,
                          bool in_parens, bool has_else, bool is_const)
     : Expr(owner, std::move(span), in_parens),
       test_(test),
       consequent_(consequent),
       alternate_(alternate),
+      if_let_pattern_(std::move(if_let_pattern)),
       has_else_(has_else),
       is_const_(is_const) {}
 
 Conditional::~Conditional() = default;
+
+std::vector<AstNode*> Conditional::GetChildren(bool want_types) const {
+  if (!if_let_pattern_.has_value()) {
+    return {test_, consequent_, ToAstNode(alternate_)};
+  }
+  return {ToAstNode(*if_let_pattern_), test_, consequent_,
+          ToAstNode(alternate_)};
+}
 
 std::vector<StatementBlock*> Conditional::GatherBlocks() {
   std::vector<StatementBlock*> blocks;
@@ -786,6 +798,10 @@ std::string Conditional::ToStringInternal() const {
   auto make_string = [&](std::string (AstNode::*to_str_fn)()
                              const) -> std::string {
     std::string test_str = (test_->*to_str_fn)();
+    if (IsIfLet()) {
+      test_str = absl::StrFormat("let %s = %s",
+                                 PatternToString(*if_let_pattern_), test_str);
+    }
     std::string then_str = (consequent_->*to_str_fn)();
     std::string else_str = "";
     if (has_else_) {
@@ -2998,6 +3014,24 @@ std::optional<Span> Statement::GetSpan() const {
 
 WildcardPattern::~WildcardPattern() = default;
 
+// -- class InvalidPattern
+
+InvalidPattern::~InvalidPattern() = default;
+
+std::string InvalidPattern::ToString() const {
+  if (raw_name_def_ == nullptr) {
+    return "invalid!";
+  }
+  return absl::StrFormat("invalid!(%s)", raw_name_def_->ToString());
+}
+
+std::vector<AstNode*> InvalidPattern::GetChildren(bool want_types) const {
+  if (raw_name_def_ == nullptr) {
+    return {};
+  }
+  return {raw_name_def_};
+}
+
 // -- class RestOfTuple
 
 RestOfTuple::~RestOfTuple() = default;
@@ -3343,7 +3377,9 @@ bool IsIrrefutablePattern(const PatternTree& pattern) {
   std::vector<PatternLeaf> leaves = FlattenPattern(pattern);
   return std::all_of(leaves.begin(), leaves.end(), [](PatternLeaf leaf) {
     return std::holds_alternative<NameDef*>(leaf) ||
-           std::holds_alternative<WildcardPattern*>(leaf);
+           (std::holds_alternative<WildcardPattern*>(leaf) &&
+            std::get<WildcardPattern*>(leaf)->kind() !=
+                AstNodeKind::kInvalidPattern);
   });
 }
 
@@ -3351,16 +3387,22 @@ bool IsIrrefutablePattern(const ConstPatternTree& pattern) {
   std::vector<ConstPatternLeaf> leaves = FlattenPattern(pattern);
   return std::all_of(leaves.begin(), leaves.end(), [](ConstPatternLeaf leaf) {
     return std::holds_alternative<const NameDef*>(leaf) ||
-           std::holds_alternative<const WildcardPattern*>(leaf);
+           (std::holds_alternative<const WildcardPattern*>(leaf) &&
+            std::get<const WildcardPattern*>(leaf)->kind() !=
+                AstNodeKind::kInvalidPattern);
   });
 }
 
 bool IsWildcardLeaf(const PatternTree& pattern) {
-  return std::holds_alternative<WildcardPattern*>(pattern);
+  return std::holds_alternative<WildcardPattern*>(pattern) &&
+         std::get<WildcardPattern*>(pattern)->kind() !=
+             AstNodeKind::kInvalidPattern;
 }
 
 bool IsWildcardLeaf(const ConstPatternTree& pattern) {
-  return std::holds_alternative<const WildcardPattern*>(pattern);
+  return std::holds_alternative<const WildcardPattern*>(pattern) &&
+         std::get<const WildcardPattern*>(pattern)->kind() !=
+             AstNodeKind::kInvalidPattern;
 }
 
 bool IsRestOfTupleLeaf(const PatternTree& pattern) {

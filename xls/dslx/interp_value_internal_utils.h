@@ -16,6 +16,7 @@
 #define XLS_DSLX_INTERP_VALUE_INTERNAL_UTILS_H_
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -30,10 +31,10 @@ class Type;
 
 namespace internal {
 
-// Borrowed view over the Phase 1 tuple encoding for a semantic sum value.
+// Borrowed view over the shared semantic-sum tuple shell.
 struct EncodedSumView {
   const InterpValue& tag;
-  absl::Span<const InterpValue> payload_slots;
+  const InterpValue& payload_slot;
 };
 
 inline absl::StatusOr<EncodedSumView> GetEncodedSumView(
@@ -49,27 +50,36 @@ inline absl::StatusOr<EncodedSumView> GetEncodedSumView(
                         static_cast<int64_t>(sum_elements.size())));
   }
 
-  const InterpValue& payload_slots = sum_elements[1];
-  if (!payload_slots.IsTuple()) {
+  const InterpValue& payload_tuple = sum_elements[1];
+  if (!payload_tuple.IsTuple()) {
     return absl::InvalidArgumentError(
-        "Expected encoded sum payload slots to be tuple-valued.");
+        "Expected encoded sum payload slot tuple to be tuple-valued.");
+  }
+  const std::vector<InterpValue>& payload_elements = payload_tuple.GetValuesOrDie();
+  if (payload_elements.size() != 1) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Expected encoded sum payload slot tuple to have 1 element; got %d",
+        static_cast<int64_t>(payload_elements.size())));
   }
 
   return EncodedSumView{
       .tag = sum_elements[0],
-      .payload_slots = payload_slots.GetValuesOrDie(),
+      .payload_slot = payload_elements[0],
   };
 }
 
-// Creates the Phase 1 tuple encoding used to carry semantic sum values.
-InterpValue CreateEncodedSumTuple(InterpValue tag,
-                                  std::vector<InterpValue> payload_slots);
+// Creates the shared tuple shell used to carry semantic sum values.
+inline InterpValue CreateEncodedSumTuple(InterpValue tag,
+                                         InterpValue payload_slot) {
+  return InterpValue::MakeTuple(
+      {std::move(tag), InterpValue::MakeTuple({std::move(payload_slot)})});
+}
 
 // Creates a shape-correct dead InterpValue for internal implementation use.
 //
 // This is intentionally separate from the public value-creation helpers because
-// callers use it for inactive Phase 1 sum payload slots and other operands that
-// are semantically unused but must still carry the right concrete shape.
+// callers use it for dead operands that are semantically unused but must still
+// carry the right concrete shape.
 absl::StatusOr<InterpValue> CreateInternalPlaceholderValueFromType(
     const Type& type);
 

@@ -632,6 +632,44 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       return status;
     };
 
+    bool match_has_invalid_arm = absl::c_any_of(
+        node->arms(),
+        [&](const MatchArm* arm) { return ArmHasInvalidPattern(*arm); });
+    bool saw_invalid_arm = false;
+    bool saw_wildcard_arm = false;
+    for (int64_t arm_index = 0; arm_index < node->arms().size(); ++arm_index) {
+      const MatchArm* arm = node->arms()[arm_index];
+      bool has_invalid_pattern = ArmHasInvalidPattern(*arm);
+      if (has_invalid_pattern) {
+        if (saw_invalid_arm) {
+          return TypeInferenceErrorStatus(
+              arm->GetPatternSpan(), nullptr,
+              "Only one `invalid!` arm is allowed in a match.", file_table_);
+        }
+        if (arm->patterns().size() != 1) {
+          return TypeInferenceErrorStatus(
+              arm->GetPatternSpan(), nullptr,
+              "`invalid!` cannot participate in `|` alternatives.",
+              file_table_);
+        }
+        if (arm_index + 1 != node->arms().size()) {
+          return TypeInferenceErrorStatus(
+              arm->GetPatternSpan(), nullptr,
+              "`invalid!` must be the final arm in a match.", file_table_);
+        }
+        saw_invalid_arm = true;
+      } else if (match_has_invalid_arm && saw_wildcard_arm) {
+        return TypeInferenceErrorStatus(
+            arm->GetPatternSpan(), nullptr,
+            "A wildcard arm may only be followed by a final `invalid!` arm.",
+            file_table_);
+      }
+
+      if (ArmHasWildcardPattern(*arm)) {
+        saw_wildcard_arm = true;
+      }
+    }
+
     std::vector<TypeAnnotation*> type_annotation_members;
     absl::flat_hash_map<std::string, const MatchArm*> seen_arms;
     absl::flat_hash_map<std::string, Span> seen_patterns;
@@ -796,6 +834,39 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       XLS_RETURN_IF_ERROR(BindPatternToType(pattern, payload_type));
     }
     return absl::OkStatus();
+  }
+
+  absl::Status HandleInvalidPattern(const InvalidPattern* node) override {
+    VLOG(5) << "HandleInvalidPattern: " << node->ToString();
+    if (!IsTopLevelMatchPattern(*node)) {
+      return TypeInferenceErrorStatus(
+          node->span(), nullptr,
+          "`invalid!` is only allowed as a top-level match arm pattern.",
+          file_table_);
+    }
+    if (node->raw_name_def() == nullptr) {
+      return absl::OkStatus();
+    }
+
+    const NameRef* matched_var = *table_.GetTypeVariable(node);
+    TypeAnnotation* matched_type =
+        module_.Make<TypeVariableTypeAnnotation>(matched_var);
+    NameRef* bit_count =
+        module_.Make<NameRef>(node->span(), "bit_count",
+                              module_.GetOrCreateBuiltinNameDef("bit_count"));
+    Expr* raw_width =
+        module_.Make<Invocation>(node->span(), bit_count, std::vector<Expr*>{},
+                                 std::vector<ExprOrType>{matched_type});
+    XLS_RETURN_IF_ERROR(
+        DefineAndSetTypeVariable(raw_width, "invalid_raw_width"));
+    XLS_RETURN_IF_ERROR(raw_width->Accept(this));
+    TypeAnnotation* raw_bits_type =
+        CreateUnOrSnAnnotation(module_, node->span(), false, raw_width);
+    XLS_RETURN_IF_ERROR(DefineAndSetTypeVariable(node->raw_name_def(),
+                                                 "invalid_raw", raw_bits_type));
+    XLS_RETURN_IF_ERROR(
+        table_.SetTypeAnnotation(node->raw_name_def(), raw_bits_type));
+    return DefaultHandler(node);
   }
 
   absl::Status HandleXlsTuple(const XlsTuple* node) override {
@@ -2612,6 +2683,24 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       return HandleTuplePatternChildren(std::get<TuplePattern*>(pattern), type);
     }
     return actual_child->Accept(this);
+  }
+
+  bool IsTopLevelMatchPattern(const InvalidPattern& pattern) const {
+    return dynamic_cast<const MatchArm*>(pattern.parent()) != nullptr;
+  }
+
+  bool ArmHasInvalidPattern(const MatchArm& arm) const {
+    return absl::c_any_of(arm.patterns(), [](const PatternTree& pattern) {
+      return std::holds_alternative<WildcardPattern*>(pattern) &&
+             std::get<WildcardPattern*>(pattern)->kind() ==
+                 AstNodeKind::kInvalidPattern;
+    });
+  }
+
+  bool ArmHasWildcardPattern(const MatchArm& arm) const {
+    return absl::c_any_of(arm.patterns(), [](const PatternTree& pattern) {
+      return IsWildcardLeaf(pattern);
+    });
   }
 
   // Helper that creates an internal type variable for a `ConstantDef`, `Param`,

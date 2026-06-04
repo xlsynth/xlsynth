@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -25,6 +26,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/format_preference.h"
@@ -82,9 +84,16 @@ class ValueFormatDescriptor {
   ValueFormatDescriptor() : kind_(ValueFormatDescriptorKind::kLeafValue) {}
 
   static ValueFormatDescriptor MakeLeafValue(FormatPreference format);
+  static ValueFormatDescriptor MakeLeafValue(FormatPreference format,
+                                             int64_t bit_count,
+                                             bool is_signed);
   static ValueFormatDescriptor MakeEnum(
       std::string_view enum_name,
       absl::flat_hash_map<Bits, std::string> value_to_name);
+  static ValueFormatDescriptor MakeEnum(
+      std::string_view enum_name,
+      absl::flat_hash_map<Bits, std::string> value_to_name,
+      int64_t bit_count, bool is_signed);
   static ValueFormatDescriptor MakeArray(
       const ValueFormatDescriptor& element_format, size_t size);
   static ValueFormatDescriptor MakeTuple(
@@ -96,6 +105,16 @@ class ValueFormatDescriptor {
       std::string_view sum_name,
       absl::Span<const ValueFormatSumVariantDescriptor> variants,
       FormatPreference tag_format);
+  static ValueFormatDescriptor MakeSum(
+      std::string_view sum_name,
+      absl::Span<const ValueFormatSumVariantDescriptor> variants,
+      FormatPreference tag_format, int64_t tag_bit_count,
+      int64_t payload_slot_bit_count);
+  static ValueFormatDescriptor MakeSum(
+      std::string_view sum_name,
+      absl::Span<const ValueFormatSumVariantDescriptor> variants,
+      FormatPreference tag_format, int64_t tag_bit_count,
+      int64_t payload_slot_bit_count, absl::Span<const Bits> variant_tag_bits);
 
   ValueFormatDescriptorKind kind() const { return kind_; }
 
@@ -115,6 +134,10 @@ class ValueFormatDescriptor {
     CHECK(IsLeafValue());
     return format_;
   }
+  std::optional<bool> leaf_is_signed() const {
+    CHECK(IsLeafValue());
+    return is_signed_;
+  }
 
   // Enum methods.
   std::string_view enum_name() const {
@@ -124,6 +147,10 @@ class ValueFormatDescriptor {
   const absl::flat_hash_map<Bits, std::string>& value_to_name() const {
     CHECK(IsEnum());
     return value_to_name_;
+  }
+  std::optional<bool> enum_is_signed() const {
+    CHECK(IsEnum());
+    return is_signed_;
   }
 
   // Array methods.
@@ -165,6 +192,19 @@ class ValueFormatDescriptor {
     CHECK(IsSum());
     return sum_tag_format_;
   }
+  std::optional<int64_t> sum_tag_bit_count() const {
+    CHECK(IsSum());
+    return sum_tag_bit_count_;
+  }
+  std::optional<int64_t> sum_payload_slot_bit_count() const {
+    CHECK(IsSum());
+    return sum_payload_slot_bit_count_;
+  }
+  std::optional<size_t> sum_variant_index_for_tag_bits(
+      const Bits& tag_bits) const;
+  absl::StatusOr<Bits> sum_variant_tag_bits(size_t i) const;
+
+  std::optional<int64_t> flat_bit_count() const { return flat_bit_count_; }
 
   // Methods for aggregate kinds.
   size_t size() const {
@@ -198,6 +238,8 @@ class ValueFormatDescriptor {
 
   // Leaf data members;
   FormatPreference format_ = FormatPreference::kDefault;
+  std::optional<int64_t> flat_bit_count_;
+  std::optional<bool> is_signed_;
 
   // Enum data members.
   std::string enum_name_;
@@ -213,6 +255,9 @@ class ValueFormatDescriptor {
   std::string sum_name_;
   std::vector<SumVariantFormat> sum_variants_;
   FormatPreference sum_tag_format_ = FormatPreference::kDefault;
+  std::optional<int64_t> sum_tag_bit_count_;
+  std::optional<int64_t> sum_payload_slot_bit_count_;
+  std::vector<Bits> sum_variant_tag_bits_;
 };
 
 // Describes one constructor inside a sum formatting descriptor.
