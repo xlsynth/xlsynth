@@ -396,6 +396,12 @@ DslxTypeToVerilogManager::TypeDefinitionToVastType(
 
                 return vast_enum_def;
               },
+              [&](SumDef* sum_def) -> absl::StatusOr<verilog::DataType*> {
+                return absl::UnimplementedError(absl::StrFormat(
+                    "TypeAnnotation SumDef %s not supported by "
+                    "DslxTypeToVerilogManager in phase 1",
+                    sum_def->ToString()));
+              },
           },
           resolved_type_definition_source.definition));
 
