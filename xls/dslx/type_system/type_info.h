@@ -182,6 +182,10 @@ class TypeInfoOwner {
   // not present.
   absl::StatusOr<TypeInfo*> GetRootTypeInfo();
 
+  // Drops the root lookup entry for a transient module that is about to be
+  // discarded before it becomes part of the final typed corpus.
+  void ForgetRootTypeInfo(const Module* module) { module_to_root_.erase(module); }
+
  private:
   // The single root (parentmost) type info across all modules.
   TypeInfo* root_type_info_ = nullptr;

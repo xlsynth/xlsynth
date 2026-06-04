@@ -140,6 +140,71 @@ fn expect_fail() -> u32 {
 007 load 0)");
 }
 
+TEST(BytecodeEmitterTest, SemanticSumConstructorUsesCreateSum) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn make_some(x: u32) -> Option {
+  Option::Some(x)
+}
+)";
+
+  ImportData import_data(CreateImportDataForTest());
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<BytecodeFunction> bf,
+      EmitBytecodes(&import_data, kProgram, "make_some"));
+
+  EXPECT_TRUE(absl::c_any_of(bf->bytecodes(), [](const Bytecode& bytecode) {
+    return bytecode.op() == Bytecode::Op::kCreateSum;
+  }));
+  EXPECT_FALSE(absl::c_any_of(bf->bytecodes(), [](const Bytecode& bytecode) {
+    return bytecode.op() == Bytecode::Op::kCreateTuple;
+  }));
+}
+
+TEST(BytecodeEmitterTest, SemanticSumPatternUsesSemanticDiscriminant) {
+  constexpr std::string_view kProgram = R"(
+enum Message: u3 {
+  Request(u8) = 3,
+  Idle(u8, bool) = 0,
+}
+
+fn classify(x: Message) -> u8 {
+  match x {
+    Message::Request(v) => v,
+    Message::Idle(code, _) => code,
+  }
+}
+)";
+
+  ImportData import_data(CreateImportDataForTest());
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<BytecodeFunction> bf,
+      EmitBytecodes(&import_data, kProgram, "classify"));
+
+  bool found_request_pattern = false;
+  for (const Bytecode& bytecode : bf->bytecodes()) {
+    if (bytecode.op() != Bytecode::Op::kMatchArm) {
+      continue;
+    }
+    XLS_ASSERT_OK_AND_ASSIGN(const Bytecode::MatchArmItem* item,
+                             bytecode.match_arm_item());
+    if (item->kind() != Bytecode::MatchArmItem::Kind::kSum) {
+      continue;
+    }
+    XLS_ASSERT_OK_AND_ASSIGN(Bytecode::MatchArmItem::SumMatchData sum_match,
+                             item->sum_match_data());
+    if (sum_match.variant_name == "Request") {
+      found_request_pattern = true;
+      EXPECT_TRUE(sum_match.discriminant.Eq(InterpValue::MakeUBits(3, 3)));
+    }
+  }
+  EXPECT_TRUE(found_request_pattern);
+}
+
 TEST(BytecodeEmitterTest, DestructuringLet) {
   constexpr std::string_view kProgram = R"(
 fn has_name_def_tree() -> (u32, u64, uN[128]) {

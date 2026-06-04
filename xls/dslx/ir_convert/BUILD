@@ -669,6 +669,7 @@ cc_library(
         "//xls/ir:format_preference",
         "//xls/ir:format_strings",
         "//xls/ir:function_builder",
+        "//xls/ir:node_util",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",

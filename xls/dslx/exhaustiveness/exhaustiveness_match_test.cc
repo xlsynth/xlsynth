@@ -56,7 +56,9 @@ std::vector<const NameDefTree*> GetPatterns(const Match& match) {
   return patterns;
 }
 
-void CheckExhaustiveOnlyAfterLastPattern(std::string_view program) {
+void CheckExhaustiveStartingAtPattern(
+    std::string_view program,
+    std::optional<int64_t> first_exhaustive_pattern = std::nullopt) {
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK_AND_ASSIGN(
       TypecheckedModule tm,
@@ -76,15 +78,20 @@ void CheckExhaustiveOnlyAfterLastPattern(std::string_view program) {
                                      *tm.type_info, *matched_type.value());
 
   std::vector<const NameDefTree*> patterns = GetPatterns(*match);
+  const int64_t first_exhaustive_index =
+      first_exhaustive_pattern.value_or(patterns.size() - 1);
   for (int64_t i = 0; i < patterns.size(); ++i) {
     bool now_exhaustive = checker.AddPattern(*patterns[i]);
-    // We expect it to become exhaustive with the last match arm.
-    bool expect_now_exhaustive = i + 1 == patterns.size();
+    bool expect_now_exhaustive = i >= first_exhaustive_index;
     EXPECT_EQ(now_exhaustive, expect_now_exhaustive)
         << "Expected match to be "
         << (expect_now_exhaustive ? "exhaustive" : "non-exhaustive")
         << " after adding pattern `" << patterns[i]->ToString() << "`";
   }
+}
+
+void CheckExhaustiveOnlyAfterLastPattern(std::string_view program) {
+  CheckExhaustiveStartingAtPattern(program);
 }
 
 void CheckExhaustiveBeforeAnyPattern(std::string_view program) {
@@ -269,6 +276,64 @@ fn main(x: MaybeU32) -> u32 {
   }
 })";
   CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnNestedSemanticSumConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Inner {
+  A(),
+  B(),
+}
+
+enum Outer {
+  Wrap(Inner),
+}
+
+fn main(x: Outer) -> u32 {
+  match x {
+    Outer::Wrap(Inner::A()) => u32:0,
+    Outer::Wrap(Inner::B()) => u32:1,
+    invalid! => u32:2,
+  }
+})";
+  CheckExhaustiveStartingAtPattern(kMatch, /*first_exhaustive_pattern=*/1);
+}
+
+TEST(ExhaustivenessMatchTest,
+     MatchOnSemanticSumConstructorsIgnoresMalformedTagSpace) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum SparseMaybe : u3 {
+  None = 0,
+  Some(u32) = 7,
+}
+
+fn main(x: SparseMaybe) -> u32 {
+  match x {
+    SparseMaybe::Some(v) => v,
+    SparseMaybe::None => u32:0,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest,
+     InvalidPatternDoesNotCompleteSemanticSumConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn main(x: MaybeU32) -> u32 {
+  match x {
+    MaybeU32::Some(v) => v,
+    invalid! => u32:0,
+  }
+})";
+  CheckNonExhaustive(kMatch);
 }
 
 TEST(ExhaustivenessMatchTest,

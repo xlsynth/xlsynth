@@ -230,6 +230,7 @@ cc_library(
         "//xls/dslx/frontend:pos",
         "//xls/ir:bits",
         "@abseil-cpp//absl/base:core_headers",
+        "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
