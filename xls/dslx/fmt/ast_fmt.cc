@@ -149,7 +149,8 @@ std::string StripAnyDotModifier(std::string_view s) {
 // Forward decls.
 // keep-sorted start
 DocRef Fmt(const ColonRef& n, Comments& comments, DocArena& arena);
-DocRef Fmt(const ConstructorPattern& n, Comments& comments, DocArena& arena);
+DocRef Fmt(const SumVariantPayloadPattern& n, Comments& comments,
+           DocArena& arena);
 DocRef Fmt(const Expr& n, Comments& comments, DocArena& arena);
 DocRef Fmt(const NameDefTree& n, Comments& comments, DocArena& arena);
 DocRef Fmt(const SumInstance& n, Comments& comments, DocArena& arena);
@@ -1666,28 +1667,27 @@ DocRef Fmt(const StructInstance& n, Comments& comments, DocArena& arena) {
 
 DocRef Fmt(const SumInstance& n, Comments& comments, DocArena& arena) {
   if (n.is_unit()) {
-    return Fmt(*n.constructor(), comments, arena);
+    return Fmt(*n.constructor_ref(), comments, arena);
   } else if (n.is_tuple()) {
-    DocRef args = FmtJoin<Expr*>(
-        n.positional_args(), Joiner::kCommaBreak1AsGroupNoTrailingComma,
-        FmtExprPtr, comments, arena);
-    return ConcatNGroup(arena,
-                        {Fmt(*n.constructor(), comments, arena),
-                         arena.oparen(), args, arena.cparen()});
+    DocRef args = FmtJoin<Expr*>(n.tuple_payload_args(),
+                                 Joiner::kCommaBreak1AsGroupNoTrailingComma,
+                                 FmtExprPtr, comments, arena);
+    return ConcatNGroup(arena, {Fmt(*n.constructor_ref(), comments, arena),
+                                arena.oparen(), args, arena.cparen()});
   } else {
-    std::vector<DocRef> pieces = {Fmt(*n.constructor(), comments, arena),
+    std::vector<DocRef> pieces = {Fmt(*n.constructor_ref(), comments, arena),
                                   arena.space(), arena.ocurl()};
-    if (n.named_args().empty()) {
+    if (n.struct_payload_field_args().empty()) {
       pieces.push_back(arena.space());
     } else {
       pieces.push_back(arena.space());
-      for (int64_t i = 0; i < n.named_args().size(); ++i) {
-        const auto& [name, arg] = n.named_args()[i];
+      for (int64_t i = 0; i < n.struct_payload_field_args().size(); ++i) {
+        const auto& [name, arg] = n.struct_payload_field_args()[i];
         pieces.push_back(arena.MakeText(name));
         pieces.push_back(arena.colon());
         pieces.push_back(arena.space());
         pieces.push_back(Fmt(*arg, comments, arena));
-        if (i != n.named_args().size() - 1) {
+        if (i != n.struct_payload_field_args().size() - 1) {
           pieces.push_back(arena.comma());
           pieces.push_back(arena.break1());
         }
@@ -1886,7 +1886,9 @@ DocRef Fmt(const Range& n, Comments& comments, DocArena& arena) {
 DocRef Fmt(const NameDefTree::Leaf& n, Comments& comments, DocArena& arena) {
   return absl::visit(
       Visitor{
-          [&](const ConstructorPattern* n) { return Fmt(*n, comments, arena); },
+          [&](const SumVariantPayloadPattern* n) {
+            return Fmt(*n, comments, arena);
+          },
           [&](const NameDef* n) { return Fmt(*n, comments, arena); },
           [&](const NameRef* n) { return Fmt(*n, comments, arena); },
           [&](const WildcardPattern* n) { return Fmt(*n, comments, arena); },
@@ -1898,12 +1900,14 @@ DocRef Fmt(const NameDefTree::Leaf& n, Comments& comments, DocArena& arena) {
       n);
 }
 
-DocRef Fmt(const ConstructorPattern& n, Comments& comments, DocArena& arena) {
-  std::vector<DocRef> pieces = {Fmt(*n.constructor(), comments, arena)};
+DocRef Fmt(const SumVariantPayloadPattern& n, Comments& comments,
+           DocArena& arena) {
+  std::vector<DocRef> pieces = {Fmt(*n.constructor_ref(), comments, arena)};
   if (n.is_tuple()) {
     pieces.push_back(arena.oparen());
     pieces.push_back(FmtJoin<NameDefTree*>(
-        n.positional_patterns(), Joiner::kCommaBreak1AsGroupTrailingCommaOnBreak,
+        n.tuple_payload_patterns(),
+        Joiner::kCommaBreak1AsGroupTrailingCommaOnBreak,
         [&](NameDefTree* pattern, Comments& comments, DocArena& arena) {
           return Fmt(*pattern, comments, arena);
         },
@@ -1914,18 +1918,21 @@ DocRef Fmt(const ConstructorPattern& n, Comments& comments, DocArena& arena) {
 
   pieces.push_back(arena.space());
   pieces.push_back(arena.ocurl());
-  if (!n.named_patterns().empty()) {
+  if (!n.struct_payload_field_patterns().empty()) {
     pieces.push_back(arena.break1());
-    pieces.push_back(FmtJoin<ConstructorPattern::NamedPattern>(
-        n.named_patterns(), Joiner::kCommaBreak1AsGroupTrailingCommaOnBreak,
-        [&](const ConstructorPattern::NamedPattern& field, Comments& comments,
-            DocArena& arena) {
-          const auto& [name, pattern] = field;
-          return ConcatNGroup(
-              arena, {arena.MakeText(name), arena.colon(), arena.space(),
-                      Fmt(*pattern, comments, arena)});
-        },
-        comments, arena));
+    pieces.push_back(
+        FmtJoin<SumVariantPayloadPattern::StructPayloadFieldPattern>(
+            n.struct_payload_field_patterns(),
+            Joiner::kCommaBreak1AsGroupTrailingCommaOnBreak,
+            [&](const SumVariantPayloadPattern::StructPayloadFieldPattern&
+                    field,
+                Comments& comments, DocArena& arena) {
+              const auto& [name, pattern] = field;
+              return ConcatNGroup(
+                  arena, {arena.MakeText(name), arena.colon(), arena.space(),
+                          Fmt(*pattern, comments, arena)});
+            },
+            comments, arena));
     pieces.push_back(arena.break1());
   } else {
     pieces.push_back(arena.space());
@@ -2038,10 +2045,10 @@ DocRef FmtBlockedExprLeader(const Expr& e, Comments& comments,
     case AstNodeKind::kSumInstance: {
       const SumInstance& n = static_cast<const SumInstance&>(e);
       if (n.is_tuple()) {
-        return arena.MakeConcat(Fmt(*n.constructor(), comments, arena),
+        return arena.MakeConcat(Fmt(*n.constructor_ref(), comments, arena),
                                 arena.oparen());
       }
-      return ConcatN(arena, {Fmt(*n.constructor(), comments, arena),
+      return ConcatN(arena, {Fmt(*n.constructor_ref(), comments, arena),
                              arena.space(), arena.ocurl()});
     }
     case AstNodeKind::kSplatStructInstance: {
@@ -2700,15 +2707,13 @@ DocRef Formatter::Format(const QuickCheck& n) {
   return ConcatN(arena_, pieces);
 }
 
-static bool AppendSumCommentsBetween(const Pos& start_pos,
-                                     const Pos& limit_pos, Comments& comments,
-                                     DocArena& arena,
+static bool AppendSumCommentsBetween(const Pos& start_pos, const Pos& limit_pos,
+                                     Comments& comments, DocArena& arena,
                                      std::vector<DocRef>& pieces) {
   bool emitted_comments = false;
   std::optional<Span> last_comment_span;
-  if (std::optional<DocRef> comments_doc =
-          EmitCommentsBetween(start_pos, limit_pos, comments, arena,
-                              &last_comment_span)) {
+  if (std::optional<DocRef> comments_doc = EmitCommentsBetween(
+          start_pos, limit_pos, comments, arena, &last_comment_span)) {
     pieces.push_back(arena.hard_line());
     pieces.push_back(comments_doc.value());
     pieces.push_back(arena.hard_line());
@@ -3034,11 +3039,10 @@ static void FmtSumTuplePayloadMembers(const SumVariant& variant,
                                   comments, arena, nullptr)) {
         if (!first_member) {
           body_pieces.push_back(arena.comma());
-          body_pieces.push_back(
-              comment_items.front()->span.start().lineno() ==
-                      last_member_pos.lineno()
-                  ? arena.space()
-                  : arena.hard_line());
+          body_pieces.push_back(comment_items.front()->span.start().lineno() ==
+                                        last_member_pos.lineno()
+                                    ? arena.space()
+                                    : arena.hard_line());
         }
         body_pieces.push_back(comments_doc.value());
         body_pieces.push_back(arena.hard_line());
@@ -3057,11 +3061,10 @@ static void FmtSumTuplePayloadMembers(const SumVariant& variant,
             last_member_pos, payload_span.limit(), comments, arena, nullptr)) {
       if (!variant.tuple_members().empty()) {
         body_pieces.push_back(arena.comma());
-        body_pieces.push_back(
-            comment_items.front()->span.start().lineno() ==
-                    last_member_pos.lineno()
-                ? arena.space()
-                : arena.hard_line());
+        body_pieces.push_back(comment_items.front()->span.start().lineno() ==
+                                      last_member_pos.lineno()
+                                  ? arena.space()
+                                  : arena.hard_line());
       }
       body_pieces.push_back(comments_doc.value());
     }
@@ -3176,15 +3179,16 @@ DocRef Formatter::Format(const SumDef& n) {
       } else {
         variant_pieces.push_back(arena_.space());
       }
-      variant_pieces.push_back(Fmt(*variant->discriminant(), comments_, arena_));
+      variant_pieces.push_back(
+          Fmt(*variant->discriminant(), comments_, arena_));
     }
     variant_pieces.push_back(arena_.comma());
     nested.push_back(ConcatNGroup(arena_, variant_pieces));
 
     last_variant_pos = variant->span().limit();
-    last_variant_pos = CollectInlineComments(
-        variant->span().limit(), last_variant_pos, comments_, arena_, nested,
-        last_comment_span);
+    last_variant_pos =
+        CollectInlineComments(variant->span().limit(), last_variant_pos,
+                              comments_, arena_, nested, last_comment_span);
     if (i + 1 != n.variants().size()) {
       nested.push_back(arena_.hard_line());
     }

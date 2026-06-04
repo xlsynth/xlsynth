@@ -202,8 +202,9 @@ PatternLeaf ToPatternLeaf(const NameDefTree::Leaf& leaf) {
             return SomeWildcard();
           },
           [&](Number* number) -> PatternLeaf { return number; },
-          [&](ConstructorPattern* /*constructor_pattern*/) -> PatternLeaf {
-            LOG(FATAL) << "ConstructorPattern not yet supported in "
+          [&](SumVariantPayloadPattern* /*constructor_pattern*/)
+              -> PatternLeaf {
+            LOG(FATAL) << "SumVariantPayloadPattern not yet supported in "
                           "MatchExhaustivenessChecker";
           },
           [&](RestOfTuple* rest_of_tuple) -> PatternLeaf {
@@ -297,7 +298,7 @@ std::vector<PatternLeaf> ExpandPatternLeaves(const NameDefTree& pattern,
               result.push_back(ToPatternLeaf(leaf));
               types_index += 1;
             },
-            [&](const ConstructorPattern* /*unused*/) {
+            [&](const SumVariantPayloadPattern* /*unused*/) {
               result.push_back(ToPatternLeaf(leaf));
               types_index += 1;
             },

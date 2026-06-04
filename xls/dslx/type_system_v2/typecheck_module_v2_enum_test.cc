@@ -14,9 +14,9 @@
 
 #include <string_view>
 
+#include "absl/status/status_matchers.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "absl/status/status_matchers.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/import_data.h"
@@ -203,7 +203,7 @@ const_assert!(y as u8 == 2);
                               HasNodeWithType("y", "MyEnum"))));
 }
 
-TEST(TypecheckV2Test, ConstructorPatternOnNumericEnumReturnsDiagnostic) {
+TEST(TypecheckV2Test, SumVariantPayloadPatternOnNumericEnumReturnsDiagnostic) {
   EXPECT_THAT(
       R"(
 enum E : u1 { A = 0 }

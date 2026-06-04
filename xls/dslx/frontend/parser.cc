@@ -2235,20 +2235,25 @@ absl::StatusOr<NameDefTree*> Parser::ParsePattern(Bindings& bindings,
     XLS_ASSIGN_OR_RETURN(bool peek_is_double_colon,
                          PeekTokenIs(TokenKind::kDoubleColon));
     auto make_constructor_pattern =
-        [&](ColonRef* constructor) -> absl::StatusOr<NameDefTree*> {
-      XLS_ASSIGN_OR_RETURN(bool peek_is_oparen, PeekTokenIs(TokenKind::kOParen));
+        [&](ColonRef* constructor_ref) -> absl::StatusOr<NameDefTree*> {
+      XLS_ASSIGN_OR_RETURN(bool peek_is_oparen,
+                           PeekTokenIs(TokenKind::kOParen));
       if (peek_is_oparen) {
-        XLS_ASSIGN_OR_RETURN(ConstructorPattern * pattern,
-                             ParseTupleConstructorPattern(bindings, constructor));
+        XLS_ASSIGN_OR_RETURN(
+            SumVariantPayloadPattern * pattern,
+            ParseTupleSumVariantPayloadPattern(bindings, constructor_ref));
         return module_->Make<NameDefTree>(pattern->span(), pattern);
       }
-      XLS_ASSIGN_OR_RETURN(bool peek_is_obrace, PeekTokenIs(TokenKind::kOBrace));
+      XLS_ASSIGN_OR_RETURN(bool peek_is_obrace,
+                           PeekTokenIs(TokenKind::kOBrace));
       if (peek_is_obrace) {
-        XLS_ASSIGN_OR_RETURN(ConstructorPattern * pattern,
-                             ParseStructConstructorPattern(bindings, constructor));
+        XLS_ASSIGN_OR_RETURN(
+            SumVariantPayloadPattern * pattern,
+            ParseStructSumVariantPayloadPattern(bindings, constructor_ref));
         return module_->Make<NameDefTree>(pattern->span(), pattern);
       }
-      return module_->Make<NameDefTree>(constructor->span(), constructor);
+      return module_->Make<NameDefTree>(constructor_ref->span(),
+                                        constructor_ref);
     };
     if (bindings.ResolveNodeIsTypeDefinition(*tok.GetValue()) &&
         !peek_is_double_colon) {
@@ -2689,9 +2694,8 @@ absl::StatusOr<Expr*> Parser::ParseTermLhs(Bindings& outer_bindings,
     VLOG(5) << "ParseTerm, kind is identifier AND it it a known type";
     // The "local" struct case goes into here because it recognized the
     // my_struct as a type
-    XLS_ASSIGN_OR_RETURN(
-        lhs, ParseCastOrEnumRefOrStructInstanceOrToken(outer_bindings,
-                                                       restrictions));
+    XLS_ASSIGN_OR_RETURN(lhs, ParseCastOrEnumRefOrStructInstanceOrToken(
+                                  outer_bindings, restrictions));
   } else if (peek->kind() == TokenKind::kIdentifier || peek_is_kw_in ||
              peek_is_kw_out || peek_is_kw_self) {
     VLOG(5) << "ParseTerm, kind is identifier but not a known type";
@@ -2777,9 +2781,8 @@ absl::StatusOr<Expr*> Parser::ParseTermLhs(Bindings& outer_bindings,
       lhs = ToExprNode(name_or_colon_ref);
     }
   } else if (peek->kind() == TokenKind::kOParen) {
-    XLS_ASSIGN_OR_RETURN(
-        lhs, ParseParentheticalOrCastLhs(outer_bindings, start_pos,
-                                         restrictions));
+    XLS_ASSIGN_OR_RETURN(lhs, ParseParentheticalOrCastLhs(
+                                  outer_bindings, start_pos, restrictions));
   } else if (peek->IsKeyword(Keyword::kMatch)) {  // Match expression.
     XLS_ASSIGN_OR_RETURN(lhs, ParseMatch(outer_bindings, /*is_const=*/false));
   } else if (peek->kind() == TokenKind::kOBrack) {  // Array expression.
@@ -4290,7 +4293,7 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
   struct ParsedEntry {
     Span span;
     NameDef* name_def;
-    SumVariant::PayloadKind payload_kind;
+    SumVariant::PayloadShape payload_shape;
     std::vector<TypeAnnotation*> tuple_members;
     std::vector<StructMemberNode*> struct_members;
     Expr* discriminant;
@@ -4304,17 +4307,17 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
     XLS_ASSIGN_OR_RETURN(NameDef * member_name, ParseNameDefNoBind());
     XLS_ASSIGN_OR_RETURN(
         Token colon,
-        PopTokenOrError(TokenKind::kColon, /*start=*/nullptr,
-                        "Expect type annotation on semantic-sum variant field"));
+        PopTokenOrError(
+            TokenKind::kColon, /*start=*/nullptr,
+            "Expect type annotation on semantic-sum variant field"));
     XLS_ASSIGN_OR_RETURN(TypeAnnotation * type,
                          ParseTypeAnnotation(enum_bindings));
-    return module_->Make<StructMemberNode>(
-        Span(node_start_pos, GetPos()), member_name, colon.span(), type);
+    return module_->Make<StructMemberNode>(Span(node_start_pos, GetPos()),
+                                           member_name, colon.span(), type);
   };
 
-  auto parse_entry =
-      [this, &enum_bindings, &parse_struct_member,
-       &name_def]() -> absl::StatusOr<ParsedEntry> {
+  auto parse_entry = [this, &enum_bindings, &parse_struct_member,
+                      &name_def]() -> absl::StatusOr<ParsedEntry> {
     Pos variant_start = GetPos();
     XLS_ASSIGN_OR_RETURN(NameDef * variant_name, ParseNameDefNoBind());
 
@@ -4342,7 +4345,7 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
       return ParsedEntry{
           .span = Span(variant_start, GetPos()),
           .name_def = variant_name,
-          .payload_kind = SumVariant::PayloadKind::kTuple,
+          .payload_shape = SumVariant::PayloadShape::kTuple,
           .tuple_members = std::move(tuple_members),
           .struct_members = {},
           .discriminant = discriminant,
@@ -4358,8 +4361,7 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
       XLS_ASSIGN_OR_RETURN(
           std::vector<StructMemberNode*> struct_members,
           ParseCommaSeq<StructMemberNode*>(parse_struct_member,
-                                           TokenKind::kCBrace,
-                                           &payload_limit));
+                                           TokenKind::kCBrace, &payload_limit));
       absl::flat_hash_set<std::string> seen_member_names;
       for (StructMemberNode* struct_member : struct_members) {
         if (!seen_member_names.insert(struct_member->name()).second) {
@@ -4383,7 +4385,7 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
       return ParsedEntry{
           .span = Span(variant_start, GetPos()),
           .name_def = variant_name,
-          .payload_kind = SumVariant::PayloadKind::kStruct,
+          .payload_shape = SumVariant::PayloadShape::kStruct,
           .tuple_members = {},
           .struct_members = std::move(struct_members),
           .discriminant = discriminant,
@@ -4403,7 +4405,7 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
     return ParsedEntry{
         .span = Span(variant_start, GetPos()),
         .name_def = variant_name,
-        .payload_kind = SumVariant::PayloadKind::kUnit,
+        .payload_shape = SumVariant::PayloadShape::kUnit,
         .tuple_members = {},
         .struct_members = {},
         .discriminant = discriminant,
@@ -4412,23 +4414,21 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
     };
   };
 
-  XLS_ASSIGN_OR_RETURN(std::vector<ParsedEntry> entries,
-                       ParseCommaSeq<ParsedEntry>(parse_entry,
-                                                  TokenKind::kCBrace));
+  XLS_ASSIGN_OR_RETURN(
+      std::vector<ParsedEntry> entries,
+      ParseCommaSeq<ParsedEntry>(parse_entry, TokenKind::kCBrace));
 
-  const bool has_payload_syntax = absl::c_any_of(
-      entries, [](const ParsedEntry& entry) {
-        return entry.payload_kind != SumVariant::PayloadKind::kUnit;
+  const bool has_payload_syntax =
+      absl::c_any_of(entries, [](const ParsedEntry& entry) {
+        return entry.payload_shape != SumVariant::PayloadShape::kUnit;
       });
   const bool is_semantic_sum = has_payload_syntax || entries.empty();
   const bool has_discriminants = absl::c_any_of(
-      entries, [](const ParsedEntry& entry) {
-        return entry.discriminant != nullptr;
-      });
+      entries,
+      [](const ParsedEntry& entry) { return entry.discriminant != nullptr; });
   const bool all_have_discriminants = absl::c_all_of(
-      entries, [](const ParsedEntry& entry) {
-        return entry.discriminant != nullptr;
-      });
+      entries,
+      [](const ParsedEntry& entry) { return entry.discriminant != nullptr; });
 
   if (!is_semantic_sum) {
     if (!parametric_bindings.empty()) {
@@ -4439,8 +4439,9 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
     if (!all_have_discriminants) {
       return ParseErrorStatus(
           name_def->span(),
-          absl::StrFormat("Numeric enum `%s` requires a value for every member.",
-                          name_def->identifier()));
+          absl::StrFormat(
+              "Numeric enum `%s` requires a value for every member.",
+              name_def->identifier()));
     }
     std::vector<EnumMember> enum_members;
     enum_members.reserve(entries.size());
@@ -4450,10 +4451,9 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
           .value = entry.discriminant,
       });
     }
-    auto* enum_def =
-        module_->Make<EnumDef>(Span(start_pos, GetPos()), name_def,
-                               type_annotation, std::move(enum_members),
-                               is_public);
+    auto* enum_def = module_->Make<EnumDef>(Span(start_pos, GetPos()), name_def,
+                                            type_annotation,
+                                            std::move(enum_members), is_public);
     bindings.Add(name_def->identifier(), enum_def);
     name_def->set_definer(enum_def);
     return enum_def;
@@ -4480,7 +4480,7 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
   variants.reserve(entries.size());
   for (ParsedEntry& entry : entries) {
     variants.push_back(module_->Make<SumVariant>(
-        entry.span, entry.name_def, entry.payload_kind,
+        entry.span, entry.name_def, entry.payload_shape,
         std::move(entry.tuple_members), std::move(entry.struct_members),
         entry.discriminant, entry.payload_span,
         entry.discriminant_equals_span));
@@ -4846,11 +4846,12 @@ absl::StatusOr<NameDefTree*> Parser::ParseTuplePattern(const Pos& start_pos,
   return module_->Make<NameDefTree>(span, std::move(members));
 }
 
-absl::StatusOr<ConstructorPattern*> Parser::ParseTupleConstructorPattern(
-    Bindings& bindings, ColonRef* constructor) {
+absl::StatusOr<SumVariantPayloadPattern*>
+Parser::ParseTupleSumVariantPayloadPattern(Bindings& bindings,
+                                           ColonRef* constructor_ref) {
   XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kOParen));
 
-  std::vector<NameDefTree*> positional_patterns;
+  std::vector<NameDefTree*> tuple_payload_patterns;
   bool must_end = false;
   while (true) {
     XLS_ASSIGN_OR_RETURN(bool dropped_cparen, TryDropToken(TokenKind::kCParen));
@@ -4863,20 +4864,21 @@ absl::StatusOr<ConstructorPattern*> Parser::ParseTupleConstructorPattern(
     }
     XLS_ASSIGN_OR_RETURN(NameDefTree * pattern,
                          ParsePattern(bindings, /*within_tuple_pattern=*/true));
-    positional_patterns.push_back(pattern);
+    tuple_payload_patterns.push_back(pattern);
     XLS_ASSIGN_OR_RETURN(bool dropped_comma, TryDropToken(TokenKind::kComma));
     must_end = !dropped_comma;
   }
 
-  return module_->Make<ConstructorPattern>(
-      Span(constructor->span().start(), GetPos()), constructor,
-      ConstructorPattern::PayloadKind::kTuple,
-      std::move(positional_patterns),
-      std::vector<ConstructorPattern::NamedPattern>{});
+  return module_->Make<SumVariantPayloadPattern>(
+      Span(constructor_ref->span().start(), GetPos()), constructor_ref,
+      SumVariantPayloadPattern::PayloadShape::kTuple,
+      std::move(tuple_payload_patterns),
+      std::vector<SumVariantPayloadPattern::StructPayloadFieldPattern>{});
 }
 
-absl::StatusOr<ConstructorPattern*> Parser::ParseStructConstructorPattern(
-    Bindings& bindings, ColonRef* constructor) {
+absl::StatusOr<SumVariantPayloadPattern*>
+Parser::ParseStructSumVariantPayloadPattern(Bindings& bindings,
+                                            ColonRef* constructor_ref) {
   XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kOBrace));
 
   auto make_identifier_pattern =
@@ -4898,7 +4900,8 @@ absl::StatusOr<ConstructorPattern*> Parser::ParseStructConstructorPattern(
     return result;
   };
 
-  std::vector<ConstructorPattern::NamedPattern> named_patterns;
+  std::vector<SumVariantPayloadPattern::StructPayloadFieldPattern>
+      struct_payload_field_patterns;
   bool must_end = false;
   while (true) {
     XLS_ASSIGN_OR_RETURN(bool dropped_cbrace, TryDropToken(TokenKind::kCBrace));
@@ -4919,25 +4922,26 @@ absl::StatusOr<ConstructorPattern*> Parser::ParseStructConstructorPattern(
     NameDefTree* member_pattern;
     if (dropped_colon) {
       XLS_ASSIGN_OR_RETURN(
-          member_pattern, ParsePattern(bindings, /*within_tuple_pattern=*/false));
+          member_pattern,
+          ParsePattern(bindings, /*within_tuple_pattern=*/false));
     } else {
       XLS_ASSIGN_OR_RETURN(member_pattern, make_identifier_pattern(member_tok));
     }
-    named_patterns.push_back(
+    struct_payload_field_patterns.push_back(
         std::make_pair(*member_tok.GetValue(), member_pattern));
 
     XLS_ASSIGN_OR_RETURN(bool dropped_comma, TryDropToken(TokenKind::kComma));
     must_end = !dropped_comma;
   }
 
-  return module_->Make<ConstructorPattern>(
-      Span(constructor->span().start(), GetPos()), constructor,
-      ConstructorPattern::PayloadKind::kStruct,
-      std::vector<NameDefTree*>{}, std::move(named_patterns));
+  return module_->Make<SumVariantPayloadPattern>(
+      Span(constructor_ref->span().start(), GetPos()), constructor_ref,
+      SumVariantPayloadPattern::PayloadShape::kStruct,
+      std::vector<NameDefTree*>{}, std::move(struct_payload_field_patterns));
 }
 
-absl::StatusOr<StatementBlock*> Parser::ParseBlockExpression(
-    Bindings& bindings, bool has_braces) {
+absl::StatusOr<StatementBlock*> Parser::ParseBlockExpression(Bindings& bindings,
+                                                             bool has_braces) {
   Bindings block_bindings(&bindings);
   Pos start_pos = GetPos();
   if (has_braces) {

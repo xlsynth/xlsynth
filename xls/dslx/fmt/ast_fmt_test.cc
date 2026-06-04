@@ -21,14 +21,14 @@
 #include <string_view>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/logging/log_lines.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
@@ -1646,7 +1646,7 @@ SECOND = 1,
         kWant);
 }
 
-TEST_F(ModuleFmtTest, SemanticSumEmptyPayloadKinds) {
+TEST_F(ModuleFmtTest, SemanticSumEmptyPayloadShapes) {
   DoFmt(R"(enum Option{None,EmptyTuple(),EmptyStruct{},Some(u32),Point{x:u32}}
 fn f(x:Option)->Option{match x{Option::EmptyTuple()=>Option::EmptyTuple(),Option::EmptyStruct{}=>Option::EmptyStruct{},Option::Some(v)=>Option::Some(v),Option::Point{x:px}=>Option::Point{x:px},Option::None=>Option::None,}}
 )",
