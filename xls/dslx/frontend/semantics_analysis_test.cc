@@ -25,6 +25,7 @@
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/ast_cloner.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/parse_and_typecheck.h"
@@ -54,15 +55,31 @@ proc Counter {
     return absl::InternalError("Dummy typecheck should not be called");
   };
   SemanticsAnalysis semantics_analysis;
-  XLS_EXPECT_OK(semantics_analysis.RunPreTypeCheckPass(
-      *tm.module, warnings, import_data, dummy_typecheck));
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> module,
+                           CloneModule(*tm.module));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      module, semantics_analysis.RunPreTypeCheckPass(
+                  std::move(module), warnings, import_data, dummy_typecheck));
 
   // Verify structurally that the member is not double-wrapped.
   XLS_ASSERT_OK_AND_ASSIGN(ProcDef * proc,
-                           tm.module->GetMemberOrError<ProcDef>("Counter"));
+                           module->GetMemberOrError<ProcDef>("Counter"));
   ASSERT_EQ(proc->members().size(), 1);
   StructMemberNode* member = proc->members()[0];
   EXPECT_EQ(member->type()->ToString(), "BuiltinProcState<u32>");
+}
+
+bool ContainsIfLet(const AstNode* node) {
+  if (const auto* conditional = dynamic_cast<const Conditional*>(node);
+      conditional != nullptr && conditional->IsIfLet()) {
+    return true;
+  }
+  for (const AstNode* child : node->GetChildren(/*want_types=*/true)) {
+    if (ContainsIfLet(child)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 TEST(SemanticsAnalysisTest, NormalizesIfLetToMatchBeforeTypecheck) {
@@ -89,7 +106,12 @@ fn unwrap_or(x: Option, y: Option) -> u8 {
                                        import_data.file_table()));
   WarningCollector warnings(import_data.enabled_warnings());
   SemanticsAnalysis analysis(/*suppress_warnings=*/false);
-  XLS_ASSERT_OK(analysis.RunPreTypeCheckPass(*module, warnings, import_data));
+  Module* original_module = module.get();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      module, analysis.RunPreTypeCheckPass(std::move(module), warnings,
+                                           import_data, TypecheckModuleFn{}));
+  EXPECT_NE(module.get(), original_module);
+  EXPECT_FALSE(ContainsIfLet(module.get()));
 
   XLS_ASSERT_OK_AND_ASSIGN(Function * unwrap_or,
                            module->GetMemberOrError<Function>("unwrap_or"));
@@ -100,16 +122,37 @@ fn unwrap_or(x: Option, y: Option) -> u8 {
   ASSERT_NE(outer_match, nullptr);
   ASSERT_EQ(outer_match->arms().size(), 2);
   EXPECT_TRUE(std::holds_alternative<SumVariantPayloadPattern*>(
-      outer_match->arms()[0]->patterns()[0]->leaf()));
-  EXPECT_TRUE(outer_match->arms()[1]->patterns()[0]->IsWildcardLeaf());
+      outer_match->arms()[0]->patterns()[0]));
+  EXPECT_TRUE(IsWildcardLeaf(outer_match->arms()[1]->patterns()[0]));
 
   const auto* inner_match =
       dynamic_cast<const Match*>(outer_match->arms()[1]->expr());
   ASSERT_NE(inner_match, nullptr);
   ASSERT_EQ(inner_match->arms().size(), 2);
   EXPECT_TRUE(std::holds_alternative<SumVariantPayloadPattern*>(
-      inner_match->arms()[0]->patterns()[0]->leaf()));
-  EXPECT_TRUE(inner_match->arms()[1]->patterns()[0]->IsWildcardLeaf());
+      inner_match->arms()[0]->patterns()[0]));
+  EXPECT_TRUE(IsWildcardLeaf(inner_match->arms()[1]->patterns()[0]));
+}
+
+TEST(SemanticsAnalysisTest, PreservesModuleWhenThereIsNoIfLet) {
+  constexpr std::string_view kProgram = R"(
+fn identity(x: u32) -> u32 {
+  x
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> module,
+                           ParseModule(kProgram, "fake_path.x", "the_module",
+                                       import_data.file_table()));
+  Module* original_module = module.get();
+  WarningCollector warnings(import_data.enabled_warnings());
+  SemanticsAnalysis analysis(/*suppress_warnings=*/false);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      module, analysis.RunPreTypeCheckPass(std::move(module), warnings,
+                                           import_data, TypecheckModuleFn{}));
+
+  EXPECT_EQ(module.get(), original_module);
 }
 
 }  // namespace
