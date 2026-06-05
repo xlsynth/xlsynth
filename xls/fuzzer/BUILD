@@ -39,6 +39,11 @@ filegroup(
     srcs = glob(["crashers/*.x"]),
 )
 
+filegroup(
+    name = "semantic_sum_phase1_seed_corpus_files",
+    srcs = glob(["testdata/semantic_sum_phase1/**"]),
+)
+
 dslx_strip_comments(
     name = "x_files_stripped",
     srcs = [":x_files"],
@@ -364,6 +369,10 @@ cc_test(
         "//xls/common/status:status_macros",
         "//xls/dslx:interp_value",
         "//xls/dslx:interp_value_utils",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
+        "//xls/dslx/frontend:pos",
+        "//xls/dslx/type_system:type",
         "//xls/ir:bits",
         "//xls/ir:ir_parser",
         "//xls/ir:value",
@@ -503,6 +512,7 @@ cc_binary(
         ":ast_generator",
         ":run_fuzz_multiprocess_lib",
         ":sample",
+        ":semantic_sum_source_seed_replay",
         ":sample_cc_proto",
         "//xls/common:exit_status",
         "//xls/common:init_xls",
@@ -610,6 +620,90 @@ pytype_strict_contrib_test(
     deps = [
         "//xls/common:runfiles",
         "//xls/common:test_base",
+    ],
+)
+
+cc_proto_library(
+    name = "semantic_sum_seed_corpus_cc_proto",
+    deps = [":semantic_sum_seed_corpus_proto"],
+)
+
+proto_library(
+    name = "semantic_sum_seed_corpus_proto",
+    srcs = ["semantic_sum_seed_corpus.proto"],
+)
+
+cc_library(
+    name = "semantic_sum_source_seed_replay",
+    srcs = ["semantic_sum_source_seed_replay.cc"],
+    hdrs = ["semantic_sum_source_seed_replay.h"],
+    deps = [
+        ":run_fuzz",
+        ":sample",
+        ":semantic_sum_seed_corpus",
+        ":value_generator",
+        "//xls/common/file:filesystem",
+        "//xls/common/file:temp_directory",
+        "//xls/common/status:status_macros",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx:interp_value",
+        "//xls/dslx:parse_and_typecheck",
+        "//xls/dslx/frontend:module",
+        "//xls/dslx/type_system:type",
+        "//xls/ir:format_preference",
+        "//xls/tests:testvector_cc_proto",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/random",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "semantic_sum_source_seed_replay_test",
+    srcs = ["semantic_sum_source_seed_replay_test.cc"],
+    data = [":semantic_sum_phase1_seed_corpus_files"],
+    deps = [
+        ":semantic_sum_source_seed_replay",
+        "//xls/common/file:filesystem",
+        "//xls/common/file:get_runfile_path",
+        "//xls/common/file:temp_directory",
+        "//xls/common/status:matchers",
+        "//xls/common/status:status_macros",
+        "//xls/common:xls_gunit_main",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
+    name = "semantic_sum_seed_corpus",
+    srcs = ["semantic_sum_seed_corpus.cc"],
+    hdrs = ["semantic_sum_seed_corpus.h"],
+    data = [":semantic_sum_phase1_seed_corpus_files"],
+    deps = [
+        ":semantic_sum_seed_corpus_cc_proto",
+        "//xls/common/file:filesystem",
+        "//xls/common/status:status_macros",
+        "@com_google_absl//absl/functional:function_ref",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "semantic_sum_seed_corpus_test",
+    srcs = ["semantic_sum_seed_corpus_test.cc"],
+    deps = [
+        ":semantic_sum_seed_corpus",
+        "//xls/common/file:get_runfile_path",
+        "//xls/common/status:matchers",
+        "//xls/common/status:status_macros",
+        "//xls/common:xls_gunit_main",
+        "@googletest//:gtest",
     ],
 )
 
@@ -913,6 +1007,7 @@ cc_library(
         "//xls/common/status:status_macros",
         "//xls/data_structures:inline_bitmap",
         "//xls/dslx:interp_value",
+        "//xls/dslx:interp_value_utils",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:ast_utils",
         "//xls/dslx/frontend:module",
@@ -941,10 +1036,13 @@ cc_test(
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
         "//xls/dslx:interp_value",
+        "//xls/dslx:interp_value_utils",
+        "//xls/dslx:parse_and_typecheck",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:pos",
         "//xls/dslx/type_system:type",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@googletest//:gtest",
     ],
