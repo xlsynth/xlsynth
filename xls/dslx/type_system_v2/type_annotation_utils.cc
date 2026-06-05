@@ -111,6 +111,19 @@ TypeAnnotation* CreateStructOrProcAnnotation(Module& module,
                                       ref.parametrics, std::nullopt);
 }
 
+TypeAnnotation* CreateSumAnnotation(Module& module, SumDef* def,
+                                    std::vector<ExprOrType> parametrics,
+                                    std::optional<const Expr*> instantiator) {
+  return module.Make<TypeRefTypeAnnotation>(
+      def->span(), module.Make<TypeRef>(def->span(), def),
+      std::move(parametrics), std::nullopt, instantiator);
+}
+
+TypeAnnotation* CreateSumAnnotation(Module& module, const SumRef& ref) {
+  return CreateSumAnnotation(module, const_cast<SumDef*>(ref.def),
+                             ref.parametrics, ref.instantiator);
+}
+
 ChannelTypeAnnotation* GetChannelArrayElementType(
     Module& module, const ChannelTypeAnnotation* channel_array_type) {
   std::optional<std::vector<Expr*>> rest_of_dims;

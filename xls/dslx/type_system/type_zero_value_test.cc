@@ -18,10 +18,10 @@
 #include <optional>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/module.h"
@@ -38,11 +38,9 @@ SumType MakeOuterSumWithInhabitedNestedSumPayload(Module& module) {
 
   auto* inner_name = module.Make<NameDef>(kFakeSpan, "Inner", nullptr);
   auto* inner_unit_name = module.Make<NameDef>(kFakeSpan, "InnerUnit", nullptr);
-  auto* inner_unit =
-      module.Make<SumVariant>(kFakeSpan, inner_unit_name,
-                              SumVariant::PayloadKind::kUnit,
-                              std::vector<TypeAnnotation*>{},
-                              std::vector<StructMemberNode*>{});
+  auto* inner_unit = module.Make<SumVariant>(
+      kFakeSpan, inner_unit_name, SumVariant::PayloadShape::kUnit,
+      std::vector<TypeAnnotation*>{}, std::vector<StructMemberNode*>{});
   auto* inner_def = module.Make<SumDef>(
       kFakeSpan, inner_name, std::vector<ParametricBinding*>{},
       std::vector<SumVariant*>{inner_unit}, /*is_public=*/false);
@@ -53,15 +51,12 @@ SumType MakeOuterSumWithInhabitedNestedSumPayload(Module& module) {
 
   auto* outer_name = module.Make<NameDef>(kFakeSpan, "Outer", nullptr);
   auto* wrapped_name = module.Make<NameDef>(kFakeSpan, "Wrapped", nullptr);
-  auto* wrapped =
-      module.Make<SumVariant>(kFakeSpan, wrapped_name,
-                              SumVariant::PayloadKind::kTuple,
-                              std::vector<TypeAnnotation*>{
-                                  module.Make<TypeRefTypeAnnotation>(
-                                      kFakeSpan,
-                                      module.Make<TypeRef>(kFakeSpan, inner_def),
-                                      std::vector<ExprOrType>{})},
-                              std::vector<StructMemberNode*>{});
+  auto* wrapped = module.Make<SumVariant>(
+      kFakeSpan, wrapped_name, SumVariant::PayloadShape::kTuple,
+      std::vector<TypeAnnotation*>{module.Make<TypeRefTypeAnnotation>(
+          kFakeSpan, module.Make<TypeRef>(kFakeSpan, inner_def),
+          std::vector<ExprOrType>{})},
+      std::vector<StructMemberNode*>{});
   auto* outer_def = module.Make<SumDef>(
       kFakeSpan, outer_name, std::vector<ParametricBinding*>{},
       std::vector<SumVariant*>{wrapped}, /*is_public=*/false);
