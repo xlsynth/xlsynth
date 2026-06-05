@@ -200,13 +200,13 @@ absl::StatusOr<dslx::SumType> MakePartiallyInhabitedEnumPayloadSumType(
   auto* impossible_name =
       module.Make<dslx::NameDef>(kFakeSpan, "Impossible", nullptr);
   auto* unit_variant = module.Make<dslx::SumVariant>(
-      kFakeSpan, unit_name, dslx::SumVariant::PayloadKind::kUnit,
+      kFakeSpan, unit_name, dslx::SumVariant::PayloadShape::kUnit,
       std::vector<dslx::TypeAnnotation*>{},
       std::vector<dslx::StructMemberNode*>{});
   XLS_ASSIGN_OR_RETURN(dslx::TypeRefTypeAnnotation * enum_type_annotation,
                        MakeTypeAnnotation(&module, "Empty"));
   auto* impossible_variant = module.Make<dslx::SumVariant>(
-      kFakeSpan, impossible_name, dslx::SumVariant::PayloadKind::kTuple,
+      kFakeSpan, impossible_name, dslx::SumVariant::PayloadShape::kTuple,
       std::vector<dslx::TypeAnnotation*>{enum_type_annotation},
       std::vector<dslx::StructMemberNode*>{});
   auto* sum_def = module.Make<dslx::SumDef>(
