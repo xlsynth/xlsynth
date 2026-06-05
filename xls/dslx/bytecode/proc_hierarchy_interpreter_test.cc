@@ -22,6 +22,7 @@
 #include "gtest/gtest.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "xls/common/file/temp_file.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/ret_check.h"
@@ -434,6 +435,85 @@ proc tester_proc {
                            "`tester_proc->incrementer#0::in_ch`:\n  u32:100",
                            "Sent data on channel "
                            "`tester_proc->incrementer#0::out_ch`:\n  u32:101"));
+}
+
+TEST_F(ProcHierarchyInterpreterTest, TraceChannelsRedactsSemanticSums) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+proc passthrough {
+  in_ch: chan<Option> in;
+  out_ch: chan<Option> out;
+
+  init { () }
+
+  config(in_ch: chan<Option> in,
+         out_ch: chan<Option> out) {
+    (in_ch, out_ch)
+  }
+  next(_: ()) {
+    let (tok, value) = recv(join(), in_ch);
+    let tok = send(tok, out_ch, value);
+  }
+}
+
+#[test_proc]
+proc tester_proc {
+  data_out: chan<Option> out;
+  data_in: chan<Option> in;
+  terminator: chan<bool> out;
+
+  init { () }
+
+  config(terminator: chan<bool> out) {
+    let (input_p, input_c) = chan<Option>("input");
+    let (output_p, output_c) = chan<Option>("output");
+    spawn passthrough(input_c, output_p);
+    (input_p, output_c, terminator)
+  }
+
+  next(state: ()) {
+    let tok = send(join(), data_out, Option::Some(u32:42));
+    let (tok, result) = recv(tok, data_in);
+    let tok = send(tok, terminator, true);
+ }
+})";
+
+  XLS_ASSERT_OK_AND_ASSIGN(TestProc * test_proc,
+                           ParseAndGetTestProc(kProgram, "tester_proc"));
+  auto options = BytecodeInterpreterOptions().trace_channels(true);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<ProcHierarchyInterpreter> interpreter,
+      Create(test_proc, options));
+  XLS_ASSERT_OK(Run(*interpreter, options));
+  constexpr std::string_view kOpaqueValue =
+      "<semantic sum value omitted in Phase 1>";
+  EXPECT_THAT(
+      GetProcInstance(*interpreter, "tester_proc:0")
+          .value()
+          ->events()
+          .GetTraceMessageStrings(),
+      testing::ElementsAre(
+          absl::StrCat("Sent data on channel `tester_proc::data_out`:\n  ",
+                       kOpaqueValue),
+          absl::StrCat("Received data on channel `tester_proc::data_in`:\n  ",
+                       kOpaqueValue),
+          "Sent data on channel `tester_proc::terminator`:\n  u1:1"));
+  EXPECT_THAT(
+      GetProcInstance(*interpreter, "tester_proc->passthrough:0")
+          .value()
+          ->events()
+          .GetTraceMessageStrings(),
+      testing::ElementsAre(
+          absl::StrCat("Received data on channel "
+                       "`tester_proc->passthrough#0::in_ch`:\n  ",
+                       kOpaqueValue),
+          absl::StrCat("Sent data on channel "
+                       "`tester_proc->passthrough#0::out_ch`:\n  ",
+                       kOpaqueValue)));
 }
 
 TEST_F(ProcHierarchyInterpreterTest, TraceChannelsHexValues) {

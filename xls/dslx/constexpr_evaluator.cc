@@ -518,9 +518,15 @@ absl::Status ConstexprEvaluator::HandleStructInstance(
   return InterpretExpr(expr);
 }
 
-absl::Status ConstexprEvaluator::HandleSumInstance(const SumInstance*) {
-  return absl::UnimplementedError(
-      "Semantic sum constants require the Phase 1 runtime layer.");
+absl::Status ConstexprEvaluator::HandleSumInstance(const SumInstance* expr) {
+  // A sum instance is constexpr iff all active payload members are constexpr.
+  for (Expr* arg : expr->tuple_payload_args()) {
+    EVAL_AS_CONSTEXPR_OR_RETURN(arg);
+  }
+  for (const auto& [name, arg] : expr->struct_payload_field_args()) {
+    EVAL_AS_CONSTEXPR_OR_RETURN(arg);
+  }
+  return InterpretExpr(expr);
 }
 
 absl::Status ConstexprEvaluator::HandleConditional(const Conditional* expr) {

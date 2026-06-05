@@ -75,7 +75,7 @@ class DslxInterpreterEvents {
       const FileTable& file_table, const Span& source_location,
       std::string_view channel_name, const InterpValue& value,
       ChannelDirection direction,
-      const ValueFormatDescriptor& format_descriptor);
+      const ValueFormatDescriptor& format_descriptor, bool redact_value);
   virtual void AddAssertMessage(const FileTable& file_table,
                                 const Span& source_location,
                                 std::string_view msg);

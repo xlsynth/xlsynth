@@ -39,6 +39,7 @@ enum {
   xls_dslx_type_definition_kind_colon_ref,
   xls_dslx_type_definition_kind_proc_def,
   xls_dslx_type_definition_kind_use_tree_entry,
+  xls_dslx_type_definition_kind_sum_def,
 };
 
 typedef int32_t xls_dslx_module_member_kind;
@@ -61,6 +62,7 @@ enum {
   xls_dslx_module_member_kind_use,
   xls_dslx_module_member_kind_proc_alias,
   xls_dslx_module_member_kind_fuzz_test_function,
+  xls_dslx_module_member_kind_sum_def,
 };
 
 typedef int32_t xls_dslx_attribute_kind;
@@ -89,6 +91,7 @@ struct xls_dslx_module;
 struct xls_dslx_type_definition;
 struct xls_dslx_struct_def;
 struct xls_dslx_enum_def;
+struct xls_dslx_sum_def;
 struct xls_dslx_type_alias;
 struct xls_dslx_type_info;
 struct xls_dslx_type;
@@ -265,6 +268,9 @@ struct xls_dslx_struct_def* xls_dslx_module_member_get_struct_def(
 struct xls_dslx_enum_def* xls_dslx_module_member_get_enum_def(
     struct xls_dslx_module_member*);
 
+struct xls_dslx_sum_def* xls_dslx_module_member_get_sum_def(
+    struct xls_dslx_module_member*);
+
 struct xls_dslx_type_alias* xls_dslx_module_member_get_type_alias(
     struct xls_dslx_module_member*);
 
@@ -292,6 +298,9 @@ struct xls_dslx_module_member* xls_dslx_module_member_from_struct_def(
 
 struct xls_dslx_module_member* xls_dslx_module_member_from_enum_def(
     struct xls_dslx_enum_def* enum_def);
+
+struct xls_dslx_module_member* xls_dslx_module_member_from_sum_def(
+    struct xls_dslx_sum_def* sum_def);
 
 struct xls_dslx_module_member* xls_dslx_module_member_from_type_alias(
     struct xls_dslx_type_alias* type_alias);
@@ -482,6 +491,9 @@ struct xls_dslx_struct_def* xls_dslx_module_get_type_definition_as_struct_def(
 struct xls_dslx_enum_def* xls_dslx_module_get_type_definition_as_enum_def(
     struct xls_dslx_module* module, int64_t i);
 
+struct xls_dslx_sum_def* xls_dslx_module_get_type_definition_as_sum_def(
+    struct xls_dslx_module* module, int64_t i);
+
 struct xls_dslx_type_alias* xls_dslx_module_get_type_definition_as_type_alias(
     struct xls_dslx_module* module, int64_t i);
 
@@ -551,6 +563,18 @@ struct xls_dslx_expr* xls_dslx_enum_member_get_value(
 
 // Note: return value is owned by the caller, free via `xls_c_str_free`.
 char* xls_dslx_enum_def_to_string(struct xls_dslx_enum_def*);
+
+// -- sum_def (AST node)
+
+// Note: the return value is owned by the caller and must be freed via
+// `xls_c_str_free`.
+char* xls_dslx_sum_def_get_identifier(struct xls_dslx_sum_def*);
+
+bool xls_dslx_sum_def_is_parametric(struct xls_dslx_sum_def*);
+int64_t xls_dslx_sum_def_get_variant_count(struct xls_dslx_sum_def*);
+
+// Note: return value is owned by the caller, free via `xls_c_str_free`.
+char* xls_dslx_sum_def_to_string(struct xls_dslx_sum_def*);
 
 // Returns the owning module for the given expression AST node.
 struct xls_dslx_module* xls_dslx_expr_get_owner_module(
@@ -650,6 +674,9 @@ const struct xls_dslx_type* xls_dslx_type_info_get_type_struct_member(
 const struct xls_dslx_type* xls_dslx_type_info_get_type_enum_def(
     struct xls_dslx_type_info*, struct xls_dslx_enum_def*);
 
+const struct xls_dslx_type* xls_dslx_type_info_get_type_sum_def(
+    struct xls_dslx_type_info*, struct xls_dslx_sum_def*);
+
 const struct xls_dslx_type* xls_dslx_type_info_get_type_constant_def(
     struct xls_dslx_type_info*, struct xls_dslx_constant_def*);
 
@@ -716,6 +743,8 @@ struct xls_dslx_function* xls_dslx_invocation_data_get_caller(
 
 // -- type (deduced type information)
 
+// Returns false for a semantic sum or a type containing a semantic sum: Phase 1
+// does not expose the temporary semantic sum representation layout.
 bool xls_dslx_type_get_total_bit_count(const struct xls_dslx_type*,
                                        char** error_out, int64_t* result_out);
 

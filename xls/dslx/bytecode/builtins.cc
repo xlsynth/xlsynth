@@ -389,6 +389,23 @@ GetAssertFormattedStrings(const InterpreterStack::FormattedInterpValue& lhs,
   return formatted_pair(fmt);
 }
 
+static absl::StatusOr<const Type*> GetAssertOperandType(
+    const Bytecode& bytecode, const Frame& frame) {
+  const TypeInfo* type_info = frame.type_info();
+  XLS_ASSIGN_OR_RETURN(Bytecode::InvocationData invocation_data,
+                       bytecode.invocation_data());
+  XLS_ASSIGN_OR_RETURN(
+      Type * lhs_type,
+      type_info->GetItemOrError(invocation_data.invocation()->args()[0]));
+  XLS_ASSIGN_OR_RETURN(
+      Type * rhs_type,
+      type_info->GetItemOrError(invocation_data.invocation()->args()[1]));
+  XLS_RET_CHECK_EQ(*lhs_type, *rhs_type) << absl::StreamFormat(
+      "Assert arguments are not the same type: `%s` vs `%s`",
+      lhs_type->ToString(), rhs_type->ToString());
+  return lhs_type;
+}
+
 absl::Status RunBuiltinAssertEq(const Bytecode& bytecode,
                                 InterpreterStack& stack, const Frame& frame,
                                 const BytecodeInterpreterOptions& options,
@@ -405,26 +422,36 @@ absl::Status RunBuiltinAssertEq(const Bytecode& bytecode,
   stack.Push(InterpValue::MakeUnit());
   bool eq = lhs.Eq(rhs);
   if (!eq) {
-    XLS_ASSIGN_OR_RETURN((const auto& [lhs_string, rhs_string]),
-                         GetAssertFormattedStrings(formatted_lhs, formatted_rhs,
-                                                   bytecode, frame, options));
-    std::string message =
-        absl::StrContains(lhs_string, '\n')
-            ? absl::StrCat(
-                  "\n  lhs and rhs were not equal:\n",
-                  HighlightLineByLineDifferences(lhs_string, rhs_string))
-            : absl::StrFormat("\n  lhs: %s\n  rhs: %s\n  were not equal",
-                              lhs_string, rhs_string);
-    if (lhs.IsArray() && rhs.IsArray()) {
+    XLS_ASSIGN_OR_RETURN(const Type* operand_type,
+                         GetAssertOperandType(bytecode, frame));
+    std::string message;
+    if (TypeContainsSemanticSum(*operand_type)) {
+      message =
+          "\n  lhs and rhs were not equal; values containing semantic sums "
+          "are not formatted in Phase 1";
+    } else {
       XLS_ASSIGN_OR_RETURN(
-          std::optional<int64_t> i,
-          FindFirstDifferingIndex(lhs.GetValuesOrDie(), rhs.GetValuesOrDie()));
-      XLS_RET_CHECK(i.has_value());
-      const auto& lhs_values = lhs.GetValuesOrDie();
-      const auto& rhs_values = rhs.GetValuesOrDie();
-      message += absl::StrFormat("; first differing index: %d :: %s vs %s", *i,
-                                 lhs_values[*i].ToHumanString(),
-                                 rhs_values[*i].ToHumanString());
+          (const auto& [lhs_string, rhs_string]),
+          GetAssertFormattedStrings(formatted_lhs, formatted_rhs, bytecode,
+                                    frame, options));
+      message =
+          absl::StrContains(lhs_string, '\n')
+              ? absl::StrCat(
+                    "\n  lhs and rhs were not equal:\n",
+                    HighlightLineByLineDifferences(lhs_string, rhs_string))
+              : absl::StrFormat("\n  lhs: %s\n  rhs: %s\n  were not equal",
+                                lhs_string, rhs_string);
+      if (lhs.IsArray() && rhs.IsArray()) {
+        XLS_ASSIGN_OR_RETURN(std::optional<int64_t> i,
+                             FindFirstDifferingIndex(lhs.GetValuesOrDie(),
+                                                     rhs.GetValuesOrDie()));
+        XLS_RET_CHECK(i.has_value());
+        const auto& lhs_values = lhs.GetValuesOrDie();
+        const auto& rhs_values = rhs.GetValuesOrDie();
+        message += absl::StrFormat("; first differing index: %d :: %s vs %s",
+                                   *i, lhs_values[*i].ToHumanString(),
+                                   rhs_values[*i].ToHumanString());
+      }
     }
     if (caller_proc_id.has_value()) {
       message += absl::StrFormat(" (called from %s)",
