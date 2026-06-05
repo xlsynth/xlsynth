@@ -28,6 +28,7 @@ namespace xls {
 namespace {
 
 using ::testing::Contains;
+using ::testing::ContainsRegex;
 using ::testing::SizeIs;
 
 std::filesystem::path GetManifestPath() {
@@ -40,7 +41,7 @@ TEST(SemanticSumSeedCorpusTest, LoadsManifestAndFiltersBySurface) {
   XLS_ASSERT_OK_AND_ASSIGN(fuzzer::SemanticSumSeedManifest manifest,
                            LoadSemanticSumSeedManifest(GetManifestPath()));
 
-  EXPECT_THAT(manifest.seeds(), SizeIs(12));
+  EXPECT_THAT(manifest.seeds(), SizeIs(16));
 
   std::vector<std::string> source_seed_ids;
   for (const fuzzer::SemanticSumSeed* seed :
@@ -52,6 +53,14 @@ TEST(SemanticSumSeedCorpusTest, LoadsManifestAndFiltersBySurface) {
               Contains("source_exhaustive_constructor_match_without_wildcard"));
   EXPECT_THAT(source_seed_ids,
               Contains("source_sample_runner_semantic_sum_argument"));
+
+  std::vector<std::string> raw_seed_ids;
+  for (const fuzzer::SemanticSumSeed* seed :
+       GetSemanticSumSeedsForSurface(
+           manifest, fuzzer::SEMANTIC_SUM_SEED_SURFACE_RAW_BOUNDARY)) {
+    raw_seed_ids.push_back(seed->seed_id());
+  }
+  EXPECT_THAT(raw_seed_ids, SizeIs(3));
 
   const fuzzer::SemanticSumSeed* assert_eq_seed = nullptr;
   for (const fuzzer::SemanticSumSeed& seed : manifest.seeds()) {
@@ -65,6 +74,28 @@ TEST(SemanticSumSeedCorpusTest, LoadsManifestAndFiltersBySurface) {
   EXPECT_THAT(assert_eq_seed->sample_args(),
               Contains("(bits[1]:0x1, (bits[32]:0x7fffffff)); "
                        "(bits[1]:0x1, (bits[32]:0x7fffffff))"));
+}
+
+TEST(SemanticSumSeedCorpusTest, ReplaysSeedTextsFromManifestRoot) {
+  std::vector<std::string> seen_seed_ids;
+  std::vector<std::string> seen_texts;
+  XLS_ASSERT_OK(ReplaySemanticSumSeeds(
+      GetManifestPath(), fuzzer::SEMANTIC_SUM_SEED_SURFACE_TYPEINFO_LAYOUT,
+      [&](const fuzzer::SemanticSumSeed& seed,
+          const std::string& seed_text) -> absl::Status {
+        seen_seed_ids.push_back(seed.seed_id());
+        seen_texts.push_back(seed_text);
+        return absl::OkStatus();
+      }));
+
+  EXPECT_THAT(seen_seed_ids,
+              Contains("typeinfo_layout_basic_sum_shape"));
+  EXPECT_THAT(seen_seed_ids,
+              Contains("typeinfo_layout_empty_payload_kinds"));
+  EXPECT_THAT(seen_texts,
+              Contains(ContainsRegex(R"(enum Option \{)")));
+  EXPECT_THAT(seen_texts,
+              Contains(ContainsRegex(R"(EmptyStruct \{ \})")));
 }
 
 }  // namespace
