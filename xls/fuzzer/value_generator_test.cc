@@ -58,15 +58,15 @@ dslx::SumType MakeTestSumType(dslx::Module& module) {
       module.GetOrCreateBuiltinNameDef(dslx::BuiltinType::kU1));
 
   auto* none_variant = module.Make<dslx::SumVariant>(
-      kFakeSpan, none_name, dslx::SumVariant::PayloadKind::kUnit,
+      kFakeSpan, none_name, dslx::SumVariant::PayloadShape::kUnit,
       std::vector<dslx::TypeAnnotation*>{},
       std::vector<dslx::StructMemberNode*>{});
   auto* byte_variant = module.Make<dslx::SumVariant>(
-      kFakeSpan, byte_name, dslx::SumVariant::PayloadKind::kTuple,
+      kFakeSpan, byte_name, dslx::SumVariant::PayloadShape::kTuple,
       std::vector<dslx::TypeAnnotation*>{u8_type},
       std::vector<dslx::StructMemberNode*>{});
   auto* pair_variant = module.Make<dslx::SumVariant>(
-      kFakeSpan, pair_name, dslx::SumVariant::PayloadKind::kTuple,
+      kFakeSpan, pair_name, dslx::SumVariant::PayloadShape::kTuple,
       std::vector<dslx::TypeAnnotation*>{u16_type, u1_type},
       std::vector<dslx::StructMemberNode*>{});
 
@@ -153,7 +153,7 @@ absl::StatusOr<dslx::SumType> MakeEnumPayloadSumType(dslx::Module& module) {
   XLS_ASSIGN_OR_RETURN(dslx::TypeRefTypeAnnotation * enum_type_annotation,
                        MakeTypeAnnotation(&module, "Flavor"));
   auto* enum_variant = module.Make<dslx::SumVariant>(
-      kFakeSpan, enum_variant_name, dslx::SumVariant::PayloadKind::kTuple,
+      kFakeSpan, enum_variant_name, dslx::SumVariant::PayloadShape::kTuple,
       std::vector<dslx::TypeAnnotation*>{enum_type_annotation},
       std::vector<dslx::StructMemberNode*>{});
   auto* sum_def = module.Make<dslx::SumDef>(
@@ -194,13 +194,13 @@ absl::StatusOr<dslx::SumType> MakePartiallyInhabitedEnumPayloadSumType(
   auto* impossible_name =
       module.Make<dslx::NameDef>(kFakeSpan, "Impossible", nullptr);
   auto* unit_variant = module.Make<dslx::SumVariant>(
-      kFakeSpan, unit_name, dslx::SumVariant::PayloadKind::kUnit,
+      kFakeSpan, unit_name, dslx::SumVariant::PayloadShape::kUnit,
       std::vector<dslx::TypeAnnotation*>{},
       std::vector<dslx::StructMemberNode*>{});
   XLS_ASSIGN_OR_RETURN(dslx::TypeRefTypeAnnotation * enum_type_annotation,
                        MakeTypeAnnotation(&module, "Empty"));
   auto* impossible_variant = module.Make<dslx::SumVariant>(
-      kFakeSpan, impossible_name, dslx::SumVariant::PayloadKind::kTuple,
+      kFakeSpan, impossible_name, dslx::SumVariant::PayloadShape::kTuple,
       std::vector<dslx::TypeAnnotation*>{enum_type_annotation},
       std::vector<dslx::StructMemberNode*>{});
   auto* sum_def = module.Make<dslx::SumDef>(

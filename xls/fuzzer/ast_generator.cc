@@ -2126,7 +2126,7 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
   variants.reserve(2);
   variants.push_back(
       module_->Make<SumVariant>(fake_span_, unit_variant_name_def,
-                                SumVariant::PayloadKind::kUnit,
+                                SumVariant::PayloadShape::kUnit,
                                 std::vector<TypeAnnotation*>{},
                                 std::vector<StructMemberNode*>{}));
 
@@ -2140,13 +2140,13 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
         payload_width, /*use_xn=*/RandomBool(0.05));
     variants.push_back(module_->Make<SumVariant>(
         fake_span_, active_variant_name_def,
-        SumVariant::PayloadKind::kTuple,
+        SumVariant::PayloadShape::kTuple,
         std::vector<TypeAnnotation*>{*payload_type},
         std::vector<StructMemberNode*>{}));
   } else {
     variants.push_back(
         module_->Make<SumVariant>(fake_span_, active_variant_name_def,
-                                  SumVariant::PayloadKind::kTuple,
+                                  SumVariant::PayloadShape::kTuple,
                                   std::vector<TypeAnnotation*>{},
                                   std::vector<StructMemberNode*>{}));
   }
@@ -2165,12 +2165,12 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
   };
   auto make_sum_expr =
       [&](NameDef* variant_name_def,
-          SumVariant::PayloadKind payload_kind,
+          SumVariant::PayloadShape payload_shape,
           std::optional<TypeAnnotation*> want_payload_type)
       -> absl::StatusOr<Expr*> {
     ColonRef* constructor_ref = make_constructor_ref(variant_name_def);
     if (!want_payload_type.has_value()) {
-      if (payload_kind == SumVariant::PayloadKind::kTuple) {
+      if (payload_shape == SumVariant::PayloadShape::kTuple) {
         return module_->Make<Invocation>(fake_span_, constructor_ref,
                                          std::vector<Expr*>{});
       }
@@ -2183,7 +2183,7 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
   };
   XLS_ASSIGN_OR_RETURN(Expr * active_sum_expr,
                        make_sum_expr(active_variant_name_def,
-                                     sum_def->variants().back()->payload_kind(),
+                                     sum_def->variants().back()->payload_shape(),
                                      payload_type));
 
   std::string sum_identifier = GenSym();
@@ -2197,7 +2197,7 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
   auto* active_sum_ref = MakeNameRef(sum_binding);
   XLS_ASSIGN_OR_RETURN(Expr * unit_sum_expr,
                        make_sum_expr(unit_variant_name_def,
-                                     sum_def->variants().front()->payload_kind(),
+                                     sum_def->variants().front()->payload_shape(),
                                      std::nullopt));
   auto append_assert_eq = [&](Expr* lhs, Expr* rhs) {
     statements->push_back(module_->Make<Statement>(module_->Make<Invocation>(
@@ -2239,11 +2239,11 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
     auto* first_payload_name = MakeNameDef(GenSym());
     auto* first_payload_pattern =
         module_->Make<NameDefTree>(fake_span_, first_payload_name);
-    auto* first_constructor_pattern = module_->Make<ConstructorPattern>(
+    auto* first_constructor_pattern = module_->Make<SumVariantPayloadPattern>(
         fake_span_, make_constructor_ref(active_variant_name_def),
-        ConstructorPattern::PayloadKind::kTuple,
+        SumVariantPayloadPattern::PayloadShape::kTuple,
         std::vector<NameDefTree*>{first_payload_pattern},
-        std::vector<ConstructorPattern::NamedPattern>{});
+        std::vector<SumVariantPayloadPattern::StructPayloadFieldPattern>{});
     match_arms.push_back(module_->Make<MatchArm>(
         fake_span_,
         std::vector<NameDefTree*>{module_->Make<NameDefTree>(
@@ -2263,11 +2263,11 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
     auto* second_payload_name = MakeNameDef(GenSym());
     auto* second_payload_pattern =
         module_->Make<NameDefTree>(fake_span_, second_payload_name);
-    auto* second_constructor_pattern = module_->Make<ConstructorPattern>(
+    auto* second_constructor_pattern = module_->Make<SumVariantPayloadPattern>(
         fake_span_, make_constructor_ref(active_variant_name_def),
-        ConstructorPattern::PayloadKind::kTuple,
+        SumVariantPayloadPattern::PayloadShape::kTuple,
         std::vector<NameDefTree*>{second_payload_pattern},
-        std::vector<ConstructorPattern::NamedPattern>{});
+        std::vector<SumVariantPayloadPattern::StructPayloadFieldPattern>{});
     match_arms.push_back(module_->Make<MatchArm>(
         fake_span_,
         std::vector<NameDefTree*>{module_->Make<NameDefTree>(
@@ -2286,11 +2286,11 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
                                  MakeNameRef(second_payload_name), fake_span_),
             match_result_type)));
   } else {
-    auto* active_constructor_pattern = module_->Make<ConstructorPattern>(
+    auto* active_constructor_pattern = module_->Make<SumVariantPayloadPattern>(
         fake_span_, make_constructor_ref(active_variant_name_def),
-        ConstructorPattern::PayloadKind::kTuple,
+        SumVariantPayloadPattern::PayloadShape::kTuple,
         std::vector<NameDefTree*>{},
-        std::vector<ConstructorPattern::NamedPattern>{});
+        std::vector<SumVariantPayloadPattern::StructPayloadFieldPattern>{});
     match_arms.push_back(module_->Make<MatchArm>(
         fake_span_,
         std::vector<NameDefTree*>{module_->Make<NameDefTree>(
