@@ -151,16 +151,16 @@ dslx::SumType MakeSampleRunnerChoiceType(dslx::Module& module) {
 
   auto* none =
       module.Make<dslx::SumVariant>(kFakeSpan, none_name,
-                                    dslx::SumVariant::PayloadKind::kUnit,
+                                    dslx::SumVariant::PayloadShape::kUnit,
                                     std::vector<dslx::TypeAnnotation*>{},
                                     std::vector<dslx::StructMemberNode*>{});
   auto* byte =
       module.Make<dslx::SumVariant>(kFakeSpan, byte_name,
-                                    dslx::SumVariant::PayloadKind::kTuple,
+                                    dslx::SumVariant::PayloadShape::kTuple,
                                     std::vector<dslx::TypeAnnotation*>{u8_type},
                                     std::vector<dslx::StructMemberNode*>{});
   auto* wide = module.Make<dslx::SumVariant>(
-      kFakeSpan, wide_name, dslx::SumVariant::PayloadKind::kTuple,
+      kFakeSpan, wide_name, dslx::SumVariant::PayloadShape::kTuple,
       std::vector<dslx::TypeAnnotation*>{u16_type},
       std::vector<dslx::StructMemberNode*>{});
   auto* choice_def = module.Make<dslx::SumDef>(
