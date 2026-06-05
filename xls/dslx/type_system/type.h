@@ -820,23 +820,36 @@ class SumTypeVariant {
 
 // Represents a semantic sum after typechecking.
 //
-// `variants()` is stored in the same order as the defining `SumDef`. In Phase 1
-// that order determines the temporary dense storage tag, payload-slot layout,
-// and the behavior of positional consumers such as equality, formatting, and
-// serialization helpers. Source-level semantic discriminants are separate from
-// that temporary storage contract until the later tagged-union phase.
+// `variants()` is stored in the same order as the defining `SumDef`. Variant
+// order remains useful for deterministic traversal and the implicit
+// discriminant rule, but Phase 2 carries the chosen tag width and concrete
+// semantic discriminants explicitly so lowering does not conflate source order
+// with wire tags.
 class SumType : public Type {
  public:
   // `variants` must be in the same declaration order as `sum_def.variants()`.
-  // `SumType` uses the vector order exactly as supplied when deriving tag
-  // numbering and payload-slot layout.
+  // When `discriminants` is omitted, the type uses the implicit declaration
+  // order rule `0..n-1` at the supplied or inferred tag width.
   SumType(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
           absl::flat_hash_map<std::string, TypeDim>
-              nominal_type_dims_by_identifier = {})
+              nominal_type_dims_by_identifier = {},
+          std::optional<TypeDim> tag_bit_count = std::nullopt,
+          std::vector<InterpValue> discriminants = {})
       : sum_def_(sum_def),
         variants_(std::move(variants)),
         nominal_type_dims_by_identifier_(
-            std::move(nominal_type_dims_by_identifier)) {}
+            std::move(nominal_type_dims_by_identifier)),
+        tag_bit_count_(tag_bit_count.value_or(InferImplicitTagBitCount())),
+        discriminants_(std::move(discriminants)) {
+    if (discriminants_.empty()) {
+      const int64_t bit_count = tag_bit_count_.GetAsInt64().value();
+      discriminants_.reserve(variants_.size());
+      for (int64_t i = 0; i < variants_.size(); ++i) {
+        discriminants_.push_back(InterpValue::MakeUBits(bit_count, i));
+      }
+    }
+    CHECK_EQ(discriminants_.size(), variants_.size());
+  }
 
   absl::Status Accept(TypeVisitor& v) const override {
     return v.HandleSum(*this);
@@ -855,6 +868,7 @@ class SumType : public Type {
   bool IsAggregate() const override { return true; }
 
   std::vector<TypeDim> GetAllDims() const override;
+  absl::StatusOr<TypeDim> GetMaxPayloadBitCount() const;
   absl::StatusOr<TypeDim> GetTotalBitCount() const override;
   std::string GetDebugTypeName() const override { return "sum"; }
   std::unique_ptr<Type> CloneToUnique() const override;
@@ -870,13 +884,20 @@ class SumType : public Type {
   int64_t variant_count() const { return variants_.size(); }
   bool HasVariant(std::string_view target) const;
   const SumTypeVariant& GetVariant(std::string_view target) const;
-  TypeDim tag_bit_count() const;
+  TypeDim tag_bit_count() const { return tag_bit_count_; }
+  const InterpValue& GetDiscriminant(int64_t variant_index) const {
+    return discriminants_.at(variant_index);
+  }
 
  private:
+  TypeDim InferImplicitTagBitCount() const;
+
   const SumDef& sum_def_;
   std::vector<SumTypeVariant> variants_;
   const absl::flat_hash_map<std::string, TypeDim>
       nominal_type_dims_by_identifier_;
+  TypeDim tag_bit_count_;
+  std::vector<InterpValue> discriminants_;
 };
 
 // This represents the type of annotations like:
@@ -1266,10 +1287,8 @@ inline bool IsBool(const Type& t) {
 // type, is signed.
 absl::StatusOr<bool> IsSigned(const Type& c);
 
-// Returns whether a type is, or recursively contains, a semantic sum type.
-// This is used at Phase 1 public observer boundaries where semantic sum values
-// and representation details must remain opaque.
-bool TypeContainsSemanticSum(const Type& type);
+// Returns whether values exist for the given fully-concrete type.
+absl::StatusOr<bool> TypeIsInhabited(const Type& type);
 
 }  // namespace xls::dslx
 

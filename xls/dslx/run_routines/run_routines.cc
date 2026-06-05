@@ -559,9 +559,38 @@ static absl::StatusOr<QuickcheckIrFn> FindQuickcheckIrFn(Function* dslx_fn,
                       absl::StrJoin(ir_package->GetFunctionNames(), ", ")));
 }
 
+static absl::StatusOr<bool> QuickCheckHasInhabitedInputs(
+    QuickCheck* quickcheck, TypeInfo* type_info) {
+  XLS_ASSIGN_OR_RETURN(dslx::FunctionType * dslx_fn_type,
+                       type_info->GetItemAs<dslx::FunctionType>(
+                           quickcheck->fn()));
+  for (const std::unique_ptr<Type>& param_type : dslx_fn_type->params()) {
+    XLS_ASSIGN_OR_RETURN(bool param_is_inhabited,
+                         TypeIsInhabited(*param_type));
+    if (!param_is_inhabited) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static absl::StatusOr<bool> HasUninhabitedQuickCheck(
+    Module* entry_module, TypeInfo* type_info) {
+  for (QuickCheck* quickcheck : entry_module->GetQuickChecks()) {
+    XLS_ASSIGN_OR_RETURN(bool has_inhabited_inputs,
+                         QuickCheckHasInhabitedInputs(quickcheck, type_info));
+    if (!has_inhabited_inputs) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static absl::Status RunQuickCheck(AbstractRunComparator* quickcheck_runner,
                                   Package* ir_package, QuickCheck* quickcheck,
-                                  TypeInfo* type_info, int64_t seed) {
+                                  TypeInfo* type_info, ImportData* import_data,
+                                  const ConvertOptions& convert_options,
+                                  int64_t seed) {
   // Note: DSLX function.
   dslx::Function* dslx_fn = quickcheck->fn();
 
@@ -579,6 +608,26 @@ static absl::Status RunQuickCheck(AbstractRunComparator* quickcheck_runner,
       << "quickcheck properties must return `bool`, should be validated by "
          "type checking";
 
+  XLS_ASSIGN_OR_RETURN(bool has_inhabited_inputs,
+                       QuickCheckHasInhabitedInputs(quickcheck, type_info));
+  if (!has_inhabited_inputs) {
+    return FailureErrorStatus(
+        dslx_fn->span(),
+        absl::StrFormat("quickcheck of `%s` rejected all input samples",
+                        dslx_fn->identifier()),
+        *dslx_fn->owner()->file_table());
+  }
+
+  std::unique_ptr<Package> local_package;
+  if (ir_package == nullptr) {
+    dslx::PackageConversionData conv{
+        .package = std::make_unique<Package>(dslx_fn->owner()->name())};
+    XLS_RETURN_IF_ERROR(ConvertOneFunctionIntoPackage(
+        dslx_fn, import_data,
+        /*parametric_env=*/nullptr, convert_options, &conv));
+    local_package = std::move(conv.package);
+    ir_package = local_package.get();
+  }
   XLS_ASSIGN_OR_RETURN(QuickcheckIrFn qc_fn,
                        FindQuickcheckIrFn(dslx_fn, ir_package));
 
@@ -643,6 +692,7 @@ static absl::Status RunQuickCheck(AbstractRunComparator* quickcheck_runner,
 static absl::Status RunQuickChecksIfEnabled(
     const RE2* test_filter, Module* entry_module, TypeInfo* type_info,
     AbstractRunComparator* quickcheck_runner, Package* ir_package,
+    ImportData* import_data, const ConvertOptions& convert_options,
     std::optional<int64_t> seed, TestResultData& result,
     VirtualizableFilesystem& vfs) {
   if (quickcheck_runner == nullptr) {
@@ -686,8 +736,9 @@ static absl::Status RunQuickChecksIfEnabled(
     }
     std::cerr << "[ RUN QUICKCHECK        ] " << quickcheck_name
               << " cases: " << quickcheck->test_cases().ToString() << "\n";
-    const absl::Status status = RunQuickCheck(quickcheck_runner, ir_package,
-                                              quickcheck, type_info, *seed);
+    const absl::Status status =
+        RunQuickCheck(quickcheck_runner, ir_package, quickcheck, type_info,
+                      import_data, convert_options, *seed);
     const absl::Duration duration = absl::Now() - test_case_start;
     if (!status.ok()) {
       HandleError(result, status, quickcheck_name, start_pos, test_case_start,
@@ -972,8 +1023,11 @@ absl::StatusOr<TestResultData> AbstractTestRunner::ParseAndTest(
   // with the interpreter.
   std::unique_ptr<Package> ir_package;
   PostFnEvalHook post_fn_eval_hook;
+  XLS_ASSIGN_OR_RETURN(
+      bool has_uninhabited_quickcheck,
+      HasUninhabitedQuickCheck(entry_module, tm->type_info));
   if (options.run_comparator != nullptr ||
-      options.quickcheck_runner != nullptr) {
+      (options.quickcheck_runner != nullptr && !has_uninhabited_quickcheck)) {
     absl::StatusOr<dslx::PackageConversionData> ir_package_conversion_data =
         ConvertModuleToPackage(entry_module, &import_data,
                                options.convert_options);
@@ -1099,8 +1153,8 @@ absl::StatusOr<TestResultData> AbstractTestRunner::ParseAndTest(
   if (!entry_module->GetQuickChecks().empty()) {
     XLS_RETURN_IF_ERROR(RunQuickChecksIfEnabled(
         options.test_filter, entry_module, tm->type_info,
-        options.quickcheck_runner, ir_package.get(), options.seed, result,
-        import_data.vfs()));
+        options.quickcheck_runner, ir_package.get(), &import_data,
+        options.convert_options, options.seed, result, import_data.vfs()));
   }
 
   result.Finish(

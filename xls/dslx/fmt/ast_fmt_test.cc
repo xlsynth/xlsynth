@@ -1786,6 +1786,44 @@ TEST_F(ModuleFmtTest, SemanticSumCommentsAroundExplicitDiscriminants) {
 )");
 }
 
+TEST_F(ModuleFmtTest, SemanticSumIfLetConditionalWithElseIf) {
+  DoFmt("enum Option{None,Some(u8),}fn f(x:Option,y:Option)->u8{if let "
+        "Option::Some(v)=x{v}else if let Option::Some(w)=y{w}else{u8:0}}",
+        R"(enum Option {
+    None,
+    Some(u8),
+}
+
+fn f(x: Option, y: Option) -> u8 {
+    if let Option::Some(v) = x {
+        v
+    } else if let Option::Some(w) = y {
+        w
+    } else {
+        u8:0
+    }
+}
+)");
+}
+
+TEST_F(ModuleFmtTest, SemanticSumMatchWithInvalidPattern) {
+  DoFmt("enum Option{None,Some(u8),}fn f(x:Option)->u8{match x{"
+        "Option::Some(v)=>v,_=>u8:0,invalid!(raw)=>raw[0+:u8],}}",
+        R"(enum Option {
+    None,
+    Some(u8),
+}
+
+fn f(x: Option) -> u8 {
+    match x {
+        Option::Some(v) => v,
+        _ => u8:0,
+        invalid!(raw) => raw[0+:u8],
+    }
+}
+)");
+}
+
 TEST_F(ModuleFmtTest, FunctionRefWithExplicitParametrics) {
   DoFmt(
       R"(fn f<X: u32>() -> u32 { X }

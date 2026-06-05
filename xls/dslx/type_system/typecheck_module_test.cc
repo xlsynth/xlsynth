@@ -3572,7 +3572,7 @@ proc Counter {
                HasSubstr("Cannot format an expression with channel type")));
 }
 
-TEST_F(TypecheckV2Test, BadTraceFmtWithUseOfSemanticSum) {
+TEST_F(TypecheckV2Test, TraceFmtWithUseOfSemanticSum) {
   constexpr std::string_view kProgram =
       R"(
 enum Option {
@@ -3585,14 +3585,10 @@ fn main(x: Option) {
 }
 )";
 
-  EXPECT_THAT(
-      Typecheck(kProgram),
-      StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("Cannot format an expression with semantic sum "
-                         "type in Phase 1")));
+  XLS_ASSERT_OK(Typecheck(kProgram));
 }
 
-TEST_F(TypecheckV2Test, BadTraceFmtWithAggregateContainingSemanticSum) {
+TEST_F(TypecheckV2Test, TraceFmtWithAggregateContainingSemanticSum) {
   constexpr std::string_view kProgram =
       R"(
 enum Option {
@@ -3609,11 +3605,7 @@ fn main(x: Wrapper) {
 }
 )";
 
-  EXPECT_THAT(
-      Typecheck(kProgram),
-      StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("Cannot format an expression with semantic sum "
-                         "type in Phase 1")));
+  XLS_ASSERT_OK(Typecheck(kProgram));
 }
 
 TEST_F(TypecheckV2Test, BadTraceFmtWithUseOfFunction) {
@@ -4647,9 +4639,8 @@ fn main() -> u32 {
 })"));
 }
 
-TEST_F(TypecheckV2Test, BitCountWithSemanticSumFailsInPhase1) {
-  EXPECT_THAT(
-      Typecheck(R"(
+TEST_F(TypecheckV2Test, BitCountWithSemanticSumUsesSharedRepresentation) {
+  XLS_ASSERT_OK(Typecheck(R"(
 enum Option {
   None,
   Some(u32),
@@ -4658,10 +4649,7 @@ enum Option {
 fn main() -> u32 {
   bit_count<Option>()
 }
-)"),
-      StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("Cannot query bit_count for a type containing "
-                         "semantic sums in Phase 1")));
+)"));
 }
 
 TEST_F(TypecheckV2Test, ElementCount) {
@@ -4693,9 +4681,8 @@ fn main() -> u32 {
 })"));
 }
 
-TEST_F(TypecheckV2Test, ElementCountWithSemanticSumFailsInPhase1) {
-  EXPECT_THAT(
-      Typecheck(R"(
+TEST_F(TypecheckV2Test, ElementCountWithSemanticSumUsesSharedRepresentation) {
+  XLS_ASSERT_OK(Typecheck(R"(
 enum Option {
   None,
   Some(u32),
@@ -4708,10 +4695,7 @@ struct Wrapper {
 fn main() -> u32 {
   element_count<Wrapper>()
 }
-)"),
-      StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("Cannot query element_count for a type containing "
-                         "semantic sums in Phase 1")));
+)"));
 }
 
 TEST_F(TypecheckV2Test, ConfiguredValueOr) {

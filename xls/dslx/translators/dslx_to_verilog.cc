@@ -119,6 +119,7 @@ std::optional<std::string_view> TypeDefinitionIdentifier(
       },
       resolved_type_definition.definition);
 }
+
 }  // namespace
 
 absl::StatusOr<std::pair<std::vector<int64_t>, verilog::DataType*>>
@@ -391,10 +392,45 @@ DslxTypeToVerilogManager::TypeDefinitionToVastType(
                 return vast_enum_def;
               },
               [&](SumDef* sum_def) -> absl::StatusOr<verilog::DataType*> {
-                return absl::UnimplementedError(absl::StrFormat(
-                    "TypeAnnotation SumDef %s not supported by "
-                    "DslxTypeToVerilogManager in phase 1",
-                    sum_def->ToString()));
+                XLS_RET_CHECK(type->IsSum());
+                const SumType& sum_type = type->AsSum();
+
+                std::vector<verilog::Def*> vast_struct_members;
+                XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count,
+                                     sum_type.tag_bit_count().GetAsInt64());
+                if (tag_bit_count > 0) {
+                  verilog::DataType* tag_type =
+                      tag_bit_count == 1
+                          ? static_cast<verilog::DataType*>(
+                                file_->Make<verilog::ScalarType>(SourceInfo()))
+                          : static_cast<verilog::DataType*>(
+                                file_->Make<verilog::BitVectorType>(
+                                    SourceInfo(), tag_bit_count, false));
+                  vast_struct_members.push_back(file_->Make<verilog::Def>(
+                      SourceInfo(), "tag", verilog::DataKind::kLogic,
+                      tag_type));
+                }
+
+                XLS_ASSIGN_OR_RETURN(TypeDim max_payload_bit_count_dim,
+                                     sum_type.GetMaxPayloadBitCount());
+                XLS_ASSIGN_OR_RETURN(int64_t max_payload_bit_count,
+                                     max_payload_bit_count_dim.GetAsInt64());
+                if (max_payload_bit_count > 0) {
+                  verilog::DataType* payload_type =
+                      max_payload_bit_count == 1
+                          ? static_cast<verilog::DataType*>(
+                                file_->Make<verilog::ScalarType>(SourceInfo()))
+                          : static_cast<verilog::DataType*>(
+                                file_->Make<verilog::BitVectorType>(
+                                    SourceInfo(), max_payload_bit_count,
+                                    false));
+                  vast_struct_members.push_back(file_->Make<verilog::Def>(
+                      SourceInfo(), "payload", verilog::DataKind::kLogic,
+                      payload_type));
+                }
+
+                return file_->Make<verilog::Struct>(SourceInfo(),
+                                                    vast_struct_members);
               },
           },
           resolved_type_definition_source.definition));

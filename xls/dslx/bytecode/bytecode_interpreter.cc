@@ -26,6 +26,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/log/check.h"
 #include "absl/log/die_if_null.h"
 #include "absl/log/log.h"
@@ -53,7 +54,10 @@
 #include "xls/dslx/frontend/proc_id.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/interp_value_internal_utils.h"
 #include "xls/dslx/interp_value_utils.h"
+#include "xls/dslx/make_value_format_descriptor.h"
+#include "xls/dslx/sum_type_encoding.h"
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
@@ -84,6 +88,58 @@ absl::StatusOr<std::string> ToStringMaybeFormatted(
   }
   return std::string(indentation, ' ') +
          value.ToString(/*humanize=*/false, FormatPreference::kDefault);
+}
+
+absl::StatusOr<std::vector<ValueFormatDescriptor>>
+MakeFunctionParamFormatDescriptors(const Function& function,
+                                   const TypeInfo& type_info,
+                                   FormatPreference format_preference) {
+  XLS_ASSIGN_OR_RETURN(FunctionType * function_type,
+                       type_info.GetItemAs<FunctionType>(&function));
+  std::vector<ValueFormatDescriptor> result;
+  result.reserve(function_type->params().size());
+  for (const std::unique_ptr<Type>& param_type : function_type->params()) {
+    XLS_ASSIGN_OR_RETURN(
+        ValueFormatDescriptor descriptor,
+        MakeValueFormatDescriptor(*param_type, format_preference));
+    result.push_back(std::move(descriptor));
+  }
+  return result;
+}
+
+absl::StatusOr<ValueFormatDescriptor> MakeFunctionReturnFormatDescriptor(
+    const Function& function, const TypeInfo& type_info,
+    FormatPreference format_preference) {
+  XLS_ASSIGN_OR_RETURN(FunctionType * function_type,
+                       type_info.GetItemAs<FunctionType>(&function));
+  return MakeValueFormatDescriptor(function_type->return_type(),
+                                   format_preference);
+}
+
+bool ValueFormatDescriptorContainsSum(
+    const ValueFormatDescriptor& descriptor) {
+  if (descriptor.IsSum()) {
+    return true;
+  } else if (descriptor.IsArray()) {
+    return ValueFormatDescriptorContainsSum(
+        descriptor.array_element_format());
+  } else if (descriptor.IsTuple()) {
+    return absl::c_any_of(
+        descriptor.tuple_elements(), ValueFormatDescriptorContainsSum);
+  } else if (descriptor.IsStruct()) {
+    return absl::c_any_of(
+        descriptor.struct_elements(), ValueFormatDescriptorContainsSum);
+  }
+  return false;
+}
+
+absl::StatusOr<std::string> FormatTraceCallValue(
+    const InterpValue& value, const ValueFormatDescriptor& descriptor,
+    FormatPreference format_preference) {
+  if (ValueFormatDescriptorContainsSum(descriptor)) {
+    return ToStringMaybeFormatted(value, descriptor);
+  }
+  return value.ToString(/*humanize=*/false, format_preference);
 }
 
 // Casts an InterpValue representable as Bits to a new InterpValue
@@ -184,14 +240,22 @@ void DslxInterpreterEvents::AddTraceStatementMessage(
   NoteTraceMessageString(file_table, source_location, msg);
 }
 
-void DslxInterpreterEvents::AddTraceCallMessage(
+absl::Status DslxInterpreterEvents::AddTraceCallMessage(
     const FileTable& file_table, const Span& source_location,
     std::string_view function_name, absl::Span<const InterpValue> args,
+    absl::Span<const ValueFormatDescriptor> arg_format_descriptors,
     int64_t call_depth, FormatPreference format_preference) {
-  std::string args_str = absl::StrJoin(
-      args, ", ", [format_preference](std::string* out, const InterpValue& v) {
-        out->append(v.ToString(/*humanize=*/false, format_preference));
-      });
+  XLS_RET_CHECK_EQ(args.size(), arg_format_descriptors.size());
+  std::vector<std::string> formatted_args;
+  formatted_args.reserve(args.size());
+  for (int64_t i = 0; i < args.size(); ++i) {
+    XLS_ASSIGN_OR_RETURN(
+        std::string formatted_arg,
+        FormatTraceCallValue(args[i], arg_format_descriptors[i],
+                             format_preference));
+    formatted_args.push_back(std::move(formatted_arg));
+  }
+  std::string args_str = absl::StrJoin(formatted_args, ", ");
   std::string indent(call_depth * 2, ' ');
   std::string msg = absl::StrCat(indent, function_name, "(", args_str, ")");
 
@@ -204,15 +268,19 @@ void DslxInterpreterEvents::AddTraceCallMessage(
   }
   SetLocationProto(tm->mutable_location(), file_table, source_location);
   NoteTraceMessageString(file_table, source_location, msg);
+  return absl::OkStatus();
 }
 
-void DslxInterpreterEvents::AddTraceCallReturnMessage(
+absl::Status DslxInterpreterEvents::AddTraceCallReturnMessage(
     const FileTable& file_table, const Span& source_location,
     std::string_view function_name, int64_t call_depth,
+    const ValueFormatDescriptor& return_format_descriptor,
     FormatPreference format_preference, const InterpValue& return_value) {
   std::string indent(call_depth * 2, ' ');
-  std::string ret_str =
-      return_value.ToString(/*humanize=*/false, format_preference);
+  XLS_ASSIGN_OR_RETURN(
+      std::string ret_str,
+      FormatTraceCallValue(return_value, return_format_descriptor,
+                           format_preference));
   std::string msg =
       absl::StrCat(indent, function_name, "(...)", " => ", ret_str);
 
@@ -224,6 +292,7 @@ void DslxInterpreterEvents::AddTraceCallReturnMessage(
       return_value.AsProto().value();
   SetLocationProto(tm->mutable_location(), file_table, source_location);
   NoteTraceMessageString(file_table, source_location, msg);
+  return absl::OkStatus();
 }
 
 void DslxInterpreterEvents::AddTraceChannelMessage(
@@ -306,10 +375,14 @@ void InfoLoggingDslxInterpreterEvents::NoteTraceMessageString(
                                   options, events);
   XLS_RETURN_IF_ERROR(interpreter.InitFrame(bf, args, bf->type_info()));
   if (options.trace_calls() && events.has_value()) {
-    (*events)->AddTraceCallMessage(
+    XLS_ASSIGN_OR_RETURN(std::vector<ValueFormatDescriptor> arg_descriptors,
+                         MakeFunctionParamFormatDescriptors(
+                             *bf->source_fn(), *bf->type_info(),
+                             options.format_preference()));
+    XLS_RETURN_IF_ERROR((*events)->AddTraceCallMessage(
         import_data->file_table(), bf->source_fn()->span(),
-        bf->source_fn()->identifier(), args,
-        /*call_depth=*/0, options.format_preference());
+        bf->source_fn()->identifier(), args, arg_descriptors,
+        /*call_depth=*/0, options.format_preference()));
   }
   XLS_RETURN_IF_ERROR(interpreter.Run());
   if (options.validate_final_stack_depth()) {
@@ -413,10 +486,14 @@ absl::Status BytecodeInterpreter::Run(bool* progress_made) {
     if (options_.trace_calls() && events_.has_value() && source_fn != nullptr) {
       int64_t call_depth = static_cast<int64_t>(frames_.size()) - 1;
       const InterpValue& ret = stack_.PeekOrDie();
-      (*events_)->AddTraceCallReturnMessage(import_data_->file_table(),
-                                            source_fn->span(),
-                                            source_fn->identifier(), call_depth,
-                                            options_.format_preference(), ret);
+      XLS_ASSIGN_OR_RETURN(ValueFormatDescriptor return_descriptor,
+                           MakeFunctionReturnFormatDescriptor(
+                               *source_fn, *frame->type_info(),
+                               options_.format_preference()));
+      XLS_RETURN_IF_ERROR((*events_)->AddTraceCallReturnMessage(
+          import_data_->file_table(), source_fn->span(),
+          source_fn->identifier(), call_depth, return_descriptor,
+          options_.format_preference(), ret));
     }
 
     // We've reached the end of a function. Time to load the next frame up!
@@ -460,6 +537,10 @@ absl::Status BytecodeInterpreter::EvalNextInstruction() {
       XLS_RETURN_IF_ERROR(EvalAnd(bytecode));
       break;
     }
+    case Bytecode::Op::kAssertWellFormed: {
+      XLS_RETURN_IF_ERROR(EvalAssertWellFormed(bytecode));
+      break;
+    }
     case Bytecode::Op::kCall: {
       XLS_RETURN_IF_ERROR(EvalCall(bytecode));
       return absl::OkStatus();
@@ -482,6 +563,21 @@ absl::Status BytecodeInterpreter::EvalNextInstruction() {
     }
     case Bytecode::Op::kCreateTuple: {
       XLS_RETURN_IF_ERROR(EvalCreateTuple(bytecode));
+      break;
+    }
+    case Bytecode::Op::kCreateSum: {
+      XLS_ASSIGN_OR_RETURN(
+          const Bytecode::SumConstructionData* sum_data,
+          bytecode.sum_construction_data());
+      const SumType& sum_type = sum_data->sum_type();
+      const SumTypeVariant& variant =
+          sum_type.GetVariant(sum_data->variant_name());
+      XLS_ASSIGN_OR_RETURN(std::vector<InterpValue> payload_values,
+                           PopArgsRightToLeft(variant.size()));
+      XLS_ASSIGN_OR_RETURN(
+          InterpValue sum_value,
+          CreateSumValue(sum_type, sum_data->variant_name(), payload_values));
+      stack_.Push(std::move(sum_value));
       break;
     }
     case Bytecode::Op::kDecode: {
@@ -711,6 +807,28 @@ absl::Status BytecodeInterpreter::EvalAnd(const Bytecode& bytecode) {
   });
 }
 
+absl::Status BytecodeInterpreter::ValidateWellFormedObserverValue(
+    const Bytecode& bytecode, const Type& type, const InterpValue& value,
+    std::string_view observer) {
+  absl::Status status = ValidateInterpValueMatchesType(value, type);
+  if (status.ok()) {
+    return absl::OkStatus();
+  } else {
+    return FailureErrorStatus(
+        bytecode.source_span(),
+        absl::StrCat("Semantic sum ", observer,
+                     " received a malformed value: ", status.message()),
+        file_table());
+  }
+}
+
+absl::Status BytecodeInterpreter::EvalAssertWellFormed(
+    const Bytecode& bytecode) {
+  XLS_ASSIGN_OR_RETURN(const Type* type, bytecode.type_data());
+  return ValidateWellFormedObserverValue(
+      bytecode, *type, stack_.PeekOrDie(), "observer");
+}
+
 absl::StatusOr<BytecodeFunction*> BytecodeInterpreter::GetBytecodeFn(
     const Function& f, const Invocation* invocation,
     const ParametricEnv& caller_bindings) {
@@ -831,10 +949,14 @@ absl::Status BytecodeInterpreter::EvalCall(const Bytecode& bytecode) {
 
   // Emit a call trace message with function name and arguments at call time.
   if (options_.trace_calls() && events_.has_value()) {
-    (*events_)->AddTraceCallMessage(
+    XLS_ASSIGN_OR_RETURN(std::vector<ValueFormatDescriptor> arg_descriptors,
+                         MakeFunctionParamFormatDescriptors(
+                             *user_fn_data.function, *bf->type_info(),
+                             options_.format_preference()));
+    XLS_RETURN_IF_ERROR((*events_)->AddTraceCallMessage(
         import_data_->file_table(), bytecode.source_span(),
-        user_fn_data.function->identifier(), args, frames_.size(),
-        options_.format_preference());
+        user_fn_data.function->identifier(), args, arg_descriptors,
+        frames_.size(), options_.format_preference()));
   }
 
   std::vector<InterpValue> args_copy = args;
@@ -1033,6 +1155,13 @@ absl::Status BytecodeInterpreter::EvalDup(const Bytecode& bytecode) {
 }
 
 absl::Status BytecodeInterpreter::EvalEq(const Bytecode& bytecode) {
+  if (bytecode.has_data()) {
+    XLS_ASSIGN_OR_RETURN(const Type* type, bytecode.type_data());
+    XLS_RETURN_IF_ERROR(ValidateWellFormedObserverValue(
+        bytecode, *type, stack_.PeekOrDie(/*from_top=*/1), "equality"));
+    XLS_RETURN_IF_ERROR(ValidateWellFormedObserverValue(
+        bytecode, *type, stack_.PeekOrDie(), "equality"));
+  }
   return EvalBinop([](const InterpValue& lhs, const InterpValue& rhs) {
     return InterpValue::MakeBool(lhs.Eq(rhs));
   });
@@ -1221,6 +1350,57 @@ absl::StatusOr<bool> BytecodeInterpreter::MatchArmEqualsInterpValue(
                << " conjunction: " << conjunction.ToString();
       return conjunction.IsTrue();
     }
+    case Kind::kSum: {
+      XLS_ASSIGN_OR_RETURN(Bytecode::MatchArmItem::SumMatchData sum_match,
+                           item.sum_match_data());
+      XLS_ASSIGN_OR_RETURN(internal::EncodedSumView sum_view,
+                           internal::GetEncodedSumView(value));
+      if (sum_match.discriminant.Ne(sum_view.tag)) {
+        return false;
+      }
+
+      absl::StatusOr<std::vector<InterpValue>> payload_values =
+          GetSumPayloadValues(*sum_match.sum_type, value);
+      if (!payload_values.ok()) {
+        return false;
+      }
+      XLS_RET_CHECK_EQ(sum_match.payload_items.size(), payload_values->size());
+      for (int64_t i = 0; i < sum_match.payload_items.size(); ++i) {
+        XLS_ASSIGN_OR_RETURN(
+            bool equal,
+            MatchArmEqualsInterpValue(&frames_.back(),
+                                      sum_match.payload_items.at(i),
+                                      payload_values->at(i)));
+        if (!equal) {
+          return false;
+        }
+      }
+      return true;
+    }
+    case Kind::kInvalidSum: {
+      XLS_ASSIGN_OR_RETURN(
+          Bytecode::MatchArmItem::InvalidSumMatchData invalid_sum,
+          item.invalid_sum_match_data());
+      XLS_ASSIGN_OR_RETURN(internal::EncodedSumView sum_view,
+                           internal::GetEncodedSumView(value));
+      const Phase1SumTypeEncoding encoding(*invalid_sum.sum_type);
+      absl::StatusOr<Phase1SumTypeEncoding::VariantInfo> variant =
+          encoding.GetVariantByTagBits(sum_view.tag.GetBitsOrDie());
+      if (variant.ok()) {
+        return false;
+      }
+      if (variant.status().code() != absl::StatusCode::kNotFound) {
+        return variant.status();
+      }
+      if (invalid_sum.raw_slot.has_value()) {
+        frame->StoreSlot(
+            *invalid_sum.raw_slot,
+            InterpValue::MakeUnsigned(bits_ops::Concat(
+                {sum_view.tag.GetBitsOrDie(),
+                 sum_view.payload_slot.GetBitsOrDie()})));
+      }
+      return true;
+    }
     case Kind::kLoad: {
       XLS_ASSIGN_OR_RETURN(Bytecode::SlotIndex slot_index, item.slot_index());
       if (frame->slots().size() <= slot_index.value()) {
@@ -1319,6 +1499,13 @@ absl::Status BytecodeInterpreter::EvalMul(const Bytecode& bytecode,
 }
 
 absl::Status BytecodeInterpreter::EvalNe(const Bytecode& bytecode) {
+  if (bytecode.has_data()) {
+    XLS_ASSIGN_OR_RETURN(const Type* type, bytecode.type_data());
+    XLS_RETURN_IF_ERROR(ValidateWellFormedObserverValue(
+        bytecode, *type, stack_.PeekOrDie(/*from_top=*/1), "inequality"));
+    XLS_RETURN_IF_ERROR(ValidateWellFormedObserverValue(
+        bytecode, *type, stack_.PeekOrDie(), "inequality"));
+  }
   return EvalBinop([](const InterpValue& lhs, const InterpValue& rhs) {
     return InterpValue::MakeBool(lhs.Ne(rhs));
   });
@@ -1571,9 +1758,7 @@ absl::Status BytecodeInterpreter::EvalSwap(const Bytecode& bytecode) {
       pieces.push_back(std::get<std::string>(trace_element));
     } else {
       const InterpValue& value = args.at(argno);
-      if (trace_data.redact_value(argno)) {
-        pieces.push_back(std::string(kOpaqueSemanticSumValue));
-      } else if (argno < trace_data.value_fmt_descs().size()) {
+      if (argno < trace_data.value_fmt_descs().size()) {
         XLS_ASSIGN_OR_RETURN(
             std::string formatted,
             value.ToFormattedString(trace_data.value_fmt_descs()[argno]));
@@ -1693,14 +1878,7 @@ absl::Status BytecodeInterpreter::RunBuiltinFn(const Bytecode& bytecode,
       return RunBuiltinEnumerate(bytecode, stack_);
     case Builtin::kFail: {
       XLS_ASSIGN_OR_RETURN(InterpValue value, Pop());
-      XLS_ASSIGN_OR_RETURN(Bytecode::InvocationData invocation_data,
-                           bytecode.invocation_data());
-      XLS_ASSIGN_OR_RETURN(Type * value_type,
-                           frames_.back().type_info()->GetItemOrError(
-                               invocation_data.invocation()->args()[1]));
-      std::string message = TypeContainsSemanticSum(*value_type)
-                                ? std::string(kOpaqueSemanticSumValue)
-                                : value.ToString();
+      std::string message{value.ToString()};
       XLS_ASSIGN_OR_RETURN(InterpValue label, Pop());
       XLS_ASSIGN_OR_RETURN(std::string label_as_string,
                            InterpValueAsString(label));

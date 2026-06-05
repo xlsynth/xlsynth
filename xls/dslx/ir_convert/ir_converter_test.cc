@@ -8860,6 +8860,50 @@ fn option_test() {
                              }));
 }
 
+TEST_F(IrConverterTest, SemanticSumIfLetComparesWithInterpreter) {
+  constexpr std::string_view program = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn unwrap_or_zero(x: Option) -> u32 {
+  if let Option::Some(v) = x { v } else { u32:0 }
+}
+
+#[test]
+fn option_if_let_test() {
+  assert_eq(unwrap_or_zero(Option::Some(u32:7)), u32:7);
+  assert_eq(unwrap_or_zero(Option::None), u32:0);
+}
+)";
+  RunComparator run_comparator(CompareMode::kInterpreter);
+  XLS_ASSERT_OK(ParseAndTest(program, "", "test_module.x",
+                             ParseAndTestOptions{
+                                 .run_comparator = &run_comparator,
+                             }));
+}
+
+TEST_F(IrConverterTest, SemanticSumTraceFormattingUsesActivePayloadOnly) {
+  constexpr std::string_view program = R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn trace_option(x: Option) {
+  trace_fmt!("x = {}", x);
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(std::string converted,
+                           ConvertOneFunctionForTest(program, "trace_option"));
+  EXPECT_THAT(converted, HasSubstr("Cannot trace malformed semantic sum value."));
+  EXPECT_THAT(converted, HasSubstr("x = Option::None"));
+  EXPECT_THAT(converted, HasSubstr("x = Option::Some("));
+  EXPECT_THAT(converted, HasSubstr("x = Option::Pair {{lhs: "));
+}
+
 TEST_F(IrConverterTest,
        SemanticSumEqualityInsideAggregatesCompareWithInterpreter) {
   constexpr std::string_view program = R"(
@@ -8930,6 +8974,7 @@ fn f(x: u32) -> u32 {
   match imported::make_some(x) {
     imported::Option::Some(v) => v,
     imported::Option::None => u32:0,
+    invalid! => u32:0,
   }
 }
 )";

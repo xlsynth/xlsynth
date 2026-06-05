@@ -59,6 +59,7 @@
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
+#include "xls/dslx/type_system/unwrap_meta_type.h"
 #include "xls/dslx/type_system_v2/constant_collector.h"
 #include "xls/dslx/type_system_v2/evaluator.h"
 #include "xls/dslx/type_system_v2/fast_concretizer.h"
@@ -127,29 +128,6 @@ bool TypeContainsSum(const Type& type) {
   return false;
 }
 
-absl::Status ValidatePhase1SumPayloadMemberType(
-    const SumDef& sum_def, const SumVariant& variant,
-    const TypeAnnotation* member_annotation, const Type& member_type,
-    const FileTable& file_table) {
-  const bool is_empty_sum =
-      member_type.IsSum() && member_type.AsSum().variants().empty();
-  if (GetBitsLike(member_type).has_value() || member_type.IsEnum() ||
-      is_empty_sum) {
-    return absl::OkStatus();
-  }
-  // TODO: Phase 2 should remove this restriction by extending the
-  // exhaustiveness flattener to recurse through the supported aggregate payload
-  // forms instead of rejecting them during sum-type concretization.
-  return TypeInferenceErrorStatusForAnnotation(
-      member_annotation->span(), member_annotation,
-      absl::Substitute(
-          "Phase 1 semantic sum payload members must be bits-like, enum typed, "
-          "or empty semantic sums; sum `$0` constructor `$1` has unsupported "
-          "payload member type `$2`.",
-          sum_def.identifier(), variant.identifier(), member_type.ToString()),
-      file_table);
-}
-
 absl::Status ValidateSemanticSumDiscriminants(
     const SumDef& sum_def, TypeInfo* type_info, ImportData* import_data,
     WarningCollector* warning_collector, const ParametricEnv& parametric_env,
@@ -158,16 +136,6 @@ absl::Status ValidateSemanticSumDiscriminants(
       absl::c_any_of(sum_def.variants(), [](const SumVariant* variant) {
         return variant->discriminant() != nullptr;
       });
-  if (!has_explicit_discriminants && sum_def.tag_type_annotation() != nullptr &&
-      !sum_def.variants().empty()) {
-    return TypeInferenceErrorStatusForAnnotation(
-        sum_def.tag_type_annotation()->span(), sum_def.tag_type_annotation(),
-        absl::Substitute(
-            "Phase 1 semantic sum `$0` may specify a tag type only when every "
-            "variant has an explicit discriminant.",
-            sum_def.identifier()),
-        file_table);
-  }
   if (!has_explicit_discriminants) {
     return absl::OkStatus();
   }
@@ -199,6 +167,80 @@ absl::Status ValidateSemanticSumDiscriminants(
     }
   }
   return absl::OkStatus();
+}
+
+absl::StatusOr<std::pair<TypeDim, std::vector<InterpValue>>>
+GetSemanticSumTagLayout(const SumDef& sum_def, TypeInfo* type_info,
+                        const std::vector<SumTypeVariant>& variants,
+                        const FileTable& file_table) {
+  const bool has_explicit_discriminants = absl::c_any_of(
+      sum_def.variants(), [](const SumVariant* variant) {
+        return variant->discriminant() != nullptr;
+      });
+
+  if (sum_def.tag_type_annotation() != nullptr) {
+    std::optional<Type*> annotation_type =
+        type_info->GetItem(sum_def.tag_type_annotation());
+    XLS_RET_CHECK(annotation_type.has_value());
+    XLS_RET_CHECK(annotation_type.value() != nullptr);
+    XLS_ASSIGN_OR_RETURN(const Type* tag_type,
+                         UnwrapMetaType(*annotation_type.value()));
+    std::optional<BitsLikeProperties> bits_like =
+        GetBitsLike(*tag_type);
+    XLS_RET_CHECK(bits_like.has_value());
+    XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count,
+                         bits_like->size.GetAsInt64());
+    if (!has_explicit_discriminants && !variants.empty() &&
+        Bits::MinBitCountUnsigned(variants.size() - 1) > tag_bit_count) {
+      return TypeInferenceErrorStatusForAnnotation(
+          sum_def.tag_type_annotation()->span(), sum_def.tag_type_annotation(),
+          absl::Substitute(
+              "Semantic sum `$0` needs at least $1 tag bits for $2 implicit "
+              "constructors, but tag type `$3` has only $4 bits.",
+              sum_def.identifier(),
+              Bits::MinBitCountUnsigned(variants.size() - 1), variants.size(),
+              sum_def.tag_type_annotation()->ToString(), tag_bit_count),
+          file_table);
+    }
+    if (!has_explicit_discriminants) {
+      XLS_ASSIGN_OR_RETURN(bool is_signed, bits_like->is_signed.GetAsBool());
+      std::vector<InterpValue> discriminants;
+      discriminants.reserve(variants.size());
+      for (int64_t i = 0; i < variants.size(); ++i) {
+        discriminants.push_back(
+            InterpValue::MakeBits(is_signed, UBits(i, tag_bit_count)));
+      }
+      return std::make_pair(TypeDim::CreateU32(tag_bit_count),
+                            std::move(discriminants));
+    }
+  }
+
+  if (!has_explicit_discriminants) {
+    const int64_t tag_bit_count =
+        variants.size() <= 1
+            ? 0
+            : Bits::MinBitCountUnsigned(variants.size() - 1);
+    std::vector<InterpValue> discriminants;
+    discriminants.reserve(variants.size());
+    for (int64_t i = 0; i < variants.size(); ++i) {
+      discriminants.push_back(InterpValue::MakeUBits(tag_bit_count, i));
+    }
+    return std::make_pair(TypeDim::CreateU32(tag_bit_count),
+                          std::move(discriminants));
+  }
+
+  std::vector<InterpValue> discriminants;
+  discriminants.reserve(sum_def.variants().size());
+  for (const SumVariant* variant : sum_def.variants()) {
+    XLS_RET_CHECK(variant->discriminant() != nullptr);
+    XLS_ASSIGN_OR_RETURN(InterpValue discriminant,
+                         type_info->GetConstExpr(variant->discriminant()));
+    discriminants.push_back(std::move(discriminant));
+  }
+  XLS_RET_CHECK(!discriminants.empty());
+  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, discriminants.front().GetBitCount());
+  return std::make_pair(TypeDim::CreateU32(tag_bit_count),
+                        std::move(discriminants));
 }
 
 // RAII guard for a frame on the proc type info stack.
@@ -1315,27 +1357,6 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       ti->SetItem(node, **type);
     }
 
-    if (node->kind() == AstNodeKind::kMatch) {
-      const auto* match = absl::down_cast<const Match*>(node);
-      std::optional<Type*> matched_type = ti->GetItem(match->matched());
-      std::optional<const Function*> caller = GetContainingFunction(node);
-      if (matched_type.has_value() && TypeContainsSum(**matched_type) &&
-          caller.has_value()) {
-        ti->NoteRequiresImplicitToken(**caller, true);
-      }
-    }
-    if (node->kind() == AstNodeKind::kBinop) {
-      const auto* binop = absl::down_cast<const Binop*>(node);
-      std::optional<Type*> lhs_type = ti->GetItem(binop->lhs());
-      std::optional<const Function*> caller = GetContainingFunction(node);
-      if (lhs_type.has_value() &&
-          (binop->binop_kind() == BinopKind::kEq ||
-           binop->binop_kind() == BinopKind::kNe) &&
-          TypeContainsSum(**lhs_type) && caller.has_value()) {
-        ti->NoteRequiresImplicitToken(**caller, true);
-      }
-    }
-
     trace.SetResult(**type);
     XLS_RETURN_IF_ERROR(constant_collector_->CollectConstants(
         parametric_context, node, **type, ti));
@@ -1706,9 +1727,6 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
             }
             XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> concrete_member_type,
                                  Concretize(member_type, parametric_context));
-            XLS_RETURN_IF_ERROR(ValidatePhase1SumPayloadMemberType(
-                *sum_def, *variant, member_type, *concrete_member_type,
-                file_table_));
             payload_members.push_back(std::move(concrete_member_type));
           }
         } else if (variant->is_struct()) {
@@ -1724,9 +1742,6 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
             }
             XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> concrete_member_type,
                                  Concretize(member_type, parametric_context));
-            XLS_RETURN_IF_ERROR(ValidatePhase1SumPayloadMemberType(
-                *sum_def, *variant, member_type, *concrete_member_type,
-                file_table_));
             payload_members.push_back(std::move(concrete_member_type));
           }
         }
@@ -1740,10 +1755,16 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
               SumTypeVariant::MakeStruct(*variant, std::move(payload_members)));
         }
       }
-      // Preserve `sum_def->variants()` declaration order: `SumType` derives
-      // tag numbering and payload-slot layout from this vector order.
-      std::unique_ptr<Type> type =
-          std::make_unique<SumType>(*sum_def, std::move(variants));
+      // Preserve declaration order for deterministic traversal and for the
+      // implicit-discriminant rule. The chosen tag width and concrete
+      // discriminants are carried separately from the variant vector.
+      XLS_ASSIGN_OR_RETURN(auto tag_layout,
+                           GetSemanticSumTagLayout(*sum_def, sum_type_info,
+                                                   variants, file_table_));
+      std::unique_ptr<Type> type = std::make_unique<SumType>(
+          *sum_def, std::move(variants),
+          absl::flat_hash_map<std::string, TypeDim>{},
+          std::move(tag_layout.first), std::move(tag_layout.second));
       if (!sum_def->IsParametric()) {
         XLS_RETURN_IF_ERROR(AddCachedType(sum_def, std::nullopt, *type));
       }

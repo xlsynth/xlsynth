@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -104,7 +105,7 @@ absl::StatusOr<std::unique_ptr<ModuleInfo>> TypecheckModuleV2Once(
     std::unique_ptr<SemanticsAnalysis> semantics_analysis,
     TypeInferenceErrorHandler error_handler,
     std::optional<TraitDeriver*> trait_deriver) {
-  std::string_view module_name = module->name();
+  std::string module_name(module->name());
   const bool top_module = !import_data->HasInferenceTable();
   if (top_module) {
     VLOG(3) << "Using type system v2 for type checking of " << path;
@@ -119,8 +120,9 @@ absl::StatusOr<std::unique_ptr<ModuleInfo>> TypecheckModuleV2Once(
   InferenceTable* table = import_data->GetOrCreateInferenceTable();
   XLS_RETURN_IF_ERROR(PopulateBuiltinStubs(import_data, warnings, table));
   if (semantics_analysis != nullptr) {
-    XLS_RETURN_IF_ERROR(semantics_analysis->RunPreTypeCheckPass(
-        *module, *warnings, *import_data));
+    XLS_ASSIGN_OR_RETURN(module,
+                         semantics_analysis->RunPreTypeCheckPass(
+                             std::move(module), *warnings, *import_data));
   }
   XLS_ASSIGN_OR_RETURN(TypecheckFlagsProto flags, GetTypecheckFlagsProto());
   std::unique_ptr<TypeSystemTracer> tracer =
@@ -235,13 +237,13 @@ absl::StatusOr<std::unique_ptr<ModuleInfo>> TypecheckModuleV2(
     }
     return module_info;
   } else {
-    import_data->RetainSupersededModuleInfo(std::move(module_info));
+    import_data->RetainTransientModuleInfo(std::move(module_info));
     std::unique_ptr<SemanticsAnalysis> canonical_semantics_analysis =
         std::make_unique<SemanticsAnalysis>(suppress_warnings);
-    return TypecheckModuleV2Once(
-        std::move(*canonical_module), path, import_data, warnings,
-        std::move(canonical_semantics_analysis), std::move(error_handler),
-        trait_deriver);
+    return TypecheckModuleV2Once(std::move(*canonical_module), path,
+                                 import_data, warnings,
+                                 std::move(canonical_semantics_analysis),
+                                 std::move(error_handler), trait_deriver);
   }
 }
 

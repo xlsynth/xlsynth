@@ -129,7 +129,7 @@ absl::Status VerifySumMetadata(std::string_view case_name,
           "SumTypeProto concrete variant count did not match checked sum type.");
     }
 
-    int64_t payload_member_count = 0;
+    int64_t max_payload_bit_count = 0;
     for (int64_t i = 0; i < sum_def->variants().size(); ++i) {
       const dslx::SumVariant* ast_variant = sum_def->variants().at(i);
       const dslx::SumVariantDefProto& proto_variant =
@@ -148,16 +148,22 @@ absl::Status VerifySumMetadata(std::string_view case_name,
         return absl::FailedPreconditionError(
             "SumTypeProto variant kind did not match AST declaration kind.");
       }
-      payload_member_count += sum_type->variants().at(i).size();
+      XLS_ASSIGN_OR_RETURN(dslx::TypeDim payload_bit_count,
+                           sum_type->variants().at(i).GetTotalBitCount());
+      XLS_ASSIGN_OR_RETURN(int64_t payload_bit_count_value,
+                           payload_bit_count.GetAsInt64());
+      max_payload_bit_count =
+          std::max(max_payload_bit_count, payload_bit_count_value);
     }
 
     const dslx::Phase1SumTypeEncoding encoding(*sum_type);
-    if (encoding.payload_slot_count() != payload_member_count) {
+    XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                         encoding.payload_slot_bit_count());
+    if (payload_slot_bit_count != max_payload_bit_count) {
       return absl::FailedPreconditionError(
-          "Phase1SumTypeEncoding payload slot count did not match payload members.");
+          "Phase1SumTypeEncoding payload slot width did not match widest payload.");
     }
 
-    int64_t next_payload_start = 0;
     XLS_RETURN_IF_ERROR(encoding.ForEachVariant(
         [&](const dslx::Phase1SumTypeEncoding::VariantInfo& variant)
             -> absl::Status {
@@ -165,11 +171,16 @@ absl::Status VerifySumMetadata(std::string_view case_name,
               variant.variant_index >= sum_type->variant_count()) {
             return absl::FailedPreconditionError("Variant index out of bounds.");
           }
-          if (variant.payload_start != next_payload_start) {
+          XLS_ASSIGN_OR_RETURN(int64_t encoded_payload_bit_count,
+                               variant.payload_bit_count());
+          XLS_ASSIGN_OR_RETURN(dslx::TypeDim concrete_payload_bit_count,
+                               variant.variant->GetTotalBitCount());
+          XLS_ASSIGN_OR_RETURN(int64_t expected_payload_bit_count,
+                               concrete_payload_bit_count.GetAsInt64());
+          if (encoded_payload_bit_count != expected_payload_bit_count) {
             return absl::FailedPreconditionError(
-                "Variant payload offsets were not monotonic.");
+                "Variant payload bit count did not match concrete payload.");
           }
-          next_payload_start += variant.payload_size();
           return absl::OkStatus();
         }));
   }

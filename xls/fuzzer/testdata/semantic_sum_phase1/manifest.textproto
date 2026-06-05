@@ -107,8 +107,8 @@ seeds {
   review_artifact_path: "/Users/dank/.codex/review/xlsynth-dslx-sum-types-phase1-rue-20260410-192516/related-rue-10-20260411-001714/review.md"
   expected_stage_or_failure_class: "raw_boundary_roundtrip"
   outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
-  sample_args: "(bits[2]:0x1, (bits[2]:0x1, bits[16]:0x0))"
-  raw_ir_value_text: "(bits[2]:0x1, (bits[2]:0x1, bits[16]:0x0))"
+  sample_args: "(bits[2]:0x1, (bits[16]:0x1))"
+  raw_ir_value_text: "(bits[2]:0x1, (bits[16]:0x1))"
 }
 seeds {
   seed_id: "raw_boundary_non_member_enum_payload"
@@ -118,17 +118,16 @@ seeds {
   expected_stage_or_failure_class: "raw_boundary_non_member_enum_payload"
   outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_FAIL
   expected_diagnostic_substr: "declared member"
-  raw_ir_value_text: "(bits[2]:0x1, (bits[2]:0x2, bits[16]:0x0))"
+  raw_ir_value_text: "(bits[2]:0x1, (bits[16]:0x2))"
 }
 seeds {
   seed_id: "raw_boundary_invalid_sum_tag"
   surfaces: SEMANTIC_SUM_SEED_SURFACE_RAW_BOUNDARY
   relative_path: "raw_boundary/enum_payload_sum_module.x"
   review_artifact_path: "/Users/dank/.codex/review/xlsynth-dank-dslx-sum-types-phase1-review-2026-03-17-v1.md"
-  expected_stage_or_failure_class: "raw_boundary_invalid_tag"
-  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_FAIL
-  expected_diagnostic_substr: "invalid tag"
-  raw_ir_value_text: "(bits[2]:0x3, (bits[2]:0x0, bits[16]:0x0))"
+  expected_stage_or_failure_class: "raw_boundary_malformed_tag"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+  raw_ir_value_text: "(bits[2]:0x3, (bits[16]:0x0))"
 }
 seeds {
   seed_id: "typeinfo_layout_basic_sum_shape"

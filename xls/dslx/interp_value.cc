@@ -261,21 +261,106 @@ static bool IsSingleLine(std::string_view s) {
   return !absl::StrContains(s, '\n');
 }
 
-static size_t GetTotalSumPayloadSlotCount(const ValueFormatDescriptor& fmt_desc) {
-  size_t payload_slot_count = 0;
-  for (size_t i = 0; i < fmt_desc.sum_variant_count(); ++i) {
-    payload_slot_count += fmt_desc.sum_variant(i).payload_slot_count();
+static absl::StatusOr<int64_t> RequireFlatBitCount(
+    const ValueFormatDescriptor& fmt_desc) {
+  if (!fmt_desc.flat_bit_count().has_value()) {
+    return absl::InvalidArgumentError(
+        "Cannot decode a formatted value without concrete bit-count metadata.");
   }
-  return payload_slot_count;
+  return fmt_desc.flat_bit_count().value();
 }
 
-static size_t GetSumVariantPayloadOffset(const ValueFormatDescriptor& fmt_desc,
-                                         size_t variant_index) {
-  size_t payload_slot_offset = 0;
-  for (size_t i = 0; i < variant_index; ++i) {
-    payload_slot_offset += fmt_desc.sum_variant(i).payload_slot_count();
+static absl::StatusOr<InterpValue> UnflattenValueForDescriptor(
+    const ValueFormatDescriptor& fmt_desc, const Bits& bits);
+
+static absl::StatusOr<std::vector<InterpValue>>
+UnflattenAggregateValuesForDescriptor(
+    absl::Span<const ValueFormatDescriptor> members, const Bits& bits) {
+  std::vector<InterpValue> values;
+  values.reserve(members.size());
+  int64_t bit_offset = bits.bit_count();
+  for (const ValueFormatDescriptor& member : members) {
+    XLS_ASSIGN_OR_RETURN(int64_t member_bit_count,
+                         RequireFlatBitCount(member));
+    bit_offset -= member_bit_count;
+    XLS_ASSIGN_OR_RETURN(
+        InterpValue value,
+        UnflattenValueForDescriptor(
+            member, bits.Slice(bit_offset, member_bit_count)));
+    values.push_back(std::move(value));
   }
-  return payload_slot_offset;
+  return values;
+}
+
+static absl::StatusOr<InterpValue> UnflattenValueForDescriptor(
+    const ValueFormatDescriptor& fmt_desc, const Bits& bits) {
+  XLS_ASSIGN_OR_RETURN(int64_t expected_bit_count,
+                       RequireFlatBitCount(fmt_desc));
+  if (bits.bit_count() != expected_bit_count) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Cannot decode formatted value: expected %d bits; got %d.",
+        expected_bit_count, bits.bit_count()));
+  }
+
+  switch (fmt_desc.kind()) {
+    case ValueFormatDescriptorKind::kLeafValue: {
+      if (!fmt_desc.leaf_is_signed().has_value()) {
+        return absl::InvalidArgumentError(
+            "Cannot decode a formatted leaf without signedness metadata.");
+      }
+      return InterpValue::MakeBits(fmt_desc.leaf_is_signed().value(), bits);
+    }
+    case ValueFormatDescriptorKind::kEnum: {
+      if (!fmt_desc.enum_is_signed().has_value()) {
+        return absl::InvalidArgumentError(
+            "Cannot decode a formatted enum without signedness metadata.");
+      }
+      return InterpValue::MakeBits(fmt_desc.enum_is_signed().value(), bits);
+    }
+    case ValueFormatDescriptorKind::kArray: {
+      XLS_ASSIGN_OR_RETURN(
+          int64_t element_bit_count,
+          RequireFlatBitCount(fmt_desc.array_element_format()));
+      std::vector<InterpValue> values;
+      values.reserve(fmt_desc.size());
+      for (int64_t i = 0; i < fmt_desc.size(); ++i) {
+        XLS_ASSIGN_OR_RETURN(
+            InterpValue value,
+            UnflattenValueForDescriptor(
+                fmt_desc.array_element_format(),
+                bits.Slice(i * element_bit_count, element_bit_count)));
+        values.push_back(std::move(value));
+      }
+      return InterpValue::MakeArray(std::move(values));
+    }
+    case ValueFormatDescriptorKind::kTuple: {
+      XLS_ASSIGN_OR_RETURN(std::vector<InterpValue> values,
+                           UnflattenAggregateValuesForDescriptor(
+                               fmt_desc.tuple_elements(), bits));
+      return InterpValue::MakeTuple(std::move(values));
+    }
+    case ValueFormatDescriptorKind::kStruct: {
+      XLS_ASSIGN_OR_RETURN(std::vector<InterpValue> values,
+                           UnflattenAggregateValuesForDescriptor(
+                               fmt_desc.struct_elements(), bits));
+      return InterpValue::MakeTuple(std::move(values));
+    }
+    case ValueFormatDescriptorKind::kSum: {
+      if (!fmt_desc.sum_tag_bit_count().has_value() ||
+          !fmt_desc.sum_payload_slot_bit_count().has_value()) {
+        return absl::InvalidArgumentError(
+            "Cannot decode a formatted sum without shared-slot metadata.");
+      }
+      const int64_t payload_slot_bit_count =
+          fmt_desc.sum_payload_slot_bit_count().value();
+      const int64_t tag_bit_count = fmt_desc.sum_tag_bit_count().value();
+      return internal::CreateEncodedSumTuple(
+          InterpValue::MakeUnsigned(
+              bits.Slice(payload_slot_bit_count, tag_bit_count)),
+          InterpValue::MakeUnsigned(bits.Slice(0, payload_slot_bit_count)));
+    }
+  }
+  return absl::InternalError("Unhandled ValueFormatDescriptorKind.");
 }
 
 absl::StatusOr<std::string> InterpValue::ToArrayString(
@@ -385,28 +470,63 @@ absl::StatusOr<std::string> InterpValue::ToSumString(
   if (!tag_value.HasBits()) {
     return absl::InvalidArgumentError("Expected sum tag to be bits-valued.");
   }
-  XLS_ASSIGN_OR_RETURN(uint64_t variant_index, tag_value.GetBitValueUnsigned());
-  if (variant_index >= fmt_desc.sum_variant_count()) {
+  std::optional<size_t> variant_index =
+      fmt_desc.sum_variant_index_for_tag_bits(tag_value.GetBitsOrDie());
+  if (!variant_index.has_value()) {
     return absl::InvalidArgumentError(
-        absl::StrFormat("Sum tag %d is out of bounds for `%s` with %d variants",
-                        static_cast<int64_t>(variant_index), fmt_desc.sum_name(),
-                        static_cast<int64_t>(fmt_desc.sum_variant_count())));
+        absl::StrFormat("Sum tag %s is not declared for `%s`.",
+                        tag_value.ToString(), fmt_desc.sum_name()));
   }
-  const size_t payload_slot_count = GetTotalSumPayloadSlotCount(fmt_desc);
-  if (sum_view.payload_slots.size() != payload_slot_count) {
+  if (!fmt_desc.sum_tag_bit_count().has_value() ||
+      !fmt_desc.sum_payload_slot_bit_count().has_value()) {
     return absl::InvalidArgumentError(
-        absl::StrFormat("Sum `%s` expected %d payload slots; got %d",
-                        fmt_desc.sum_name(),
-                        static_cast<int64_t>(payload_slot_count),
-                        static_cast<int64_t>(sum_view.payload_slots.size())));
+        "Cannot format a sum without shared-slot metadata.");
+  }
+  XLS_ASSIGN_OR_RETURN(int64_t actual_tag_bit_count, tag_value.GetBitCount());
+  if (actual_tag_bit_count != fmt_desc.sum_tag_bit_count().value()) {
+    return absl::InvalidArgumentError(
+        absl::StrFormat("Sum `%s` expected a %d-bit tag; got %d bits.",
+                        fmt_desc.sum_name(), fmt_desc.sum_tag_bit_count().value(),
+                        actual_tag_bit_count));
+  }
+  if (!sum_view.payload_slot.IsUBits()) {
+    return absl::InvalidArgumentError(
+        "Expected shared sum payload slot to be unsigned bits.");
+  }
+  XLS_ASSIGN_OR_RETURN(int64_t actual_payload_slot_bit_count,
+                       sum_view.payload_slot.GetBitCount());
+  if (actual_payload_slot_bit_count !=
+      fmt_desc.sum_payload_slot_bit_count().value()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Sum `%s` expected a %d-bit payload slot; got %d bits.",
+        fmt_desc.sum_name(), fmt_desc.sum_payload_slot_bit_count().value(),
+        actual_payload_slot_bit_count));
   }
 
-  const ValueFormatSumVariantView variant = fmt_desc.sum_variant(variant_index);
+  const ValueFormatSumVariantView variant =
+      fmt_desc.sum_variant(variant_index.value());
   const absl::Span<const ValueFormatDescriptor> payload_formats =
       variant.payload_formats();
   const size_t payload_size = variant.payload_slot_count();
-  const size_t payload_slot_offset =
-      GetSumVariantPayloadOffset(fmt_desc, variant_index);
+  int64_t active_payload_bit_count = 0;
+  for (const ValueFormatDescriptor& payload_format : payload_formats) {
+    XLS_ASSIGN_OR_RETURN(int64_t payload_bit_count,
+                         RequireFlatBitCount(payload_format));
+    active_payload_bit_count += payload_bit_count;
+  }
+  if (active_payload_bit_count >
+      fmt_desc.sum_payload_slot_bit_count().value()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Sum `%s` variant `%s` expected %d payload bits but slot has only %d.",
+        fmt_desc.sum_name(), variant.name(), active_payload_bit_count,
+        fmt_desc.sum_payload_slot_bit_count().value()));
+  }
+  const Bits active_payload_bits =
+      sum_view.payload_slot.GetBitsOrDie().Slice(0, active_payload_bit_count);
+  XLS_ASSIGN_OR_RETURN(
+      std::vector<InterpValue> active_payload_values,
+      UnflattenAggregateValuesForDescriptor(payload_formats,
+                                            active_payload_bits));
   const std::string prefix =
       absl::StrFormat("%s::%s", fmt_desc.sum_name(), variant.name());
 
@@ -419,7 +539,7 @@ absl::StatusOr<std::string> InterpValue::ToSumString(
       for (size_t i = 0; i < payload_size; ++i) {
         XLS_ASSIGN_OR_RETURN(
             std::string payload_piece,
-            sum_view.payload_slots[payload_slot_offset + i].ToFormattedString(
+            active_payload_values[i].ToFormattedString(
                 payload_formats[i], include_type_prefix, indentation + 1));
         payload_pieces.push_back(std::move(payload_piece));
       }
@@ -452,7 +572,7 @@ absl::StatusOr<std::string> InterpValue::ToSumString(
       for (size_t i = 0; i < payload_size; ++i) {
         XLS_ASSIGN_OR_RETURN(
             std::string payload_piece,
-            sum_view.payload_slots[payload_slot_offset + i].ToFormattedString(
+            active_payload_values[i].ToFormattedString(
                 payload_formats[i], include_type_prefix, indentation + 1));
         pieces.push_back(IndentString(
             absl::StrFormat("%s: %s", field_names[i], payload_piece),

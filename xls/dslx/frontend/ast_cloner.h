@@ -110,8 +110,16 @@ CloneAstAndGetAllPairs(const AstNode* root,
                        std::optional<Module*> target_module,
                        CloneReplacer replacer = &NoopCloneReplacer);
 
+// Returns a fresh clone of `module`, preserving module metadata and references
+// to type definitions owned by other modules.
 absl::StatusOr<std::unique_ptr<Module>> CloneModule(
     const Module& module, CloneReplacer replacer = &NoopCloneReplacer);
+
+// Returns a fresh clone of `module` in which every `if let` conditional is
+// lowered to its equivalent `match` expression. Module metadata is preserved,
+// including configured values and source span.
+absl::StatusOr<std::unique_ptr<Module>> CloneModuleWithIfLetsLowered(
+    const Module& module);
 
 // Returns a clone of `module` that omits any top-level members whose
 // definitions appear in `members_to_remove`. References to those members are

@@ -23,6 +23,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/log/check.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xls/common/strong_int.h"
@@ -49,6 +50,9 @@ class Bytecode {
     kSAdd,
     // Performs a bitwise AND of the top two values on the stack.
     kAnd,
+    // Validates that TOS0 is a canonical value of the type given in the data
+    // argument and leaves it on the stack unchanged.
+    kAssertWellFormed,
     // Invokes the function given in the Bytecode's data argument. Arguments are
     // given on the stack with deeper elements being earlier in the arg list
     // (rightmost arg is TOS1 because we evaluate args left-to-right, TOS0 is
@@ -69,6 +73,9 @@ class Bytecode {
     // Creates an N-tuple (N given in the data argument) from the values on the
     // stack.
     kCreateTuple,
+    // Creates a semantic sum value from its active payload members using the
+    // sum constructor carried in the data argument.
+    kCreateSum,
     // Decodes the element on top of the stack to a one-hot of the type given as
     // the parametric arg.
     kDecode,
@@ -235,6 +242,12 @@ class Bytecode {
     static MatchArmItem MakeLoad(SlotIndex slot_index);
     static MatchArmItem MakeStore(SlotIndex slot_index);
     static MatchArmItem MakeRange(InterpValue start, InterpValue limit);
+    static MatchArmItem MakeSum(const SumType* sum_type,
+                                std::string variant_name,
+                                InterpValue discriminant,
+                                std::vector<MatchArmItem> payload_items);
+    static MatchArmItem MakeInvalidSum(const SumType* sum_type,
+                                       std::optional<SlotIndex> raw_slot);
     static MatchArmItem MakeTuple(std::vector<MatchArmItem> elements);
     static MatchArmItem MakeWildcard();
     static MatchArmItem MakeRestOfTuple();
@@ -243,6 +256,8 @@ class Bytecode {
       kInterpValue,
       kLoad,
       kRange,
+      kSum,
+      kInvalidSum,
       kStore,
       kTuple,
       kWildcard,
@@ -254,9 +269,23 @@ class Bytecode {
       InterpValue limit;
     };
 
+    struct SumMatchData {
+      const SumType* sum_type;
+      std::string variant_name;
+      InterpValue discriminant;
+      std::vector<MatchArmItem> payload_items;
+    };
+
+    struct InvalidSumMatchData {
+      const SumType* sum_type;
+      std::optional<SlotIndex> raw_slot;
+    };
+
     absl::StatusOr<InterpValue> interp_value() const;
     absl::StatusOr<SlotIndex> slot_index() const;
     absl::StatusOr<RangeData> range() const;
+    absl::StatusOr<SumMatchData> sum_match_data() const;
+    absl::StatusOr<InvalidSumMatchData> invalid_sum_match_data() const;
     absl::StatusOr<std::vector<MatchArmItem>> tuple_elements() const;
     Kind kind() const { return kind_; }
 
@@ -264,12 +293,14 @@ class Bytecode {
 
    private:
     explicit MatchArmItem(Kind kind);
-    MatchArmItem(Kind kind, std::variant<InterpValue, SlotIndex, RangeData,
-                                         std::vector<MatchArmItem>>
+    MatchArmItem(Kind kind,
+                 std::variant<InterpValue, SlotIndex, RangeData, SumMatchData,
+                              InvalidSumMatchData, std::vector<MatchArmItem>>
                                 data);
 
     Kind kind_;
     std::optional<std::variant<InterpValue, SlotIndex, RangeData,
+                               SumMatchData, InvalidSumMatchData,
                                std::vector<MatchArmItem>>>
         data_;
   };
@@ -330,18 +361,13 @@ class Bytecode {
     TraceData& operator=(TraceData&& other) = default;
 
     TraceData(std::vector<FormatStep> steps,
-              std::vector<ValueFormatDescriptor> value_fmt_descs,
-              std::vector<bool> redact_values = {})
+              std::vector<ValueFormatDescriptor> value_fmt_descs)
         : steps_(std::move(steps)),
-          value_fmt_descs_(std::move(value_fmt_descs)),
-          redact_values_(std::move(redact_values)) {}
+          value_fmt_descs_(std::move(value_fmt_descs)) {}
 
     absl::Span<const FormatStep> steps() const { return steps_; }
     absl::Span<const ValueFormatDescriptor> value_fmt_descs() const {
       return value_fmt_descs_;
-    }
-    bool redact_value(size_t index) const {
-      return index < redact_values_.size() && redact_values_.at(index);
     }
 
    private:
@@ -350,10 +376,6 @@ class Bytecode {
     // For default formatting of struct operands we hold metadata that allows us
     // to format them in more detail (struct name, fields, etc).
     std::vector<ValueFormatDescriptor> value_fmt_descs_;
-
-    // Values whose runtime contents must be opaque at a public observer
-    // boundary, such as semantic sums during Phase 1.
-    std::vector<bool> redact_values_;
   };
 
   // Information necessary for channel operations.
@@ -385,10 +407,31 @@ class Bytecode {
     bool redact_value_;
   };
 
+  class SumConstructionData {
+   public:
+    SumConstructionData(std::unique_ptr<Type> sum_type,
+                        std::string variant_name)
+        : sum_type_(std::move(sum_type)),
+          variant_name_(std::move(variant_name)) {
+      CHECK(sum_type_ != nullptr);
+      CHECK(sum_type_->IsSum());
+    }
+
+    const SumType& sum_type() const { return sum_type_->AsSum(); }
+    std::string_view variant_name() const { return variant_name_; }
+
+   private:
+    std::unique_ptr<Type> sum_type_;
+    std::string variant_name_;
+  };
+
   using Data = std::variant<InterpValue, JumpTarget, NumElements, SlotIndex,
                             std::unique_ptr<Type>, InvocationData, MatchArmItem,
-                            SpawnData, TraceData, ChannelData>;
+                            SpawnData, TraceData, ChannelData,
+                            SumConstructionData>;
 
+  static Bytecode MakeAssertWellFormed(Span span, std::unique_ptr<Type> type);
+  static Bytecode MakeCreateSum(Span span, SumConstructionData sum_data);
   static Bytecode MakeDup(Span span);
   static Bytecode MakeIndex(Span span);
   static Bytecode MakeTupleIndex(Span span);
@@ -446,6 +489,7 @@ class Bytecode {
   absl::StatusOr<const SpawnData*> spawn_data() const;
   absl::StatusOr<const TraceData*> trace_data() const;
   absl::StatusOr<const ChannelData*> channel_data() const;
+  absl::StatusOr<const SumConstructionData*> sum_construction_data() const;
   absl::StatusOr<const Type*> type_data() const;
   absl::StatusOr<InterpValue> value_data() const;
 

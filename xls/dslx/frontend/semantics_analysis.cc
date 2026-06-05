@@ -790,6 +790,48 @@ class PreTypecheckPass : public AstNodeVisitorWithDefault {
   const FileTable& file_table_;
 };
 
+class ContainsIfLetVisitor : public AstNodeVisitorWithDefault {
+ public:
+  bool contains_if_let() const { return contains_if_let_; }
+
+  absl::Status HandleConditional(const Conditional* node) override {
+    if (node->IsIfLet()) {
+      contains_if_let_ = true;
+      return absl::OkStatus();
+    }
+    return DefaultHandler(node);
+  }
+
+  absl::Status DefaultHandler(const AstNode* node) override {
+    for (const AstNode* child : node->GetChildren(/*want_types=*/true)) {
+      XLS_RETURN_IF_ERROR(child->Accept(this));
+      if (contains_if_let_) {
+        break;
+      }
+    }
+    return absl::OkStatus();
+  }
+
+ private:
+  bool contains_if_let_ = false;
+};
+
+absl::StatusOr<std::unique_ptr<Module>> NormalizeIfLets(
+    std::unique_ptr<Module> module) {
+  ContainsIfLetVisitor contains_if_let;
+  XLS_RETURN_IF_ERROR(module->Accept(&contains_if_let));
+  if (!contains_if_let.contains_if_let()) {
+    return module;
+  }
+
+  XLS_ASSIGN_OR_RETURN(std::unique_ptr<Module> normalized,
+                       CloneModuleWithIfLetsLowered(*module));
+  ContainsIfLetVisitor verify_no_if_let;
+  XLS_RETURN_IF_ERROR(normalized->Accept(&verify_no_if_let));
+  XLS_RET_CHECK(!verify_no_if_let.contains_if_let());
+  return normalized;
+}
+
 class CollectUseDef : public AstNodeVisitorWithDefault {
  public:
   absl::Status HandleNameDef(const NameDef* node) override {
@@ -885,9 +927,14 @@ class ProcStateVisitor : public AstNodeVisitorWithDefault {
         node->parent()->kind() == AstNodeKind::kFunction) {
       const Function* fn = absl::down_cast<const Function*>(node->parent());
       if (fn->tag() == FunctionTag::kProcNext) {
-        const_cast<Param*>(node)->set_type_annotation(
-            CreateStateTypeAnnotation(node->owner(), node->type_annotation(),
-                                      node->type_annotation()->span()));
+        XLS_ASSIGN_OR_RETURN(
+            std::optional<const StructDefBase*> def,
+            GetStructOrProcDef(node->type_annotation(), import_data_));
+        if (!def.has_value() || *def != state_struct_def_) {
+          const_cast<Param*>(node)->set_type_annotation(
+              CreateStateTypeAnnotation(node->owner(), node->type_annotation(),
+                                        node->type_annotation()->span()));
+        }
       }
     }
     return absl::OkStatus();
@@ -904,7 +951,8 @@ class ProcStateVisitor : public AstNodeVisitorWithDefault {
       }
       XLS_ASSIGN_OR_RETURN(std::optional<const StructDefBase*> def,
                            GetStructOrProcDef(type, import_data_));
-      if (def.has_value() && (*def)->kind() == AstNodeKind::kProcDef) {
+      if (def.has_value() && (*def == state_struct_def_ ||
+                              (*def)->kind() == AstNodeKind::kProcDef)) {
         continue;
       }
 
@@ -941,48 +989,55 @@ class ProcStateVisitor : public AstNodeVisitorWithDefault {
 SemanticsAnalysis::SemanticsAnalysis(bool suppress_warnings)
     : suppress_warnings_(suppress_warnings) {}
 
-absl::Status SemanticsAnalysis::RunPreTypeCheckPass(
-    Module& module, WarningCollector& warning_collector,
+absl::StatusOr<std::unique_ptr<Module>> SemanticsAnalysis::RunPreTypeCheckPass(
+    std::unique_ptr<Module> module, WarningCollector& warning_collector,
     ImportData& import_data) {
-  if (module.attributes().contains(ModuleAttribute::kExplicitStateAccess)) {
+  if (!suppress_warnings_) {
+    PreTypecheckPass pass(warning_collector, import_data.file_table());
+    XLS_RETURN_IF_ERROR(module->Accept(&pass));
+  }
+
+  // Normalize while the AST is still source-shaped. Later semantic
+  // transformations attach state that this source-to-source clone should not
+  // need to preserve.
+  XLS_ASSIGN_OR_RETURN(module, NormalizeIfLets(std::move(module)));
+
+  if (module->attributes().contains(ModuleAttribute::kExplicitStateAccess)) {
     XLS_ASSIGN_OR_RETURN(Module * builtins,
                          import_data.GetBuiltinStubsModule());
     XLS_ASSIGN_OR_RETURN(StructDef * state_struct_def,
                          builtins->GetMemberOrError<StructDef>("State"));
     ProcStateVisitor state_visitor(import_data, state_struct_def);
-    XLS_RETURN_IF_ERROR(module.Accept(&state_visitor));
+    XLS_RETURN_IF_ERROR(module->Accept(&state_visitor));
   }
   ReplaceLambdaWithInvocation lambda_pass(import_data.file_table());
-  XLS_RETURN_IF_ERROR(module.Accept(&lambda_pass));
+  XLS_RETURN_IF_ERROR(module->Accept(&lambda_pass));
 
   AddSpawnTraitToProcDefs add_spawn_trait;
-  XLS_RETURN_IF_ERROR(module.Accept(&add_spawn_trait));
+  XLS_RETURN_IF_ERROR(module->Accept(&add_spawn_trait));
 
-  if (suppress_warnings_) {
-    return absl::OkStatus();
-  }
-  PreTypecheckPass pass(warning_collector, import_data.file_table());
+  if (!suppress_warnings_) {
+    for (const ModuleMember& top : module->top()) {
+      if (const Function* const* func = std::get_if<Function*>(&top)) {
+        CollectUseDef visitor;
+        XLS_RETURN_IF_ERROR((*func)->body()->Accept(&visitor));
 
-  for (const ModuleMember& top : module.top()) {
-    if (const Function* const* func = std::get_if<Function*>(&top)) {
-      CollectUseDef visitor;
-      XLS_RETURN_IF_ERROR((*func)->body()->Accept(&visitor));
+        maybe_unreferenced_defs.emplace_back(
+            std::make_pair(*func, std::vector<const NameDef*>()));
+        std::vector<const NameDef*>& defs_in_func =
+            maybe_unreferenced_defs.back().second;
 
-      maybe_unreferenced_defs.emplace_back(
-          std::make_pair(*func, std::vector<const NameDef*>()));
-      std::vector<const NameDef*>& defs_in_func =
-          maybe_unreferenced_defs.back().second;
-
-      for (const NameDef* def : visitor.Defs()) {
-        if (!visitor.Uses().contains(def)) {
-          defs_in_func.emplace_back(def);
-          def_to_type_.try_emplace(def, nullptr);
+        for (const NameDef* def : visitor.Defs()) {
+          if (!visitor.Uses().contains(def)) {
+            defs_in_func.emplace_back(def);
+            def_to_type_.try_emplace(def, nullptr);
+          }
         }
       }
     }
   }
 
-  return module.Accept(&pass);
+  return module;
 }
 
 // If a possibly unused def is concretized to a non-token type at any possible

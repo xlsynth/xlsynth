@@ -63,6 +63,9 @@ absl::StatusOr<Bytecode::Op> OpFromString(std::string_view s) {
   if (s == "and") {
     return Bytecode::Op::kAnd;
   }
+  if (s == "assert_well_formed") {
+    return Bytecode::Op::kAssertWellFormed;
+  }
   if (s == "call") {
     return Bytecode::Op::kCall;
   }
@@ -80,6 +83,9 @@ absl::StatusOr<Bytecode::Op> OpFromString(std::string_view s) {
   }
   if (s == "create_tuple") {
     return Bytecode::Op::kCreateTuple;
+  }
+  if (s == "create_sum") {
+    return Bytecode::Op::kCreateSum;
   }
   if (s == "decode") {
     return Bytecode::Op::kDecode;
@@ -224,6 +230,8 @@ std::string OpToString(Bytecode::Op op) {
       return "uadd";
     case Bytecode::Op::kAnd:
       return "and";
+    case Bytecode::Op::kAssertWellFormed:
+      return "assert_well_formed";
     case Bytecode::Op::kCall:
       return "call";
     case Bytecode::Op::kCast:
@@ -236,6 +244,8 @@ std::string OpToString(Bytecode::Op op) {
       return "create_array";
     case Bytecode::Op::kCreateTuple:
       return "create_tuple";
+    case Bytecode::Op::kCreateSum:
+      return "create_sum";
     case Bytecode::Op::kDecode:
       return "decode";
     case Bytecode::Op::kDiv:
@@ -374,12 +384,31 @@ std::string BytecodesToString(absl::Span<const Bytecode> bytecodes,
                       RangeData{std::move(start), std::move(limit)});
 }
 
+/* static */ Bytecode::MatchArmItem Bytecode::MatchArmItem::MakeSum(
+    const SumType* sum_type, std::string variant_name,
+    InterpValue discriminant, std::vector<MatchArmItem> payload_items) {
+  return MatchArmItem(
+      Kind::kSum,
+      SumMatchData{.sum_type = sum_type,
+                   .variant_name = std::move(variant_name),
+                   .discriminant = std::move(discriminant),
+                   .payload_items = std::move(payload_items)});
+}
+
+/* static */ Bytecode::MatchArmItem Bytecode::MatchArmItem::MakeInvalidSum(
+    const SumType* sum_type, std::optional<SlotIndex> raw_slot) {
+  return MatchArmItem(
+      Kind::kInvalidSum,
+      InvalidSumMatchData{.sum_type = sum_type, .raw_slot = raw_slot});
+}
+
 Bytecode::MatchArmItem::MatchArmItem(Kind kind)
     : kind_(kind), data_(std::nullopt) {}
 
 Bytecode::MatchArmItem::MatchArmItem(
     Kind kind,
-    std::variant<InterpValue, SlotIndex, RangeData, std::vector<MatchArmItem>>
+    std::variant<InterpValue, SlotIndex, RangeData, SumMatchData,
+                 InvalidSumMatchData, std::vector<MatchArmItem>>
         data)
     : kind_(kind), data_(std::move(data)) {}
 
@@ -404,6 +433,31 @@ Bytecode::MatchArmItem::range() const {
   }
 
   return std::get<RangeData>(data_.value());
+}
+
+absl::StatusOr<Bytecode::MatchArmItem::SumMatchData>
+Bytecode::MatchArmItem::sum_match_data() const {
+  if (!data_.has_value()) {
+    return absl::InvalidArgumentError("MatchArmItem does not hold data.");
+  }
+  if (!std::holds_alternative<SumMatchData>(data_.value())) {
+    return absl::InvalidArgumentError("Bytecode data is not SumMatchData.");
+  }
+
+  return std::get<SumMatchData>(data_.value());
+}
+
+absl::StatusOr<Bytecode::MatchArmItem::InvalidSumMatchData>
+Bytecode::MatchArmItem::invalid_sum_match_data() const {
+  if (!data_.has_value()) {
+    return absl::InvalidArgumentError("MatchArmItem does not hold data.");
+  }
+  if (!std::holds_alternative<InvalidSumMatchData>(data_.value())) {
+    return absl::InvalidArgumentError(
+        "Bytecode data is not InvalidSumMatchData.");
+  }
+
+  return std::get<InvalidSumMatchData>(data_.value());
 }
 
 absl::StatusOr<Bytecode::SlotIndex> Bytecode::MatchArmItem::slot_index() const {
@@ -443,6 +497,19 @@ std::string Bytecode::MatchArmItem::ToString() const {
       return absl::StrCat("load:", std::get<SlotIndex>(data_.value()).value());
     case Kind::kStore:
       return absl::StrCat("store:", std::get<SlotIndex>(data_.value()).value());
+    case Kind::kSum: {
+      const auto& sum_data = std::get<SumMatchData>(data_.value());
+      std::vector<std::string> pieces;
+      pieces.reserve(sum_data.payload_items.size());
+      for (const MatchArmItem& item : sum_data.payload_items) {
+        pieces.push_back(item.ToString());
+      }
+      return absl::StrCat("sum: ", sum_data.sum_type->ToString(), "::",
+                          sum_data.variant_name, "(",
+                          absl::StrJoin(pieces, ", "), ")");
+    }
+    case Kind::kInvalidSum:
+      return "invalid_sum";
     case Kind::kTuple: {
       std::vector<MatchArmItem> elements =
           std::get<std::vector<MatchArmItem>>(data_.value());
@@ -492,6 +559,16 @@ DEF_UNARY_BUILDER(Swap);
     std::optional<ValueFormatDescriptor> format_descriptor) {
   return Bytecode(span, Op::kLiteral, std::move(literal),
                   std::move(format_descriptor));
+}
+
+/* static */ Bytecode Bytecode::MakeAssertWellFormed(
+    Span span, std::unique_ptr<Type> type) {
+  return Bytecode(span, Op::kAssertWellFormed, std::move(type));
+}
+
+/* static */ Bytecode Bytecode::MakeCreateSum(
+    Span span, SumConstructionData sum_data) {
+  return Bytecode(span, Op::kCreateSum, std::move(sum_data));
 }
 
 /* static */ Bytecode Bytecode::MakeLoad(Span span, SlotIndex slot_index) {
@@ -551,6 +628,13 @@ absl::StatusOr<const Bytecode::ChannelData*> Bytecode::channel_data() const {
   XLS_RET_CHECK(data_.has_value());
   XLS_RET_CHECK(std::holds_alternative<ChannelData>(data_.value()));
   return &std::get<ChannelData>(data_.value());
+}
+
+absl::StatusOr<const Bytecode::SumConstructionData*>
+Bytecode::sum_construction_data() const {
+  XLS_RET_CHECK(data_.has_value());
+  XLS_RET_CHECK(std::holds_alternative<SumConstructionData>(data_.value()));
+  return &std::get<SumConstructionData>(data_.value());
 }
 
 absl::StatusOr<Bytecode::SlotIndex> Bytecode::slot_index() const {
@@ -652,6 +736,11 @@ std::string Bytecode::ToString(const FileTable& file_table,
 
       std::string operator()(const ChannelData& channel_data) {
         return std::string{channel_data.channel_name()};
+      }
+
+      std::string operator()(const SumConstructionData& sum_data) {
+        return absl::StrCat(sum_data.sum_type().ToString(), "::",
+                            sum_data.variant_name());
       }
 
       std::string operator()(const JumpTarget& target) {

@@ -423,7 +423,7 @@ TEST(InterpValueHelpersTest, CreateZeroEmptySumValueFails) {
 }
 
 TEST(InterpValueHelpersTest,
-     CreateInternalPlaceholderEmptySumValueUsesZeroTag) {
+     CreateInternalPlaceholderEmptySumValueUsesZeroWidthTag) {
   const Span kFakeSpan = Span::Fake();
 
   FileTable file_table;
@@ -440,7 +440,8 @@ TEST(InterpValueHelpersTest,
       InterpValue zero,
       internal::CreateInternalPlaceholderValueFromType(empty_type));
   EXPECT_TRUE(InterpValue::MakeTuple(
-                  {InterpValue::MakeUBits(1, 0), InterpValue::MakeTuple({})})
+                  {InterpValue::MakeUBits(0, 0),
+                   InterpValue::MakeTuple({InterpValue::MakeUBits(0, 0)})})
                   .Eq(zero));
 }
 
@@ -471,8 +472,7 @@ TEST(InterpValueHelpersTest,
                        HasSubstr("Cannot create zero value")));
 }
 
-TEST(InterpValueHelpersTest,
-     CreateSumValueUsesInternalPlaceholderForInactiveEmptySumPayload) {
+TEST(InterpValueHelpersTest, CreateSumValueUsesSharedZeroedPayloadSlot) {
   const Span kFakeSpan = Span::Fake();
 
   FileTable file_table;
@@ -514,12 +514,10 @@ TEST(InterpValueHelpersTest,
   XLS_ASSERT_OK_AND_ASSIGN(
       InterpValue value,
       CreateSumValue(outer_type, "Nothing", no_payload_values));
-  EXPECT_TRUE(
-      InterpValue::MakeTuple(
-          {InterpValue::MakeUBits(1, 1),
-           InterpValue::MakeTuple({InterpValue::MakeTuple(
-               {InterpValue::MakeUBits(1, 0), InterpValue::MakeTuple({})})})})
-          .Eq(value));
+  EXPECT_TRUE(InterpValue::MakeTuple(
+                  {InterpValue::MakeUBits(1, 1),
+                   InterpValue::MakeTuple({InterpValue::MakeUBits(0, 0)})})
+                  .Eq(value));
 }
 
 TEST(InterpValueHelpersTest, CreateSumValueRejectsPayloadTypeMismatch) {
@@ -634,6 +632,20 @@ TEST(InterpValueHelpersTest,
   XLS_ASSERT_OK_AND_ASSIGN(
       InterpValue value, CreateSumValue(outer_type, "Unit", no_payload_values));
   EXPECT_THAT(SignConvertValue(outer_type, value), IsOkAndHolds(Eq(value)));
+}
+
+TEST(InterpValueHelpersTest, SignConvertValuePreservesMalformedSumShape) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumType sum_type = MakeMixedPayloadSumType(module);
+
+  InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeUBits(/*bit_count=*/16, /*value=*/0xbeef)})});
+
+  EXPECT_THAT(SignConvertValue(sum_type, malformed),
+              IsOkAndHolds(Eq(malformed)));
 }
 
 TEST(InterpValueHelpersTest, CreateSumValueRejectsActiveNonMemberEnumPayload) {
@@ -756,17 +768,23 @@ TEST(InterpValueHelpersTest, ValueToInterpValueEnum) {
                   UBits(3, 32), /*is_signed=*/false, &enum_def))));
 }
 
-TEST(InterpValueHelpersTest, ValueToInterpValueSumRejectsInvalidTag) {
+TEST(InterpValueHelpersTest, ValueToInterpValueSumPreservesMalformedTag) {
   FileTable file_table;
   Module module("test", /*fs_path=*/std::nullopt, file_table);
   SumType sum_type = MakeMixedPayloadSumType(module);
 
   Value raw =
-      Value::Tuple({Value(UBits(3, 2)),
-                    Value::Tuple({Value(UBits(0, 8)), Value(UBits(0, 16))})});
-  EXPECT_THAT(
-      ValueToInterpValue(raw, &sum_type),
-      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("invalid tag")));
+      Value::Tuple({Value(UBits(3, 2)), Value::Tuple({Value(UBits(0, 16))})});
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue actual,
+                           ValueToInterpValue(raw, &sum_type));
+  EXPECT_TRUE(InterpValue::MakeTuple(
+                  {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+                   InterpValue::MakeTuple({InterpValue::MakeUBits(
+                       /*bit_count=*/16, /*value=*/0)})})
+                  .Eq(actual));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, actual),
+              StatusIs(absl::StatusCode::kNotFound,
+                       HasSubstr("No variant with tag bits")));
 }
 
 TEST(InterpValueHelpersTest, ValueToInterpValueSumRejectsMalformedRawShape) {
@@ -786,22 +804,19 @@ TEST(InterpValueHelpersTest, ValueToInterpValueSumRejectsMalformedRawShape) {
       StatusIs(absl::StatusCode::kInvalidArgument,
                HasSubstr("tag and a payload tuple")));
   EXPECT_THAT(
-      ValueToInterpValue(Value::Tuple({Value(UBits(0, 2)),
-                                       Value::Tuple({Value(UBits(0, 8))})}),
+      ValueToInterpValue(Value::Tuple({Value(UBits(0, 2)), Value::Tuple({})}),
                          &sum_type),
       StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("must contain 2 payload slots")));
+               HasSubstr("must contain 1 payload slots")));
 }
 
-TEST(InterpValueHelpersTest,
-     ValueToInterpValueSumAcceptsInactiveEmptySumPlaceholder) {
+TEST(InterpValueHelpersTest, ValueToInterpValueSumIgnoresUnusedPayloadBits) {
   FileTable file_table;
   Module module("test", /*fs_path=*/std::nullopt, file_table);
   SumType outer_type = MakeOuterSumWithInactiveEmptyPayloadType(module);
 
-  Value raw = Value::Tuple(
-      {Value(UBits(1, 1)),
-       Value::Tuple({Value::Tuple({Value(UBits(0, 1)), Value::Tuple({})})})});
+  Value raw =
+      Value::Tuple({Value(UBits(1, 1)), Value::Tuple({Value(UBits(0, 0))})});
   const std::vector<InterpValue> no_payload_values;
   XLS_ASSERT_OK_AND_ASSIGN(
       InterpValue expected,
@@ -810,13 +825,13 @@ TEST(InterpValueHelpersTest,
 }
 
 TEST(InterpValueHelpersTest,
-     ValueToInterpValueSumAcceptsInactiveEmptyEnumPlaceholder) {
+     ValueToInterpValueSumIgnoresUnusedEnumPayloadBits) {
   FileTable file_table;
   Module module("test", /*fs_path=*/std::nullopt, file_table);
   SumType outer_type = MakeOuterSumWithInactiveEmptyEnumPayloadType(module);
 
   Value raw =
-      Value::Tuple({Value(UBits(0, 1)), Value::Tuple({Value(UBits(0, 2))})});
+      Value::Tuple({Value(UBits(0, 1)), Value::Tuple({Value(UBits(3, 2))})});
   const std::vector<InterpValue> no_payload_values;
   XLS_ASSERT_OK_AND_ASSIGN(
       InterpValue expected,
@@ -825,17 +840,18 @@ TEST(InterpValueHelpersTest,
 }
 
 TEST(InterpValueHelpersTest,
-     ValueToInterpValueSumRejectsNoncanonicalInactivePayload) {
+     ValueToInterpValueSumCanonicalizesUnusedPayloadBits) {
   FileTable file_table;
   Module module("test", /*fs_path=*/std::nullopt, file_table);
   SumType sum_type = MakeMixedPayloadSumType(module);
 
-  Value raw =
-      Value::Tuple({Value(UBits(0, 2)),
-                    Value::Tuple({Value(UBits(1, 8)), Value(UBits(0, 16))})});
-  EXPECT_THAT(ValueToInterpValue(raw, &sum_type),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("noncanonical inactive payload slot")));
+  Value raw = Value::Tuple(
+      {Value(UBits(0, 2)), Value::Tuple({Value(UBits(0xffff, 16))})});
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue actual,
+                           ValueToInterpValue(raw, &sum_type));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue expected,
+                           CreateSumValue(sum_type, "None", {}));
+  EXPECT_TRUE(actual.Eq(expected));
 }
 
 }  // namespace

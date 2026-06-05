@@ -72,7 +72,8 @@ class ZipTypeVisitor : public TypeVisitor {
   }
   absl::Status HandleSum(const SumType& lhs) override {
     auto* rhs = dynamic_cast<const SumType*>(&rhs_);
-    if (rhs == nullptr || &lhs.nominal_type() != &rhs->nominal_type()) {
+    if (rhs == nullptr || &lhs.nominal_type() != &rhs->nominal_type() ||
+        lhs.tag_bit_count() != rhs->tag_bit_count()) {
       return callbacks_.NoteTypeMismatch(lhs, lhs_parent_, rhs_, rhs_parent_);
     }
     AggregatePair aggregates = std::make_pair(&lhs, rhs);
@@ -82,7 +83,8 @@ class ZipTypeVisitor : public TypeVisitor {
       const SumTypeVariant& lhs_variant = lhs.variants().at(variant_i);
       const SumTypeVariant& rhs_variant = rhs->variants().at(variant_i);
       if (&lhs_variant.variant() != &rhs_variant.variant() ||
-          lhs_variant.size() != rhs_variant.size()) {
+          lhs_variant.size() != rhs_variant.size() ||
+          lhs.GetDiscriminant(variant_i) != rhs->GetDiscriminant(variant_i)) {
         return callbacks_.NoteTypeMismatch(lhs, lhs_parent_, rhs_, rhs_parent_);
       }
       for (int64_t member_i = 0; member_i < lhs_variant.size(); ++member_i) {

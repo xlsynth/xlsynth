@@ -971,6 +971,9 @@ absl::Status UnpackValue(llvm::Value* packed_buffer,
                          llvm::Value* unpacked_buffer, Type* xls_type,
                          int64_t bit_offset, LlvmTypeConverter& type_converter,
                          llvm::IRBuilder<>* builder) {
+  if (xls_type->GetFlatBitCount() == 0) {
+    return absl::OkStatus();
+  }
   switch (xls_type->kind()) {
     case TypeKind::kBits: {
       // Compute the byte offset into `packed_buffer` where first bit of data

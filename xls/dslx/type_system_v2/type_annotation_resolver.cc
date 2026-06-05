@@ -804,11 +804,13 @@ class StatefulResolver : public TypeAnnotationResolver {
                   parametric_context, *struct_or_proc_ref, *member_type);
         }
         if (std::holds_alternative<Function*>(*impl_member)) {
+          const FunctionTypeAnnotation* function_type_annotation =
+              CreateFunctionTypeAnnotation(module_,
+                                           *std::get<Function*>(*impl_member));
           return parametric_struct_instantiator_
               .GetParametricFreeStructMemberType(
                   parametric_context, *struct_or_proc_ref,
-                  CreateFunctionTypeAnnotation(
-                      module_, *std::get<Function*>(*impl_member)));
+                  function_type_annotation);
         }
         return absl::UnimplementedError(
             absl::StrCat("Impl member type is not supported: ",

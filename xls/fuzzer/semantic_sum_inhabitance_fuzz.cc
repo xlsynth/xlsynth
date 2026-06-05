@@ -58,51 +58,13 @@ absl::Status CheckOrCreateWritableDirectory(const std::filesystem::path& path) {
   return absl::OkStatus();
 }
 
-absl::StatusOr<bool> TypeIsInhabited(const dslx::Type& type);
-
 absl::StatusOr<bool> SumVariantIsInhabited(const dslx::SumTypeVariant& variant) {
   for (int64_t i = 0; i < variant.size(); ++i) {
     XLS_ASSIGN_OR_RETURN(bool member_is_inhabited,
-                         TypeIsInhabited(variant.GetMemberType(i)));
+                         dslx::TypeIsInhabited(variant.GetMemberType(i)));
     if (!member_is_inhabited) {
       return false;
     }
-  }
-  return true;
-}
-
-absl::StatusOr<bool> TypeIsInhabited(const dslx::Type& type) {
-  if (dslx::GetBitsLike(type).has_value()) {
-    return true;
-  }
-  if (auto* enum_type = dynamic_cast<const dslx::EnumType*>(&type)) {
-    return !enum_type->members().empty();
-  }
-  if (auto* tuple_type = dynamic_cast<const dslx::TupleType*>(&type)) {
-    for (const std::unique_ptr<dslx::Type>& member : tuple_type->members()) {
-      XLS_ASSIGN_OR_RETURN(bool member_is_inhabited, TypeIsInhabited(*member));
-      if (!member_is_inhabited) {
-        return false;
-      }
-    }
-    return true;
-  }
-  if (auto* array_type = dynamic_cast<const dslx::ArrayType*>(&type)) {
-    XLS_ASSIGN_OR_RETURN(int64_t size, array_type->size().GetAsInt64());
-    if (size == 0) {
-      return true;
-    }
-    return TypeIsInhabited(array_type->element_type());
-  }
-  if (auto* sum_type = dynamic_cast<const dslx::SumType*>(&type)) {
-    for (const dslx::SumTypeVariant& variant : sum_type->variants()) {
-      XLS_ASSIGN_OR_RETURN(bool variant_is_inhabited,
-                           SumVariantIsInhabited(variant));
-      if (variant_is_inhabited) {
-        return true;
-      }
-    }
-    return false;
   }
   return true;
 }
@@ -112,7 +74,6 @@ absl::Status VerifyGeneratedValue(const dslx::Type& type,
 
 absl::Status VerifyGeneratedSumValue(const dslx::SumType& sum_type,
                                      const dslx::InterpValue& value) {
-  const dslx::Phase1SumTypeEncoding encoding(sum_type);
   const std::vector<dslx::InterpValue>& elements = value.GetValuesOrDie();
   if (elements.size() != 2) {
     return absl::FailedPreconditionError("Generated sum value was not encoded as a pair.");
@@ -128,16 +89,12 @@ absl::Status VerifyGeneratedSumValue(const dslx::SumType& sum_type,
         absl::StrCat("Generated uninhabited sum variant `",
                      variant.variant().identifier(), "`."));
   }
-  const std::vector<dslx::InterpValue>& payload_slots =
-      elements.at(1).GetValuesOrDie();
-  XLS_ASSIGN_OR_RETURN(dslx::Phase1SumTypeEncoding::VariantInfo variant_info,
-                       encoding.GetVariant(variant.variant().identifier()));
-  XLS_RETURN_IF_ERROR(encoding.ForEachActivePayloadSlot(
-      variant_info,
-      [&](int64_t slot_index, int64_t active_index,
-          const dslx::Type& member_type) -> absl::Status {
-        return VerifyGeneratedValue(member_type, payload_slots.at(slot_index));
-      }));
+  XLS_ASSIGN_OR_RETURN(std::vector<dslx::InterpValue> payload_values,
+                       dslx::GetSumPayloadValues(sum_type, value));
+  for (int64_t i = 0; i < variant.size(); ++i) {
+    XLS_RETURN_IF_ERROR(
+        VerifyGeneratedValue(variant.GetMemberType(i), payload_values.at(i)));
+  }
   return absl::OkStatus();
 }
 

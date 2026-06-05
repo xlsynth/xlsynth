@@ -67,6 +67,56 @@ absl::StatusOr<BitsLikeProperties> GetBitsLikeOrError(
   return *bits_like;
 }
 
+bool IsInvalidPattern(const NameDefTree& pattern) {
+  return pattern.is_leaf() &&
+         std::holds_alternative<WildcardPattern*>(pattern.leaf()) &&
+         std::get<WildcardPattern*>(pattern.leaf())->kind() ==
+             AstNodeKind::kInvalidPattern;
+}
+
+bool HasInvalidPattern(const Match& match) {
+  for (const MatchArm* arm : match.arms()) {
+    for (const NameDefTree* pattern : arm->patterns()) {
+      if (IsInvalidPattern(*pattern)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool HasIrrefutablePayloadPatterns(const SumVariantPayloadPattern& pattern) {
+  for (const NameDefTree* payload_pattern : pattern.tuple_payload_patterns()) {
+    if (!payload_pattern->IsIrrefutable()) {
+      return false;
+    }
+  }
+  for (const auto& [_, payload_pattern] :
+       pattern.struct_payload_field_patterns()) {
+    if (!payload_pattern->IsIrrefutable()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool IsValidMalformedSumFallbackPattern(const NameDefTree& pattern) {
+  if (pattern.IsWildcardLeaf()) {
+    return true;
+  }
+  if (!pattern.is_leaf()) {
+    return false;
+  }
+  if (std::holds_alternative<ColonRef*>(pattern.leaf())) {
+    return true;
+  }
+  if (!std::holds_alternative<SumVariantPayloadPattern*>(pattern.leaf())) {
+    return false;
+  }
+  return HasIrrefutablePayloadPatterns(
+      *std::get<SumVariantPayloadPattern*>(pattern.leaf()));
+}
+
 absl::Status ValidateCoverBuiltinInvocation(const FileTable& file_table,
                                             const Invocation* invocation) {
   // Make sure that the coverpoint's identifier is valid in both Verilog
@@ -164,6 +214,15 @@ class TypeValidator : public AstNodeVisitorWithDefault {
           file_table_);
     }
     return DefaultHandler(ref);
+  }
+
+  absl::Status HandleInvalidPattern(const InvalidPattern* pattern) override {
+    if (!type_->IsSum()) {
+      return TypeInferenceErrorStatus(
+          pattern->span(), type_,
+          "`invalid!` is only valid when matching on a sum type.", file_table_);
+    }
+    return DefaultHandler(pattern);
   }
 
   absl::Status HandleBinop(const Binop* binop) override {
@@ -371,11 +430,24 @@ class TypeValidator : public AstNodeVisitorWithDefault {
       return absl::OkStatus();
     }
 
+    if (dynamic_cast<const SumType*>(*matched_type) != nullptr &&
+        !HasInvalidPattern(*node)) {
+      MatchArm* fallback_arm = node->arms().back();
+      if (fallback_arm->patterns().size() != 1 ||
+          !IsValidMalformedSumFallbackPattern(*fallback_arm->patterns()[0])) {
+        return TypeInferenceErrorStatus(
+            fallback_arm->GetPatternSpan(), *matched_type,
+            "A sum match without `invalid!` must end with `_` or one "
+            "constructor pattern whose payload subpatterns are irrefutable.",
+            file_table_);
+      }
+    }
+
     for (MatchArm* arm : node->arms()) {
       for (NameDefTree* pattern : arm->patterns()) {
         bool exhaustive_before = exhaustiveness_checker.IsExhaustive();
         exhaustiveness_checker.AddPattern(*pattern);
-        if (exhaustive_before) {
+        if (exhaustive_before && !IsInvalidPattern(*pattern)) {
           warning_collector_.Add(
               pattern->span(), WarningKind::kAlreadyExhaustiveMatch,
               "Match is already exhaustive before this pattern");
