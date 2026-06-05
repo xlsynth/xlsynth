@@ -94,6 +94,10 @@ absl::StatusOr<xls::Type*> TypeToIr(Package* package, const Type& type,
       retval_ = package_->GetTupleType(members);
       return absl::OkStatus();
     }
+    absl::Status HandleSum(const SumType&) override {
+      return absl::UnimplementedError(
+          "Semantic sum type lowering requires the Phase 1 lowering layer.");
+    }
     absl::Status HandleProc(const ProcType& t) override {
       // TODO: https://github.com/google/xls/issues/836 - Support this.
       return absl::UnimplementedError(absl::StrCat(
