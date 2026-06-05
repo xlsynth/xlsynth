@@ -287,6 +287,46 @@ enum MaybeU32 : u3 {
           "explicit discriminants on every variant in Phase 1.")));
 }
 
+TEST(TypecheckV2Test, SemanticSumEmptyPayloadLeafAllowedInPhase1) {
+  EXPECT_THAT(
+      R"(
+enum Never {}
+
+enum S {
+  Unit,
+  Impossible(Never),
+}
+
+fn f(x: S) -> u32 {
+  match x {
+    S::Unit => u32:0,
+  }
+}
+)",
+      TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test, MatchWithSemanticSumConstructors) {
+  EXPECT_THAT(
+      R"(
+enum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn unwrap_or_zero(x: MaybeU32) -> u32 {
+  match x {
+    MaybeU32::Some(v) => v,
+    MaybeU32::None => u32:0,
+  }
+}
+
+const X = unwrap_or_zero(MaybeU32::Some(u32:7));
+)",
+      TypecheckSucceeds(AllOf(HasNodeWithType("v", "uN[32]"),
+                              HasNodeWithType("X", "uN[32]"))));
+}
+
 TEST(TypecheckV2Test,
      ParametricSemanticTupleConstructorUsesContextualPayloadType) {
   EXPECT_THAT(
@@ -380,6 +420,32 @@ const X = imported::Option::Some(u8:7);
               IsOkAndHolds(::testing::_));
 }
 
+TEST(TypecheckV2Test, ParametricSemanticSumPatternsBindPayloadTypes) {
+  EXPECT_THAT(
+      R"(#![feature(generics)]
+enum OptionN<N: u32> {
+  None,
+  Some(uN[N]),
+  Pair { value: uN[N] },
+}
+
+fn unwrap_or_zero(x: OptionN<u32:8>) -> u8 {
+  match x {
+    OptionN<u32:8>::Some(v) => v,
+    OptionN<u32:8>::Pair { value } => value,
+    OptionN<u32:8>::None => u8:0,
+  }
+}
+
+const X = unwrap_or_zero(OptionN<u32:8>::Some(u8:7));
+const INPUT_Y: OptionN<u32:8> = OptionN::Pair { value: u8:9 };
+const Y = unwrap_or_zero(INPUT_Y);
+)",
+      TypecheckSucceeds(AllOf(
+          HasNodeWithType("v", "uN[8]"), HasNodeWithType("value", "uN[8]"),
+          HasNodeWithType("X", "uN[8]"), HasNodeWithType("Y", "uN[8]"))));
+}
+
 TEST(TypecheckV2Test, NonUnitSemanticSumConstructorCannotBeUsedAsValue) {
   EXPECT_THAT(
       R"(
@@ -397,7 +463,49 @@ fn f() -> () {
                            HasSubstr("cannot be used as a value in Phase 1"))));
 }
 
-TEST(TypecheckV2Test, SemanticSumMatchRejectedBeforePatternLayer) {
+TEST(TypecheckV2Test, MatchWithSemanticSumConstructorsNonExhaustive) {
+  EXPECT_THAT(
+      R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn unwrap_or_zero(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    Option::None => u32:0,
+  }
+}
+)",
+      TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+}
+
+TEST(TypecheckV2Test, MatchWithSemanticSumConstructorsWildcardCompletes) {
+  EXPECT_THAT(
+      R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn unwrap_or_zero(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    _ => u32:0,
+  }
+}
+
+const X = unwrap_or_zero(Option::Pair { lhs: u32:3, rhs: u32:4 });
+)",
+      TypecheckSucceeds(
+          AllOf(HasNodeWithType("v", "uN[32]"),
+                HasNodeWithType("X", "uN[32]"))));
+}
+
+TEST(TypecheckV2Test, MatchOrPatternRejectsBindingInLaterAlternative) {
   EXPECT_THAT(
       R"(
 enum Option {
@@ -407,11 +515,55 @@ enum Option {
 
 fn f(x: Option) -> u32 {
   match x {
+    Option::None | Option::Some(v) => v,
     _ => u32:0,
   }
 }
 )",
-      TypecheckFails(HasSubstr("require the Phase 1 pattern layer")));
+      TypecheckFails(AllOf(HasSubstr("Cannot bind names in a match arm with "
+                                     "multiple patterns"),
+                           HasSubstr("bound: v"))));
+}
+
+TEST(TypecheckV2Test, MatchOrPatternRejectsBindingInFirstAlternative) {
+  EXPECT_THAT(
+      R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn f(x: Option) -> u32 {
+  match x {
+    Option::Some(v) | Option::None => v,
+    _ => u32:0,
+  }
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("Cannot bind names in a match arm with "
+                                     "multiple patterns"),
+                           HasSubstr("bound: v"))));
+}
+
+TEST(TypecheckV2Test, MatchWithSemanticSumConstructorsAlreadyExhaustive) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn unwrap_or_zero(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    _ => u32:0,
+    Option::None => u32:1,
+  }
+}
+)"));
+  ASSERT_THAT(result.tm.warnings.warnings().size(), 1);
+  EXPECT_EQ(result.tm.warnings.warnings()[0].message,
+            "Match is already exhaustive before this pattern");
 }
 
 TEST(TypecheckV2Test, ZeroMacroImplicitSemanticSumUsesFirstVariant) {
