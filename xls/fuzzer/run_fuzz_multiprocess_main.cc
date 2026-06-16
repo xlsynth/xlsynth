@@ -34,8 +34,8 @@
 #include "xls/fuzzer/ast_generator.h"
 #include "xls/fuzzer/run_fuzz_multiprocess.h"
 #include "xls/fuzzer/sample.h"
-#include "xls/fuzzer/semantic_sum_source_seed_replay.h"
 #include "xls/fuzzer/sample.pb.h"
+#include "xls/fuzzer/semantic_sum_source_seed_replay.h"
 
 ABSL_FLAG(absl::Duration, duration, absl::InfiniteDuration(),
           "Duration to run the sample generator for.");
@@ -49,9 +49,10 @@ ABSL_FLAG(
     "Forces the samples to fail. Can be used to test failure code paths.");
 ABSL_FLAG(bool, generate_proc, false, "Generate a proc sample.");
 ABSL_FLAG(bool, require_sum_type, false,
-          "Require each generated function sample to include a semantic sum "
-          "definition and constructor use. Not supported with "
-          "`--generate_proc`.");
+          "Require each generated sample to include a semantic sum definition. "
+          "For function samples, the generated body uses semantic-sum "
+          "constructors and observers. For proc samples, a semantic sum is "
+          "forced onto proc channel/state boundaries.");
 ABSL_FLAG(bool, require_cross_module_sum_type, false,
           "Require each semantic-sum function sample to instantiate an "
           "imported parametric type and construct, pass, return, and match "
