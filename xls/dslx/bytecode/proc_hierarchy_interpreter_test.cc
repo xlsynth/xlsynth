@@ -507,7 +507,7 @@ proc tester_proc {
       std::unique_ptr<ProcHierarchyInterpreter> interpreter,
       Create(test_proc, options));
   XLS_ASSERT_OK(Run(*interpreter, options));
-  constexpr std::string_view kSumValue = "Option::Some(42)";
+  constexpr std::string_view kSumValue = "Option::Some(u32:42)";
   EXPECT_THAT(
       GetProcInstance(*interpreter, "tester_proc:0")
           .value()

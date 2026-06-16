@@ -45,9 +45,11 @@ namespace {
 // `GetEnumDef`.
 class TypeRefUnwrapper : public AstNodeVisitorWithDefault {
  public:
-  explicit TypeRefUnwrapper(const ImportData& import_data,
-                            bool include_generic = false)
-      : import_data_(import_data), include_generic_(include_generic) {}
+  TypeRefUnwrapper(const ImportData& import_data, const AstNode* root,
+                   bool include_generic = false)
+      : import_data_(import_data),
+        root_owner_(root->owner()),
+        include_generic_(include_generic) {}
 
   absl::Status HandleColonRef(const ColonRef* colon_ref) override {
     XLS_ASSIGN_OR_RETURN(std::optional<ModuleInfo*> import_module,
@@ -131,8 +133,15 @@ class TypeRefUnwrapper : public AstNodeVisitorWithDefault {
     // Canonicalization may clone an imported module after its first typecheck
     // pass. Rebind imported sum references through ImportData so later pointer
     // comparisons observe the stored canonical module definition instead of a
-    // stale pre-canonicalization clone.
-    absl::StatusOr<const SumDef*> canonical = import_data_.FindSumDef(def->span());
+    // stale pre-canonicalization clone. Do not rebind same-module references;
+    // the current module may itself be the canonicalized clone whose local
+    // nominal identity must be preserved.
+    if (def->owner() == root_owner_) {
+      type_def_ = const_cast<SumDef*>(def);
+      return absl::OkStatus();
+    }
+    absl::StatusOr<const SumDef*> canonical =
+        import_data_.FindSumDef(def->span());
     type_def_ = canonical.ok() ? const_cast<SumDef*>(*canonical)
                                : const_cast<SumDef*>(def);
     return absl::OkStatus();
@@ -186,6 +195,7 @@ class TypeRefUnwrapper : public AstNodeVisitorWithDefault {
 
  private:
   const ImportData& import_data_;
+  const Module* root_owner_;
   bool include_generic_;
 
   // These fields get populated as we visit nodes.
@@ -206,7 +216,7 @@ absl::StatusOr<std::optional<StructOrProcRef>> GetStructOrProcRef(
       !annotation->IsAnnotation<TypeVariableTypeAnnotation>()) {
     return std::nullopt;
   }
-  TypeRefUnwrapper unwrapper(import_data, include_generic);
+  TypeRefUnwrapper unwrapper(import_data, annotation, include_generic);
   XLS_RETURN_IF_ERROR(annotation->Accept(&unwrapper));
   return unwrapper.GetStructOrProcRef();
 }
@@ -216,21 +226,21 @@ absl::StatusOr<std::optional<SumRef>> GetSumRef(
   if (!annotation->IsAnnotation<TypeRefTypeAnnotation>()) {
     return std::nullopt;
   }
-  TypeRefUnwrapper unwrapper(import_data);
+  TypeRefUnwrapper unwrapper(import_data, annotation);
   XLS_RETURN_IF_ERROR(annotation->Accept(&unwrapper));
   return unwrapper.GetSumRef();
 }
 
 absl::StatusOr<std::optional<StructOrProcRef>> GetStructOrProcRefForSubject(
     const ColonRef* ref, const ImportData& import_data) {
-  TypeRefUnwrapper unwrapper(import_data);
+  TypeRefUnwrapper unwrapper(import_data, ref);
   XLS_RETURN_IF_ERROR(ToAstNode(ref->subject())->Accept(&unwrapper));
   return unwrapper.GetStructOrProcRef();
 }
 
 absl::StatusOr<std::optional<SumRef>> GetSumRefForSubject(
     const ColonRef* ref, const ImportData& import_data) {
-  TypeRefUnwrapper unwrapper(import_data);
+  TypeRefUnwrapper unwrapper(import_data, ref);
   XLS_RETURN_IF_ERROR(ToAstNode(ref->subject())->Accept(&unwrapper));
   return unwrapper.GetSumRef();
 }
@@ -310,14 +320,14 @@ absl::StatusOr<ModuleMember> GetPublicModuleMember(
 
 absl::StatusOr<std::optional<StructOrProcRef>> GetStructOrProcRef(
     const ColonRef* colon_ref, const ImportData& import_data) {
-  TypeRefUnwrapper unwrapper(import_data);
+  TypeRefUnwrapper unwrapper(import_data, colon_ref);
   XLS_RETURN_IF_ERROR(colon_ref->Accept(&unwrapper));
   return unwrapper.GetStructOrProcRef();
 }
 
 absl::StatusOr<std::optional<SumRef>> GetSumRef(const ColonRef* colon_ref,
                                                 const ImportData& import_data) {
-  TypeRefUnwrapper unwrapper(import_data);
+  TypeRefUnwrapper unwrapper(import_data, colon_ref);
   XLS_RETURN_IF_ERROR(colon_ref->Accept(&unwrapper));
   return unwrapper.GetSumRef();
 }
@@ -360,7 +370,7 @@ absl::StatusOr<std::optional<const EnumDef*>> GetEnumDef(
       !annotation->IsAnnotation<TypeVariableTypeAnnotation>()) {
     return std::nullopt;
   }
-  TypeRefUnwrapper unwrapper(import_data);
+  TypeRefUnwrapper unwrapper(import_data, annotation);
   XLS_RETURN_IF_ERROR(annotation->Accept(&unwrapper));
   return unwrapper.GetEnumDef();
 }
