@@ -25,7 +25,6 @@
 #include <utility>
 #include <vector>
 
-#include "gtest/gtest_prod.h"
 #include "absl/container/btree_map.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
@@ -36,6 +35,8 @@
 #include "absl/strings/match.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
+#include "gtest/gtest_prod.h"
+#include "xls/dslx/channel_direction.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
@@ -151,6 +152,23 @@ class AstGenerator {
                                            const std::string& module_name);
 
  private:
+  struct RequiredSumType {
+    SumDef* sum_def;
+    SumVariant* unit_variant;
+    SumVariant* active_variant;
+    std::optional<TypeAnnotation*> active_payload_type;
+  };
+
+  enum class RequiredProcSumBoundary : uint8_t {
+    kState,
+    kOutputChannel,
+  };
+
+  struct RequiredProcSumInput {
+    TypedExpr token;
+    TypedExpr payload;
+  };
+
   // We include RNG helper functions to help simplify circumstances where the
   // Abseil Random library does not provide native interfaces (e.g., choosing a
   // random item from a list of choices, or picking a random integer from a
@@ -591,12 +609,21 @@ class AstGenerator {
   // appends the required let statements to `statements`.
   absl::StatusOr<TypedExpr> GenerateRequiredSumPredicate(
       Context* ctx, std::vector<Statement*>* statements);
+  RequiredSumType& GetOrCreateRequiredSumType();
+  TypeRefTypeAnnotation* MakeRequiredSumTypeAnnotation();
+  absl::StatusOr<NameRef*> GenerateProcChannel(ChannelDirection direction,
+                                               TypeAnnotation* payload_type);
+  absl::StatusOr<RequiredProcSumInput> GenerateRequiredProcSumInput(
+      Context* ctx, std::vector<Statement*>* statements);
+  absl::Status GenerateRequiredProcSumOutput(
+      Context* ctx, std::vector<Statement*>* statements, const TypedExpr& token,
+      const TypedExpr& payload);
 
   TypeRefTypeAnnotation* MakeTypeRefTypeAnnotation(
-      TypeDefinition type_definition,
-      std::vector<ExprOrType> parametrics = {},
+      TypeDefinition type_definition, std::vector<ExprOrType> parametrics = {},
       std::optional<const StructInstanceBase*> instantiator = std::nullopt) {
-    auto* type_ref = module_->Make<TypeRef>(fake_span_, std::move(type_definition));
+    auto* type_ref =
+        module_->Make<TypeRef>(fake_span_, std::move(type_definition));
     return module_->Make<TypeRefTypeAnnotation>(
         fake_span_, type_ref, std::move(parametrics), instantiator);
   }
@@ -774,6 +801,8 @@ class AstGenerator {
   absl::flat_hash_map<std::string, int64_t> type_bit_counts_;
 
   bool generated_required_sum_ = false;
+  std::optional<RequiredSumType> required_sum_type_;
+  std::optional<RequiredProcSumBoundary> required_proc_sum_boundary_;
 
   // Set of constants defined during module generation.
   absl::btree_map<std::string, ConstantDef*> constants_;
