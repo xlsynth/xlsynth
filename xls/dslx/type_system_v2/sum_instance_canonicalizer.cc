@@ -66,6 +66,38 @@ absl::StatusOr<std::optional<AstNode*>> RebindLocalTypeRef(
   return target_module->Make<TypeRef>(type_ref->span(), *canonical_definition);
 }
 
+absl::StatusOr<std::optional<AstNode*>> RebindLocalTypeNameRef(
+    const AstNode* node, Module* target_module,
+    const absl::flat_hash_map<const AstNode*, AstNode*>&) {
+  if (node->kind() != AstNodeKind::kNameRef) {
+    return std::nullopt;
+  }
+  const auto* name_ref = absl::down_cast<const NameRef*>(node);
+  if (!std::holds_alternative<const NameDef*>(name_ref->name_def())) {
+    return std::nullopt;
+  }
+  const NameDef* name_def = std::get<const NameDef*>(name_ref->name_def());
+  const AstNode* definer = name_def->definer();
+  if (definer == nullptr || definer->owner() != node->owner()) {
+    return std::nullopt;
+  }
+  if (definer->kind() != AstNodeKind::kTypeAlias &&
+      definer->kind() != AstNodeKind::kStructDef &&
+      definer->kind() != AstNodeKind::kProcDef &&
+      definer->kind() != AstNodeKind::kEnumDef &&
+      definer->kind() != AstNodeKind::kSumDef) {
+    return std::nullopt;
+  }
+  absl::StatusOr<TypeDefinition> canonical_definition =
+      target_module->GetTypeDefinition(name_ref->identifier());
+  if (!canonical_definition.ok()) {
+    return std::nullopt;
+  }
+  return target_module->Make<NameRef>(
+      name_ref->span(), name_ref->identifier(),
+      TypeDefinitionGetNameDef(*canonical_definition), name_ref->in_parens());
+}
+
 absl::StatusOr<Expr*> CloneExprIntoModule(
     Expr* expr, Module* target_module,
     const absl::flat_hash_map<const AstNode*, AstNode*>& old_to_new) {
@@ -78,7 +110,9 @@ absl::StatusOr<Expr*> CloneExprIntoModule(
       auto pairs, CloneAstAndGetAllPairs(
                       expr, std::optional<Module*>{target_module},
                       ChainCloneReplacers(&RebindLocalTypeRef,
-                                          NameRefReplacer(&name_def_map))));
+                                          ChainCloneReplacers(
+                                              &RebindLocalTypeNameRef,
+                                              NameRefReplacer(&name_def_map)))));
   return absl::down_cast<Expr*>(pairs.at(expr));
 }
 
