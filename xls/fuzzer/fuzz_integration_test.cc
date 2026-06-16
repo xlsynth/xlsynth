@@ -20,7 +20,6 @@
 #include <string>
 #include <utility>
 
-#include "gtest/gtest.h"
 #include "absl/flags/flag.h"
 #include "absl/log/log.h"
 #include "absl/random/distributions.h"
@@ -28,6 +27,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/time/time.h"
+#include "gtest/gtest.h"
 #include "xls/common/file/filesystem.h"
 #include "xls/common/file/temp_directory.h"
 #include "xls/common/status/matchers.h"
@@ -71,9 +71,10 @@ ABSL_FLAG(bool, generate_proc, false, "Generate a proc sample.");
 ABSL_FLAG(bool, with_valid_holdoff, false,
           "If true, emit valid random holdoffs on proc input channels.");
 ABSL_FLAG(bool, require_sum_type, false,
-          "Require each generated function sample to include a semantic sum "
-          "definition and constructor use. Not supported with "
-          "`--generate_proc`.");
+          "Require each generated sample to include a semantic sum definition. "
+          "For function samples, the generated body uses semantic-sum "
+          "constructors and observers. For proc samples, a semantic sum is "
+          "forced onto proc channel/state boundaries.");
 
 // The maximum number of failures before the test aborts.
 constexpr int64_t kMaxFailures = 10;
@@ -116,9 +117,6 @@ TEST(FuzzIntegrationTest, Fuzzing) {
       .emit_gate = !absl::GetFlag(FLAGS_simulate),
       .generate_proc = absl::GetFlag(FLAGS_generate_proc),
       .require_sum_type = absl::GetFlag(FLAGS_require_sum_type)};
-  ASSERT_FALSE(absl::GetFlag(FLAGS_generate_proc) &&
-               absl::GetFlag(FLAGS_require_sum_type))
-      << "require_sum_type is only supported for function samples.";
 
   SampleOptions sample_options;
   sample_options.set_input_is_dslx(true);
