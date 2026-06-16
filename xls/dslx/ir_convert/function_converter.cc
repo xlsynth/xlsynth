@@ -3248,7 +3248,7 @@ absl::Status FunctionConverter::HandleSumConstructorInvocation(
         XLS_ASSIGN_OR_RETURN(
             InterpValue zero,
             internal::CreateInternalPlaceholderValueFromType(inactive_type));
-        XLS_ASSIGN_OR_RETURN(Value zero_value, InterpValueToValue(zero));
+        XLS_ASSIGN_OR_RETURN(Value zero_value, zero.ConvertToIr());
         payload_slots.push_back(function_builder_->Literal(zero_value));
         return absl::OkStatus();
       }));
@@ -3274,7 +3274,7 @@ absl::Status FunctionConverter::HandleSumInstance(const SumInstance* node) {
     XLS_ASSIGN_OR_RETURN(
         InterpValue value,
         CreateSumValue(sum_type, node->constructor_ref()->attr(), {}));
-    XLS_ASSIGN_OR_RETURN(Value ir_value, InterpValueToValue(value));
+    XLS_ASSIGN_OR_RETURN(Value ir_value, value.ConvertToIr());
     DefConst(node, ir_value);
     return absl::OkStatus();
   }
@@ -3305,7 +3305,7 @@ absl::Status FunctionConverter::HandleSumInstance(const SumInstance* node) {
         XLS_ASSIGN_OR_RETURN(
             InterpValue zero,
             internal::CreateInternalPlaceholderValueFromType(inactive_type));
-        XLS_ASSIGN_OR_RETURN(Value zero_value, InterpValueToValue(zero));
+        XLS_ASSIGN_OR_RETURN(Value zero_value, zero.ConvertToIr());
         payload_slots.push_back(function_builder_->Literal(zero_value));
         return absl::OkStatus();
       }));
@@ -5044,7 +5044,7 @@ absl::Status FunctionConverter::HandleColonRef(const ColonRef* node) {
     const SumType& sum_type = (*type)->AsSum();
     XLS_ASSIGN_OR_RETURN(InterpValue value,
                          CreateSumValue(sum_type, node->attr(), {}));
-    XLS_ASSIGN_OR_RETURN(Value ir_value, InterpValueToValue(value));
+    XLS_ASSIGN_OR_RETURN(Value ir_value, value.ConvertToIr());
     DefConst(node, ir_value);
     return absl::OkStatus();
   }
@@ -5146,7 +5146,7 @@ absl::Status FunctionConverter::HandleSumStructInstance(
         XLS_ASSIGN_OR_RETURN(
             InterpValue zero,
             internal::CreateInternalPlaceholderValueFromType(inactive_type));
-        XLS_ASSIGN_OR_RETURN(Value zero_value, InterpValueToValue(zero));
+        XLS_ASSIGN_OR_RETURN(Value zero_value, zero.ConvertToIr());
         payload_slots.push_back(function_builder_->Literal(zero_value));
         return absl::OkStatus();
       }));
