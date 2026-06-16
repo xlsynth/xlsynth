@@ -114,6 +114,50 @@ const STRUCT = Option::Pair { lhs: u32:3, rhs: u32:4 };
   EXPECT_TRUE(struct_instance->is_struct());
 }
 
+TEST(TypecheckV2Test, SemanticSumProcChannelCanonicalizesInProcContext) {
+  EXPECT_THAT(
+      R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+proc Passthrough {
+  in_ch: chan<Option> in;
+  out_ch: chan<Option> out;
+
+  init { () }
+
+  config(in_ch: chan<Option> in, out_ch: chan<Option> out) {
+    (in_ch, out_ch)
+  }
+
+  next(_: ()) {
+    let (tok, value) = recv(join(), in_ch);
+    send(tok, out_ch, value);
+  }
+}
+
+proc Main {
+  init { () }
+
+  config() {
+    let (input_p, input_c) = chan<Option>("input");
+    let (output_p, output_c) = chan<Option>("output");
+    spawn Passthrough(input_c, output_p);
+    ()
+  }
+
+  next(_: ()) {
+    let value = Option::Some(u32:42);
+    ()
+  }
+}
+)",
+      TypecheckSucceeds(HasNodeWithType("Option::Some(u32:42)",
+                                        "Option { None | Some(uN[32]) }")));
+}
+
 TEST(TypecheckV2Test, ImportedSemanticSumConstructorCanonicalizes) {
   constexpr std::string_view kImported = R"(
 pub enum Option {
