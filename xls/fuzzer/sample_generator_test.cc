@@ -18,15 +18,23 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <string_view>
+#include <variant>
 #include <vector>
 
+#include "absl/status/status_matchers.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "absl/status/status_matchers.h"
 #include "xls/common/status/matchers.h"
+#include "xls/common/status/status_macros.h"
+#include "xls/common/visitor.h"
 #include "xls/dslx/channel_direction.h"
+#include "xls/dslx/create_import_data.h"
+#include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/pos.h"
+#include "xls/dslx/frontend/proc.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/fuzzer/ast_generator.h"
 #include "xls/fuzzer/sample.h"
@@ -38,6 +46,77 @@ namespace {
 
 using ::absl_testing::IsOkAndHolds;
 using ::testing::HasSubstr;
+
+absl::StatusOr<dslx::TypecheckedModule> ParseSample(
+    std::string_view text, dslx::ImportData* import_data) {
+  return dslx::ParseAndTypecheck(text, "sample.x", "sample", import_data);
+}
+
+bool TypeDefinitionContainsSumDef(const dslx::TypeDefinition& type_def);
+
+bool TypeAnnotationContainsSumDef(const dslx::TypeAnnotation* type) {
+  if (auto* type_ref = dynamic_cast<const dslx::TypeRefTypeAnnotation*>(type);
+      type_ref != nullptr) {
+    return TypeDefinitionContainsSumDef(
+        type_ref->type_ref()->type_definition());
+  }
+  if (auto* tuple = dynamic_cast<const dslx::TupleTypeAnnotation*>(type);
+      tuple != nullptr) {
+    for (dslx::TypeAnnotation* member_type : tuple->members()) {
+      if (TypeAnnotationContainsSumDef(member_type)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (auto* array = dynamic_cast<const dslx::ArrayTypeAnnotation*>(type);
+      array != nullptr) {
+    return TypeAnnotationContainsSumDef(array->element_type());
+  }
+  return false;
+}
+
+bool TypeDefinitionContainsSumDef(const dslx::TypeDefinition& type_def) {
+  return std::visit(
+      xls::Visitor{
+          [](dslx::SumDef*) { return true; },
+          [](dslx::StructDef*) { return false; },
+          [](dslx::ProcDef*) { return false; },
+          [](dslx::EnumDef*) { return false; },
+          [](dslx::ColonRef*) { return false; },
+          [](dslx::UseTreeEntry*) { return false; },
+          [](dslx::TypeAlias* type_alias) {
+            return TypeAnnotationContainsSumDef(&type_alias->type_annotation());
+          },
+      },
+      type_def);
+}
+
+bool ProcHasChannelPayloadWithSumDef(const dslx::Proc& proc,
+                                     dslx::ChannelDirection direction) {
+  for (dslx::ProcMember* member : proc.members()) {
+    auto* channel_type =
+        dynamic_cast<dslx::ChannelTypeAnnotation*>(member->type_annotation());
+    if (channel_type != nullptr && channel_type->direction() == direction &&
+        TypeAnnotationContainsSumDef(channel_type->payload())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ProcHasStateWithSumDef(const dslx::Proc& proc) {
+  if (proc.next().params().empty()) {
+    return false;
+  }
+  return TypeAnnotationContainsSumDef(
+      proc.next().params().front()->type_annotation());
+}
+
+absl::StatusOr<dslx::Proc*> GetGeneratedMainProc(
+    const dslx::TypecheckedModule& tm) {
+  return tm.module->GetMemberOrError<dslx::Proc>("main");
+}
 
 TEST(SampleGeneratorTest, GenerateBasicFunctionSample) {
   dslx::FileTable file_table;
@@ -130,6 +209,74 @@ TEST(SampleGeneratorTest, GenerateBasicProcSample) {
   EXPECT_EQ(args_batch.size(), kProcTicks);
 
   EXPECT_THAT(sample.input_text(), HasSubstr("proc main"));
+}
+
+TEST(SampleGeneratorTest, GenerateProcSampleWithRequiredSumType) {
+  dslx::FileTable file_table;
+  std::mt19937_64 rng;
+  SampleOptions sample_options;
+  constexpr int64_t kProcTicks = 3;
+  sample_options.set_sample_type(fuzzer::SampleType::SAMPLE_TYPE_PROC);
+  sample_options.set_calls_per_sample(0);
+  sample_options.set_proc_ticks(kProcTicks);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Sample sample,
+      GenerateSample(dslx::AstGeneratorOptions{.generate_proc = true,
+                                               .require_sum_type = true},
+                     sample_options, rng, file_table));
+  EXPECT_EQ(sample.options().sample_type(),
+            fuzzer::SampleType::SAMPLE_TYPE_PROC);
+  EXPECT_THAT(sample.input_text(), HasSubstr("recv("));
+  dslx::ImportData import_data = dslx::CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(dslx::TypecheckedModule tm,
+                           ParseSample(sample.input_text(), &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(dslx::Proc * proc, GetGeneratedMainProc(tm));
+  EXPECT_TRUE(
+      ProcHasChannelPayloadWithSumDef(*proc, dslx::ChannelDirection::kIn));
+  EXPECT_TRUE(
+      ProcHasStateWithSumDef(*proc) ||
+      ProcHasChannelPayloadWithSumDef(*proc, dslx::ChannelDirection::kOut));
+
+  std::vector<std::vector<dslx::InterpValue>> args_batch;
+  std::vector<std::string> ir_channel_names;
+  XLS_EXPECT_OK(sample.GetArgsAndChannels(args_batch, &ir_channel_names));
+  ASSERT_EQ(args_batch.size(), kProcTicks);
+  ASSERT_FALSE(args_batch.front().empty());
+  EXPECT_FALSE(ir_channel_names.empty());
+}
+
+TEST(SampleGeneratorTest, GenerateStatelessProcSampleWithRequiredSumType) {
+  dslx::FileTable file_table;
+  std::mt19937_64 rng;
+  SampleOptions sample_options;
+  constexpr int64_t kProcTicks = 3;
+  sample_options.set_sample_type(fuzzer::SampleType::SAMPLE_TYPE_PROC);
+  sample_options.set_calls_per_sample(0);
+  sample_options.set_proc_ticks(kProcTicks);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Sample sample,
+      GenerateSample(dslx::AstGeneratorOptions{.generate_proc = true,
+                                               .emit_stateless_proc = true,
+                                               .require_sum_type = true},
+                     sample_options, rng, file_table));
+  dslx::ImportData import_data = dslx::CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(dslx::TypecheckedModule tm,
+                           ParseSample(sample.input_text(), &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(dslx::Proc * proc, GetGeneratedMainProc(tm));
+  EXPECT_TRUE(proc->IsStateless());
+  EXPECT_THAT(sample.input_text(), HasSubstr("recv("));
+  EXPECT_THAT(sample.input_text(), HasSubstr("send("));
+  EXPECT_TRUE(
+      ProcHasChannelPayloadWithSumDef(*proc, dslx::ChannelDirection::kIn));
+  EXPECT_TRUE(
+      ProcHasChannelPayloadWithSumDef(*proc, dslx::ChannelDirection::kOut));
+
+  std::vector<std::vector<dslx::InterpValue>> args_batch;
+  std::vector<std::string> ir_channel_names;
+  XLS_EXPECT_OK(sample.GetArgsAndChannels(args_batch, &ir_channel_names));
+  ASSERT_EQ(args_batch.size(), kProcTicks);
+  ASSERT_FALSE(args_batch.front().empty());
+  EXPECT_FALSE(ir_channel_names.empty());
 }
 
 }  // namespace
