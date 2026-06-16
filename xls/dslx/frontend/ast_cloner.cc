@@ -795,13 +795,18 @@ class AstCloner : public AstNodeVisitor {
     // cloned.
     AnyNameDef new_name_def;
     if (std::holds_alternative<const NameDef*>(n->name_def())) {
-      const NameDef* old_def = std::get<const NameDef*>(n->name_def());
-      auto it = old_to_new_.find(old_def);
-      if (it != old_to_new_.end()) {
-        new_name_def = absl::down_cast<NameDef*>(it->second);
-      } else {
-        new_name_def = old_def;
+      const NameDef* old_name_def = std::get<const NameDef*>(n->name_def());
+      auto it = old_to_new_.find(old_name_def);
+      if (it == old_to_new_.end() && old_name_def->definer() != nullptr &&
+          old_name_def->definer()->kind() == AstNodeKind::kProcMember) {
+        // Expression-level replacement can clone proc body references before
+        // the surrounding proc member declarations have been visited.
+        XLS_RETURN_IF_ERROR(ReplaceOrVisit(old_name_def->definer()));
+        it = old_to_new_.find(old_name_def);
       }
+      new_name_def = it == old_to_new_.end()
+                         ? AnyNameDef{old_name_def}
+                         : AnyNameDef{absl::down_cast<NameDef*>(it->second)};
     } else {
       BuiltinNameDef* old_name_def = std::get<BuiltinNameDef*>(n->name_def());
       XLS_RETURN_IF_ERROR(ReplaceOrVisit(old_name_def));

@@ -140,17 +140,20 @@ proc Passthrough {
 }
 
 proc Main {
+  data_out: chan<Option> out;
+  data_in: chan<Option> in;
+
   init { () }
 
   config() {
     let (input_p, input_c) = chan<Option>("input");
     let (output_p, output_c) = chan<Option>("output");
     spawn Passthrough(input_c, output_p);
-    ()
+    (input_p, output_c)
   }
 
   next(_: ()) {
-    let value = Option::Some(u32:42);
+    let _ = send(join(), data_out, Option::Some(u32:42));
     ()
   }
 }
