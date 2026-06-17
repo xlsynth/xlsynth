@@ -1072,6 +1072,7 @@ cc_test(
         "//xls/dslx/frontend:pos",
         "//xls/dslx/frontend:proc",
         "//xls/dslx/type_system:type",
+        "@abseil-cpp//absl/container:flat_hash_set",
         "@abseil-cpp//absl/status:status_matchers",
         "@googletest//:gtest",
     ],

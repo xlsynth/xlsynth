@@ -22,6 +22,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/container/flat_hash_set.h"
 #include "absl/status/status_matchers.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -92,17 +93,55 @@ bool TypeDefinitionContainsSumDef(const dslx::TypeDefinition& type_def) {
       type_def);
 }
 
-bool ProcHasChannelPayloadWithSumDef(const dslx::Proc& proc,
-                                     dslx::ChannelDirection direction) {
+std::vector<std::string> ProcChannelNamesWithSumDef(
+    const dslx::Proc& proc, dslx::ChannelDirection direction) {
+  std::vector<std::string> names;
   for (dslx::ProcMember* member : proc.members()) {
     auto* channel_type =
         dynamic_cast<dslx::ChannelTypeAnnotation*>(member->type_annotation());
     if (channel_type != nullptr && channel_type->direction() == direction &&
         TypeAnnotationContainsSumDef(channel_type->payload())) {
+      names.push_back(member->identifier());
+    }
+  }
+  return names;
+}
+
+bool ProcHasChannelPayloadWithSumDef(const dslx::Proc& proc,
+                                     dslx::ChannelDirection direction) {
+  return !ProcChannelNamesWithSumDef(proc, direction).empty();
+}
+
+bool ContainsRecvFromChannelNames(
+    const dslx::AstNode* node,
+    const absl::flat_hash_set<std::string>& channel_names) {
+  if (auto* invocation = dynamic_cast<const dslx::Invocation*>(node);
+      invocation != nullptr) {
+    auto* callee = dynamic_cast<const dslx::NameRef*>(invocation->callee());
+    if (callee != nullptr && callee->identifier() == "recv" &&
+        invocation->args().size() == 2) {
+      auto* channel_ref =
+          dynamic_cast<const dslx::NameRef*>(invocation->args()[1]);
+      if (channel_ref != nullptr &&
+          channel_names.contains(channel_ref->identifier())) {
+        return true;
+      }
+    }
+  }
+  for (const dslx::AstNode* child : node->GetChildren(/*want_types=*/false)) {
+    if (ContainsRecvFromChannelNames(child, channel_names)) {
       return true;
     }
   }
   return false;
+}
+
+bool ProcReceivesFromInputChannelWithSumDef(const dslx::Proc& proc) {
+  std::vector<std::string> names =
+      ProcChannelNamesWithSumDef(proc, dslx::ChannelDirection::kIn);
+  absl::flat_hash_set<std::string> name_set(names.begin(), names.end());
+  return !name_set.empty() &&
+         ContainsRecvFromChannelNames(&proc.next(), name_set);
 }
 
 bool ProcHasStateWithSumDef(const dslx::Proc& proc) {
@@ -226,13 +265,11 @@ TEST(SampleGeneratorTest, GenerateProcSampleWithRequiredSumType) {
                      sample_options, rng, file_table));
   EXPECT_EQ(sample.options().sample_type(),
             fuzzer::SampleType::SAMPLE_TYPE_PROC);
-  EXPECT_THAT(sample.input_text(), HasSubstr("recv("));
   dslx::ImportData import_data = dslx::CreateImportDataForTest();
   XLS_ASSERT_OK_AND_ASSIGN(dslx::TypecheckedModule tm,
                            ParseSample(sample.input_text(), &import_data));
   XLS_ASSERT_OK_AND_ASSIGN(dslx::Proc * proc, GetGeneratedMainProc(tm));
-  EXPECT_TRUE(
-      ProcHasChannelPayloadWithSumDef(*proc, dslx::ChannelDirection::kIn));
+  EXPECT_TRUE(ProcReceivesFromInputChannelWithSumDef(*proc));
   EXPECT_TRUE(
       ProcHasStateWithSumDef(*proc) ||
       ProcHasChannelPayloadWithSumDef(*proc, dslx::ChannelDirection::kOut));
@@ -264,10 +301,8 @@ TEST(SampleGeneratorTest, GenerateStatelessProcSampleWithRequiredSumType) {
                            ParseSample(sample.input_text(), &import_data));
   XLS_ASSERT_OK_AND_ASSIGN(dslx::Proc * proc, GetGeneratedMainProc(tm));
   EXPECT_TRUE(proc->IsStateless());
-  EXPECT_THAT(sample.input_text(), HasSubstr("recv("));
   EXPECT_THAT(sample.input_text(), HasSubstr("send("));
-  EXPECT_TRUE(
-      ProcHasChannelPayloadWithSumDef(*proc, dslx::ChannelDirection::kIn));
+  EXPECT_TRUE(ProcReceivesFromInputChannelWithSumDef(*proc));
   EXPECT_TRUE(
       ProcHasChannelPayloadWithSumDef(*proc, dslx::ChannelDirection::kOut));
 
