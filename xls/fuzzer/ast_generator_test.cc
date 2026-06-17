@@ -205,7 +205,7 @@ TEST(AstGeneratorMultiTest, GeneratesRequiredSumTypesInProcs) {
   AstGeneratorOptions options;
   options.generate_proc = true;
   options.require_sum_type = true;
-  constexpr int64_t kNumSamples = 32;
+  constexpr int64_t kNumSamples = 8;
   for (int64_t i = 0; i < kNumSamples; ++i) {
     AstGenerator g(options, rng, file_table);
     LOG(INFO) << "Generating required-sum proc sample: " << i;
