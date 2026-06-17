@@ -70,8 +70,9 @@ ABSL_FLAG(std::optional<int64_t>, seed, std::nullopt,
           "Seed value for generation. By default, a nondetermistic seed is "
           "used; if a seed is provided, it is used for determinism");
 ABSL_FLAG(std::optional<std::string>, seed_manifest, std::nullopt,
-          "Manifest of semantic-sum source seeds to replay before random "
-          "sample generation.");
+          "Manifest of function-sample semantic-sum source seeds to replay "
+          "before random sample generation. Seed replay is not supported with "
+          "`--generate_proc`.");
 ABSL_FLAG(bool, simulate, false, "Run Verilog simulation.");
 ABSL_FLAG(std::optional<std::string>, simulator, std::nullopt,
           "Verilog simulator to use.");
