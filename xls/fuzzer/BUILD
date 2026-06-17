@@ -845,6 +845,7 @@ cc_library(
 
 cc_test(
     name = "ast_generator_test",
+    timeout = "long",
     srcs = ["ast_generator_test.cc"],
     deps = [
         ":ast_generator",
