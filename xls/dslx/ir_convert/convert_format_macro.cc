@@ -49,7 +49,7 @@ struct ConvertContext {
 };
 
 struct FormatFragment {
-  BValue predicate;
+  std::optional<BValue> predicate;
   std::vector<FormatStep> fmt_steps;
   std::vector<BValue> ir_args;
 };
@@ -62,9 +62,7 @@ BValue FalsePredicate(ConvertContext& ctx) {
   return ctx.fn_builder.Literal(UBits(/*value=*/0, /*bit_count=*/1));
 }
 
-FormatFragment EmptyFragment(ConvertContext& ctx) {
-  return FormatFragment{.predicate = TruePredicate(ctx)};
-}
+FormatFragment EmptyFragment() { return FormatFragment{}; }
 
 BValue AndPredicates(const BValue& lhs, const BValue& rhs,
                      ConvertContext& ctx) {
@@ -76,15 +74,26 @@ BValue AndPredicates(const BValue& lhs, const BValue& rhs,
   return ctx.fn_builder.And(lhs, rhs);
 }
 
+std::optional<BValue> AndPredicates(std::optional<BValue> lhs,
+                                    std::optional<BValue> rhs,
+                                    ConvertContext& ctx) {
+  if (!lhs.has_value()) {
+    return rhs;
+  } else if (!rhs.has_value()) {
+    return lhs;
+  }
+  return AndPredicates(*lhs, *rhs, ctx);
+}
+
 void AppendStep(std::vector<FormatFragment>& fragments, FormatStep step) {
   for (FormatFragment& fragment : fragments) {
     fragment.fmt_steps.push_back(step);
   }
 }
 
-std::vector<FormatFragment> CrossProduct(
-    absl::Span<const FormatFragment> lhs,
-    absl::Span<const FormatFragment> rhs, ConvertContext& ctx) {
+std::vector<FormatFragment> CrossProduct(absl::Span<const FormatFragment> lhs,
+                                         absl::Span<const FormatFragment> rhs,
+                                         ConvertContext& ctx) {
   std::vector<FormatFragment> result;
   result.reserve(lhs.size() * rhs.size());
   for (const FormatFragment& left : lhs) {
@@ -126,7 +135,7 @@ absl::StatusOr<std::vector<FormatFragment>> FlattenFromBits(
 
 absl::StatusOr<std::vector<FormatFragment>> FlattenTuple(
     const ValueFormatDescriptor& tfd, const BValue& v, ConvertContext& ctx) {
-  std::vector<FormatFragment> fragments = {EmptyFragment(ctx)};
+  std::vector<FormatFragment> fragments = {EmptyFragment()};
   AppendStep(fragments, "(");
   for (size_t i = 0; i < tfd.size(); ++i) {
     BValue item = ctx.fn_builder.TupleIndex(v, i);
@@ -146,7 +155,7 @@ absl::StatusOr<std::vector<FormatFragment>> FlattenTuple(
 
 absl::StatusOr<std::vector<FormatFragment>> FlattenTupleFromBits(
     const ValueFormatDescriptor& tfd, const BValue& bits, ConvertContext& ctx) {
-  std::vector<FormatFragment> fragments = {EmptyFragment(ctx)};
+  std::vector<FormatFragment> fragments = {EmptyFragment()};
   AppendStep(fragments, "(");
   XLS_ASSIGN_OR_RETURN(int64_t bit_offset, RequireFlatBitCount(tfd));
   for (size_t i = 0; i < tfd.size(); ++i) {
@@ -171,7 +180,7 @@ absl::StatusOr<std::vector<FormatFragment>> FlattenTupleFromBits(
 
 absl::StatusOr<std::vector<FormatFragment>> FlattenStruct(
     const ValueFormatDescriptor& sfd, const BValue& v, ConvertContext& ctx) {
-  std::vector<FormatFragment> fragments = {EmptyFragment(ctx)};
+  std::vector<FormatFragment> fragments = {EmptyFragment()};
   AppendStep(fragments, absl::StrCat(sfd.struct_name(), "{{"));
   for (size_t i = 0; i < sfd.size(); ++i) {
     if (i != 0) {
@@ -189,7 +198,7 @@ absl::StatusOr<std::vector<FormatFragment>> FlattenStruct(
 
 absl::StatusOr<std::vector<FormatFragment>> FlattenStructFromBits(
     const ValueFormatDescriptor& sfd, const BValue& bits, ConvertContext& ctx) {
-  std::vector<FormatFragment> fragments = {EmptyFragment(ctx)};
+  std::vector<FormatFragment> fragments = {EmptyFragment()};
   AppendStep(fragments, absl::StrCat(sfd.struct_name(), "{{"));
   XLS_ASSIGN_OR_RETURN(int64_t bit_offset, RequireFlatBitCount(sfd));
   for (size_t i = 0; i < sfd.size(); ++i) {
@@ -212,7 +221,7 @@ absl::StatusOr<std::vector<FormatFragment>> FlattenStructFromBits(
 
 absl::StatusOr<std::vector<FormatFragment>> FlattenArray(
     const ValueFormatDescriptor& afd, const BValue& v, ConvertContext& ctx) {
-  std::vector<FormatFragment> fragments = {EmptyFragment(ctx)};
+  std::vector<FormatFragment> fragments = {EmptyFragment()};
   AppendStep(fragments, "[");
   for (int64_t i = 0; i < afd.size(); ++i) {
     if (i != 0) {
@@ -230,7 +239,7 @@ absl::StatusOr<std::vector<FormatFragment>> FlattenArray(
 
 absl::StatusOr<std::vector<FormatFragment>> FlattenArrayFromBits(
     const ValueFormatDescriptor& afd, const BValue& bits, ConvertContext& ctx) {
-  std::vector<FormatFragment> fragments = {EmptyFragment(ctx)};
+  std::vector<FormatFragment> fragments = {EmptyFragment()};
   AppendStep(fragments, "[");
   XLS_ASSIGN_OR_RETURN(int64_t element_bit_count,
                        RequireFlatBitCount(afd.array_element_format()));
@@ -251,7 +260,7 @@ absl::StatusOr<std::vector<FormatFragment>> FlattenArrayFromBits(
 
 std::vector<FormatFragment> FlattenEnum(const ValueFormatDescriptor& efd,
                                         const BValue& v, ConvertContext& ctx) {
-  FormatFragment fragment = EmptyFragment(ctx);
+  FormatFragment fragment = EmptyFragment();
   // IR tracing cannot carry the value-to-name lookup table, so enums continue
   // to print their raw value after the nominal type prefix.
   fragment.fmt_steps.push_back(absl::StrCat(efd.enum_name(), "::"));
@@ -262,7 +271,7 @@ std::vector<FormatFragment> FlattenEnum(const ValueFormatDescriptor& efd,
 
 std::vector<FormatFragment> FlattenLeaf(const ValueFormatDescriptor& lfd,
                                         const BValue& v, ConvertContext& ctx) {
-  FormatFragment fragment = EmptyFragment(ctx);
+  FormatFragment fragment = EmptyFragment();
   fragment.fmt_steps.push_back(lfd.leaf_format());
   fragment.ir_args.push_back(v);
   return {std::move(fragment)};
@@ -296,8 +305,7 @@ absl::StatusOr<std::vector<FormatFragment>> FlattenSumFromParts(
                            RequireFlatBitCount(payload_format));
       active_payload_bit_count += payload_bit_count;
     }
-    if (active_payload_bit_count >
-        sfd.sum_payload_slot_bit_count().value()) {
+    if (active_payload_bit_count > sfd.sum_payload_slot_bit_count().value()) {
       return absl::InvalidArgumentError(absl::StrCat(
           "Variant payload does not fit in semantic sum shared slot for ",
           sfd.sum_name(), "::", variant.name()));
@@ -314,12 +322,11 @@ absl::StatusOr<std::vector<FormatFragment>> FlattenSumFromParts(
           XLS_ASSIGN_OR_RETURN(int64_t payload_bit_count,
                                RequireFlatBitCount(payload_format));
           bit_offset -= payload_bit_count;
-          BValue payload_bits =
-              ctx.fn_builder.BitSlice(payload_slot, bit_offset,
-                                      payload_bit_count);
-          XLS_ASSIGN_OR_RETURN(std::vector<FormatFragment> payload_fragments,
-                               FlattenFromBits(payload_format, payload_bits,
-                                               ctx));
+          BValue payload_bits = ctx.fn_builder.BitSlice(
+              payload_slot, bit_offset, payload_bit_count);
+          XLS_ASSIGN_OR_RETURN(
+              std::vector<FormatFragment> payload_fragments,
+              FlattenFromBits(payload_format, payload_bits, ctx));
           variant_fragments =
               CrossProduct(variant_fragments, payload_fragments, ctx);
           if (j + 1 != payload_formats.size()) {
@@ -342,12 +349,11 @@ absl::StatusOr<std::vector<FormatFragment>> FlattenSumFromParts(
           XLS_ASSIGN_OR_RETURN(int64_t payload_bit_count,
                                RequireFlatBitCount(payload_format));
           bit_offset -= payload_bit_count;
-          BValue payload_bits =
-              ctx.fn_builder.BitSlice(payload_slot, bit_offset,
-                                      payload_bit_count);
-          XLS_ASSIGN_OR_RETURN(std::vector<FormatFragment> payload_fragments,
-                               FlattenFromBits(payload_format, payload_bits,
-                                               ctx));
+          BValue payload_bits = ctx.fn_builder.BitSlice(
+              payload_slot, bit_offset, payload_bit_count);
+          XLS_ASSIGN_OR_RETURN(
+              std::vector<FormatFragment> payload_fragments,
+              FlattenFromBits(payload_format, payload_bits, ctx));
           variant_fragments =
               CrossProduct(variant_fragments, payload_fragments, ctx);
         }
@@ -441,8 +447,8 @@ absl::StatusOr<std::vector<FormatFragment>> FlattenFromBits(
       const int64_t payload_slot_bit_count =
           vfd.sum_payload_slot_bit_count().value();
       const int64_t tag_bit_count = vfd.sum_tag_bit_count().value();
-      BValue tag = ctx.fn_builder.BitSlice(bits, payload_slot_bit_count,
-                                           tag_bit_count);
+      BValue tag =
+          ctx.fn_builder.BitSlice(bits, payload_slot_bit_count, tag_bit_count);
       BValue payload_slot =
           ctx.fn_builder.BitSlice(bits, 0, payload_slot_bit_count);
       return FlattenSumFromParts(vfd, tag, payload_slot, ctx);
@@ -459,7 +465,9 @@ BValue OrPredicates(absl::Span<const FormatFragment> alternatives,
   std::vector<BValue> predicates;
   predicates.reserve(alternatives.size());
   for (const FormatFragment& alternative : alternatives) {
-    predicates.push_back(alternative.predicate);
+    predicates.push_back(alternative.predicate.has_value()
+                             ? *alternative.predicate
+                             : TruePredicate(ctx));
   }
   if (predicates.size() == 1) {
     return predicates.front();
@@ -477,7 +485,7 @@ absl::StatusOr<BValue> ConvertFormatMacro(const FormatMacro& node,
                                           const TypeInfo& current_type_info,
                                           BuilderBase& function_builder) {
   ConvertContext ctx{.fn_builder = function_builder};
-  std::vector<FormatFragment> alternatives = {EmptyFragment(ctx)};
+  std::vector<FormatFragment> alternatives = {EmptyFragment()};
 
   size_t next_argno = 0;
   for (size_t node_format_index = 0; node_format_index < node.format().size();
@@ -504,19 +512,26 @@ absl::StatusOr<BValue> ConvertFormatMacro(const FormatMacro& node,
   }
 
   BValue token = entry_token;
-  if (ctx.saw_sum) {
+  if (!ctx.saw_sum) {
+    XLS_RET_CHECK_EQ(alternatives.size(), 1);
+    const FormatFragment& fragment = alternatives.front();
+    return function_builder.Trace(token, control_predicate, fragment.ir_args,
+                                  fragment.fmt_steps, verbosity);
+  } else {
     BValue any_valid_alternative = OrPredicates(alternatives, ctx);
     BValue trace_is_inactive = function_builder.Not(control_predicate);
     BValue well_formed_or_inactive =
         function_builder.Or(trace_is_inactive, any_valid_alternative);
-    token = function_builder.Assert(
-        token, well_formed_or_inactive,
-        "Cannot trace malformed semantic sum value.");
+    token =
+        function_builder.Assert(token, well_formed_or_inactive,
+                                "Cannot trace malformed semantic sum value.");
   }
 
   for (const FormatFragment& alternative : alternatives) {
     BValue predicate =
-        AndPredicates(control_predicate, alternative.predicate, ctx);
+        alternative.predicate.has_value()
+            ? AndPredicates(control_predicate, *alternative.predicate, ctx)
+            : control_predicate;
     token = function_builder.Trace(token, predicate, alternative.ir_args,
                                    alternative.fmt_steps, verbosity);
   }
