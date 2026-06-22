@@ -4472,7 +4472,7 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
         name_def->span(),
         absl::StrFormat(
             "Semantic sum `%s` with a tag type annotation requires explicit "
-            "discriminants on every variant in Phase 1.",
+            "discriminants on every variant.",
             name_def->identifier()));
   }
 

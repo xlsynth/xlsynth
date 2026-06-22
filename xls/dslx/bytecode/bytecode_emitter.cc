@@ -1282,7 +1282,8 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandleNameDefTreeExpr(
             [&](SumVariantPayloadPattern* /*n*/)
                 -> absl::StatusOr<Bytecode::MatchArmItem> {
               return absl::UnimplementedError(
-                  "Semantic sum patterns require the Phase 1 runtime layer.");
+                  "Semantic sum patterns are not supported by the bytecode "
+                  "runtime.");
             },
             [&](RestOfTuple* n) -> absl::StatusOr<Bytecode::MatchArmItem> {
               return Bytecode::MatchArmItem::MakeRestOfTuple();
@@ -1662,7 +1663,7 @@ absl::Status BytecodeEmitter::HandleStructInstance(const StructInstance* node) {
 
 absl::Status BytecodeEmitter::HandleSumInstance(const SumInstance*) {
   return absl::UnimplementedError(
-      "Semantic sum execution requires the Phase 1 runtime layer.");
+      "Semantic sum execution is not supported by the bytecode runtime.");
 }
 
 absl::Status BytecodeEmitter::HandleSplatStructInstance(

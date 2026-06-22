@@ -2637,7 +2637,7 @@ TEST_F(ParserTest, SemanticSumRejectsImplicitDiscriminantsWithTagAnnotation) {
   EXPECT_THAT(Parse(kProgram),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        HasSubstr("with a tag type annotation requires explicit "
-                                 "discriminants on every variant in Phase 1")));
+                                 "discriminants on every variant")));
 }
 
 TEST_F(ParserTest, BareUnitEnumWithoutValuesIsStillRejected) {

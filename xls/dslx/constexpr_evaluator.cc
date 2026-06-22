@@ -519,8 +519,7 @@ absl::Status ConstexprEvaluator::HandleStructInstance(
 }
 
 absl::Status ConstexprEvaluator::HandleSumInstance(const SumInstance*) {
-  return absl::UnimplementedError(
-      "Semantic sum constants require the Phase 1 runtime layer.");
+  return absl::UnimplementedError("Semantic sum constants are not supported.");
 }
 
 absl::Status ConstexprEvaluator::HandleConditional(const Conditional* expr) {

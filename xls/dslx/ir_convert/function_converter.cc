@@ -1939,7 +1939,7 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
             },
             [&](SumVariantPayloadPattern*) -> absl::StatusOr<BValue> {
               return absl::UnimplementedError(
-                  "Semantic sum patterns require the Phase 1 lowering layer.");
+                  "Semantic sum patterns are not supported by IR conversion.");
             },
             [&](RestOfTuple* n) -> absl::StatusOr<BValue> {
               return Def(matcher, [&](const SourceInfo& loc) {
