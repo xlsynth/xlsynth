@@ -794,13 +794,6 @@ class AstCloner : public AstNodeVisitor {
     if (std::holds_alternative<const NameDef*>(n->name_def())) {
       const NameDef* old_name_def = std::get<const NameDef*>(n->name_def());
       auto it = old_to_new_.find(old_name_def);
-      if (it == old_to_new_.end() && old_name_def->definer() != nullptr &&
-          old_name_def->definer()->kind() == AstNodeKind::kProcMember) {
-        // Expression-level replacement can clone proc body references before
-        // the surrounding proc member declarations have been visited.
-        XLS_RETURN_IF_ERROR(ReplaceOrVisit(old_name_def->definer()));
-        it = old_to_new_.find(old_name_def);
-      }
       new_name_def = it == old_to_new_.end()
                          ? AnyNameDef{old_name_def}
                          : AnyNameDef{absl::down_cast<NameDef*>(it->second)};
@@ -838,10 +831,14 @@ class AstCloner : public AstNodeVisitor {
 
   absl::Status HandleProcMember(const ProcMember* n) override {
     XLS_RETURN_IF_ERROR(VisitChildren(n));
-    old_to_new_[n] = module(n)->Make<ProcMember>(
-        absl::down_cast<NameDef*>(old_to_new_.at(n->name_def())),
+    auto* new_name_def =
+        absl::down_cast<NameDef*>(old_to_new_.at(n->name_def()));
+    auto* new_proc_member = module(n)->Make<ProcMember>(
+        new_name_def,
         absl::down_cast<TypeAnnotation*>(old_to_new_.at(n->type_annotation())),
         n->strictness(), n->flow_control());
+    new_name_def->set_definer(new_proc_member);
+    old_to_new_[n] = new_proc_member;
     return absl::OkStatus();
   }
 
