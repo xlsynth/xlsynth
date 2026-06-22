@@ -298,8 +298,8 @@ enum MaybePoint {
 const X = MaybePoint::None;
 )",
       TypecheckFails(AllOf(
-          HasSubstr("Phase 1 semantic sum payload members must be bits-like, "
-                    "enum typed, or empty semantic sums"),
+          HasSubstr("Semantic sum payload members must be bits-like, enum "
+                    "typed, or empty semantic sums"),
           HasSubstr("constructor `Some`"), HasSubstr("Point"))));
 }
 
@@ -313,8 +313,8 @@ enum PairBox {
 const X = PairBox::Pair { xy: (u32:1, u32:2) };
 )",
       TypecheckFails(AllOf(
-          HasSubstr("Phase 1 semantic sum payload members must be bits-like, "
-                    "enum typed, or empty semantic sums"),
+          HasSubstr("Semantic sum payload members must be bits-like, enum "
+                    "typed, or empty semantic sums"),
           HasSubstr("constructor `Pair`"), HasSubstr("(uN[32], uN[32])"))));
 }
 
@@ -328,7 +328,7 @@ enum MaybeU32 : u3 {
 )",
       TypecheckFails(HasSubstr(
           "Semantic sum `MaybeU32` with a tag type annotation requires "
-          "explicit discriminants on every variant in Phase 1.")));
+          "explicit discriminants on every variant.")));
 }
 
 TEST(TypecheckV2Test,
@@ -438,7 +438,7 @@ fn f() -> () {
 }
 )",
       TypecheckFails(AllOf(HasSubstr("MaybeU32::Some"),
-                           HasSubstr("cannot be used as a value in Phase 1"))));
+                           HasSubstr("cannot be used as a value"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumMatchRejectedBeforePatternLayer) {
@@ -455,7 +455,8 @@ fn f(x: Option) -> u32 {
   }
 }
 )",
-      TypecheckFails(HasSubstr("require the Phase 1 pattern layer")));
+      TypecheckFails(
+          HasSubstr("Match expressions over semantic sums are not supported")));
 }
 
 TEST(TypecheckV2Test, ZeroMacroImplicitSemanticSumUsesFirstVariant) {
@@ -494,7 +495,8 @@ enum Option {
 const Y = zero!<(Option,)>();
 )",
       TypecheckFails(
-          HasSubstr("aggregate type containing a semantic sum in Phase 1")));
+          HasSubstr("aggregate types containing semantic sums are not "
+                    "supported")));
 }
 
 TEST(TypecheckV2Test, ZeroMacroArrayContainingSemanticSumFailsInPhase1) {
@@ -507,7 +509,8 @@ enum Option {
 const Y = zero!<Option[1]>();
 )",
       TypecheckFails(
-          HasSubstr("aggregate type containing a semantic sum in Phase 1")));
+          HasSubstr("aggregate types containing semantic sums are not "
+                    "supported")));
 }
 
 TEST(TypecheckV2Test, ZeroMacroStructContainingSemanticSumFailsInPhase1) {
@@ -523,7 +526,8 @@ struct Wrapper {
 const Y = zero!<Wrapper>();
 )",
       TypecheckFails(
-          HasSubstr("aggregate type containing a semantic sum in Phase 1")));
+          HasSubstr("aggregate types containing semantic sums are not "
+                    "supported")));
 }
 
 TEST(TypecheckV2Test, ZeroMacroExplicitSemanticSumWithoutZeroFails) {

@@ -711,8 +711,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       const SumVariantPayloadPattern* node) override {
     return TypeInferenceErrorStatus(
         node->span(), nullptr,
-        ": Semantic sum constructor patterns require the Phase 1 pattern "
-        "layer.",
+        ": Semantic sum constructor patterns are not supported.",
         file_table_);
   }
 
@@ -2346,8 +2345,8 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       return TypeInferenceErrorStatus(
           node->span(), nullptr,
           absl::Substitute(
-              "Non-unit constructor `$0` cannot be used as a value in "
-              "Phase 1; invoke it instead.",
+              "Non-unit constructor `$0` cannot be used as a value; invoke it "
+              "instead.",
               node->ToString()),
           file_table_);
     }

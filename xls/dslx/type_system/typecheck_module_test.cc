@@ -3566,8 +3566,7 @@ fn main(x: Option) {
   EXPECT_THAT(
       Typecheck(kProgram),
       StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("Cannot format an expression with semantic sum "
-                         "type in Phase 1")));
+               HasSubstr("Formatting semantic sum values is not supported")));
 }
 
 TEST_F(TypecheckV2Test, BadTraceFmtWithAggregateContainingSemanticSum) {
@@ -3590,8 +3589,7 @@ fn main(x: Wrapper) {
   EXPECT_THAT(
       Typecheck(kProgram),
       StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("Cannot format an expression with semantic sum "
-                         "type in Phase 1")));
+               HasSubstr("Formatting semantic sum values is not supported")));
 }
 
 TEST_F(TypecheckV2Test, BadTraceFmtWithUseOfFunction) {
@@ -4638,8 +4636,8 @@ fn main() -> u32 {
 }
 )"),
       StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("Cannot query bit_count for a type containing "
-                         "semantic sums in Phase 1")));
+               HasSubstr("Querying bit_count for types containing semantic "
+                         "sums is not supported")));
 }
 
 TEST_F(TypecheckV2Test, ElementCount) {
@@ -4688,8 +4686,8 @@ fn main() -> u32 {
 }
 )"),
       StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("Cannot query element_count for a type containing "
-                         "semantic sums in Phase 1")));
+               HasSubstr("Querying element_count for types containing "
+                         "semantic sums is not supported")));
 }
 
 TEST_F(TypecheckV2Test, ConfiguredValueOr) {

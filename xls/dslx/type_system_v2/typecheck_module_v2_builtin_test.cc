@@ -752,7 +752,7 @@ const Y = map([u32:1, u32:2], Option::Some);
 )",
       TypecheckFails(AllOf(
           HasSubstr("Option::Some"),
-          HasSubstr("cannot be used as a value in Phase 1"))));
+          HasSubstr("cannot be used as a value"))));
 }
 
 TEST(TypecheckV2BuiltinTest, Map) {

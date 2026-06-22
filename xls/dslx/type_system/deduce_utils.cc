@@ -351,8 +351,7 @@ absl::Status ValidateFormatMacroArgument(const Type& type, const Span& span,
                                          const FileTable& file_table) {
   if (TypeContainsSum(type)) {
     return TypeInferenceErrorStatus(
-        span, &type,
-        ": Cannot format an expression with semantic sum type in Phase 1",
+        span, &type, ": Formatting semantic sum values is not supported",
         file_table);
   }
   FormatMacroArgumentValidator validator(file_table, span);
@@ -647,8 +646,8 @@ absl::StatusOr<InterpValue> GetBitCountAsInterpValue(const Type* type) {
   }
   if (TypeContainsSum(*type)) {
     return absl::InvalidArgumentError(
-        "Cannot query bit_count for a type containing semantic sums in Phase "
-        "1");
+        "Querying bit_count for types containing semantic sums is not "
+        "supported.");
   }
   XLS_ASSIGN_OR_RETURN(TypeDim bit_count_ctd, type->GetTotalBitCount());
   XLS_ASSIGN_OR_RETURN(int64_t bit_count,
@@ -662,8 +661,8 @@ absl::StatusOr<InterpValue> GetElementCountAsInterpValue(const Type* type) {
   }
   if (TypeContainsSum(*type)) {
     return absl::InvalidArgumentError(
-        "Cannot query element_count for a type containing semantic sums in "
-        "Phase 1");
+        "Querying element_count for types containing semantic sums is not "
+        "supported.");
   }
   if (const auto* array_type = dynamic_cast<const ArrayType*>(type)) {
     XLS_ASSIGN_OR_RETURN(int64_t size, array_type->size().GetAsInt64());

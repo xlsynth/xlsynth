@@ -144,8 +144,8 @@ absl::Status ValidatePhase1SumPayloadMemberType(
   return TypeInferenceErrorStatusForAnnotation(
       member_annotation->span(), member_annotation,
       absl::Substitute(
-          "Phase 1 semantic sum payload members must be bits-like, enum typed, "
-          "or empty semantic sums; sum `$0` constructor `$1` has unsupported "
+          "Semantic sum payload members must be bits-like, enum typed, or "
+          "empty semantic sums; sum `$0` constructor `$1` has unsupported "
           "payload member type `$2`.",
           sum_def.identifier(), variant.identifier(), member_type.ToString()),
       file_table);
@@ -164,7 +164,7 @@ absl::Status ValidateSemanticSumDiscriminants(
     return TypeInferenceErrorStatusForAnnotation(
         sum_def.tag_type_annotation()->span(), sum_def.tag_type_annotation(),
         absl::Substitute(
-            "Phase 1 semantic sum `$0` may specify a tag type only when every "
+            "Semantic sum `$0` may specify a tag type only when every "
             "variant has an explicit discriminant.",
             sum_def.identifier()),
         file_table);
@@ -1463,8 +1463,7 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       if (matched_type.has_value() && TypeContainsSum(**matched_type)) {
         return TypeInferenceErrorStatus(
             match->span(), nullptr,
-            ": Match expressions over semantic sums require the Phase 1 "
-            "pattern layer.",
+            ": Match expressions over semantic sums are not supported.",
             file_table_);
       }
     }
