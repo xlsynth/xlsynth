@@ -134,7 +134,7 @@ class FlattenVisitor : public ValueFormatVisitor {
   }
   absl::Status HandleSum(const ValueFormatDescriptor& d) override {
     return absl::UnimplementedError(
-        "semantic sum formatting is not supported in Phase 1");
+        "Formatting semantic sum values is not supported");
   }
   absl::Status HandleTuple(const ValueFormatDescriptor& d) override {
     return FlattenTuple(d, ir_value_, ctx_);

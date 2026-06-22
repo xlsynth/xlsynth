@@ -252,8 +252,8 @@ class MakeValueVisitor : public TypeVisitor {
     if (aggregate_nesting_depth_ > 0) {
       return TypeInferenceErrorStatus(
           span_, &t,
-          "Cannot make a zero-value of an aggregate type containing a "
-          "semantic sum in Phase 1.",
+          "Zero values for aggregate types containing semantic sums are not "
+          "supported.",
           file_table());
     }
     XLS_ASSIGN_OR_RETURN(const SumTypeVariant* zero_variant,
