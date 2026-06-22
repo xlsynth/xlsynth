@@ -218,7 +218,7 @@ fn main() -> () {
                 nullptr, &events));
   EXPECT_THAT(
       events.GetTraceMessageStrings(),
-      ElementsAre("trace of x: <semantic sum value omitted in Phase 1>"));
+      ElementsAre("trace of x: <semantic sum value omitted>"));
   EXPECT_EQ(value, InterpValue::MakeUnit());
 }
 
@@ -231,7 +231,7 @@ TEST_F(BytecodeInterpreterTest, TraceChannelSemanticSumValueIsOpaqueInPhase1) {
       ChannelDirection::kOut, ValueFormatDescriptor(), /*redact_value=*/true);
   EXPECT_THAT(events.GetTraceMessageStrings(),
               ElementsAre("Sent data on channel `sum_channel`:\n  "
-                          "<semantic sum value omitted in Phase 1>"));
+                          "<semantic sum value omitted>"));
 }
 
 TEST_F(BytecodeInterpreterTest, TraceActsAsIdentity) {
@@ -2341,9 +2341,9 @@ fn doomed() {
   absl::StatusOr<InterpValue> value = Interpret(kProgram, "doomed");
   EXPECT_THAT(value.status(),
               StatusIs(absl::StatusCode::kInternal,
-                       AllOf(HasSubstr("lhs and rhs were not equal; values "
-                                       "containing semantic sums are not "
-                                       "formatted in Phase 1"),
+                       AllOf(HasSubstr("lhs and rhs were not equal; "
+                                       "formatting values containing semantic "
+                                       "sums is not supported"),
                              Not(HasSubstr("Option::Pair")),
                              Not(HasSubstr("rhs: u32:2")),
                              Not(HasSubstr("rhs: u32:3")))));
@@ -2366,8 +2366,8 @@ fn doomed() {
   absl::StatusOr<InterpValue> value = Interpret(kProgram, "doomed");
   EXPECT_THAT(value.status(),
               StatusIs(absl::StatusCode::kInternal,
-                       AllOf(HasSubstr("values containing semantic sums are "
-                                       "not formatted in Phase 1"),
+                       AllOf(HasSubstr("formatting values containing semantic "
+                                       "sums is not supported"),
                              Not(HasSubstr("first differing index")),
                              Not(HasSubstr("Option::Some")))));
 }
@@ -3165,8 +3165,8 @@ fn main() -> bool {
       Interpret(kProgram, "main", {}),
       StatusIs(absl::StatusCode::kInvalidArgument,
                testing::AllOf(
-                   HasSubstr("Phase 1 semantic sum payload members must be "
-                             "bits-like, enum typed, or empty semantic sums"),
+                   HasSubstr("Semantic sum payload members must be bits-like, "
+                             "enum typed, or empty semantic sums"),
                    HasSubstr("constructor `Wrapped`"),
                    HasSubstr("Inner"))));
 }

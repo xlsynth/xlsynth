@@ -411,8 +411,8 @@ absl::Status RunBuiltinAssertEq(const Bytecode& bytecode,
     std::string message;
     if (TypeContainsSemanticSum(*operand_type)) {
       message =
-          "\n  lhs and rhs were not equal; values containing semantic sums "
-          "are not formatted in Phase 1";
+          "\n  lhs and rhs were not equal; formatting values containing "
+          "semantic sums is not supported.";
     } else {
       XLS_ASSIGN_OR_RETURN(
           (const auto& [lhs_string, rhs_string]),

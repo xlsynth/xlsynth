@@ -493,7 +493,7 @@ proc tester_proc {
       Create(test_proc, options));
   XLS_ASSERT_OK(Run(*interpreter, options));
   constexpr std::string_view kOpaqueValue =
-      "<semantic sum value omitted in Phase 1>";
+      "<semantic sum value omitted>";
   EXPECT_THAT(
       GetProcInstance(*interpreter, "tester_proc:0")
           .value()

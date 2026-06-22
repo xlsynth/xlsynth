@@ -70,7 +70,7 @@ namespace xls::dslx {
 namespace {
 
 constexpr std::string_view kOpaqueSemanticSumValue =
-    "<semantic sum value omitted in Phase 1>";
+    "<semantic sum value omitted>";
 
 // Returns the given InterpValue formatted using the given format descriptor (if
 // it is not null).
