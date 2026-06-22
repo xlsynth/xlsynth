@@ -398,8 +398,8 @@ DslxTypeToVerilogManager::TypeDefinitionToVastType(
               },
               [&](SumDef* sum_def) -> absl::StatusOr<verilog::DataType*> {
                 return absl::UnimplementedError(absl::StrFormat(
-                    "TypeAnnotation SumDef %s not supported by "
-                    "DslxTypeToVerilogManager in phase 1",
+                    "Semantic sum type annotation %s is not supported by "
+                    "DslxTypeToVerilogManager",
                     sum_def->ToString()));
               },
           },

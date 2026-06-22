@@ -1005,7 +1005,7 @@ fn f(x: Option, y: Option) -> bool {
 
   EXPECT_THAT(package.DumpIr(),
               testing::HasSubstr(
-                  "Phase 1 semantic sum equality received a non-semantic "
+                  "Semantic sum equality received a non-semantic "
                   "value"));
   EXPECT_THAT(package.DumpIr(), testing::HasSubstr("__itok__test_module__f"));
 }
@@ -1044,7 +1044,7 @@ fn f(x: Option, y: Option) -> bool {
 
   EXPECT_THAT(package.DumpIr(),
               testing::HasSubstr(
-                  "Phase 1 semantic sum inequality received a non-semantic "
+                  "Semantic sum inequality received a non-semantic "
                   "value"));
   EXPECT_THAT(package.DumpIr(), testing::HasSubstr("__itok__test_module__f"));
 }
@@ -1084,7 +1084,7 @@ fn f(x: Option, y: Option) -> () {
 
   EXPECT_THAT(package.DumpIr(),
               testing::HasSubstr(
-                  "Phase 1 semantic sum assert_eq received a non-semantic "
+                  "Semantic sum assert_eq received a non-semantic "
                   "value"));
 }
 

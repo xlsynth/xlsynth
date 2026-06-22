@@ -1015,7 +1015,7 @@ absl::Status FunctionConverter::AssertPhase1SemanticSumValueIsWellFormed(
     return absl::OkStatus();
   }
   XLS_RET_CHECK(implicit_token_data_.has_value())
-      << "Converting a phase-1 semantic sum " << message_observer
+      << "Converting a semantic sum " << message_observer
       << " requires implicit-token calling convention.";
   XLS_RET_CHECK(implicit_token_data_->create_control_predicate != nullptr);
   XLS_ASSIGN_OR_RETURN(BValue is_well_formed,
@@ -1025,7 +1025,7 @@ absl::Status FunctionConverter::AssertPhase1SemanticSumValueIsWellFormed(
                                     is_well_formed);
   BValue assert_result_token = function_builder_->Assert(
       implicit_token_data_->entry_token, ok,
-      absl::StrFormat("Phase 1 semantic sum %s received a non-semantic value @ "
+      absl::StrFormat("Semantic sum %s received a non-semantic value @ "
                       "%s",
                       message_observer, span.ToString(file_table())),
       absl::StrCat("phase1_sum_", label_suffix));
