@@ -843,11 +843,12 @@ class AstCloner : public AstNodeVisitor {
     XLS_RETURN_IF_ERROR(VisitChildren(n));
     auto* new_name_def =
         absl::down_cast<NameDef*>(old_to_new_.at(n->name_def()));
-    old_to_new_[n] = module(n)->Make<ProcMember>(
+    auto* new_proc_member = module(n)->Make<ProcMember>(
         new_name_def,
         absl::down_cast<TypeAnnotation*>(old_to_new_.at(n->type_annotation())),
         n->strictness(), n->flow_control());
-    new_name_def->set_definer(old_to_new_.at(n));
+    new_name_def->set_definer(new_proc_member);
+    old_to_new_[n] = new_proc_member;
     return absl::OkStatus();
   }
 
