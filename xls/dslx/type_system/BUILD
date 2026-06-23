@@ -156,6 +156,7 @@ cc_library(
         "//xls/dslx:errors",
         "//xls/dslx:import_data",
         "//xls/dslx:interp_value",
+        "//xls/dslx:interp_value_utils",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:pos",
         "//xls/ir:bits",
@@ -163,6 +164,23 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:str_format",
+    ],
+)
+
+cc_test(
+    name = "type_zero_value_test",
+    srcs = ["type_zero_value_test.cc"],
+    deps = [
+        ":type",
+        ":type_zero_value",
+        "//xls/common:xls_gunit_main",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
+        "//xls/dslx/frontend:pos",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@googletest//:gtest",
     ],
 )
 
