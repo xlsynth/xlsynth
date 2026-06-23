@@ -40,7 +40,7 @@ SumType MakeOuterSumWithInhabitedNestedSumPayload(Module& module) {
   auto* inner_unit_name = module.Make<NameDef>(kFakeSpan, "InnerUnit", nullptr);
   auto* inner_unit =
       module.Make<SumVariant>(kFakeSpan, inner_unit_name,
-                              SumVariant::PayloadKind::kUnit,
+                              SumVariant::PayloadShape::kUnit,
                               std::vector<TypeAnnotation*>{},
                               std::vector<StructMemberNode*>{});
   auto* inner_def = module.Make<SumDef>(
@@ -55,7 +55,7 @@ SumType MakeOuterSumWithInhabitedNestedSumPayload(Module& module) {
   auto* wrapped_name = module.Make<NameDef>(kFakeSpan, "Wrapped", nullptr);
   auto* wrapped =
       module.Make<SumVariant>(kFakeSpan, wrapped_name,
-                              SumVariant::PayloadKind::kTuple,
+                              SumVariant::PayloadShape::kTuple,
                               std::vector<TypeAnnotation*>{
                                   module.Make<TypeRefTypeAnnotation>(
                                       kFakeSpan,
@@ -82,7 +82,8 @@ TEST(TypeZeroValueTest, RejectsNestedSumPayload) {
 
   EXPECT_THAT(MakeZeroValue(outer_type, import_data, Span::Fake()),
               StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("aggregate type containing a semantic sum")));
+                       HasSubstr("Zero values for aggregate types containing "
+                                 "semantic sums are not supported")));
 }
 
 }  // namespace

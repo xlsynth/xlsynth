@@ -59,17 +59,17 @@ SumType MakeMixedPayloadSumType(Module& module) {
 
   auto* none =
       module.Make<SumVariant>(kFakeSpan, none_name,
-                              SumVariant::PayloadKind::kUnit,
+                              SumVariant::PayloadShape::kUnit,
                               std::vector<TypeAnnotation*>{},
                               std::vector<StructMemberNode*>{});
   auto* byte =
       module.Make<SumVariant>(kFakeSpan, byte_name,
-                              SumVariant::PayloadKind::kTuple,
+                              SumVariant::PayloadShape::kTuple,
                               std::vector<TypeAnnotation*>{u8_type},
                               std::vector<StructMemberNode*>{});
   auto* wide =
       module.Make<SumVariant>(kFakeSpan, wide_name,
-                              SumVariant::PayloadKind::kTuple,
+                              SumVariant::PayloadShape::kTuple,
                               std::vector<TypeAnnotation*>{u16_type},
                               std::vector<StructMemberNode*>{});
   auto* sum_def = module.Make<SumDef>(
@@ -103,7 +103,7 @@ SumType MakeOuterSumWithInactiveEmptyPayloadType(Module& module) {
   auto* nothing_name = module.Make<NameDef>(kFakeSpan, "Nothing", nullptr);
   auto* wrapped =
       module.Make<SumVariant>(kFakeSpan, wrapped_name,
-                              SumVariant::PayloadKind::kTuple,
+                              SumVariant::PayloadShape::kTuple,
                               std::vector<TypeAnnotation*>{
                                   module.Make<TypeRefTypeAnnotation>(
                                       kFakeSpan,
@@ -112,7 +112,7 @@ SumType MakeOuterSumWithInactiveEmptyPayloadType(Module& module) {
                               std::vector<StructMemberNode*>{});
   auto* nothing =
       module.Make<SumVariant>(kFakeSpan, nothing_name,
-                              SumVariant::PayloadKind::kUnit,
+                              SumVariant::PayloadShape::kUnit,
                               std::vector<TypeAnnotation*>{},
                               std::vector<StructMemberNode*>{});
   auto* outer_def = module.Make<SumDef>(
@@ -147,12 +147,12 @@ SumType MakeOuterSumWithInactiveEmptyEnumPayloadType(Module& module) {
   auto* impossible_name = module.Make<NameDef>(kFakeSpan, "Impossible", nullptr);
   auto* unit =
       module.Make<SumVariant>(kFakeSpan, unit_name,
-                              SumVariant::PayloadKind::kUnit,
+                              SumVariant::PayloadShape::kUnit,
                               std::vector<TypeAnnotation*>{},
                               std::vector<StructMemberNode*>{});
   auto* impossible =
       module.Make<SumVariant>(kFakeSpan, impossible_name,
-                              SumVariant::PayloadKind::kTuple,
+                              SumVariant::PayloadShape::kTuple,
                               std::vector<TypeAnnotation*>{
                                   module.Make<TypeRefTypeAnnotation>(
                                       kFakeSpan,
@@ -208,7 +208,7 @@ SumType MakeEnumPayloadSumType(Module& module, EnumDef** enum_def_out) {
   auto* none_name = module.Make<NameDef>(kFakeSpan, "None", nullptr);
   auto* some =
       module.Make<SumVariant>(kFakeSpan, some_name,
-                              SumVariant::PayloadKind::kTuple,
+                              SumVariant::PayloadShape::kTuple,
                               std::vector<TypeAnnotation*>{
                                   module.Make<TypeRefTypeAnnotation>(
                                       kFakeSpan,
@@ -217,7 +217,7 @@ SumType MakeEnumPayloadSumType(Module& module, EnumDef** enum_def_out) {
                               std::vector<StructMemberNode*>{});
   auto* none =
       module.Make<SumVariant>(kFakeSpan, none_name,
-                              SumVariant::PayloadKind::kUnit,
+                              SumVariant::PayloadShape::kUnit,
                               std::vector<TypeAnnotation*>{},
                               std::vector<StructMemberNode*>{});
   auto* sum_def = module.Make<SumDef>(
@@ -379,12 +379,12 @@ TEST(InterpValueHelpersTest, CreateZeroSumValueFails) {
       module.GetOrCreateBuiltinNameDef(dslx::BuiltinType::kU32));
   auto* inner_none =
       module.Make<SumVariant>(kFakeSpan, inner_none_name,
-                              SumVariant::PayloadKind::kUnit,
+                              SumVariant::PayloadShape::kUnit,
                               std::vector<TypeAnnotation*>{},
                               std::vector<StructMemberNode*>{});
   auto* inner_some =
       module.Make<SumVariant>(kFakeSpan, inner_some_name,
-                              SumVariant::PayloadKind::kTuple,
+                              SumVariant::PayloadShape::kTuple,
                               std::vector<TypeAnnotation*>{u32_type},
                               std::vector<StructMemberNode*>{});
   auto* inner_def = module.Make<SumDef>(
@@ -405,12 +405,12 @@ TEST(InterpValueHelpersTest, CreateZeroSumValueFails) {
   auto* outer_none_name = module.Make<NameDef>(kFakeSpan, "Nothing", nullptr);
   auto* outer_wrap =
       module.Make<SumVariant>(kFakeSpan, outer_wrap_name,
-                              SumVariant::PayloadKind::kTuple,
+                              SumVariant::PayloadShape::kTuple,
                               std::vector<TypeAnnotation*>{u32_type},
                               std::vector<StructMemberNode*>{});
   auto* outer_none =
       module.Make<SumVariant>(kFakeSpan, outer_none_name,
-                              SumVariant::PayloadKind::kUnit,
+                              SumVariant::PayloadShape::kUnit,
                               std::vector<TypeAnnotation*>{},
                               std::vector<StructMemberNode*>{});
   auto* outer_def = module.Make<SumDef>(
@@ -517,7 +517,7 @@ TEST(InterpValueHelpersTest,
   auto* nothing_name = module.Make<NameDef>(kFakeSpan, "Nothing", nullptr);
   auto* wrapped =
       module.Make<SumVariant>(kFakeSpan, wrapped_name,
-                              SumVariant::PayloadKind::kTuple,
+                              SumVariant::PayloadShape::kTuple,
                               std::vector<TypeAnnotation*>{
                                   module.Make<TypeRefTypeAnnotation>(
                                       kFakeSpan,
@@ -526,7 +526,7 @@ TEST(InterpValueHelpersTest,
                               std::vector<StructMemberNode*>{});
   auto* nothing =
       module.Make<SumVariant>(kFakeSpan, nothing_name,
-                              SumVariant::PayloadKind::kUnit,
+                              SumVariant::PayloadShape::kUnit,
                               std::vector<TypeAnnotation*>{},
                               std::vector<StructMemberNode*>{});
   auto* outer_def = module.Make<SumDef>(
@@ -593,7 +593,7 @@ TEST(InterpValueHelpersTest, SignConvertValuePreservesSumEnumPayload) {
   auto* none_name = module.Make<NameDef>(kFakeSpan, "None", nullptr);
   auto* some =
       module.Make<SumVariant>(kFakeSpan, some_name,
-                              SumVariant::PayloadKind::kTuple,
+                              SumVariant::PayloadShape::kTuple,
                               std::vector<TypeAnnotation*>{
                                   module.Make<TypeRefTypeAnnotation>(
                                       kFakeSpan,
@@ -602,7 +602,7 @@ TEST(InterpValueHelpersTest, SignConvertValuePreservesSumEnumPayload) {
                               std::vector<StructMemberNode*>{});
   auto* none =
       module.Make<SumVariant>(kFakeSpan, none_name,
-                              SumVariant::PayloadKind::kUnit,
+                              SumVariant::PayloadShape::kUnit,
                               std::vector<TypeAnnotation*>{},
                               std::vector<StructMemberNode*>{});
   auto* sum_def = module.Make<SumDef>(

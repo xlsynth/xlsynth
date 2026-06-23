@@ -64,17 +64,17 @@ SumType MakeTuplePayloadSumType(Module& module) {
 
   auto* none =
       module.Make<SumVariant>(kFakeSpan, none_name,
-                              SumVariant::PayloadKind::kUnit,
+                              SumVariant::PayloadShape::kUnit,
                               std::vector<TypeAnnotation*>{},
                               std::vector<StructMemberNode*>{});
   auto* left =
       module.Make<SumVariant>(kFakeSpan, left_name,
-                              SumVariant::PayloadKind::kTuple,
+                              SumVariant::PayloadShape::kTuple,
                               std::vector<TypeAnnotation*>{u8_type},
                               std::vector<StructMemberNode*>{});
   auto* pair =
       module.Make<SumVariant>(kFakeSpan, pair_name,
-                              SumVariant::PayloadKind::kTuple,
+                              SumVariant::PayloadShape::kTuple,
                               std::vector<TypeAnnotation*>{u16_type, u32_type},
                               std::vector<StructMemberNode*>{});
   auto* sum_def = module.Make<SumDef>(
