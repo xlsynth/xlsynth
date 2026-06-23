@@ -237,8 +237,28 @@ BytecodeEmitter::EmitInternal(
 
   BytecodeEmitter emitter(import_data, type_info, caller_bindings,
                           channel_instance_allocator, options);
+  absl::flat_hash_map<std::string, int64_t> legacy_proc_member_slots;
   for (const NameDef* name_def : legacy_proc_members) {
-    emitter.namedef_to_slot_[name_def] = emitter.next_slotno_++;
+    int64_t slot_index = emitter.next_slotno_++;
+    emitter.namedef_to_slot_[name_def] = slot_index;
+    legacy_proc_member_slots[name_def->identifier()] = slot_index;
+  }
+  if (!legacy_proc_member_slots.empty()) {
+    XLS_ASSIGN_OR_RETURN(auto references, CollectReferencedUnder(f.body()));
+    for (const auto& [_, name_def] : references) {
+      if (emitter.namedef_to_slot_.contains(name_def)) {
+        continue;
+      }
+      auto* proc_member = dynamic_cast<ProcMember*>(name_def->definer());
+      if (proc_member == nullptr) {
+        continue;
+      }
+      auto slot = legacy_proc_member_slots.find(name_def->identifier());
+      if (slot == legacy_proc_member_slots.end()) {
+        continue;
+      }
+      emitter.namedef_to_slot_[name_def] = slot->second;
+    }
   }
   XLS_RETURN_IF_ERROR(emitter.Init(f));
   XLS_RETURN_IF_ERROR(f.body()->AcceptExpr(&emitter));
@@ -1713,9 +1733,11 @@ BytecodeEmitter::HandleNameRefInternal(const NameRef* node) {
 
 absl::StatusOr<std::variant<InterpValue, Bytecode::SlotIndex>>
 BytecodeEmitter::HandleNameDefInternal(const NameDef* node) {
-  std::optional<InterpValue> const_value = type_info_->GetConstExprOption(node);
-  if (const_value.has_value() && const_value->IsStateElementReference()) {
-    return *const_value;
+  if (node->owner() == type_info_->module()) {
+    std::optional<InterpValue> const_value = type_info_->GetConstExprOption(node);
+    if (const_value.has_value() && const_value->IsStateElementReference()) {
+      return *const_value;
+    }
   }
 
   AstNode* definer = node->definer();
