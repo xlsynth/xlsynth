@@ -2707,8 +2707,17 @@ TEST_F(ParserTest, SumRemainsValidIdentifierOutsideTypeDeclarations) {
   EXPECT_TRUE(module->GetFunction("f").has_value());
 }
 
-TEST_F(ParserTest, EmptyEnumWithTagAnnotationIsSemanticSum) {
+TEST_F(ParserTest, EmptyEnumWithTagAnnotationIsNumericEnum) {
   std::unique_ptr<Module> module = RoundTrip(R"(enum Never : u3 {
+})");
+  std::optional<ModuleMember*> maybe_member =
+      module->FindMemberWithName("Never");
+  ASSERT_TRUE(maybe_member.has_value());
+  EXPECT_TRUE(std::holds_alternative<EnumDef*>(*maybe_member.value()));
+}
+
+TEST_F(ParserTest, EmptyEnumWithoutTagAnnotationIsSemanticSum) {
+  std::unique_ptr<Module> module = RoundTrip(R"(enum Never {
 })");
   std::optional<ModuleMember*> maybe_member =
       module->FindMemberWithName("Never");
