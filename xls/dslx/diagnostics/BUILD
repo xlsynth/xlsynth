@@ -89,6 +89,8 @@ cc_test(
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
         "//xls/dslx:channel_direction",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:pos",
         "//xls/dslx/type_system:type",
         "@googletest//:gtest",
