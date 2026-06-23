@@ -287,6 +287,8 @@ std::string_view AstNodeKindToString(AstNodeKind kind) {
       return "string";
     case AstNodeKind::kStructInstance:
       return "struct instance";
+    case AstNodeKind::kSumInstance:
+      return "sum instance";
     case AstNodeKind::kSplatStructInstance:
       return "splat struct instance";
     case AstNodeKind::kTuplePattern:
@@ -337,12 +339,18 @@ std::string_view AstNodeKindToString(AstNodeKind kind) {
       return "all-ones macro";
     case AstNodeKind::kSlice:
       return "slice";
+    case AstNodeKind::kSumVariantPayloadPattern:
+      return "constructor-pattern";
     case AstNodeKind::kEnumDef:
       return "enum definition";
     case AstNodeKind::kStructDef:
       return "struct definition";
     case AstNodeKind::kStructMember:
       return "struct member";
+    case AstNodeKind::kSumDef:
+      return "sum definition";
+    case AstNodeKind::kSumVariant:
+      return "sum variant";
     case AstNodeKind::kProcDef:
       return "proc definition";
     case AstNodeKind::kQuickCheck:
@@ -394,6 +402,7 @@ AnyNameDef TypeDefinitionGetNameDef(const TypeDefinition& td) {
           [](StructDef* n) -> AnyNameDef { return n->name_def(); },
           [](ProcDef* n) -> AnyNameDef { return n->name_def(); },
           [](EnumDef* n) -> AnyNameDef { return n->name_def(); },
+          [](SumDef* n) -> AnyNameDef { return n->name_def(); },
           [](ColonRef* n) -> AnyNameDef {
             return GetSubjectNameDef(n->subject());
           },
@@ -420,6 +429,9 @@ absl::StatusOr<TypeDefinition> ToTypeDefinition(AstNode* node) {
   }
   if (node->kind() == AstNodeKind::kEnumDef) {
     return absl::down_cast<EnumDef*>(node);
+  }
+  if (node->kind() == AstNodeKind::kSumDef) {
+    return absl::down_cast<SumDef*>(node);
   }
   if (node->kind() == AstNodeKind::kColonRef) {
     return absl::down_cast<ColonRef*>(node);
@@ -1551,6 +1563,179 @@ std::string EnumDef::ToString() const {
   return result;
 }
 
+// -- class SumVariant
+
+SumVariant::SumVariant(Module* owner, Span span, NameDef* name_def,
+                       PayloadShape payload_shape,
+                       std::vector<TypeAnnotation*> tuple_members,
+                       std::vector<StructMemberNode*> struct_members,
+                       std::optional<Expr*> discriminant,
+                       std::optional<Span> payload_span,
+                       std::optional<Span> discriminant_equals_span)
+    : AstNode(owner),
+      span_(std::move(span)),
+      name_def_(name_def),
+      payload_shape_(payload_shape),
+      discriminant_(discriminant),
+      payload_span_(std::move(payload_span)),
+      discriminant_equals_span_(std::move(discriminant_equals_span)),
+      tuple_members_(std::move(tuple_members)),
+      struct_members_(std::move(struct_members)) {
+  if (payload_shape_ == PayloadShape::kUnit) {
+    CHECK(tuple_members_.empty());
+    CHECK(struct_members_.empty());
+  } else if (payload_shape_ == PayloadShape::kTuple) {
+    CHECK(struct_members_.empty());
+  } else {
+    CHECK_EQ(payload_shape_, PayloadShape::kStruct);
+    CHECK(tuple_members_.empty());
+  }
+  CHECK(!discriminant_.has_value() || *discriminant_ != nullptr);
+  CHECK(!discriminant_equals_span_.has_value() || discriminant_.has_value());
+}
+
+SumVariant::~SumVariant() = default;
+
+std::vector<AstNode*> SumVariant::GetChildren(bool want_types) const {
+  std::vector<AstNode*> results = {name_def_};
+  if (discriminant_.has_value()) {
+    results.push_back(*discriminant_);
+  }
+  if (!want_types) {
+    return results;
+  }
+  if (is_tuple()) {
+    for (TypeAnnotation* member : tuple_members_) {
+      results.push_back(member);
+    }
+  } else if (is_struct()) {
+    for (StructMemberNode* member : struct_members_) {
+      results.push_back(member);
+    }
+  }
+  return results;
+}
+
+std::string SumVariant::ToString() const {
+  if (is_unit()) {
+    return discriminant_.has_value()
+               ? absl::StrCat(identifier(), " = ", (*discriminant_)->ToString())
+               : identifier();
+  }
+  if (is_tuple()) {
+    std::string result = absl::StrCat(
+        identifier(), "(",
+        absl::StrJoin(tuple_members_, ", ",
+                      [](std::string* out, TypeAnnotation* member) {
+                        absl::StrAppend(out, member->ToString());
+                      }),
+        ")");
+    if (discriminant_.has_value()) {
+      absl::StrAppend(&result, " = ", (*discriminant_)->ToString());
+    }
+    return result;
+  }
+  if (struct_members_.empty()) {
+    return discriminant_.has_value()
+               ? absl::StrCat(identifier(),
+                              " {} = ", (*discriminant_)->ToString())
+               : absl::StrCat(identifier(), " {}");
+  }
+  std::string result = absl::StrCat(
+      identifier(), " { ",
+      absl::StrJoin(struct_members_, ", ",
+                    [](std::string* out, StructMemberNode* member) {
+                      absl::StrAppend(out, member->ToString());
+                    }),
+      " }");
+  if (discriminant_.has_value()) {
+    absl::StrAppend(&result, " = ", (*discriminant_)->ToString());
+  }
+  return result;
+}
+
+// -- class SumDef
+
+SumDef::SumDef(Module* owner, Span span, NameDef* name_def,
+               std::vector<ParametricBinding*> parametric_bindings,
+               std::vector<SumVariant*> variants, bool is_public,
+               TypeAnnotation* tag_type_annotation)
+    : AstNode(owner),
+      span_(std::move(span)),
+      name_def_(name_def),
+      tag_type_annotation_(tag_type_annotation),
+      parametric_bindings_(std::move(parametric_bindings)),
+      variants_(std::move(variants)),
+      is_public_(is_public) {}
+
+SumDef::~SumDef() = default;
+
+std::vector<AstNode*> SumDef::GetChildren(bool want_types) const {
+  std::vector<AstNode*> results = {name_def_};
+  if (want_types && tag_type_annotation_ != nullptr) {
+    results.push_back(tag_type_annotation_);
+  }
+  for (ParametricBinding* binding : parametric_bindings_) {
+    results.push_back(binding);
+  }
+  for (SumVariant* variant : variants_) {
+    results.push_back(variant);
+  }
+  return results;
+}
+
+bool SumDef::HasVariant(std::string_view target) const {
+  return std::any_of(variants_.begin(), variants_.end(),
+                     [&](const SumVariant* variant) {
+                       return variant->identifier() == target;
+                     });
+}
+
+std::optional<SumVariant*> SumDef::GetVariant(std::string_view target) {
+  for (SumVariant* variant : variants_) {
+    if (variant->identifier() == target) {
+      return variant;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<const SumVariant*> SumDef::GetVariant(
+    std::string_view target) const {
+  for (const SumVariant* variant : variants_) {
+    if (variant->identifier() == target) {
+      return variant;
+    }
+  }
+  return std::nullopt;
+}
+
+std::string SumDef::ToString() const {
+  std::string parametric_str;
+  if (!parametric_bindings_.empty()) {
+    parametric_str = absl::StrCat(
+        "<",
+        absl::StrJoin(parametric_bindings_, ", ",
+                      [](std::string* out, ParametricBinding* binding) {
+                        absl::StrAppend(out, binding->ToString());
+                      }),
+        ">");
+  }
+  const std::string tag_type =
+      tag_type_annotation_ == nullptr
+          ? ""
+          : absl::StrCat(" : ", tag_type_annotation_->ToString());
+  std::string result = absl::StrFormat(
+      "%s%senum %s%s%s {\n", MakeExternTypeAttr(extern_type_name_),
+      is_public_ ? "pub " : "", identifier(), parametric_str, tag_type);
+  for (const SumVariant* variant : variants_) {
+    absl::StrAppendFormat(&result, "%s%s,\n", kRustOneIndent,
+                          variant->ToString());
+  }
+  absl::StrAppend(&result, "}");
+  return result;
+}
+
 // -- class Instantiation
 
 Instantiation::Instantiation(Module* owner, Span span, Expr* callee,
@@ -2088,6 +2273,10 @@ std::vector<AstNode*> StructInstance::GetChildren(bool want_types) const {
 std::string StructInstance::ToStringInternal() const {
   std::string type_name = ToAstNode(struct_ref())->ToString();
 
+  if (GetUnorderedMembers().empty()) {
+    return absl::StrFormat("%s { }", type_name);
+  }
+
   std::string members_str = absl::StrJoin(
       GetUnorderedMembers(), ", ",
       [](std::string* out, const std::pair<std::string, Expr*>& member) {
@@ -2095,6 +2284,66 @@ std::string StructInstance::ToStringInternal() const {
                               member.second->ToString());
       });
   return absl::StrFormat("%s { %s }", type_name, members_str);
+}
+
+// -- class SumInstance
+
+SumInstance::SumInstance(
+    Module* owner, Span span, ColonRef* constructor_ref,
+    PayloadShape payload_shape, std::vector<Expr*> tuple_payload_args,
+    std::vector<StructPayloadFieldArg> struct_payload_field_args,
+    bool in_parens)
+    : Expr(owner, std::move(span), in_parens),
+      constructor_ref_(constructor_ref),
+      payload_shape_(payload_shape),
+      tuple_payload_args_(std::move(tuple_payload_args)),
+      struct_payload_field_args_(std::move(struct_payload_field_args)) {
+  if (payload_shape_ == PayloadShape::kUnit) {
+    CHECK(tuple_payload_args_.empty());
+    CHECK(struct_payload_field_args_.empty());
+  } else if (payload_shape_ == PayloadShape::kTuple) {
+    CHECK(struct_payload_field_args_.empty());
+  } else {
+    CHECK_EQ(payload_shape_, PayloadShape::kStruct);
+    CHECK(tuple_payload_args_.empty());
+  }
+}
+
+SumInstance::~SumInstance() = default;
+
+std::vector<AstNode*> SumInstance::GetChildren(bool want_types) const {
+  std::vector<AstNode*> results = {constructor_ref_};
+  for (Expr* arg : tuple_payload_args_) {
+    results.push_back(arg);
+  }
+  for (const auto& [_, arg] : struct_payload_field_args_) {
+    results.push_back(arg);
+  }
+  return results;
+}
+
+std::string SumInstance::ToStringInternal() const {
+  if (is_unit()) {
+    return constructor_ref_->ToString();
+  } else if (is_tuple()) {
+    return absl::StrCat(constructor_ref_->ToString(), "(",
+                        absl::StrJoin(tuple_payload_args_, ", ",
+                                      [](std::string* out, Expr* arg) {
+                                        absl::StrAppend(out, arg->ToString());
+                                      }),
+                        ")");
+  } else if (struct_payload_field_args_.empty()) {
+    return absl::StrCat(constructor_ref_->ToString(), " {}");
+  } else {
+    return absl::StrCat(
+        constructor_ref_->ToString(), " { ",
+        absl::StrJoin(struct_payload_field_args_, ", ",
+                      [](std::string* out, const StructPayloadFieldArg& arg) {
+                        absl::StrAppendFormat(out, "%s: %s", arg.first,
+                                              arg.second->ToString());
+                      }),
+        " }");
+  }
 }
 
 // -- class SplatStructInstance
@@ -2836,6 +3085,64 @@ std::string XlsTuple::ToStringInternal() const {
   return result;
 }
 
+// -- class SumVariantPayloadPattern
+
+SumVariantPayloadPattern::SumVariantPayloadPattern(
+    Module* owner, Span span, ColonRef* constructor_ref,
+    PayloadShape payload_shape, std::vector<PatternTree> tuple_payload_patterns,
+    std::vector<StructPayloadFieldPattern> struct_payload_field_patterns)
+    : AstNode(owner),
+      span_(std::move(span)),
+      constructor_ref_(constructor_ref),
+      payload_shape_(payload_shape),
+      tuple_payload_patterns_(std::move(tuple_payload_patterns)),
+      struct_payload_field_patterns_(std::move(struct_payload_field_patterns)) {
+  if (payload_shape_ == PayloadShape::kTuple) {
+    CHECK(struct_payload_field_patterns_.empty());
+  } else {
+    CHECK_EQ(payload_shape_, PayloadShape::kStruct);
+    CHECK(tuple_payload_patterns_.empty());
+  }
+}
+
+SumVariantPayloadPattern::~SumVariantPayloadPattern() = default;
+
+std::vector<AstNode*> SumVariantPayloadPattern::GetChildren(
+    bool want_types) const {
+  std::vector<AstNode*> results = {constructor_ref_};
+  for (const PatternTree& pattern : tuple_payload_patterns_) {
+    results.push_back(ToAstNode(pattern));
+  }
+  for (const auto& [_, pattern] : struct_payload_field_patterns_) {
+    results.push_back(ToAstNode(pattern));
+  }
+  return results;
+}
+
+std::string SumVariantPayloadPattern::ToString() const {
+  if (is_tuple()) {
+    return absl::StrCat(
+        constructor_ref_->ToString(), "(",
+        absl::StrJoin(tuple_payload_patterns_, ", ",
+                      [](std::string* out, const PatternTree& pattern) {
+                        absl::StrAppend(out, PatternToString(pattern));
+                      }),
+        ")");
+  }
+  if (struct_payload_field_patterns_.empty()) {
+    return absl::StrCat(constructor_ref_->ToString(), " {}");
+  }
+  return absl::StrCat(
+      constructor_ref_->ToString(), " { ",
+      absl::StrJoin(
+          struct_payload_field_patterns_, ", ",
+          [](std::string* out, const StructPayloadFieldPattern& pattern) {
+            absl::StrAppendFormat(out, "%s: %s", pattern.first,
+                                  PatternToString(pattern.second));
+          }),
+      " }");
+}
+
 // -- class TuplePattern
 
 TuplePattern::~TuplePattern() = default;
@@ -2861,17 +3168,19 @@ namespace {
 
 PatternLeaf PatternTreeToLeaf(const PatternTree& pattern) {
   return absl::visit(
-      Visitor{[](NameDef* node) -> PatternLeaf { return node; },
-              [](NameRef* node) -> PatternLeaf { return node; },
-              [](WildcardPattern* node) -> PatternLeaf { return node; },
-              [](Number* node) -> PatternLeaf { return node; },
-              [](ColonRef* node) -> PatternLeaf { return node; },
-              [](Range* node) -> PatternLeaf { return node; },
-              [](RestOfTuple* node) -> PatternLeaf { return node; },
-              [](TuplePattern* /*node*/) -> PatternLeaf {
-                LOG(FATAL) << "Tuple pattern is not a pattern leaf";
-                return static_cast<NameDef*>(nullptr);
-              }},
+      Visitor{
+          [](NameDef* node) -> PatternLeaf { return node; },
+          [](NameRef* node) -> PatternLeaf { return node; },
+          [](WildcardPattern* node) -> PatternLeaf { return node; },
+          [](Number* node) -> PatternLeaf { return node; },
+          [](ColonRef* node) -> PatternLeaf { return node; },
+          [](SumVariantPayloadPattern* node) -> PatternLeaf { return node; },
+          [](Range* node) -> PatternLeaf { return node; },
+          [](RestOfTuple* node) -> PatternLeaf { return node; },
+          [](TuplePattern* /*node*/) -> PatternLeaf {
+            LOG(FATAL) << "Tuple pattern is not a pattern leaf";
+            return static_cast<NameDef*>(nullptr);
+          }},
       pattern);
 }
 
@@ -2883,6 +3192,9 @@ ConstPatternLeaf PatternTreeToLeaf(const ConstPatternTree& pattern) {
           [](const WildcardPattern* node) -> ConstPatternLeaf { return node; },
           [](const Number* node) -> ConstPatternLeaf { return node; },
           [](const ColonRef* node) -> ConstPatternLeaf { return node; },
+          [](const SumVariantPayloadPattern* node) -> ConstPatternLeaf {
+            return node;
+          },
           [](const Range* node) -> ConstPatternLeaf { return node; },
           [](const RestOfTuple* node) -> ConstPatternLeaf { return node; },
           [](const TuplePattern* /*node*/) -> ConstPatternLeaf {
@@ -2977,6 +3289,18 @@ std::vector<NameDef*> GetPatternNameDefs(const PatternTree& pattern) {
   for (const PatternLeaf& leaf : FlattenPattern(pattern)) {
     if (std::holds_alternative<NameDef*>(leaf)) {
       result.push_back(std::get<NameDef*>(leaf));
+    } else if (std::holds_alternative<SumVariantPayloadPattern*>(leaf)) {
+      const SumVariantPayloadPattern* constructor =
+          std::get<SumVariantPayloadPattern*>(leaf);
+      for (const PatternTree& payload : constructor->tuple_payload_patterns()) {
+        std::vector<NameDef*> names = GetPatternNameDefs(payload);
+        result.insert(result.end(), names.begin(), names.end());
+      }
+      for (const auto& [_, payload] :
+           constructor->struct_payload_field_patterns()) {
+        std::vector<NameDef*> names = GetPatternNameDefs(payload);
+        result.insert(result.end(), names.begin(), names.end());
+      }
     }
   }
   return result;
@@ -2988,6 +3312,20 @@ std::vector<const NameDef*> GetPatternNameDefs(
   for (const ConstPatternLeaf& leaf : FlattenPattern(pattern)) {
     if (std::holds_alternative<const NameDef*>(leaf)) {
       result.push_back(std::get<const NameDef*>(leaf));
+    } else if (std::holds_alternative<const SumVariantPayloadPattern*>(leaf)) {
+      const SumVariantPayloadPattern* constructor =
+          std::get<const SumVariantPayloadPattern*>(leaf);
+      for (const PatternTree& payload : constructor->tuple_payload_patterns()) {
+        std::vector<const NameDef*> names =
+            GetPatternNameDefs(ToConstPatternTree(payload));
+        result.insert(result.end(), names.begin(), names.end());
+      }
+      for (const auto& [_, payload] :
+           constructor->struct_payload_field_patterns()) {
+        std::vector<const NameDef*> names =
+            GetPatternNameDefs(ToConstPatternTree(payload));
+        result.insert(result.end(), names.begin(), names.end());
+      }
     }
   }
   return result;
