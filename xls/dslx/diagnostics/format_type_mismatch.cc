@@ -55,6 +55,24 @@ struct MismatchData {
   std::vector<TupleMismatchData> tuple_extra;
 };
 
+std::string GetSumMemberPrefix(const SumType& parent, const Type& member) {
+  for (const SumTypeVariant& variant : parent.variants()) {
+    for (int64_t i = 0; i < variant.size(); ++i) {
+      if (&variant.GetMemberType(i) == &member) {
+        if (variant.is_struct()) {
+          return absl::StrFormat("%s.%s: ", variant.variant().identifier(),
+                                 variant.GetMemberName(i));
+        }
+        if (variant.size() == 1) {
+          return absl::StrCat(variant.variant().identifier(), ": ");
+        }
+        return absl::StrFormat("%s[%d]: ", variant.variant().identifier(), i);
+      }
+    }
+  }
+  return "";
+}
+
 // Populates the ref given as `mismatches` with the mismatches.
 //
 // Note: we could have this use the auto-formatting pretty printer to get more
@@ -79,6 +97,11 @@ class Callbacks : public ZipTypesCallbacks {
             [&](std::pair<const ProcType*, const ProcType*> p) {
               AddMatchedBoth(
                   absl::StrCat(p.first->nominal_type().identifier(), "{"));
+              return absl::OkStatus();
+            },
+            [&](std::pair<const SumType*, const SumType*> p) {
+              AddMatchedBoth(
+                  absl::StrCat(p.first->nominal_type().identifier(), " { "));
               return absl::OkStatus();
             },
             [&](std::pair<const ArrayType*, const ArrayType*> p) {
@@ -113,6 +136,10 @@ class Callbacks : public ZipTypesCallbacks {
               AddMatchedBoth(", ");
               return absl::OkStatus();
             },
+            [&](std::pair<const SumType*, const SumType*> p) {
+              AddMatchedBoth(", ");
+              return absl::OkStatus();
+            },
         },
         aggregates);
   }
@@ -131,6 +158,10 @@ class Callbacks : public ZipTypesCallbacks {
             [&](std::pair<const ProcType*, const ProcType*> p) {
               AddMatchedBoth(
                   absl::StrCat(p.first->nominal_type().identifier(), "{"));
+              return absl::OkStatus();
+            },
+            [&](std::pair<const SumType*, const SumType*> p) {
+              AddMatchedBoth(" }");
               return absl::OkStatus();
             },
             [&](std::pair<const ArrayType*, const ArrayType*> p) {
@@ -212,6 +243,10 @@ class Callbacks : public ZipTypesCallbacks {
         parent_struct != nullptr) {
       int64_t index = parent_struct->IndexOf(lhs).value();
       AddMatchedBoth(absl::StrCat(parent_struct->GetMemberName(index), ": "));
+    }
+    if (auto* parent_sum = dynamic_cast<const SumType*>(lhs_parent);
+        parent_sum != nullptr) {
+      AddMatchedBoth(GetSumMemberPrefix(*parent_sum, lhs));
     }
   }
 

@@ -15,11 +15,15 @@
 #include "xls/dslx/diagnostics/format_type_mismatch.h"
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/channel_direction.h"
+#include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/type_system/type.h"
 
@@ -32,6 +36,66 @@ namespace {
 #define ANSI_RED "\33[31m"
 #define ANSI_BOLD "\33[1m"
 #define ANSI_UNBOLD "\33[22m"
+
+TEST(FormatTypeMismatchTest, SumPayloadMismatch) {
+  const Span kFakeSpan = Span::Fake();
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  auto* option_name = module.Make<NameDef>(kFakeSpan, "Option", nullptr);
+  auto* none_name = module.Make<NameDef>(kFakeSpan, "None", nullptr);
+  auto* some_name = module.Make<NameDef>(kFakeSpan, "Some", nullptr);
+  auto* u8_type = module.Make<BuiltinTypeAnnotation>(
+      kFakeSpan, BuiltinType::kU8,
+      module.GetOrCreateBuiltinNameDef(dslx::BuiltinType::kU8));
+  auto* u16_type = module.Make<BuiltinTypeAnnotation>(
+      kFakeSpan, BuiltinType::kU16,
+      module.GetOrCreateBuiltinNameDef(dslx::BuiltinType::kU16));
+
+  auto* none = module.Make<SumVariant>(
+      kFakeSpan, none_name, SumVariant::PayloadShape::kUnit,
+      std::vector<TypeAnnotation*>{}, std::vector<StructMemberNode*>{});
+  auto* some = module.Make<SumVariant>(
+      kFakeSpan, some_name, SumVariant::PayloadShape::kTuple,
+      std::vector<TypeAnnotation*>{u8_type, u16_type},
+      std::vector<StructMemberNode*>{});
+  auto* option = module.Make<SumDef>(
+      kFakeSpan, option_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{none, some}, /*is_public=*/false);
+  option_name->set_definer(option);
+
+  std::vector<SumTypeVariant> lhs_variants;
+  lhs_variants.push_back(SumTypeVariant::MakeUnit(*none));
+  std::vector<std::unique_ptr<Type>> lhs_some_members;
+  lhs_some_members.push_back(BitsType::MakeU8());
+  lhs_some_members.push_back(std::make_unique<BitsType>(/*is_signed=*/false,
+                                                        /*size=*/16));
+  lhs_variants.push_back(
+      SumTypeVariant::MakeTuple(*some, std::move(lhs_some_members)));
+
+  std::vector<SumTypeVariant> rhs_variants;
+  rhs_variants.push_back(SumTypeVariant::MakeUnit(*none));
+  std::vector<std::unique_ptr<Type>> rhs_some_members;
+  rhs_some_members.push_back(BitsType::MakeU8());
+  rhs_some_members.push_back(BitsType::MakeU32());
+  rhs_variants.push_back(
+      SumTypeVariant::MakeTuple(*some, std::move(rhs_some_members)));
+
+  SumType lhs(*option, std::move(lhs_variants));
+  SumType rhs(*option, std::move(rhs_variants));
+  XLS_ASSERT_OK_AND_ASSIGN(std::string got,
+                           FormatTypeMismatch(lhs, rhs, file_table));
+
+  EXPECT_EQ(got,
+            ANSI_RESET "Mismatched elements " ANSI_BOLD "within" ANSI_UNBOLD
+                       " type:\n"                                 //
+                       "   uN[16]\n"                              //
+                       "vs uN[32]\n" ANSI_BOLD                    //
+                       "Overall" ANSI_UNBOLD " type mismatch:\n"  //
+            ANSI_RESET "   Option { Some[0]: uN[8], Some[1]: " ANSI_RED
+                       "uN[16]" ANSI_RESET " }\n"  //
+                       "vs Option { Some[0]: uN[8], Some[1]: " ANSI_RED
+                       "uN[32]" ANSI_RESET " }");
+}
 
 TEST(FormatTypeMismatchTest, ElementInTuple) {
   auto t0 = TupleType::Create3(BitsType::MakeU8(),
