@@ -413,6 +413,7 @@ def _xls_pass_registry_impl_helper(
             cc_toolchain = cc_toolchain,
             compilation_outputs = comp_out,
             linking_contexts = link_deps,
+            disallow_dynamic_library = True,
             alwayslink = True,
         )
         linking_ctxs.append(link_ctx)
@@ -456,6 +457,7 @@ def _xls_pass_registry_impl_helper(
         cc_toolchain = cc_toolchain,
         compilation_outputs = comp_out,
         linking_contexts = linking_ctxs,
+        disallow_dynamic_library = True,
         # This target links in all the passes.
         alwayslink = True,
     )
