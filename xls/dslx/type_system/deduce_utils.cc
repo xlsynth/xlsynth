@@ -79,6 +79,11 @@ class FormatMacroArgumentValidator : public TypeVisitor {
   absl::Status HandleStruct(const StructType& t) override {
     return absl::OkStatus();
   }
+  absl::Status HandleSum(const SumType& t) override {
+    return TypeInferenceErrorStatus(
+        span_, &t, ": Formatting semantic sum values is not supported",
+        file_table_);
+  }
   absl::Status HandleProc(const ProcType& t) override {
     return absl::OkStatus();
   }
