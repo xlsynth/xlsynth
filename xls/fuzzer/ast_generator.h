@@ -118,6 +118,7 @@ struct AstGeneratorOptions {
   // TODO(https://github.com/google/xls/issues/1138): Switch this to default
   // true.
   bool emit_zero_width_bits_types = false;
+  bool require_sum_type = false;
 
   static absl::StatusOr<AstGeneratorOptions> FromProto(
       const AstGeneratorOptionsProto& proto);
@@ -587,6 +588,20 @@ class AstGenerator {
   absl::StatusOr<TypedExpr> GeneratePartialProductDeterministicGroup(
       Context* ctx);
 
+  // Creates a boolean predicate backed by a semantic sum constructor use and
+  // appends the required let statements to `statements`.
+  absl::StatusOr<TypedExpr> GenerateRequiredSumPredicate(
+      Context* ctx, std::vector<Statement*>* statements);
+
+  TypeRefTypeAnnotation* MakeTypeRefTypeAnnotation(
+      TypeDefinition type_definition,
+      std::vector<ExprOrType> parametrics = {},
+      std::optional<const StructInstanceBase*> instantiator = std::nullopt) {
+    auto* type_ref = module_->Make<TypeRef>(fake_span_, std::move(type_definition));
+    return module_->Make<TypeRefTypeAnnotation>(
+        fake_span_, type_ref, std::move(parametrics), instantiator);
+  }
+
   // Creates and returns a type ref for the given type.
   //
   // As part of this process, a TypeAlias is created and added to the
@@ -597,11 +612,10 @@ class AstGenerator {
     NameDef* name_def = MakeNameDef(type_name);
     auto* type_alias = module_->Make<TypeAlias>(fake_span_, *name_def, *type,
                                                 /*is_public=*/false);
-    auto* type_ref = module_->Make<TypeRef>(fake_span_, type_alias);
     type_aliases_.push_back(type_alias);
-    type_bit_counts_[type_ref->ToString()] = GetTypeBitCount(type);
-    return module_->Make<TypeRefTypeAnnotation>(
-        fake_span_, type_ref, /*parametrics=*/std::vector<ExprOrType>{});
+    auto* type_ref_type = MakeTypeRefTypeAnnotation(type_alias);
+    type_bit_counts_[type_ref_type->ToString()] = GetTypeBitCount(type);
+    return type_ref_type;
   }
 
   // Generates a logical binary operation (e.g. and, xor, or).
@@ -755,9 +769,12 @@ class AstGenerator {
 
   // Types defined during module generation.
   std::vector<TypeAlias*> type_aliases_;
+  std::vector<SumDef*> sum_defs_;
 
   // Widths of the aggregate types, indexed by TypeAnnotation::ToString().
   absl::flat_hash_map<std::string, int64_t> type_bit_counts_;
+
+  bool generated_required_sum_ = false;
 
   // Set of constants defined during module generation.
   absl::btree_map<std::string, ConstantDef*> constants_;
