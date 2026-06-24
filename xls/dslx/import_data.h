@@ -167,6 +167,13 @@ class ImportData {
   absl::StatusOr<ModuleInfo*> Put(const ImportTokens& subject,
                                   std::unique_ptr<ModuleInfo> module_info);
 
+  // Retains a typechecked module whose visible replacement is subsequently
+  // stored via Put(). TIv2 corpus state holds pointers into typechecked module
+  // arenas, so superseded arenas must remain live until this ImportData dies.
+  void RetainSupersededModuleInfo(std::unique_ptr<ModuleInfo> module_info) {
+    superseded_module_infos_.push_back(std::move(module_info));
+  }
+
   // Returns the `TraitDeriver` to use for traits that are declared in the
   // builtins module.
   TraitDeriver* GetBuiltinTraitDeriver() const {
@@ -315,6 +322,7 @@ class ImportData {
 
   FileTable file_table_;
   absl::flat_hash_map<ImportTokens, std::unique_ptr<ModuleInfo>> modules_;
+  std::vector<std::unique_ptr<ModuleInfo>> superseded_module_infos_;
   absl::flat_hash_map<std::string, ModuleInfo*> path_to_module_info_;
   absl::flat_hash_map<Module*, std::unique_ptr<InterpBindings>>
       top_level_bindings_;

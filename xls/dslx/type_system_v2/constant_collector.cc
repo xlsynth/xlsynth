@@ -647,6 +647,21 @@ class Visitor : public AstNodeVisitorWithDefault {
 
   absl::Status HandleInvocation(const Invocation* invocation) override {
     if (!IsBuiltinFn(invocation->callee())) {
+      bool is_sum_constructor_invocation = false;
+      if (invocation->callee()->kind() == AstNodeKind::kColonRef) {
+        const auto* colon_ref =
+            absl::down_cast<const ColonRef*>(invocation->callee());
+        std::optional<const AstNode*> callee_target =
+            table_.GetColonRefTarget(colon_ref);
+        is_sum_constructor_invocation =
+            callee_target.has_value() &&
+            (*callee_target)->kind() == AstNodeKind::kSumVariant;
+      }
+      if (is_sum_constructor_invocation) {
+        XLS_RETURN_IF_ERROR(EvaluateAndNoteExpr(invocation));
+        return absl::OkStatus();
+      }
+
       std::optional<const Function*> f =
           table_.GetCalleeInCallerContext(invocation, parametric_context_);
       XLS_RET_CHECK(f.has_value());
