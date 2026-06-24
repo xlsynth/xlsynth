@@ -1313,18 +1313,6 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       }
     }
 
-    if (node->kind() == AstNodeKind::kMatch) {
-      const auto* match = absl::down_cast<const Match*>(node);
-      std::optional<Type*> matched_type = ti->GetItem(match->matched());
-      if (matched_type.has_value() && TypeContainsSemanticSum(**matched_type)) {
-        // TODO(dank-openai): Support match expressions over semantic sums.
-        return TypeInferenceErrorStatus(
-            match->span(), nullptr,
-            ": Match expressions over semantic sums are not supported yet.",
-            file_table_);
-      }
-    }
-
     XLS_RETURN_IF_ERROR(
         ValidateConcreteType(table_, parametric_context, node, type->get(), *ti,
                              warning_collector_, import_data_, file_table_));
@@ -1336,6 +1324,15 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       ti->SetItem(node, **type);
     }
 
+    if (node->kind() == AstNodeKind::kMatch) {
+      const auto* match = absl::down_cast<const Match*>(node);
+      std::optional<Type*> matched_type = ti->GetItem(match->matched());
+      std::optional<const Function*> caller = GetContainingFunction(node);
+      if (matched_type.has_value() && TypeContainsSemanticSum(**matched_type) &&
+          caller.has_value()) {
+        ti->NoteRequiresImplicitToken(**caller, true);
+      }
+    }
     if (IsComparisonRequiringImplicitToken(node, *ti)) {
       if (std::optional<const Function*> caller = GetContainingFunction(node);
           caller.has_value()) {
