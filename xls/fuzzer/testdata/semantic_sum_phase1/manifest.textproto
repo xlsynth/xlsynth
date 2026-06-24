@@ -1,0 +1,89 @@
+# Exact constructor-only exhaustive match shape from the IR-converter
+# regression.
+seeds {
+  seed_id: "source_exhaustive_constructor_match_without_wildcard"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  relative_path: "source/exhaustive_constructor_match_without_wildcard.x"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
+seeds {
+  seed_id: "source_aggregate_contained_sum_match"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  relative_path: "source/aggregate_contained_sum_match.x"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
+seeds {
+  seed_id: "source_semantic_sum_equality_observer"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  relative_path: "source/semantic_sum_equality_observer.x"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
+seeds {
+  seed_id: "source_semantic_sum_inequality_observer"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  relative_path: "source/semantic_sum_inequality_observer.x"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
+seeds {
+  seed_id: "source_semantic_sum_assert_eq_observer"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  relative_path: "source/semantic_sum_assert_eq_observer.x"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+  sample_args: "(bits[1]:0x0, (bits[32]:0x0)); (bits[1]:0x0, (bits[32]:0x0))"
+  sample_args: "(bits[1]:0x1, (bits[32]:0x0)); (bits[1]:0x1, (bits[32]:0x0))"
+  sample_args: "(bits[1]:0x1, (bits[32]:0x7fffffff)); (bits[1]:0x1, (bits[32]:0x7fffffff))"
+}
+seeds {
+  seed_id: "source_or_pattern_binding_nonfinal"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_NEGATIVE_MUTATION
+  relative_path: "source/or_pattern_binding_nonfinal.x"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_FAIL
+  expected_diagnostic_substr: "Cannot bind names in a match arm with multiple patterns"
+}
+seeds {
+  seed_id: "source_or_pattern_binding_final"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_NEGATIVE_MUTATION
+  relative_path: "source/or_pattern_binding_final.x"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_FAIL
+  expected_diagnostic_substr: "Cannot bind names in a match arm with multiple patterns"
+}
+seeds {
+  seed_id: "source_duplicate_sum_payload_field"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_NEGATIVE_MUTATION
+  relative_path: "source/duplicate_sum_payload_field.x"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_FAIL
+  expected_diagnostic_substr: "defined more than once"
+}
+seeds {
+  seed_id: "source_top_level_empty_enum_payload_match"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_INHABITANCE
+  relative_path: "source/top_level_empty_enum_payload_match.x"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
+seeds {
+  seed_id: "source_top_level_empty_sum_payload"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_INHABITANCE
+  relative_path: "source/top_level_empty_sum_payload.x"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
+seeds {
+  seed_id: "source_sample_runner_semantic_sum_argument"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_INHABITANCE
+  relative_path: "source/sample_runner_semantic_sum_argument.x"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
+seeds {
+  seed_id: "raw_boundary_valid_enum_payload"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_RAW_BOUNDARY
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  relative_path: "raw_boundary/enum_payload_sum_module.x"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+  sample_args: "(bits[2]:0x1, (bits[2]:0x1, bits[16]:0x0))"
+  raw_ir_value_text: "(bits[2]:0x1, (bits[2]:0x1, bits[16]:0x0))"
+}
