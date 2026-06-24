@@ -117,6 +117,7 @@ LastDelayingOp ComposeDelayingOps(LastDelayingOp op1, LastDelayingOp op2,
       .generate_proc = proto.generate_proc(),
       .emit_stateless_proc = proto.emit_stateless_proc(),
       .emit_zero_width_bits_types = proto.emit_zero_width_bits_types(),
+      .require_sum_type = proto.require_sum_type(),
   };
 }
 
@@ -130,6 +131,7 @@ AstGeneratorOptionsProto AstGeneratorOptions::ToProto() const {
   proto.set_generate_proc(generate_proc);
   proto.set_emit_stateless_proc(emit_stateless_proc);
   proto.set_emit_zero_width_bits_types(emit_zero_width_bits_types);
+  proto.set_require_sum_type(require_sum_type);
   return proto;
 }
 
@@ -2111,6 +2113,245 @@ TypeAnnotation* AstGenerator::GenerateType(
   return GenerateBitsType(max_width_bits_types);
 }
 
+absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
+    Context* ctx, std::vector<Statement*>* statements) {
+  XLS_RET_CHECK(!ctx->is_generating_proc);
+  XLS_RET_CHECK(statements != nullptr);
+
+  NameDef* sum_name_def = MakeNameDef(GenSym());
+  NameDef* unit_variant_name_def = MakeNameDef(GenSym());
+  NameDef* active_variant_name_def = MakeNameDef(GenSym());
+
+  std::vector<SumVariant*> variants;
+  variants.reserve(2);
+  variants.push_back(
+      module_->Make<SumVariant>(fake_span_, unit_variant_name_def,
+                                SumVariant::PayloadShape::kUnit,
+                                std::vector<TypeAnnotation*>{},
+                                std::vector<StructMemberNode*>{}));
+
+  std::optional<TypeAnnotation*> payload_type;
+  if (options_.max_width_bits_types > 0) {
+    int64_t payload_width = absl::Uniform<int64_t>(
+        absl::IntervalClosed, bit_gen_, 1,
+        std::min<int64_t>(options_.max_width_bits_types, 8));
+    payload_type = MakeTypeAnnotation(
+        /*is_signed=*/options_.emit_signed_types && RandomBool(0.5),
+        payload_width, /*use_xn=*/RandomBool(0.05));
+    variants.push_back(module_->Make<SumVariant>(
+        fake_span_, active_variant_name_def,
+        SumVariant::PayloadShape::kTuple,
+        std::vector<TypeAnnotation*>{*payload_type},
+        std::vector<StructMemberNode*>{}));
+  } else {
+    variants.push_back(
+        module_->Make<SumVariant>(fake_span_, active_variant_name_def,
+                                  SumVariant::PayloadShape::kTuple,
+                                  std::vector<TypeAnnotation*>{},
+                                  std::vector<StructMemberNode*>{}));
+  }
+
+  auto* sum_def =
+      module_->Make<SumDef>(fake_span_, sum_name_def,
+                            std::vector<ParametricBinding*>{},
+                            std::move(variants), /*is_public=*/false);
+  sum_name_def->set_definer(sum_def);
+  sum_defs_.push_back(sum_def);
+  generated_required_sum_ = true;
+
+  auto make_constructor_ref = [&](NameDef* variant_name_def) {
+    return module_->Make<ColonRef>(fake_span_, MakeTypeRefTypeAnnotation(sum_def),
+                                   variant_name_def->identifier());
+  };
+  auto make_sum_expr =
+      [&](NameDef* variant_name_def,
+          SumVariant::PayloadShape payload_shape,
+          std::optional<TypeAnnotation*> want_payload_type)
+      -> absl::StatusOr<Expr*> {
+    ColonRef* constructor_ref = make_constructor_ref(variant_name_def);
+    if (!want_payload_type.has_value()) {
+      if (payload_shape == SumVariant::PayloadShape::kTuple) {
+        return module_->Make<Invocation>(fake_span_, constructor_ref,
+                                         std::vector<Expr*>{});
+      }
+      return constructor_ref;
+    }
+    XLS_ASSIGN_OR_RETURN(TypedExpr payload_value,
+                         GenerateExprOfType(ctx, *want_payload_type));
+    return module_->Make<Invocation>(
+        fake_span_, constructor_ref, std::vector<Expr*>{payload_value.expr});
+  };
+  XLS_ASSIGN_OR_RETURN(Expr * active_sum_expr,
+                       make_sum_expr(active_variant_name_def,
+                                     sum_def->variants().back()->payload_shape(),
+                                     payload_type));
+
+  std::string sum_identifier = GenSym();
+  auto* sum_binding =
+      module_->Make<NameDef>(fake_span_, sum_identifier, active_sum_expr);
+  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+      fake_span_, module_->Make<NameDefTree>(fake_span_, sum_binding),
+      MakeTypeRefTypeAnnotation(sum_def), active_sum_expr,
+      /*is_const=*/false)));
+
+  auto* active_sum_ref = MakeNameRef(sum_binding);
+  XLS_ASSIGN_OR_RETURN(Expr * unit_sum_expr,
+                       make_sum_expr(unit_variant_name_def,
+                                     sum_def->variants().front()->payload_shape(),
+                                     std::nullopt));
+  auto append_assert_eq = [&](Expr* lhs, Expr* rhs) {
+    statements->push_back(module_->Make<Statement>(module_->Make<Invocation>(
+        fake_span_, MakeBuiltinNameRef("assert_eq"),
+        std::vector<Expr*>{lhs, rhs})));
+  };
+
+  auto* eq_expr = module_->Make<Binop>(fake_span_, BinopKind::kEq,
+                                       active_sum_ref, MakeNameRef(sum_binding),
+                                       fake_span_);
+  auto* eq_binding = module_->Make<NameDef>(fake_span_, GenSym(), eq_expr);
+  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+      fake_span_, module_->Make<NameDefTree>(fake_span_, eq_binding),
+      MakeBoolTypeAnnotation(), eq_expr,
+      /*is_const=*/false)));
+  append_assert_eq(MakeNameRef(eq_binding), MakeBool(true));
+
+  auto* ne_expr = module_->Make<Binop>(fake_span_, BinopKind::kNe,
+                                       MakeNameRef(sum_binding), unit_sum_expr,
+                                       fake_span_);
+  auto* ne_binding = module_->Make<NameDef>(fake_span_, GenSym(), ne_expr);
+  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+      fake_span_, module_->Make<NameDefTree>(fake_span_, ne_binding),
+      MakeBoolTypeAnnotation(), ne_expr,
+      /*is_const=*/false)));
+  append_assert_eq(MakeNameRef(ne_binding), MakeBool(true));
+
+  append_assert_eq(MakeNameRef(sum_binding), MakeNameRef(sum_binding));
+
+  auto* match_result_type =
+      MakeTypeAnnotation(/*is_signed=*/false, /*width=*/32,
+                         /*use_xn=*/false);
+  auto* nested_tuple_expr = module_->Make<XlsTuple>(
+      fake_span_, std::vector<Expr*>{MakeNameRef(sum_binding), MakeBool(true)},
+      /*has_trailing_comma=*/false);
+
+  std::vector<MatchArm*> match_arms;
+  if (payload_type.has_value()) {
+    auto* first_payload_name = MakeNameDef(GenSym());
+    auto* first_payload_pattern =
+        module_->Make<NameDefTree>(fake_span_, first_payload_name);
+    auto* first_constructor_pattern = module_->Make<SumVariantPayloadPattern>(
+        fake_span_, make_constructor_ref(active_variant_name_def),
+        SumVariantPayloadPattern::PayloadShape::kTuple,
+        std::vector<NameDefTree*>{first_payload_pattern},
+        std::vector<SumVariantPayloadPattern::StructPayloadFieldPattern>{});
+    match_arms.push_back(module_->Make<MatchArm>(
+        fake_span_,
+        std::vector<NameDefTree*>{module_->Make<NameDefTree>(
+            fake_span_,
+            std::vector<NameDefTree*>{
+                module_->Make<NameDefTree>(fake_span_,
+                                           first_constructor_pattern),
+                module_->Make<NameDefTree>(fake_span_, MakeBool(true)),
+            })},
+        module_->Make<Cast>(
+            fake_span_,
+            module_->Make<Binop>(fake_span_, BinopKind::kEq,
+                                 MakeNameRef(first_payload_name),
+                                 MakeNameRef(first_payload_name), fake_span_),
+            match_result_type)));
+
+    auto* second_payload_name = MakeNameDef(GenSym());
+    auto* second_payload_pattern =
+        module_->Make<NameDefTree>(fake_span_, second_payload_name);
+    auto* second_constructor_pattern = module_->Make<SumVariantPayloadPattern>(
+        fake_span_, make_constructor_ref(active_variant_name_def),
+        SumVariantPayloadPattern::PayloadShape::kTuple,
+        std::vector<NameDefTree*>{second_payload_pattern},
+        std::vector<SumVariantPayloadPattern::StructPayloadFieldPattern>{});
+    match_arms.push_back(module_->Make<MatchArm>(
+        fake_span_,
+        std::vector<NameDefTree*>{module_->Make<NameDefTree>(
+            fake_span_,
+            std::vector<NameDefTree*>{
+                module_->Make<NameDefTree>(fake_span_,
+                                           second_constructor_pattern),
+                module_->Make<NameDefTree>(fake_span_,
+                                           module_->Make<WildcardPattern>(
+                                               fake_span_)),
+            })},
+        module_->Make<Cast>(
+            fake_span_,
+            module_->Make<Binop>(fake_span_, BinopKind::kEq,
+                                 MakeNameRef(second_payload_name),
+                                 MakeNameRef(second_payload_name), fake_span_),
+            match_result_type)));
+  } else {
+    auto* active_constructor_pattern = module_->Make<SumVariantPayloadPattern>(
+        fake_span_, make_constructor_ref(active_variant_name_def),
+        SumVariantPayloadPattern::PayloadShape::kTuple,
+        std::vector<NameDefTree*>{},
+        std::vector<SumVariantPayloadPattern::StructPayloadFieldPattern>{});
+    match_arms.push_back(module_->Make<MatchArm>(
+        fake_span_,
+        std::vector<NameDefTree*>{module_->Make<NameDefTree>(
+            fake_span_,
+            std::vector<NameDefTree*>{
+                module_->Make<NameDefTree>(fake_span_,
+                                           active_constructor_pattern),
+                module_->Make<NameDefTree>(fake_span_,
+                                           module_->Make<WildcardPattern>(
+                                               fake_span_)),
+            })},
+        GenerateNumber(/*value=*/1, match_result_type)));
+  }
+  match_arms.push_back(module_->Make<MatchArm>(
+      fake_span_,
+      std::vector<NameDefTree*>{module_->Make<NameDefTree>(
+          fake_span_,
+          std::vector<NameDefTree*>{
+              module_->Make<NameDefTree>(fake_span_,
+                                         make_constructor_ref(
+                                             unit_variant_name_def)),
+              module_->Make<NameDefTree>(fake_span_,
+                                         module_->Make<WildcardPattern>(
+                                             fake_span_)),
+          })},
+      GenerateNumber(/*value=*/0, match_result_type)));
+
+  auto* match_expr =
+      module_->Make<Match>(fake_span_, nested_tuple_expr, match_arms);
+  auto* match_binding = module_->Make<NameDef>(fake_span_, GenSym(), match_expr);
+  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+      fake_span_, module_->Make<NameDefTree>(fake_span_, match_binding),
+      match_result_type, match_expr,
+      /*is_const=*/false)));
+  append_assert_eq(MakeNameRef(match_binding),
+                   GenerateNumber(/*value=*/1, match_result_type));
+
+  auto* observers_ok_expr = module_->Make<Binop>(
+      fake_span_, BinopKind::kAnd, MakeNameRef(eq_binding),
+      MakeNameRef(ne_binding),
+      fake_span_);
+  auto* match_is_expected_expr = module_->Make<Binop>(
+      fake_span_, BinopKind::kEq, MakeNameRef(match_binding),
+      GenerateNumber(/*value=*/1, match_result_type), fake_span_);
+  auto* predicate_expr = module_->Make<Binop>(
+      fake_span_, BinopKind::kAnd, observers_ok_expr, match_is_expected_expr,
+      fake_span_);
+  auto* predicate_binding =
+      module_->Make<NameDef>(fake_span_, GenSym(), predicate_expr);
+  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+      fake_span_, module_->Make<NameDefTree>(fake_span_, predicate_binding),
+      MakeBoolTypeAnnotation(), predicate_expr,
+      /*is_const=*/false)));
+  append_assert_eq(MakeNameRef(predicate_binding), MakeBool(true));
+
+  return TypedExpr{.expr = MakeNameRef(predicate_binding),
+                   .type = MakeBoolTypeAnnotation(),
+                   .last_delaying_op = LastDelayingOp::kNone,
+                   .min_stage = 1};
+}
+
 std::optional<TypedExpr> AstGenerator::ChooseEnvValueOptional(
     Env* env, const std::function<bool(const TypedExpr&)>& take) {
   if (take == nullptr) {
@@ -2797,7 +3038,26 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateBody(int64_t call_depth,
                                                  /*lower_limit=*/1);
 
   std::vector<Statement*> statements;
-  statements.reserve(body_size + 1);
+  statements.reserve(body_size + 4);
+  std::optional<TypedExpr> required_sum_predicate;
+  if (options_.require_sum_type && !ctx->is_generating_proc &&
+      call_depth == 0) {
+    XLS_ASSIGN_OR_RETURN(required_sum_predicate,
+                         GenerateRequiredSumPredicate(ctx, &statements));
+    if (options_.max_width_bits_types == 0) {
+      // The required-sum predicate already exercises the unit-only sum path in
+      // this configuration, so avoid generating extra expressions that may
+      // require bits-typed intermediates.
+      statements.push_back(module_->Make<Statement>(required_sum_predicate->expr));
+      auto* block = module_->Make<StatementBlock>(fake_span_, statements,
+                                                  /*trailing_semi=*/false);
+      return TypedExpr{.expr = block,
+                       .type = required_sum_predicate->type,
+                       .last_delaying_op =
+                           required_sum_predicate->last_delaying_op,
+                       .min_stage = required_sum_predicate->min_stage};
+    }
+  }
   for (int64_t i = 0; i < body_size; ++i) {
     XLS_ASSIGN_OR_RETURN(TypedExpr rhs, GenerateExpr(call_depth, ctx));
 
@@ -2835,6 +3095,23 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateBody(int64_t call_depth,
                        ctx->is_generating_proc
                            ? GenerateProcNextFunctionRetval(ctx)
                            : GenerateRetval(ctx));
+  if (required_sum_predicate.has_value()) {
+    std::string retval_identifier = GenSym();
+    auto* retval_binding =
+        module_->Make<NameDef>(fake_span_, retval_identifier, retval.expr);
+    statements.push_back(module_->Make<Statement>(module_->Make<Let>(
+        fake_span_, module_->Make<NameDefTree>(fake_span_, retval_binding),
+        retval.type, retval.expr,
+        /*is_const=*/false)));
+    retval = TypedExpr{
+        .expr = MakeSel(required_sum_predicate->expr, MakeNameRef(retval_binding),
+                        MakeNameRef(retval_binding)),
+        .type = retval.type,
+        .last_delaying_op = ComposeDelayingOps(
+            required_sum_predicate->last_delaying_op, retval.last_delaying_op),
+        .min_stage = std::max(required_sum_predicate->min_stage,
+                              retval.min_stage)};
+  }
   statements.push_back(module_->Make<Statement>(retval.expr));
 
   auto* block = module_->Make<StatementBlock>(fake_span_, statements,
@@ -3017,6 +3294,10 @@ absl::StatusOr<int64_t> AstGenerator::GenerateFunctionInModule(
     XLS_RETURN_IF_ERROR(
         module_->AddTop(item, /*make_collision_error=*/nullptr));
   }
+  for (auto* item : sum_defs_) {
+    XLS_RETURN_IF_ERROR(
+        module_->AddTop(item, /*make_collision_error=*/nullptr));
+  }
   for (auto& item : functions_) {
     XLS_RETURN_IF_ERROR(
         module_->AddTop(item, /*make_collision_error=*/nullptr));
@@ -3171,6 +3452,10 @@ absl::StatusOr<int64_t> AstGenerator::GenerateProcInModule(
     XLS_RETURN_IF_ERROR(
         module_->AddTop(item, /*make_collision_error=*/nullptr));
   }
+  for (auto* item : sum_defs_) {
+    XLS_RETURN_IF_ERROR(
+        module_->AddTop(item, /*make_collision_error=*/nullptr));
+  }
   for (auto& item : functions_) {
     XLS_RETURN_IF_ERROR(
         module_->AddTop(item, /*make_collision_error=*/nullptr));
@@ -3182,6 +3467,10 @@ absl::StatusOr<int64_t> AstGenerator::GenerateProcInModule(
 
 absl::StatusOr<AnnotatedModule> AstGenerator::Generate(
     const std::string& top_entity_name, const std::string& module_name) {
+  if (options_.generate_proc && options_.require_sum_type) {
+    return absl::InvalidArgumentError(
+        "require_sum_type is only supported for function generation.");
+  }
   module_ = std::make_unique<Module>(module_name, /*fs_path=*/std::nullopt,
                                      file_table_);
   int64_t min_stages = 1;
@@ -3190,6 +3479,8 @@ absl::StatusOr<AnnotatedModule> AstGenerator::Generate(
   } else {
     XLS_ASSIGN_OR_RETURN(min_stages, GenerateFunctionInModule(top_entity_name));
   }
+  XLS_RET_CHECK(!options_.require_sum_type || generated_required_sum_)
+      << "require_sum_type did not emit a semantic sum definition.";
   return AnnotatedModule{.module = std::move(module_),
                          .min_stages = min_stages};
 }
