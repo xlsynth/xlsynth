@@ -378,6 +378,12 @@ dslx_lang_test(name = "multiplies")
 
 dslx_lang_test(name = "match_sample")
 
+dslx_lang_test(
+    name = "semantic_sum_patterns",
+    compare = "none",
+    convert_to_ir = False,
+)
+
 dslx_lang_test(name = "match_const")
 
 dslx_lang_test(name = "match_multi")
