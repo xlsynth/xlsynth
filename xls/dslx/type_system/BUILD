@@ -178,8 +178,8 @@ cc_test(
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:pos",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:status_matchers",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:status_matchers",
         "@googletest//:gtest",
     ],
 )
