@@ -505,13 +505,16 @@ class LambdaRewriter : public AstNodeRecursiveVisitor {
     NameRef* struct_instance_parametric_nr = module->Make<NameRef>(
         parent_binding->span(), parent_binding->identifier(),
         parent_binding->name_def());
+    ExprOrType type_parametric = struct_type_parametric_nr;
     ExprOrType instance_parametric = struct_instance_parametric_nr;
     if (parent_binding->type_annotation()
             ->IsAnnotation<GenericTypeAnnotation>()) {
+      type_parametric = module->Make<TypeVariableTypeAnnotation>(
+          struct_type_parametric_nr, /*internal=*/true);
       instance_parametric = module->Make<TypeVariableTypeAnnotation>(
           struct_instance_parametric_nr);
     }
-    bindings->AddBinding(lambda_struct_binding, struct_type_parametric_nr,
+    bindings->AddBinding(lambda_struct_binding, type_parametric,
                          instance_parametric);
     parametric_nds.insert(parent_binding->name_def());
     for (const NameRef* original_name_ref : name_refs) {
@@ -545,7 +548,9 @@ class LambdaRewriter : public AstNodeRecursiveVisitor {
     TypeRef* instance_type_ref =
         module->Make<TypeRef>(original_nd->span(), type_def);
     bindings->AddBinding(
-        lambda_struct_binding, struct_type_parametric_nr,
+        lambda_struct_binding,
+        module->Make<TypeVariableTypeAnnotation>(struct_type_parametric_nr,
+                                                 /*internal=*/true),
         module->Make<TypeRefTypeAnnotation>(
             original_nd->span(), instance_type_ref, std::vector<ExprOrType>{}));
 
@@ -594,8 +599,11 @@ class LambdaRewriter : public AstNodeRecursiveVisitor {
     bindings->AddBinding(
         module->Make<ParametricBinding>(generic_name_def, gta,
                                         /*default_expr_or_type=*/std::nullopt),
-        module->Make<NameRef>(original_nd->span(),
-                              generic_name_def->identifier(), generic_name_def),
+        module->Make<TypeVariableTypeAnnotation>(
+            module->Make<NameRef>(original_nd->span(),
+                                  generic_name_def->identifier(),
+                                  generic_name_def),
+            /*internal=*/true),
         instance_annotation);
 
     // Binding for value of constant.
@@ -644,7 +652,8 @@ class LambdaRewriter : public AstNodeRecursiveVisitor {
     bindings->AddBinding(
         module->Make<ParametricBinding>(generic_name_def, gta,
                                         /*default_expr_or_type=*/std::nullopt),
-        generic_name_ref);
+        module->Make<TypeVariableTypeAnnotation>(generic_name_ref,
+                                                 /*internal=*/true));
 
     NameDef* struct_member_nd = module->Make<NameDef>(
         original_name_def->span(), original_name_def->identifier(),

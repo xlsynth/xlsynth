@@ -49,6 +49,7 @@
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/parametric_env.h"
+#include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/type_system_v2/type_annotation_utils.h"
 
@@ -327,6 +328,28 @@ class InferenceTableImpl : public InferenceTable {
     AddVariable(name_def,
                 std::make_unique<InferenceVariable>(name_def, name_ref, kind));
     XLS_RETURN_IF_ERROR(SetTypeAnnotation(name_def, binding.type_annotation()));
+    return name_ref;
+  }
+
+  absl::StatusOr<NameRef*> MakeParametricValueReference(
+      Module& module, const TypeAnnotation* annotation, const Type& type,
+      const InterpValue& value, TypeInfo& type_info) override {
+    // The table is shared by converters, so distinct values never share an
+    // identifier in a constexpr environment. '$' is not a source identifier
+    // character. These bookkeeping nodes have no corresponding source token.
+    std::string identifier =
+        absl::StrCat("$parametric_value_", parametric_value_count_++);
+    NameDef* name_def = module.Make<NameDef>(Span::None(), identifier,
+                                             /*definer=*/nullptr);
+    NameRef* name_ref =
+        module.Make<NameRef>(Span::None(), identifier, name_def);
+    XLS_RETURN_IF_ERROR(SetTypeAnnotation(name_def, annotation));
+    XLS_RETURN_IF_ERROR(SetTypeAnnotation(name_ref, annotation));
+    TypeInfo* root = type_info.GetRoot();
+    root->SetItem(name_def, type);
+    root->SetItem(name_ref, type);
+    root->NoteConstExpr(name_def, value);
+    root->NoteConstExpr(name_ref, value);
     return name_ref;
   }
 
@@ -746,7 +769,8 @@ class InferenceTableImpl : public InferenceTable {
                 absl::down_cast<const TypeAnnotation*>(new_node), flag);
           }
         }
-        if (old_node->kind() == AstNodeKind::kColonRef) {
+        if (old_node->kind() == AstNodeKind::kColonRef &&
+            new_node->kind() == AstNodeKind::kColonRef) {
           const auto* old_node_as_colon_ref =
               absl::down_cast<const ColonRef*>(old_node);
           std::optional<const AstNode*> target =
@@ -1019,6 +1043,7 @@ class InferenceTableImpl : public InferenceTable {
   // internally.
   absl::flat_hash_map<const NameDef*, std::unique_ptr<InferenceVariable>>
       variables_;
+  uint64_t parametric_value_count_ = 0;
   // The type annotations that have been associated with each inference
   // variable of type-kind.
   absl::flat_hash_map<const InferenceVariable*,
