@@ -67,11 +67,6 @@ void CollectLeafChannelReferences(const InterpValue& channel_or_array,
 absl::Status ValidateInterpValueMatchesType(const InterpValue& value,
                                             const Type& type);
 
-// Creates a shape-correct value for an inactive semantic-sum payload slot.
-// Unlike ordinary zero construction, this also supports empty enums and sums.
-absl::StatusOr<InterpValue> CreateInternalPlaceholderValueFromType(
-    const Type& type);
-
 absl::StatusOr<bool> IsCanonicalPlaceholderValue(const InterpValue& actual,
                                                  const InterpValue& expected,
                                                  const Type& type) {
@@ -512,12 +507,12 @@ absl::StatusOr<InterpValue> CreateValueFromType(const Type& type,
   }
 }
 
+}  // namespace
+
 absl::StatusOr<InterpValue> CreateInternalPlaceholderValueFromType(
     const Type& type) {
   return CreateValueFromType(type, TypeValuePolicy::kInternalPlaceholder);
 }
-
-}  // namespace
 
 absl::StatusOr<InterpValue> CreateZeroValueFromType(const Type& type) {
   return CreateValueFromType(type, TypeValuePolicy::kZero);

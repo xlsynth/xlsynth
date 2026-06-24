@@ -50,6 +50,11 @@ absl::StatusOr<InterpValue> CreateZeroValue(const InterpValue& value);
 // zero-value rule depends on discriminants and belongs to DSLX `zero!`.
 absl::StatusOr<InterpValue> CreateZeroValueFromType(const Type& type);
 
+// Creates a shape-correct value for an inactive semantic-sum payload slot.
+// Unlike ordinary zero construction, this also supports empty enums and sums.
+absl::StatusOr<InterpValue> CreateInternalPlaceholderValueFromType(
+    const Type& type);
+
 // Assembles a sum from payloads already constructed by the trusted zero-value
 // visitor. The caller must have produced each payload for its declared type;
 // skipping recursive revalidation keeps nested zero construction linear.
