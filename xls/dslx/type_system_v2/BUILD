@@ -212,6 +212,7 @@ cc_library(
         ":inference_table_utils",
         ":module_trait_manager",
         ":parametric_struct_instantiator",
+        ":parametric_type_annotation_utils",
         ":populate_table_visitor",
         ":simplified_type_annotation_cache",
         ":solve_for_parametrics",
@@ -436,10 +437,12 @@ cc_library(
     hdrs = ["typecheck_module_v2.h"],
     deps = [
         ":decorate_error",
+        ":import_utils",
         ":inference_table",
         ":inference_table_converter",
         ":inference_table_converter_impl",
         ":populate_table",
+        ":sum_instance_canonicalizer",
         ":trait_deriver",
         ":type_inference_error_handler",
         ":type_system_tracer",
@@ -450,6 +453,8 @@ cc_library(
         "//xls/dslx:warning_collector",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:ast_node",
+        "//xls/dslx/frontend:ast_node_visitor_with_default",
+        "//xls/dslx/frontend:bindings",
         "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:semantics_analysis",
         "//xls/dslx/type_system:type",
@@ -460,6 +465,24 @@ cc_library(
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",
+    ],
+)
+
+cc_library(
+    name = "sum_instance_canonicalizer",
+    srcs = ["sum_instance_canonicalizer.cc"],
+    hdrs = ["sum_instance_canonicalizer.h"],
+    deps = [
+        ":import_utils",
+        "//xls/common/status:ret_check",
+        "//xls/common/status:status_macros",
+        "//xls/dslx:import_data",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:ast_cloner",
+        "//xls/dslx/frontend:module",
+        "@abseil-cpp//absl/base",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/status:statusor",
     ],
 )
 
@@ -826,6 +849,27 @@ cc_library(
 )
 
 cc_library(
+    name = "parametric_type_annotation_utils",
+    srcs = ["parametric_type_annotation_utils.cc"],
+    hdrs = ["parametric_type_annotation_utils.h"],
+    deps = [
+        ":inference_table",
+        ":inference_table_utils",
+        ":populate_table_visitor",
+        ":type_annotation_utils",
+        "//xls/common/status:status_macros",
+        "//xls/dslx:import_data",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:ast_cloner",
+        "//xls/dslx/frontend:ast_utils",
+        "@abseil-cpp//absl/base",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/log:check",
+        "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_library(
     name = "type_annotation_utils",
     srcs = ["type_annotation_utils.cc"],
     hdrs = ["type_annotation_utils.h"],
@@ -1056,6 +1100,25 @@ cc_test(
 )
 
 cc_test(
+    name = "typecheck_module_v2_sum_test",
+    srcs = ["typecheck_module_v2_sum_test.cc"],
+    deps = [
+        ":matchers",
+        ":type_system_test_utils",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/type_system:typecheck_test_utils",
+        "@abseil-cpp//absl/base",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:status_matchers",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_test(
     name = "typecheck_module_v2_lambda_test",
     srcs = ["typecheck_module_v2_lambda_test.cc"],
     deps = [
@@ -1128,6 +1191,7 @@ cc_library(
         ":inference_table_converter",
         ":inference_table_utils",
         ":parametric_struct_instantiator",
+        ":parametric_type_annotation_utils",
         ":simplified_type_annotation_cache",
         ":type_annotation_filter",
         ":type_annotation_utils",
