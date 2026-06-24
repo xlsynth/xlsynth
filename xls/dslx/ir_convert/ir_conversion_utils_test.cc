@@ -100,22 +100,18 @@ class IrConversionUtilsSemanticSumTest : public ::testing::Test {
   std::unique_ptr<SumType> sum_type_;
 };
 
-TEST_F(IrConversionUtilsSemanticSumTest, SemanticSumLoweringIsRejected) {
-  EXPECT_THAT(
-      TypeToIr(&package_, *sum_type_, ParametricEnv{}),
-      ::absl_testing::StatusIs(
-          absl::StatusCode::kUnimplemented,
-          ::testing::HasSubstr("Semantic sum type lowering is not supported")));
+TEST_F(IrConversionUtilsSemanticSumTest, SemanticSumLoweringUsesDenseStorage) {
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Type * lowered,
+                           TypeToIr(&package_, *sum_type_, ParametricEnv{}));
+  EXPECT_EQ(lowered->ToString(), "(bits[1], ())");
 }
 
-TEST_F(IrConversionUtilsSemanticSumTest, AggregateContainingSumIsRejected) {
+TEST_F(IrConversionUtilsSemanticSumTest, AggregateContainingSumIsLowered) {
   std::unique_ptr<TupleType> aggregate =
       TupleType::Create2(BitsType::MakeU8(), sum_type_->CloneToUnique());
-  EXPECT_THAT(
-      TypeToIr(&package_, *aggregate, ParametricEnv{}),
-      ::absl_testing::StatusIs(
-          absl::StatusCode::kUnimplemented,
-          ::testing::HasSubstr("Semantic sum type lowering is not supported")));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Type * lowered,
+                           TypeToIr(&package_, *aggregate, ParametricEnv{}));
+  EXPECT_EQ(lowered->ToString(), "(bits[8], (bits[1], ()))");
 }
 
 }  // namespace xls::dslx
