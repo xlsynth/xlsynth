@@ -345,12 +345,6 @@ DslxTypeToVerilogManager::TypeDefinitionToVastType(
                     "DslxTypeToVerilogManager",
                     proc_def->ToString()));
               },
-              [&](SumDef* sum_def) -> absl::StatusOr<verilog::DataType*> {
-                return absl::UnimplementedError(absl::StrFormat(
-                    "TypeAnnotation SumDef %s not supported by "
-                    "DslxTypeToVerilogManager",
-                    sum_def->ToString()));
-              },
               [&](UseTreeEntry* use_tree_entry)
                   -> absl::StatusOr<verilog::DataType*> {
                 return absl::UnimplementedError(absl::StrFormat(
@@ -395,6 +389,12 @@ DslxTypeToVerilogManager::TypeDefinitionToVastType(
                 }
 
                 return vast_enum_def;
+              },
+              [&](SumDef* sum_def) -> absl::StatusOr<verilog::DataType*> {
+                return absl::UnimplementedError(absl::StrFormat(
+                    "Semantic sum type annotation %s is not supported by "
+                    "DslxTypeToVerilogManager",
+                    sum_def->ToString()));
               },
           },
           resolved_type_definition_source.definition));
