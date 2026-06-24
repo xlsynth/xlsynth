@@ -378,27 +378,12 @@ class TypeValidator : public AstNodeVisitorWithDefault {
 
     for (MatchArm* arm : node->arms()) {
       for (const PatternTree& pattern : arm->patterns()) {
-        bool has_constructor_pattern = false;
-        for (const PatternLeaf& leaf : FlattenPattern(pattern)) {
-          if (std::holds_alternative<SumVariantPayloadPattern*>(leaf)) {
-            has_constructor_pattern = true;
-            break;
-          }
-        }
-        if (has_constructor_pattern) {
-          return TypeInferenceErrorStatus(
-              GetPatternSpan(pattern), matched,
-              "Constructor patterns are not supported before semantic-sum "
-              "pattern typechecking is enabled.",
-              file_table_);
-        } else {
-          bool exhaustive_before = exhaustiveness_checker.IsExhaustive();
-          exhaustiveness_checker.AddPattern(pattern);
-          if (exhaustive_before) {
-            warning_collector_.Add(
-                GetPatternSpan(pattern), WarningKind::kAlreadyExhaustiveMatch,
-                "Match is already exhaustive before this pattern");
-          }
+        bool exhaustive_before = exhaustiveness_checker.IsExhaustive();
+        exhaustiveness_checker.AddPattern(pattern);
+        if (exhaustive_before) {
+          warning_collector_.Add(
+              GetPatternSpan(pattern), WarningKind::kAlreadyExhaustiveMatch,
+              "Match is already exhaustive before this pattern");
         }
       }
     }
