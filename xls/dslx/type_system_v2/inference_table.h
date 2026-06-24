@@ -41,6 +41,7 @@
 #include "xls/dslx/frontend/ast_node.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/parametric_env.h"
+#include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/type_system_v2/type_annotation_utils.h"
 
@@ -420,6 +421,15 @@ class InferenceTable {
   // `N` and its dependent types for each invocation context of `foo`.
   virtual absl::StatusOr<const NameRef*> DefineParametricVariable(
       const ParametricBinding& binding) = 0;
+
+  // Creates a context-free reference to an already validated, resolved
+  // parametric value for substitution into type/constexpr expressions. The
+  // annotation must have all prior parametric bindings substituted. Each call
+  // creates a distinct definition, visible from every descendant of type_info's
+  // root, with a name that cannot collide with source identifiers.
+  virtual absl::StatusOr<NameRef*> MakeParametricValueReference(
+      Module& module, const TypeAnnotation* annotation, const Type& type,
+      const InterpValue& value, TypeInfo& type_info) = 0;
 
   // Defines an invocation context for a parametric function, giving its
   // associated parametric variables distinct value expression storage for that
