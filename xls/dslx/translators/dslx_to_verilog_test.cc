@@ -206,7 +206,7 @@ pub enum MaybeWord {
     EXPECT_THAT(type_to_verilog.AddTypeForTypeDefinition(def, &import_data),
                 absl_testing::StatusIs(
                     absl::StatusCode::kUnimplemented,
-                    ::testing::HasSubstr("TypeAnnotation SumDef")));
+                    ::testing::HasSubstr("Semantic sum type annotation")));
   }
 }
 

@@ -345,12 +345,6 @@ DslxTypeToVerilogManager::TypeDefinitionToVastType(
                     "DslxTypeToVerilogManager",
                     proc_def->ToString()));
               },
-              [&](SumDef* sum_def) -> absl::StatusOr<verilog::DataType*> {
-                return absl::UnimplementedError(absl::StrFormat(
-                    "TypeAnnotation SumDef %s not supported by "
-                    "DslxTypeToVerilogManager",
-                    sum_def->ToString()));
-              },
               [&](UseTreeEntry* use_tree_entry)
                   -> absl::StatusOr<verilog::DataType*> {
                 return absl::UnimplementedError(absl::StrFormat(
