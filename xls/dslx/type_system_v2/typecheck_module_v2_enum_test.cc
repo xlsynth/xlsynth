@@ -213,7 +213,8 @@ fn f(x: E) -> u32 {
   }
 }
 )",
-      TypecheckFails(HasSubstr("Constructor pattern")));
+      TypecheckFails(
+          HasSubstr("Semantic sum constructor patterns are not supported")));
 }
 
 TEST(TypecheckV2Test, EnumInvalidNameRef) {

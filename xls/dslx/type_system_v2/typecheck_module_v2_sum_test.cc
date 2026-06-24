@@ -560,7 +560,7 @@ enum Never : u3 {}
 const Y = zero!<Never>();
 )",
       TypecheckFails(
-          HasSubstr("Sum type 'Never' does not have a known zero value.")));
+          HasSubstr("Enum type 'Never' does not have a known zero value.")));
 }
 
 TEST(TypecheckV2Test, ZeroMacroImportedSemanticSumUsesFirstVariant) {
