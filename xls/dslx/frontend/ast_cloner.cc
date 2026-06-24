@@ -878,6 +878,9 @@ class AstCloner : public AstNodeVisitor {
                                     new_parametric_bindings, new_body,
                                     n->is_public());
     new_name_def->set_definer(p);
+    new_body.config->set_proc(p);
+    new_body.next->set_proc(p);
+    new_body.init->set_proc(p);
     old_to_new_[n] = p;
     return absl::OkStatus();
   }
