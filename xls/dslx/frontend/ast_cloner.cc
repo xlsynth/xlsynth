@@ -882,6 +882,9 @@ class AstCloner : public AstNodeVisitor {
                                     new_parametric_bindings, new_body,
                                     n->is_public());
     new_name_def->set_definer(p);
+    new_body.config->set_proc(p);
+    new_body.next->set_proc(p);
+    new_body.init->set_proc(p);
     old_to_new_[n] = p;
     return absl::OkStatus();
   }
@@ -1686,6 +1689,9 @@ absl::StatusOr<std::unique_ptr<Module>> CloneModule(const Module& module,
                                                     CloneReplacer replacer) {
   auto new_module = std::make_unique<Module>(module.name(), module.fs_path(),
                                              *module.file_table());
+  if (std::optional<Span> span = module.GetSpan(); span.has_value()) {
+    new_module->set_span(*span);
+  }
   std::optional<Span> attribute_span = module.GetAttributeSpan();
   for (const ModuleAttribute& dir : module.attributes()) {
     new_module->AddAttribute(dir, attribute_span);
@@ -1727,6 +1733,9 @@ absl::StatusOr<std::unique_ptr<Module>> CloneModuleRemovingMembers(
 
   auto new_module = std::make_unique<Module>(module.name(), module.fs_path(),
                                              *module.file_table());
+  if (std::optional<Span> span = module.GetSpan(); span.has_value()) {
+    new_module->set_span(*span);
+  }
   std::optional<Span> attribute_span = module.GetAttributeSpan();
   for (const ModuleAttribute& attribute : module.attributes()) {
     new_module->AddAttribute(attribute, attribute_span);
