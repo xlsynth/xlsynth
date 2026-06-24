@@ -469,6 +469,24 @@ class ImportModuleWithTypeErrorTest(parameterized.TestCase):
     self.assertIn('match_not_exhaustive.x:16:5-19:6', stderr)
     self.assertIn('Match patterns are not exhaustive', stderr)
 
+  def test_semantic_sum_match_not_exhaustive(self):
+    stderr = self._run(
+        'xls/dslx/tests/errors/semantic_sum_match_not_exhaustive.x',
+    )
+    self.assertIn('semantic_sum_match_not_exhaustive.x:', stderr)
+    self.assertIn('Match patterns are not exhaustive', stderr)
+
+  def test_semantic_sum_struct_pattern_positional(self):
+    stderr = self._run(
+        'xls/dslx/tests/errors/semantic_sum_struct_pattern_positional.x',
+    )
+    self.assertIn('semantic_sum_struct_pattern_positional.x:', stderr)
+    self.assertIn(
+        'Struct constructor `Message::Data` does not support positional '
+        'payload patterns.',
+        stderr,
+    )
+
   def test_bad_coverpoint_name(self):
     stderr = self._run(
         'xls/dslx/tests/errors/coverpoint_bad_name.x',
