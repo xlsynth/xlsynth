@@ -3033,8 +3033,7 @@ fn doomed() -> Option {
   absl::StatusOr<InterpValue> value = Interpret(kProgram, "doomed");
   EXPECT_THAT(value.status(),
               StatusIs(absl::StatusCode::kInternal,
-                       AllOf(HasSubstr("<semantic sum value omitted in Phase "
-                                       "1>"),
+                       AllOf(HasSubstr("<semantic sum value omitted>"),
                              Not(HasSubstr("u32:42")))));
 }
 
