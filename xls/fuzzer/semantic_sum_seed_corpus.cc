@@ -17,10 +17,12 @@
 #include <filesystem>
 #include <set>
 #include <string>
+#include <string_view>
 
 #include "google/protobuf/text_format.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/ascii.h"
 #include "absl/strings/str_cat.h"
 #include "xls/common/file/filesystem.h"
 #include "xls/common/status/status_macros.h"
@@ -28,12 +30,29 @@
 namespace xls {
 namespace {
 
+bool IsSafeSeedIdPathComponent(std::string_view seed_id) {
+  if (seed_id == "." || seed_id == "..") {
+    return false;
+  }
+  for (char c : seed_id) {
+    if (!absl::ascii_isalnum(c) && c != '.' && c != '_' && c != '-') {
+      return false;
+    }
+  }
+  return true;
+}
+
 absl::Status ValidateSemanticSumSeedManifest(
     const fuzzer::SemanticSumSeedManifest& manifest) {
   std::set<std::string> seed_ids;
   for (const fuzzer::SemanticSumSeed& seed : manifest.seeds()) {
     if (seed.seed_id().empty()) {
       return absl::InvalidArgumentError("Semantic-sum seed is missing seed_id.");
+    }
+    if (!IsSafeSeedIdPathComponent(seed.seed_id())) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Semantic-sum seed `", seed.seed_id(),
+          "` must use a seed_id that is one safe path component."));
     }
     if (!seed_ids.insert(seed.seed_id()).second) {
       return absl::InvalidArgumentError(

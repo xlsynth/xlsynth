@@ -20,7 +20,10 @@
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "absl/status/status.h"
+#include "xls/common/file/filesystem.h"
 #include "xls/common/file/get_runfile_path.h"
+#include "xls/common/file/temp_directory.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
 
@@ -28,7 +31,9 @@ namespace xls {
 namespace {
 
 using ::testing::Contains;
+using ::testing::HasSubstr;
 using ::testing::SizeIs;
+using ::absl_testing::StatusIs;
 
 std::filesystem::path GetManifestPath() {
   return GetXlsRunfilePath(
@@ -65,6 +70,30 @@ TEST(SemanticSumSeedCorpusTest, LoadsManifestAndFiltersBySurface) {
   EXPECT_THAT(assert_eq_seed->sample_args(),
               Contains("(bits[1]:0x1, (bits[32]:0x7fffffff)); "
                        "(bits[1]:0x1, (bits[32]:0x7fffffff))"));
+}
+
+TEST(SemanticSumSeedCorpusTest, RejectsSeedIdsThatAreNotSafePathComponents) {
+  XLS_ASSERT_OK_AND_ASSIGN(TempDirectory temp_dir, TempDirectory::Create());
+  const std::filesystem::path manifest_path =
+      temp_dir.path() / "manifest.textproto";
+
+  for (std::string seed_id : {"../outside", "a/b", ".", ".."}) {
+    SCOPED_TRACE(seed_id);
+    XLS_ASSERT_OK(SetFileContents(
+        manifest_path,
+        "seeds {\n"
+        "  seed_id: \"" +
+            seed_id +
+            "\"\n"
+            "  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE\n"
+            "  relative_path: \"seed.x\"\n"
+            "  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS\n"
+            "}\n"));
+
+    EXPECT_THAT(LoadSemanticSumSeedManifest(manifest_path),
+                StatusIs(absl::StatusCode::kInvalidArgument,
+                         HasSubstr("safe path component")));
+  }
 }
 
 }  // namespace
