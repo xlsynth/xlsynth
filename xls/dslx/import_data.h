@@ -170,6 +170,12 @@ class ImportData {
   // Keeps the given module info alive for the duration of the import session,
   // preventing its AST nodes from being deleted.
   void KeepAlive(std::unique_ptr<ModuleInfo> module_info);
+  // Retains a typechecked module whose visible replacement is subsequently
+  // stored via Put(). TIv2 corpus state holds pointers into typechecked module
+  // arenas, so superseded arenas must remain live until this ImportData dies.
+  void RetainSupersededModuleInfo(std::unique_ptr<ModuleInfo> module_info) {
+    superseded_module_infos_.push_back(std::move(module_info));
+  }
 
   // Returns the `TraitDeriver` to use for traits that are declared in the
   // builtins module.
@@ -321,6 +327,7 @@ class ImportData {
   // Modules that were discarded after being imported. We keep them to
   // avoid use-after-free errors.
   std::vector<std::unique_ptr<ModuleInfo>> discarded_modules_;
+  std::vector<std::unique_ptr<ModuleInfo>> superseded_module_infos_;
   absl::flat_hash_map<std::string, ModuleInfo*> path_to_module_info_;
   absl::flat_hash_map<Module*, std::unique_ptr<InterpBindings>>
       top_level_bindings_;

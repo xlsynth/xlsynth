@@ -24,13 +24,13 @@
 #include <variant>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/base/casts.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
@@ -895,6 +895,13 @@ TEST(AstClonerTest, Procs) {
                                                     "the_module", file_table));
   XLS_ASSERT_OK_AND_ASSIGN(Proc * p, module->GetMemberOrError<Proc>("MyProc"));
   XLS_ASSERT_OK_AND_ASSIGN(AstNode * clone, CloneAst(p));
+  auto* cloned_proc = absl::down_cast<Proc*>(clone);
+  ASSERT_TRUE(cloned_proc->config().proc().has_value());
+  ASSERT_TRUE(cloned_proc->next().proc().has_value());
+  ASSERT_TRUE(cloned_proc->init().proc().has_value());
+  EXPECT_EQ(cloned_proc->config().proc().value(), cloned_proc);
+  EXPECT_EQ(cloned_proc->next().proc().value(), cloned_proc);
+  EXPECT_EQ(cloned_proc->init().proc().value(), cloned_proc);
   EXPECT_EQ(kProgram, clone->ToString());
   XLS_ASSERT_OK(VerifyClone(p, clone, *module->file_table()));
 }
@@ -2487,6 +2494,8 @@ fn main() -> u32 {
   const std::array<const AstNode*, 1> removed = {const_drop};
   XLS_ASSERT_OK_AND_ASSIGN(auto clone,
                            CloneModuleRemovingMembers(*module, removed));
+  ASSERT_TRUE(module->GetSpan().has_value());
+  EXPECT_EQ(clone->GetSpan(), module->GetSpan());
   EXPECT_THAT(clone->ToString(), HasSubstr("const CONST_KEEP"));
   EXPECT_THAT(clone->ToString(), Not(HasSubstr("CONST_DROP")));
   EXPECT_THAT(clone->GetConstantDef("CONST_KEEP"),
@@ -2714,6 +2723,8 @@ fn unwrap_or_sum(x: Option) -> u32 {
       ParseModule(kProgram, "fake_path.x", "the_module", file_table));
   XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> clone,
                            CloneModule(*module.get()));
+  ASSERT_TRUE(module->GetSpan().has_value());
+  EXPECT_EQ(clone->GetSpan(), module->GetSpan());
   EXPECT_EQ(kExpected, clone->ToString());
   XLS_ASSERT_OK(VerifyClone(module.get(), clone.get(), file_table));
 }
