@@ -109,9 +109,11 @@ absl::StatusOr<TypecheckedModule> TypecheckModule(
     trait_deriver = import_data->GetBuiltinTraitDeriver();
   }
 
-  std::string_view module_name = module->name();
+  std::string module_name = module->name();
 
   WarningCollector warnings(import_data->enabled_warnings());
+  XLS_ASSIGN_OR_RETURN(ImportTokens subject,
+                       ImportTokens::FromString(module_name));
 
   std::unique_ptr<SemanticsAnalysis> semantics_analysis =
       std::make_unique<SemanticsAnalysis>();
@@ -145,13 +147,10 @@ absl::StatusOr<TypecheckedModule> TypecheckModule(
     }
   }
 
-  TypeInfo* type_info = module_info->type_info();
-  XLS_ASSIGN_OR_RETURN(ImportTokens subject,
-                       ImportTokens::FromString(module_name));
-  XLS_ASSIGN_OR_RETURN(ModuleInfo * stored_info,
+  XLS_ASSIGN_OR_RETURN(ModuleInfo * stored,
                        import_data->Put(subject, std::move(module_info)));
-  return TypecheckedModule{.module = &stored_info->module(),
-                           .type_info = type_info,
+  return TypecheckedModule{.module = &stored->module(),
+                           .type_info = stored->type_info(),
                            .warnings = std::move(warnings)};
 }
 
