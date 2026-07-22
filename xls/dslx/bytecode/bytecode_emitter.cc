@@ -176,11 +176,13 @@ std::optional<ValueFormatDescriptor> GetFormatDescriptorFromNumber(
 
 BytecodeEmitter::BytecodeEmitter(
     ImportData* import_data, const TypeInfo* type_info,
+    const Module* current_module,
     const std::optional<ParametricEnv>& caller_bindings,
     std::optional<absl::FunctionRef<int64_t()>> channel_instance_allocator,
     const BytecodeEmitterOptions& options)
     : import_data_(import_data),
       type_info_(type_info),
+      current_module_(current_module),
       caller_bindings_(caller_bindings),
       channel_instance_allocator_(channel_instance_allocator),
       options_(options) {}
@@ -235,7 +237,7 @@ BytecodeEmitter::EmitInternal(
     const BytecodeEmitterOptions& options) {
   XLS_RET_CHECK(type_info != nullptr);
 
-  BytecodeEmitter emitter(import_data, type_info, caller_bindings,
+  BytecodeEmitter emitter(import_data, type_info, f.owner(), caller_bindings,
                           channel_instance_allocator, options);
   absl::flat_hash_map<std::string, int64_t> legacy_proc_member_slots;
   for (const NameDef* name_def : legacy_proc_members) {
@@ -1744,7 +1746,7 @@ BytecodeEmitter::HandleNameRefInternal(const NameRef* node) {
 
 absl::StatusOr<std::variant<InterpValue, Bytecode::SlotIndex>>
 BytecodeEmitter::HandleNameDefInternal(const NameDef* node) {
-  if (node->owner() == type_info_->module()) {
+  if (node->owner() == current_module_) {
     std::optional<InterpValue> const_value = type_info_->GetConstExprOption(node);
     if (const_value.has_value() && const_value->IsStateElementReference()) {
       return *const_value;
