@@ -295,7 +295,8 @@ BytecodeEmitter::EmitExpression(
     const absl::flat_hash_map<std::string, InterpValue>& env,
     const std::optional<ParametricEnv>& caller_bindings,
     const BytecodeEmitterOptions& options) {
-  BytecodeEmitter emitter(import_data, type_info, caller_bindings,
+  BytecodeEmitter emitter(import_data, type_info, expr->owner(),
+                          caller_bindings,
                           /*channel_instance_allocator=*/std::nullopt, options);
 
   std::vector<std::pair<const NameRef*, const NameDef*>> references;
