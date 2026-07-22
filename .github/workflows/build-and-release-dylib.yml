@@ -34,8 +34,9 @@ jobs:
 
     - name: Build for arm64
       run: |
-        wget -q https://github.com/bazelbuild/bazel/releases/download/7.7.1/bazel-7.7.1-darwin-arm64
-        mv bazel-7.7.1-darwin-arm64 bazel-arm64
+        BAZEL_VERSION="$(cat .bazelversion)"
+        wget -q "https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-darwin-arm64"
+        mv "bazel-${BAZEL_VERSION}-darwin-arm64" bazel-arm64
         chmod +x bazel-arm64
         ./bazel-arm64 info
         ./bazel-arm64 test -c opt --host_cpu=darwin_arm64 --action_env=MACOSX_DEPLOYMENT_TARGET --macos_minimum_os=11.0 --cxxopt="-std=c++20" --host_cxxopt="-std=c++20" //xls/public:test_c_api_symbols
