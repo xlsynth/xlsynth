@@ -12,6 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Covers value generation for a fixed partially inhabited semantic sum:
+// Unit is inhabited and Impossible(Empty) is not. FUZZ_TEST varies an
+// arbitrary 64-bit generator seed and a closed selector domain {0, 1, 2};
+// selectors choose the root sum, tuple(sum, u8), or array[2] of sums.
+//
+// The property validates that generated values select only inhabited variants
+// and that nested leaves round-trip through raw IR. It does not synthesize
+// arbitrary DSLX declarations, malformed raw encodings, source-pattern errors,
+// or uninhabited-only sums.
+
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -49,6 +59,7 @@
 namespace xls {
 namespace {
 
+// Resolves the checked-in corpus manifest from Bazel runfiles.
 std::filesystem::path GetManifestPath() {
   return GetXlsRunfilePath(
              "xls/fuzzer/testdata/semantic_sum_phase1/manifest.textproto")
@@ -57,6 +68,7 @@ std::filesystem::path GetManifestPath() {
 
 absl::StatusOr<bool> TypeIsInhabited(const dslx::Type& type);
 
+// Returns whether every payload member of a variant can hold a value.
 absl::StatusOr<bool> SumVariantIsInhabited(
     const dslx::SumTypeVariant& variant) {
   for (int64_t i = 0; i < variant.size(); ++i) {
@@ -69,6 +81,7 @@ absl::StatusOr<bool> SumVariantIsInhabited(
   return true;
 }
 
+// Recursively classifies the type forms exercised by the value generator.
 absl::StatusOr<bool> TypeIsInhabited(const dslx::Type& type) {
   if (dslx::GetBitsLike(type).has_value()) {
     return true;
@@ -108,6 +121,7 @@ absl::StatusOr<bool> TypeIsInhabited(const dslx::Type& type) {
 absl::Status VerifyGeneratedValue(const dslx::Type& type,
                                   const dslx::InterpValue& value);
 
+// Validates the encoded variant and recursively checks its active payload.
 absl::Status VerifyGeneratedSumValue(const dslx::SumType& sum_type,
                                      const dslx::InterpValue& value) {
   const dslx::Phase1SumTypeEncoding encoding(sum_type);
@@ -143,6 +157,7 @@ absl::Status VerifyGeneratedSumValue(const dslx::SumType& sum_type,
   return absl::OkStatus();
 }
 
+// Checks generated tuples, arrays, sums, and leaf raw round-trips.
 absl::Status VerifyGeneratedValue(const dslx::Type& type,
                                   const dslx::InterpValue& value) {
   if (auto* tuple_type = dynamic_cast<const dslx::TupleType*>(&type)) {
@@ -174,6 +189,7 @@ absl::Status VerifyGeneratedValue(const dslx::Type& type,
   return absl::OkStatus();
 }
 
+// Builds an AST type reference for the synthetic empty enum payload.
 absl::StatusOr<dslx::TypeRefTypeAnnotation*> MakeTypeAnnotation(
     dslx::Module* module, std::string_view name) {
   XLS_ASSIGN_OR_RETURN(dslx::TypeDefinition type_definition,
@@ -184,6 +200,7 @@ absl::StatusOr<dslx::TypeRefTypeAnnotation*> MakeTypeAnnotation(
       dslx::FakeSpan(), type_ref, std::vector<dslx::ExprOrType>{});
 }
 
+// Creates Unit | Impossible(Empty), the fixed partial-inhabitance probe.
 absl::StatusOr<dslx::SumType> MakePartiallyInhabitedEnumPayloadSumType(
     dslx::Module& module) {
   const dslx::Span kFakeSpan = dslx::FakeSpan();
@@ -232,6 +249,7 @@ absl::StatusOr<dslx::SumType> MakePartiallyInhabitedEnumPayloadSumType(
   return dslx::SumType(*sum_def, std::move(variants));
 }
 
+// Selects main, or the only function, from a reviewed source fixture.
 absl::StatusOr<dslx::Function*> GetEntryFunction(dslx::Module& module) {
   auto functions = module.GetFunctionByName();
   auto it = functions.find("main");
@@ -247,6 +265,7 @@ absl::StatusOr<dslx::Function*> GetEntryFunction(dslx::Module& module) {
                    module.name(), "'"));
 }
 
+// Parses a reviewed source fixture and clones its entry parameter types.
 absl::StatusOr<std::vector<std::unique_ptr<dslx::Type>>> GetFunctionParamTypes(
     const std::string& seed_text, std::string_view seed_id) {
   dslx::ImportData import_data = dslx::CreateImportDataForTest();
@@ -264,6 +283,8 @@ absl::StatusOr<std::vector<std::unique_ptr<dslx::Type>>> GetFunctionParamTypes(
   return params;
 }
 
+// Verifies: reviewed inhabitance seeds generate only valid values.
+// Catches: generator regressions that select an uninhabited variant.
 TEST(SemanticSumInhabitanceFuzzTest, ReplaysManifestCases) {
   std::mt19937_64 generator(0);
   absl::BitGenRef bit_gen(generator);
@@ -296,6 +317,8 @@ TEST(SemanticSumInhabitanceFuzzTest, ReplaysManifestCases) {
   EXPECT_GT(verified, 0);
 }
 
+// Generates one value for one of three fixed shapes from an explicit seed.
+// It validates inhabitance recursively but does not fuzz declaration syntax.
 void GeneratedValueIsInhabited(uint64_t generator_seed,
                                uint8_t shape_selector) {
   std::mt19937_64 generator(generator_seed);

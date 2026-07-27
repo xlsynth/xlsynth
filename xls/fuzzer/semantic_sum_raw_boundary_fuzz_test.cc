@@ -12,6 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Covers the Phase 1 raw-value boundary for one reviewed sum declaration with
+// an enum-typed payload. The generated domain varies only that payload across
+// declared members {0, 1} and undeclared encodings {2, 3}; each invocation
+// checks one semantic/raw conversion outcome for the fixed declaration.
+//
+// This test does not generate sum declarations, payload layouts, tag values,
+// or arbitrary raw tuples. Source syntax and pattern failures stay in SOURCE
+// replay, while malformed-tag preservation and final layout-width checks
+// belong to later semantic owners.
+
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -43,6 +53,7 @@
 namespace xls {
 namespace {
 
+// Keeps the parsed seed module alive and identifies its enum payload slot.
 struct RawBoundaryContext {
   std::unique_ptr<dslx::ImportData> import_data;
   dslx::TypecheckedModule tm;
@@ -53,12 +64,14 @@ struct RawBoundaryContext {
   int64_t enum_bit_count;
 };
 
+// Resolves the checked-in corpus manifest from Bazel runfiles.
 std::filesystem::path GetManifestPath() {
   return GetXlsRunfilePath(
              "xls/fuzzer/testdata/semantic_sum_phase1/manifest.textproto")
       .value();
 }
 
+// Parses one source module and finds the enum payload used by this test.
 absl::StatusOr<RawBoundaryContext> PrepareContext(
     std::string_view program_text) {
   auto import_data =
@@ -108,6 +121,7 @@ absl::StatusOr<RawBoundaryContext> PrepareContext(
       "Raw-boundary sample did not contain an enum-typed payload variant.");
 }
 
+// Finds a named reviewed seed without depending on manifest position.
 absl::StatusOr<const fuzzer::SemanticSumSeed*> FindSeed(
     const fuzzer::SemanticSumSeedManifest& manifest, std::string_view seed_id) {
   for (const fuzzer::SemanticSumSeed& seed : manifest.seeds()) {
@@ -119,6 +133,7 @@ absl::StatusOr<const fuzzer::SemanticSumSeed*> FindSeed(
       absl::StrCat("Could not find semantic-sum seed '", seed_id, "'."));
 }
 
+// Builds the fixed raw-boundary context from its reviewed source seed.
 absl::StatusOr<RawBoundaryContext> LoadRawBoundaryContext(
     const std::filesystem::path& manifest_path) {
   XLS_ASSIGN_OR_RETURN(fuzzer::SemanticSumSeedManifest manifest,
@@ -130,6 +145,7 @@ absl::StatusOr<RawBoundaryContext> LoadRawBoundaryContext(
   return PrepareContext(program_text);
 }
 
+// Reads the enum payload bits from the active slot of a raw sum tuple.
 absl::StatusOr<Bits> ExtractEnumPayloadBitsFromRawValue(
     const RawBoundaryContext& context, const Value& raw_value) {
   const dslx::Phase1SumTypeEncoding encoding(*context.sum_type);
@@ -141,6 +157,7 @@ absl::StatusOr<Bits> ExtractEnumPayloadBitsFromRawValue(
   return payload_value.bits();
 }
 
+// Interprets payload bits as a declared member of the seed's enum type.
 absl::StatusOr<dslx::InterpValue> MakeSemanticEnumPayloadValue(
     const RawBoundaryContext& context, const Bits& bits) {
   const dslx::Phase1SumTypeEncoding encoding(*context.sum_type);
@@ -158,6 +175,7 @@ absl::StatusOr<dslx::InterpValue> MakeSemanticEnumPayloadValue(
   return dslx::CastBitsToEnum(bits_value, *enum_type);
 }
 
+// Builds one otherwise well-formed raw sum with an undeclared enum payload.
 absl::StatusOr<Value> MakeInvalidEnumRawValue(const RawBoundaryContext& context,
                                               uint64_t invalid_member_value) {
   const dslx::Phase1SumTypeEncoding encoding(*context.sum_type);
@@ -194,6 +212,7 @@ absl::StatusOr<Value> MakeInvalidEnumRawValue(const RawBoundaryContext& context,
                          Value::TupleOwned(std::move(payload_slots))});
 }
 
+// Applies the manifest outcome contract to one reviewed raw IR value.
 absl::Status VerifyManifestRawSeed(const RawBoundaryContext& context,
                                    const fuzzer::SemanticSumSeed& seed) {
   XLS_ASSIGN_OR_RETURN(Value raw_value,
@@ -237,6 +256,7 @@ absl::Status VerifyManifestRawSeed(const RawBoundaryContext& context,
   return absl::OkStatus();
 }
 
+// Checks semantic-to-raw-to-semantic identity for one declared member.
 absl::Status VerifyDeclaredEnumRoundtrip(const RawBoundaryContext& context,
                                          uint64_t member_index) {
   XLS_ASSIGN_OR_RETURN(
@@ -258,6 +278,7 @@ absl::Status VerifyDeclaredEnumRoundtrip(const RawBoundaryContext& context,
   return absl::OkStatus();
 }
 
+// Checks that one undeclared enum encoding fails during raw conversion.
 absl::Status VerifyUndeclaredEnumPayloadRejected(
     const RawBoundaryContext& context, uint64_t invalid_member_value) {
   XLS_ASSIGN_OR_RETURN(Value raw_value,
@@ -276,6 +297,8 @@ absl::Status VerifyUndeclaredEnumPayloadRejected(
   return absl::OkStatus();
 }
 
+// Verifies: reviewed raw-boundary seeds convert or reject as declared.
+// Catches: changed conversion or diagnostic behavior for named raw fixtures.
 TEST(SemanticSumRawBoundaryFuzzTest, ReplaysManifestCases) {
   std::filesystem::path manifest_path = GetManifestPath();
   XLS_ASSERT_OK_AND_ASSIGN(RawBoundaryContext context,
@@ -291,6 +314,8 @@ TEST(SemanticSumRawBoundaryFuzzTest, ReplaysManifestCases) {
   EXPECT_EQ(verified, 2);
 }
 
+// Generates one declared member index from {0, 1} for the fixed seed sum.
+// It validates round-trip identity and does not vary tags or payload layout.
 void DeclaredEnumPayloadRoundtrips(uint64_t member_index) {
   XLS_ASSERT_OK_AND_ASSIGN(RawBoundaryContext context,
                            LoadRawBoundaryContext(GetManifestPath()));
@@ -300,6 +325,8 @@ void DeclaredEnumPayloadRoundtrips(uint64_t member_index) {
 FUZZ_TEST(SemanticSumRawBoundaryFuzzTest, DeclaredEnumPayloadRoundtrips)
     .WithDomains(fuzztest::ElementOf<uint64_t>({0, 1}));
 
+// Generates one undeclared two-bit member value from {2, 3}.
+// It validates rejection and does not fuzz malformed tags or source syntax.
 void UndeclaredEnumPayloadIsRejected(uint64_t invalid_member_value) {
   XLS_ASSERT_OK_AND_ASSIGN(RawBoundaryContext context,
                            LoadRawBoundaryContext(GetManifestPath()));

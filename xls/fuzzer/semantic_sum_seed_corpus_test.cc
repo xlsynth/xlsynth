@@ -42,6 +42,8 @@ std::filesystem::path GetManifestPath() {
       .value();
 }
 
+// Verifies: the checked-in corpus loads and surface tags select expected seeds.
+// Catches: malformed manifests or accidental surface-tag drift.
 TEST(SemanticSumSeedCorpusTest, LoadsManifestAndFiltersBySurface) {
   XLS_ASSERT_OK_AND_ASSIGN(fuzzer::SemanticSumSeedManifest manifest,
                            LoadSemanticSumSeedManifest(GetManifestPath()));

@@ -1,3 +1,17 @@
+# Reviewed semantic-sum corpus shared by deterministic replay tests.
+#
+# relative_path is rooted next to this manifest. surfaces selects the replay
+# consumers; list more than one surface only when the same outcome applies to
+# each consumer. outcome and expected_diagnostic_substr describe deterministic
+# replay, while sample_args and raw_ir_value_text provide concrete replay input
+# when a consumer needs more than the DSLX source file.
+#
+# This manifest is not a FUZZ_TEST input domain. Generated FUZZ_TEST cases live
+# in each test's explicit domains; this file preserves named reviewed
+# regressions that should remain stable as later sum semantics land.
+#
+# Source fixtures exercise parsing, typechecking, conversion, and sample replay
+# through the ordinary DSLX source path.
 # Exact constructor-only exhaustive match shape from the IR-converter
 # regression.
 seeds {
@@ -89,6 +103,8 @@ seeds {
   relative_path: "source/sample_runner_semantic_sum_argument.x"
   outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
 }
+# Raw-boundary fixtures pair one valid source module with concrete raw IR
+# values. They do not ask the fuzzer to generate arbitrary raw sum layouts.
 seeds {
   seed_id: "raw_boundary_valid_enum_payload"
   surfaces: SEMANTIC_SUM_SEED_SURFACE_RAW_BOUNDARY
@@ -106,6 +122,8 @@ seeds {
   expected_diagnostic_substr: "declared member"
   raw_ir_value_text: "(bits[2]:0x1, (bits[2]:0x2, bits[16]:0x0))"
 }
+# Type-info fixtures pin reviewed declarations. Generated type-info programs are
+# produced separately by the FUZZ_TEST domain in the type-info test.
 seeds {
   seed_id: "typeinfo_layout_basic_sum_shape"
   surfaces: SEMANTIC_SUM_SEED_SURFACE_TYPEINFO_LAYOUT

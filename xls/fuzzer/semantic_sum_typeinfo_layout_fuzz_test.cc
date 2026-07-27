@@ -12,6 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Covers durable serialized metadata for bounded generated sum declarations.
+// FUZZ_TEST generates a vector of two to four variant-kind choices; each choice
+// becomes a bare unit, one-field tuple, empty tuple, one-field struct, or empty
+// struct variant in a fixed enum plus main-function shell.
+//
+// The property validates serialized variant existence, count, declaration
+// order, and unit/tuple/struct kind. It does not fuzz invalid programs,
+// parametrics, nested sums, payload values, payload-slot widths, or offsets.
+
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
@@ -41,15 +50,18 @@
 namespace xls {
 namespace {
 
+// Variant-kind codes consumed by the generated-program domain.
 constexpr int64_t kBareUnitVariantKind = 0;
 constexpr int64_t kEmptyTuplePayloadVariantKind = 2;
 
+// Resolves the checked-in corpus manifest from Bazel runfiles.
 std::filesystem::path GetManifestPath() {
   return GetXlsRunfilePath(
              "xls/fuzzer/testdata/semantic_sum_phase1/manifest.textproto")
       .value();
 }
 
+// Finds the checked sum type corresponding to one parsed sum declaration.
 absl::StatusOr<const dslx::SumType*> GetConcreteSumType(
     const dslx::TypecheckedModule& tm, const dslx::SumDef& sum_def) {
   for (const auto& [_, function] : tm.module->GetFunctionByName()) {
@@ -75,6 +87,7 @@ absl::StatusOr<const dslx::SumType*> GetConcreteSumType(
       "Could not find a concrete sum type for '", sum_def.identifier(), "'."));
 }
 
+// Checks durable SumTypeProto declaration metadata for one DSLX program.
 absl::Status VerifySumMetadata(std::string_view case_name,
                                std::string_view program_text) {
   dslx::ImportData import_data = dslx::CreateImportDataForTest();
@@ -147,6 +160,7 @@ absl::Status VerifySumMetadata(std::string_view case_name,
   return absl::OkStatus();
 }
 
+// Emits one bounded variant declaration from a generated kind code.
 std::string GenerateVariantDecl(int64_t index, int64_t kind_choice) {
   switch (kind_choice) {
     case kBareUnitVariantKind:
@@ -162,6 +176,7 @@ std::string GenerateVariantDecl(int64_t index, int64_t kind_choice) {
   }
 }
 
+// Emits a constructor matching the generated variant declaration.
 std::string GenerateConstructorExpr(int64_t index, int64_t kind_choice) {
   switch (kind_choice) {
     case kBareUnitVariantKind:
@@ -178,6 +193,7 @@ std::string GenerateConstructorExpr(int64_t index, int64_t kind_choice) {
   }
 }
 
+// Builds one deterministic DSLX program from two to four kind choices.
 std::string GenerateProgram(std::vector<int64_t> kind_choices) {
   if (std::all_of(kind_choices.begin(), kind_choices.end(),
                   [](int64_t kind_choice) {
@@ -201,6 +217,8 @@ std::string GenerateProgram(std::vector<int64_t> kind_choices) {
   return program;
 }
 
+// Verifies: reviewed type-info seeds preserve durable sum metadata.
+// Catches: missing, reordered, or misclassified serialized variants.
 TEST(SemanticSumTypeinfoLayoutFuzzTest, ReplaysManifestCases) {
   int64_t verified = 0;
   XLS_ASSERT_OK(ReplaySemanticSumSeeds(
@@ -214,6 +232,8 @@ TEST(SemanticSumTypeinfoLayoutFuzzTest, ReplaysManifestCases) {
   EXPECT_EQ(verified, 2);
 }
 
+// Generates one bounded sum declaration and validates its metadata contract.
+// It intentionally excludes layout-width assertions owned by later semantics.
 void GeneratedProgramHasConsistentMetadata(std::vector<int64_t> kind_choices) {
   std::string program = GenerateProgram(std::move(kind_choices));
   SCOPED_TRACE(program);
