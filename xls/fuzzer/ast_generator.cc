@@ -2178,17 +2178,19 @@ TypeAnnotation* AstGenerator::GenerateType(
   return GenerateBitsType(max_width_bits_types);
 }
 
+TypeRefTypeAnnotation* AstGenerator::MakeImportedSumTypeAnnotation() {
+  CHECK(imported_semantic_sum_name_def_ != nullptr);
+  auto* type_ref = module_->Make<ColonRef>(
+      fake_span_, MakeNameRef(imported_semantic_sum_name_def_), "Option");
+  return MakeTypeRefTypeAnnotation(TypeDefinition(type_ref));
+}
+
 absl::Status AstGenerator::GenerateImportedSumStatements(
     NameDef* imported_float32_value, std::vector<Statement*>* statements) {
   XLS_RET_CHECK(imported_float32_value != nullptr);
   XLS_RET_CHECK(imported_semantic_sum_name_def_ != nullptr);
   XLS_RET_CHECK(statements != nullptr);
 
-  auto make_imported_sum_type = [&]() {
-    auto* type_ref = module_->Make<ColonRef>(
-        fake_span_, MakeNameRef(imported_semantic_sum_name_def_), "Option");
-    return MakeTypeRefTypeAnnotation(TypeDefinition(type_ref));
-  };
   auto make_imported_constructor = [&](std::string_view variant) {
     auto* type_ref = module_->Make<ColonRef>(
         fake_span_, MakeNameRef(imported_semantic_sum_name_def_), "Option");
@@ -2208,8 +2210,8 @@ absl::Status AstGenerator::GenerateImportedSumStatements(
   auto* imported_sum_name =
       module_->Make<NameDef>(fake_span_, GenSym(), imported_sum);
   statements->push_back(module_->Make<Statement>(module_->Make<Let>(
-      fake_span_, imported_sum_name, make_imported_sum_type(), imported_sum,
-      /*is_const=*/false)));
+      fake_span_, imported_sum_name, MakeImportedSumTypeAnnotation(),
+      imported_sum, /*is_const=*/false)));
 
   auto* identity_ref = module_->Make<ColonRef>(
       fake_span_, MakeNameRef(imported_semantic_sum_name_def_), "identity");
@@ -2218,10 +2220,9 @@ absl::Status AstGenerator::GenerateImportedSumStatements(
       std::vector<Expr*>{MakeNameRef(imported_sum_name)});
   auto* roundtripped_sum_name =
       module_->Make<NameDef>(fake_span_, GenSym(), identity_call);
-  statements->push_back(module_->Make<Statement>(
-      module_->Make<Let>(fake_span_, roundtripped_sum_name,
-                         make_imported_sum_type(), identity_call,
-                         /*is_const=*/false)));
+  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+      fake_span_, roundtripped_sum_name, MakeImportedSumTypeAnnotation(),
+      identity_call, /*is_const=*/false)));
 
   auto* matched_payload_name = MakeNameDef(GenSym());
   auto* some_pattern = module_->Make<SumVariantPayloadPattern>(
@@ -3399,12 +3400,33 @@ absl::StatusOr<AnnotatedFunction> AstGenerator::GenerateFunction(
   }
 
   XLS_ASSIGN_OR_RETURN(TypedExpr retval, GenerateBody(call_depth, &context));
+  std::vector<Statement*> statements;
+  if (call_depth == 0 && options_.require_cross_module_sum_type) {
+    Param* imported_sum_param =
+        GenerateParam({.type = MakeImportedSumTypeAnnotation()}).param;
+    params.push_back(imported_sum_param);
+
+    auto* original_result = module_->Make<NameDef>(
+        fake_span_, absl::StrCat("_", GenSym()), retval.expr);
+    statements.push_back(module_->Make<Statement>(module_->Make<Let>(
+        fake_span_, original_result, retval.type, retval.expr,
+        /*is_const=*/false)));
+
+    auto* identity_ref = module_->Make<ColonRef>(
+        fake_span_, MakeNameRef(imported_semantic_sum_name_def_), "identity");
+    auto* identity_call = module_->Make<Invocation>(
+        fake_span_, identity_ref,
+        std::vector<Expr*>{MakeNameRef(imported_sum_param->name_def())});
+    statements.push_back(module_->Make<Statement>(identity_call));
+    retval.type = MakeImportedSumTypeAnnotation();
+  } else {
+    statements.push_back(module_->Make<Statement>(retval.expr));
+  }
+
   NameDef* name_def =
       module_->Make<NameDef>(fake_span_, name, /*definer=*/nullptr);
-  Statement* retval_statement = module_->Make<Statement>(retval.expr);
-  auto* block = module_->Make<StatementBlock>(
-      fake_span_, std::vector<Statement*>{retval_statement},
-      /*trailing_semi=*/false);
+  auto* block = module_->Make<StatementBlock>(fake_span_, statements,
+                                              /*trailing_semi=*/false);
   Function* f = module_->Make<Function>(
       fake_span_, name_def,
       /*parametric_bindings=*/parametric_bindings,
