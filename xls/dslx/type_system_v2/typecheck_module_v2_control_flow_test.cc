@@ -991,6 +991,29 @@ fn f(value: Alias) -> u32 {
                HasSubstr("Exact-duplicate pattern match detected `Alias::A`")));
 }
 
+TEST(TypecheckV2Test, MatchImportedSameValuedEnumConstantsRemainDistinct) {
+  constexpr std::string_view kImported = R"(
+pub enum E: u2 { A = 0, B = 0, C = 1 }
+pub const FIRST = E::A;
+pub const SECOND = E::B;
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn f(value: imported::E) -> u32 {
+  match value {
+    imported::FIRST => u32:0,
+    imported::SECOND => u32:1,
+    imported::E::C => u32:2,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
+  XLS_EXPECT_OK(TypecheckV2(kProgram, "main", &import_data));
+}
+
 TEST(TypecheckV2Test, MatchDistinctEnumVariantsThroughTypeAliasRemainValid) {
   XLS_EXPECT_OK(TypecheckV2(R"(
 enum E: u2 { A = 0, B = 1, C = 2 }
@@ -1003,6 +1026,209 @@ fn f(value: E) -> u32 {
   }
 }
 )"));
+}
+
+TEST(TypecheckV2Test, MatchDistinctSameValuedEnumVariantsAreExhaustive) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u2 { A = 0, B = 0, C = 1 }
+type Alias = E;
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    Alias::B => u32:1,
+    E::C => u32:2,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchDistinctSameValuedEnumVariantsRemainDistinct) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u2 { A = 0, B = 0, C = 1 }
+type Alias = E;
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    Alias::B => u32:1,
+    _ => u32:2,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchEnumVariantCountCanExceedUnderlyingValueCount) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u1 { A = 0, B = 0, C = 1 }
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    E::B => u32:1,
+    E::C => u32:2,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchDistinctSameValuedEnumConstantsAreExhaustive) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u2 { A = 0, B = 0, C = 1 }
+const FIRST = E::A;
+const SECOND = E::B;
+
+fn f(value: E) -> u32 {
+  match value {
+    FIRST => u32:0,
+    SECOND => u32:1,
+    E::C => u32:2,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchFullyContainedRangeIsRejected) {
+  EXPECT_THAT(R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:0..u4:4 => u32:0,
+    u4:1..u4:3 => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFailsWithPayload(
+                  AllOf(HasSubstr("fully covered by previous patterns"),
+                        HasSubstr("previously @ fake.x:6:5-6:15")),
+                  AllOf(HasSpan(5, 4, 5, 14), HasSpan(6, 4, 6, 14))));
+}
+
+TEST(TypecheckV2Test, MatchRangeCoveredByMultiplePatternsIsRejected) {
+  EXPECT_THAT(R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:0..u4:2 => u32:0,
+    u4:2..u4:4 => u32:1,
+    u4:1..u4:3 => u32:2,
+    _ => u32:3,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, MatchPartiallyOverlappingRangesRemainValid) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:0..u4:3 => u32:0,
+    u4:2..u4:5 => u32:1,
+    _ => u32:2,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchNestedAliasedEnumVariantShadowingIsRejected) {
+  EXPECT_THAT(R"(
+enum E: u1 { A = 0, B = 1 }
+type Alias = E;
+
+fn f(value: (E, bool)) -> u32 {
+  match value {
+    (E::A, _) => u32:0,
+    (Alias::A, true) => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, MatchDuplicateReportsExactEarlierPattern) {
+  EXPECT_THAT(
+      R"(
+fn f(value: (bool, bool, bool)) -> u32 {
+  match value {
+    (true, _, _) => u32:0,
+    (_, true, _) => u32:1,
+    (false, false, true) | (_, true, _) => u32:2,
+    _ => u32:3,
+  }
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("Exact-duplicate pattern match detected "
+                                     "`(_, true, _)`"),
+                           HasSubstr("previously @ fake.x:7:5-7:17"))));
+}
+
+TEST(TypecheckV2Test, MatchEquivalentNamedConstantsAreRejected) {
+  EXPECT_THAT(R"(
+const FIRST = u4:2;
+const SECOND = u4:2;
+
+fn f(value: u4) -> u32 {
+  match value {
+    FIRST => u32:0,
+    SECOND => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `SECOND`")));
+}
+
+TEST(TypecheckV2Test, MatchShadowedSumConstructorPayloadIsRejected) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u4),
+}
+
+fn f(value: Option) -> u32 {
+  match value {
+    Option::Some(_) => u32:0,
+    Option::Some(u4:1) => u32:1,
+    Option::None => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, ConstMatchDuplicateGroupedPatternIsRejected) {
+  EXPECT_THAT(R"(
+fn f() -> u32 {
+  const VALUE = u2:0;
+  const match VALUE {
+    u2:0 | u2:1 => u32:0,
+    u2:0 => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(
+                  HasSubstr("Exact-duplicate pattern match detected `u2:0`")));
+}
+
+TEST(TypecheckV2Test, ConstMatchDuplicateAliasedEnumVariantIsRejected) {
+  EXPECT_THAT(R"(
+enum E: u1 { A = 0, B = 1 }
+type Alias = E;
+
+fn f() -> u32 {
+  const VALUE = E::A;
+  const match VALUE {
+    E::A => u32:0,
+    Alias::A => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `Alias::A`")));
 }
 
 TEST(TypecheckV2Test, MatchEnumVariantAlternativesRemainValid) {
@@ -1040,6 +1266,20 @@ fn f(x: u4) -> u32 {
 }
 )"));
   ASSERT_THAT(result.tm.warnings.warnings().size(), 1);
+  EXPECT_EQ(result.tm.warnings.warnings()[0].message,
+            "Match is already exhaustive before this pattern");
+}
+
+TEST(TypecheckV2Test, DifferentCatchAllPatternsRemainWarningOnly) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+fn f(value: bool) -> u32 {
+  match value {
+    _ => u32:0,
+    otherwise => otherwise as u32,
+  }
+}
+)"));
+  ASSERT_EQ(result.tm.warnings.warnings().size(), 1);
   EXPECT_EQ(result.tm.warnings.warnings()[0].message,
             "Match is already exhaustive before this pattern");
 }

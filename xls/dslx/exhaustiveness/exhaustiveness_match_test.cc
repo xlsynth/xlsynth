@@ -77,7 +77,7 @@ void CheckExhaustiveOnlyAfterLastPattern(std::string_view program) {
 
   std::vector<PatternTree> patterns = GetPatterns(*match);
   for (int64_t i = 0; i < patterns.size(); ++i) {
-    bool now_exhaustive = checker.AddPattern(patterns[i]);
+    bool now_exhaustive = checker.AddPattern(patterns[i]).is_exhaustive;
     // We expect it to become exhaustive with the last match arm.
     bool expect_now_exhaustive = i + 1 == patterns.size();
     EXPECT_EQ(now_exhaustive, expect_now_exhaustive)
@@ -108,7 +108,7 @@ void CheckExhaustiveBeforeAnyPattern(std::string_view program) {
   EXPECT_TRUE(checker.IsExhaustive());
 
   for (const PatternTree& pattern : GetPatterns(*match)) {
-    EXPECT_TRUE(checker.AddPattern(pattern))
+    EXPECT_TRUE(checker.AddPattern(pattern).is_exhaustive)
         << "Expected match to stay exhaustive after adding pattern `"
         << PatternToString(pattern) << "`";
   }
@@ -207,9 +207,8 @@ TEST(ExhaustivenessMatchTest, MatchNestedTuple) {
   CheckExhaustiveOnlyAfterLastPattern(kMatch);
 }
 
-TEST(ExhaustivenessMatchTest, MatchRedundantPattern) {
-  // Even if one of the arms is redundant, the overall match is only complete
-  // once a catch-all branch is reached.
+TEST(ExhaustivenessMatchTest, MatchRedundantPatternIsRejected) {
+  // A pattern fully covered before the match is exhaustive is unreachable.
   constexpr std::string_view kMatch = R"(fn main(t: (bool, bool)) -> u32 {
     match t {
       (true, _) => u32:1,
@@ -217,7 +216,11 @@ TEST(ExhaustivenessMatchTest, MatchRedundantPattern) {
       _ => u32:0,
     }
   })";
-  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+  ImportData import_data = CreateImportDataForTest();
+  EXPECT_THAT(
+      ParseAndTypecheck(kMatch, "test.x", "test", &import_data).status(),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("fully covered by previous patterns")));
 }
 
 // Dense enum values but missing the top value in the underlying type.
@@ -713,7 +716,6 @@ TEST(ExhaustivenessMatchTest, OverlappingRangesForSignedIntegers) {
     match x {
       s4:-8..s4:-2 => u32:10,
       s4:-4..s4:1  => u32:20,
-      s4:0        => u32:30,
       _           => u32:40,
     }
   })";

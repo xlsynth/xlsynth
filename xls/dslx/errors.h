@@ -172,6 +172,17 @@ absl::Status MatchNotExhaustiveStatus(const Span& span, const Type* matched,
                                       InterpValue& unmatched_sample,
                                       const FileTable& file_table);
 
+enum class MatchPatternOverlapKind {
+  kExactDuplicate,
+  kFullyCovered,
+};
+
+// Returns a two-location error for a pattern already covered by earlier arms.
+absl::Status MatchPatternAlreadyCoveredStatus(
+    const Span& original_span, const Span& duplicate_span,
+    std::string_view pattern, MatchPatternOverlapKind overlap_kind,
+    const FileTable& file_table);
+
 // To be raised when const_assert! evaluates to false.
 absl::Status ConstAssertFailureStatus(const Span& span, const Expr* expr,
                                       std::string env_string,
