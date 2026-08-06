@@ -603,6 +603,8 @@ class AstGenerator {
   absl::StatusOr<TypedExpr> GenerateRequiredSumPredicate(
       Context* ctx, std::vector<Statement*>* statements);
 
+  TypeRefTypeAnnotation* MakeImportedSumTypeAnnotation();
+
   // Constructs, transports, and matches an imported semantic sum entirely
   // inside the generated function, without entering the generic environment.
   absl::Status GenerateImportedSumStatements(

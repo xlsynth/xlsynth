@@ -37,6 +37,7 @@ namespace xls {
 namespace {
 
 using ::absl_testing::IsOkAndHolds;
+using ::testing::ContainsRegex;
 using ::testing::HasSubstr;
 
 TEST(SampleGeneratorTest, GenerateBasicFunctionSample) {
@@ -88,10 +89,36 @@ TEST(SampleGeneratorTest, GenerateCrossModuleSumFunctionSample) {
               HasSubstr("semantic_sum_provider::identity("));
   EXPECT_THAT(sample.input_text(),
               HasSubstr("semantic_sum_provider::Option::None"));
+  EXPECT_THAT(sample.input_text(),
+              HasSubstr("semantic_sum_provider::Option) -> "
+                        "semantic_sum_provider::Option"));
 
   std::vector<std::vector<dslx::InterpValue>> args_batch;
   XLS_EXPECT_OK(sample.GetArgsAndChannels(args_batch));
-  EXPECT_EQ(args_batch.size(), kCallsPerSample);
+  ASSERT_EQ(args_batch.size(), kCallsPerSample);
+  for (const std::vector<dslx::InterpValue>& args : args_batch) {
+    ASSERT_FALSE(args.empty());
+    const dslx::InterpValue& imported_sum = args.back();
+    ASSERT_TRUE(imported_sum.IsTuple());
+    ASSERT_EQ(imported_sum.GetValuesOrDie().size(), 2);
+
+    const dslx::InterpValue& tag = imported_sum.GetValuesOrDie().at(0);
+    ASSERT_TRUE(tag.IsUBits());
+    EXPECT_THAT(tag.GetBitCount(), IsOkAndHolds(1));
+
+    const dslx::InterpValue& payload = imported_sum.GetValuesOrDie().at(1);
+    ASSERT_TRUE(payload.IsTuple());
+    ASSERT_EQ(payload.GetValuesOrDie().size(), 1);
+    EXPECT_TRUE(payload.GetValuesOrDie().at(0).IsUBits());
+    EXPECT_THAT(payload.GetValuesOrDie().at(0).GetBitCount(), IsOkAndHolds(8));
+  }
+
+  ASSERT_EQ(sample.testvector().function_args().args_size(), kCallsPerSample);
+  for (const std::string& args : sample.testvector().function_args().args()) {
+    EXPECT_THAT(
+        args,
+        ContainsRegex(R"(\(bits\[1\]:0x[01], \(bits\[8\]:0x[0-9a-f]+\)\)$)"));
+  }
 }
 
 TEST(SampleGeneratorTest, GenerateCodegenSample) {
