@@ -278,12 +278,12 @@ TEST(AstGeneratorMultiTest, GeneratesRequiredSumTypes) {
   }
 }
 
-TEST(AstGeneratorMultiTest, GeneratesRequiredImportedParametricSumTypes) {
+TEST(AstGeneratorMultiTest, GeneratesRequiredCrossModuleSumTypes) {
   FileTable file_table;
   std::mt19937_64 rng{0};
   AstGeneratorOptions options;
   options.require_sum_type = true;
-  options.require_imported_parametric_type = true;
+  options.require_cross_module_sum_type = true;
 
   AstGenerator generator(options, rng, file_table);
   XLS_ASSERT_OK_AND_ASSIGN(AnnotatedModule module,
@@ -291,28 +291,42 @@ TEST(AstGeneratorMultiTest, GeneratesRequiredImportedParametricSumTypes) {
   std::string text = module.module->ToString();
 
   EXPECT_TRUE(module.module->GetImportByName().contains("float32"));
+  EXPECT_TRUE(
+      module.module->GetImportByName().contains("semantic_sum_provider"));
   EXPECT_THAT(text, testing::HasSubstr("import float32;")) << text;
   EXPECT_THAT(text, testing::HasSubstr("float32::F32 {")) << text;
   EXPECT_THAT(text, testing::HasSubstr(".fraction")) << text;
   EXPECT_THAT(text, ContainsRegex(R"(x[0-9]+::x[0-9]+\()")) << text;
+  EXPECT_THAT(text, testing::HasSubstr(
+                        "import xls.fuzzer.testdata.semantic_sum_provider;"))
+      << text;
+  EXPECT_THAT(text, testing::HasSubstr("semantic_sum_provider::Option::Some("))
+      << text;
+  EXPECT_THAT(text, testing::HasSubstr("semantic_sum_provider::identity("))
+      << text;
+  EXPECT_THAT(text, testing::HasSubstr("semantic_sum_provider::Option::None"))
+      << text;
+  EXPECT_THAT(text, testing::Not(ContainsRegex(
+                        R"(fn main\([^\n]*semantic_sum_provider::Option)")))
+      << text;
   XLS_ASSERT_OK(ParseAndTypecheck<Function>(text, "imported_sum_sample"))
       << text;
 }
 
-TEST(AstGeneratorOptionsTest, ImportedParametricTypeOptionRoundTrips) {
+TEST(AstGeneratorOptionsTest, CrossModuleSumTypeOptionRoundTrips) {
   AstGeneratorOptions options;
   options.require_sum_type = true;
-  options.require_imported_parametric_type = true;
+  options.require_cross_module_sum_type = true;
 
   XLS_ASSERT_OK_AND_ASSIGN(AstGeneratorOptions decoded,
                            AstGeneratorOptions::FromProto(options.ToProto()));
   EXPECT_TRUE(decoded.require_sum_type);
-  EXPECT_TRUE(decoded.require_imported_parametric_type);
+  EXPECT_TRUE(decoded.require_cross_module_sum_type);
 }
 
-TEST(AstGeneratorOptionsTest, RejectsUnsupportedImportedParametricTypes) {
+TEST(AstGeneratorOptionsTest, RejectsUnsupportedCrossModuleSumTypes) {
   AstGeneratorOptions options;
-  options.require_imported_parametric_type = true;
+  options.require_cross_module_sum_type = true;
   EXPECT_THAT(options.Validate().message(),
               testing::HasSubstr("requires require_sum_type"));
 

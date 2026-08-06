@@ -51,8 +51,9 @@ message AstGeneratorOptionsProto {
   // generation.
   optional bool require_sum_type = 9;
 
-  // Whether a required semantic sum must consume a scalar field from an
-  // instantiated parametric type imported from the DSLX standard library.
+  // Whether each required-sum function must instantiate an imported parametric
+  // standard-library value and construct, transport, and match a semantic sum
+  // declared in another module. Imported values remain private to the function.
   // This is supported only for function generation with require_sum_type.
-  optional bool require_imported_parametric_type = 10;
+  optional bool require_cross_module_sum_type = 10;
 }

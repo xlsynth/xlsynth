@@ -122,7 +122,7 @@ struct AstGeneratorOptions {
   // true.
   bool emit_zero_width_bits_types = false;
   bool require_sum_type = false;
-  bool require_imported_parametric_type = false;
+  bool require_cross_module_sum_type = false;
 
   // Returns an actionable error when requested generation modes cannot be
   // satisfied together or exceed their configured type-width limits.
@@ -603,6 +603,11 @@ class AstGenerator {
   absl::StatusOr<TypedExpr> GenerateRequiredSumPredicate(
       Context* ctx, std::vector<Statement*>* statements);
 
+  // Constructs, transports, and matches an imported semantic sum entirely
+  // inside the generated function, without entering the generic environment.
+  absl::Status GenerateImportedSumStatements(
+      NameDef* imported_float32_value, std::vector<Statement*>* statements);
+
   TypeRefTypeAnnotation* MakeTypeRefTypeAnnotation(
       TypeDefinition type_definition,
       std::vector<ExprOrType> parametrics = {},
@@ -781,8 +786,9 @@ class AstGenerator {
   std::vector<TypeAlias*> type_aliases_;
   std::vector<SumDef*> sum_defs_;
 
-  // Binding for the optional imported parametric-type generation mode.
+  // Module bindings for the optional cross-module semantic-sum mode.
   NameDef* imported_float32_name_def_ = nullptr;
+  NameDef* imported_semantic_sum_name_def_ = nullptr;
 
   // Widths of the aggregate types, indexed by TypeAnnotation::ToString().
   absl::flat_hash_map<std::string, int64_t> type_bit_counts_;
