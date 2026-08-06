@@ -60,7 +60,7 @@ TEST(SampleGeneratorTest, GenerateBasicFunctionSample) {
   EXPECT_THAT(sample.input_text(), testing::HasSubstr("fn main"));
 }
 
-TEST(SampleGeneratorTest, GenerateImportedParametricSumFunctionSample) {
+TEST(SampleGeneratorTest, GenerateCrossModuleSumFunctionSample) {
   dslx::FileTable file_table;
   std::mt19937_64 rng{0};
   SampleOptions sample_options;
@@ -69,7 +69,7 @@ TEST(SampleGeneratorTest, GenerateImportedParametricSumFunctionSample) {
 
   dslx::AstGeneratorOptions generator_options;
   generator_options.require_sum_type = true;
-  generator_options.require_imported_parametric_type = true;
+  generator_options.require_cross_module_sum_type = true;
   XLS_ASSERT_OK_AND_ASSIGN(
       Sample sample,
       GenerateSample(generator_options, sample_options, rng, file_table));
@@ -80,6 +80,14 @@ TEST(SampleGeneratorTest, GenerateImportedParametricSumFunctionSample) {
   EXPECT_THAT(sample.input_text(), HasSubstr("import float32;"));
   EXPECT_THAT(sample.input_text(), HasSubstr("float32::F32 {"));
   EXPECT_THAT(sample.input_text(), HasSubstr(".fraction as "));
+  EXPECT_THAT(sample.input_text(),
+              HasSubstr("import xls.fuzzer.testdata.semantic_sum_provider;"));
+  EXPECT_THAT(sample.input_text(),
+              HasSubstr("semantic_sum_provider::Option::Some("));
+  EXPECT_THAT(sample.input_text(),
+              HasSubstr("semantic_sum_provider::identity("));
+  EXPECT_THAT(sample.input_text(),
+              HasSubstr("semantic_sum_provider::Option::None"));
 
   std::vector<std::vector<dslx::InterpValue>> args_batch;
   XLS_EXPECT_OK(sample.GetArgsAndChannels(args_batch));
