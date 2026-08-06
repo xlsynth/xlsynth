@@ -670,6 +670,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     std::vector<TypeAnnotation*> type_annotation_members;
     absl::flat_hash_map<std::string, const MatchArm*> seen_arms;
     absl::flat_hash_map<std::string, const NameDefTree*> seen_patterns;
+    absl::flat_hash_map<const NameDef*, const NameDefTree*> seen_enum_members;
     for (MatchArm* arm : node->arms()) {
       // Identify syntactically identical match arms.
       std::string patterns_string = PatternsToString(arm);
@@ -699,6 +700,23 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
             !inserted) {
           return duplicate_pattern_error(it->second->span(), pattern->span(),
                                          it->first);
+        }
+
+        if (pattern->is_leaf()) {
+          const NameDefTree::Leaf leaf = pattern->leaf();
+          if (std::holds_alternative<ColonRef*>(leaf)) {
+            const ColonRef* colon_ref = std::get<ColonRef*>(leaf);
+            XLS_ASSIGN_OR_RETURN(std::optional<const NameDef*> enum_member,
+                                 ResolveEnumMember(colon_ref, import_data_));
+            if (enum_member.has_value()) {
+              if (auto [it, inserted] =
+                      seen_enum_members.try_emplace(*enum_member, pattern);
+                  !inserted) {
+                return duplicate_pattern_error(
+                    it->second->span(), pattern->span(), pattern->ToString());
+              }
+            }
+          }
         }
 
         XLS_RETURN_IF_ERROR(table_.SetTypeVariable(pattern, matched_var));
