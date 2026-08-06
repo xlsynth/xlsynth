@@ -162,7 +162,7 @@ class RunFuzzMultiprocessTest(test_base.TestCase):
     )
     self.assertIn('source_seed_replay.binarypb', os.listdir(summaries_path))
 
-  def test_imported_parametric_semantic_sum_sample(self):
+  def test_cross_module_semantic_sum_sample(self):
     crasher_path = self.create_tempdir().full_path
     samples_path = self.create_tempdir().full_path
 
@@ -170,7 +170,7 @@ class RunFuzzMultiprocessTest(test_base.TestCase):
         RUN_FUZZ_MULTIPROCESS_PATH,
         '--seed=42',
         '--require_sum_type',
-        '--require_imported_parametric_type',
+        '--require_cross_module_sum_type',
         '--crash_path=' + crasher_path,
         '--save_temps_path=' + samples_path,
         '--sample_count=1',
@@ -185,6 +185,13 @@ class RunFuzzMultiprocessTest(test_base.TestCase):
       generated_program = source.read()
     self.assertIn('import float32;', generated_program)
     self.assertIn('float32::F32 {', generated_program)
+    self.assertIn(
+        'import xls.fuzzer.testdata.semantic_sum_provider;', generated_program
+    )
+    self.assertIn('semantic_sum_provider::Option::Some(', generated_program)
+    self.assertIn('semantic_sum_provider::identity(', generated_program)
+    self.assertIn('semantic_sum_provider::Option::None', generated_program)
+    self.assertNotIn('semantic_sum_provider.x', os.listdir(sample_path))
     self.assertRegex(
         generated_program, r'x[0-9]+::x[0-9]+\([^)]*\.fraction as '
     )
