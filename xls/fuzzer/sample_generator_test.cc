@@ -60,6 +60,32 @@ TEST(SampleGeneratorTest, GenerateBasicFunctionSample) {
   EXPECT_THAT(sample.input_text(), testing::HasSubstr("fn main"));
 }
 
+TEST(SampleGeneratorTest, GenerateImportedParametricSumFunctionSample) {
+  dslx::FileTable file_table;
+  std::mt19937_64 rng{0};
+  SampleOptions sample_options;
+  constexpr int kCallsPerSample = 2;
+  sample_options.set_calls_per_sample(kCallsPerSample);
+
+  dslx::AstGeneratorOptions generator_options;
+  generator_options.require_sum_type = true;
+  generator_options.require_imported_parametric_type = true;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Sample sample,
+      GenerateSample(generator_options, sample_options, rng, file_table));
+
+  EXPECT_TRUE(sample.options().input_is_dslx());
+  EXPECT_TRUE(sample.options().convert_to_ir());
+  EXPECT_TRUE(sample.options().optimize_ir());
+  EXPECT_THAT(sample.input_text(), HasSubstr("import float32;"));
+  EXPECT_THAT(sample.input_text(), HasSubstr("float32::F32 {"));
+  EXPECT_THAT(sample.input_text(), HasSubstr(".fraction as "));
+
+  std::vector<std::vector<dslx::InterpValue>> args_batch;
+  XLS_EXPECT_OK(sample.GetArgsAndChannels(args_batch));
+  EXPECT_EQ(args_batch.size(), kCallsPerSample);
+}
+
 TEST(SampleGeneratorTest, GenerateCodegenSample) {
   dslx::FileTable file_table;
   std::mt19937_64 rng;

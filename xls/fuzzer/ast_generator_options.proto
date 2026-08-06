@@ -50,4 +50,9 @@ message AstGeneratorOptionsProto {
   // sum definition and constructor use. This is not supported for proc
   // generation.
   optional bool require_sum_type = 9;
+
+  // Whether a required semantic sum must consume a scalar field from an
+  // instantiated parametric type imported from the DSLX standard library.
+  // This is supported only for function generation with require_sum_type.
+  optional bool require_imported_parametric_type = 10;
 }

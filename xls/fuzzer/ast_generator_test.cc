@@ -278,6 +278,60 @@ TEST(AstGeneratorMultiTest, GeneratesRequiredSumTypes) {
   }
 }
 
+TEST(AstGeneratorMultiTest, GeneratesRequiredImportedParametricSumTypes) {
+  FileTable file_table;
+  std::mt19937_64 rng{0};
+  AstGeneratorOptions options;
+  options.require_sum_type = true;
+  options.require_imported_parametric_type = true;
+
+  AstGenerator generator(options, rng, file_table);
+  XLS_ASSERT_OK_AND_ASSIGN(AnnotatedModule module,
+                           generator.Generate("main", "imported_sum_sample"));
+  std::string text = module.module->ToString();
+
+  EXPECT_TRUE(module.module->GetImportByName().contains("float32"));
+  EXPECT_THAT(text, testing::HasSubstr("import float32;")) << text;
+  EXPECT_THAT(text, testing::HasSubstr("float32::F32 {")) << text;
+  EXPECT_THAT(text, testing::HasSubstr(".fraction")) << text;
+  EXPECT_THAT(text, ContainsRegex(R"(x[0-9]+::x[0-9]+\()")) << text;
+  XLS_ASSERT_OK(ParseAndTypecheck<Function>(text, "imported_sum_sample"))
+      << text;
+}
+
+TEST(AstGeneratorOptionsTest, ImportedParametricTypeOptionRoundTrips) {
+  AstGeneratorOptions options;
+  options.require_sum_type = true;
+  options.require_imported_parametric_type = true;
+
+  XLS_ASSERT_OK_AND_ASSIGN(AstGeneratorOptions decoded,
+                           AstGeneratorOptions::FromProto(options.ToProto()));
+  EXPECT_TRUE(decoded.require_sum_type);
+  EXPECT_TRUE(decoded.require_imported_parametric_type);
+}
+
+TEST(AstGeneratorOptionsTest, RejectsUnsupportedImportedParametricTypes) {
+  AstGeneratorOptions options;
+  options.require_imported_parametric_type = true;
+  EXPECT_THAT(options.Validate().message(),
+              testing::HasSubstr("requires require_sum_type"));
+
+  options.require_sum_type = true;
+  options.max_width_bits_types = 22;
+  EXPECT_THAT(options.Validate().message(),
+              testing::HasSubstr("max_width_bits_types of at least 23"));
+
+  options.max_width_bits_types = 23;
+  options.max_width_aggregate_types = 31;
+  EXPECT_THAT(options.Validate().message(),
+              testing::HasSubstr("max_width_aggregate_types of at least 32"));
+
+  options.max_width_aggregate_types = 32;
+  options.generate_proc = true;
+  EXPECT_THAT(options.Validate().message(),
+              testing::HasSubstr("only supported for function generation"));
+}
+
 TEST(AstGeneratorMultiTest,
      GeneratesRequiredUnitOnlySumTypesWhenPayloadBitsDisabled) {
   FileTable file_table;
