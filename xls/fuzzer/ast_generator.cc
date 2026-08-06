@@ -110,9 +110,34 @@ LastDelayingOp ComposeDelayingOps(LastDelayingOp op1, LastDelayingOp op2,
 
 }  // namespace
 
+absl::Status AstGeneratorOptions::Validate() const {
+  if (generate_proc && require_sum_type) {
+    return absl::InvalidArgumentError(
+        "require_sum_type is only supported for function generation.");
+  } else if (require_imported_parametric_type && generate_proc) {
+    return absl::InvalidArgumentError(
+        "require_imported_parametric_type is only supported for function "
+        "generation.");
+  } else if (require_imported_parametric_type && !require_sum_type) {
+    return absl::InvalidArgumentError(
+        "require_imported_parametric_type requires require_sum_type.");
+  } else if (require_imported_parametric_type && max_width_bits_types < 23) {
+    return absl::InvalidArgumentError(
+        "require_imported_parametric_type requires max_width_bits_types "
+        "of at least 23.");
+  } else if (require_imported_parametric_type &&
+             max_width_aggregate_types < 32) {
+    return absl::InvalidArgumentError(
+        "require_imported_parametric_type requires "
+        "max_width_aggregate_types of at least 32.");
+  } else {
+    return absl::OkStatus();
+  }
+}
+
 /* static */ absl::StatusOr<AstGeneratorOptions> AstGeneratorOptions::FromProto(
     const AstGeneratorOptionsProto& proto) {
-  return AstGeneratorOptions{
+  AstGeneratorOptions options{
       .emit_signed_types = proto.emit_signed_types(),
       .max_width_bits_types = proto.max_width_bits_types(),
       .max_width_aggregate_types = proto.max_width_aggregate_types(),
@@ -122,7 +147,11 @@ LastDelayingOp ComposeDelayingOps(LastDelayingOp op1, LastDelayingOp op2,
       .emit_stateless_proc = proto.emit_stateless_proc(),
       .emit_zero_width_bits_types = proto.emit_zero_width_bits_types(),
       .require_sum_type = proto.require_sum_type(),
+      .require_imported_parametric_type =
+          proto.require_imported_parametric_type(),
   };
+  XLS_RETURN_IF_ERROR(options.Validate());
+  return options;
 }
 
 AstGeneratorOptionsProto AstGeneratorOptions::ToProto() const {
@@ -136,6 +165,7 @@ AstGeneratorOptionsProto AstGeneratorOptions::ToProto() const {
   proto.set_emit_stateless_proc(emit_stateless_proc);
   proto.set_emit_zero_width_bits_types(emit_zero_width_bits_types);
   proto.set_require_sum_type(require_sum_type);
+  proto.set_require_imported_parametric_type(require_imported_parametric_type);
   return proto;
 }
 
@@ -2190,6 +2220,39 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
   sum_defs_.push_back(sum_def);
   generated_required_sum_ = true;
 
+  NameDef* imported_value_name_def = nullptr;
+  if (options_.require_imported_parametric_type) {
+    XLS_RET_CHECK(imported_float32_name_def_ != nullptr);
+    XLS_RET_CHECK(payload_type.has_value());
+
+    auto* imported_type_ref = module_->Make<ColonRef>(
+        fake_span_, MakeNameRef(imported_float32_name_def_), "F32");
+    auto* imported_type =
+        MakeTypeRefTypeAnnotation(TypeDefinition(imported_type_ref));
+    auto* sign_type = MakeTypeAnnotation(/*is_signed=*/false, /*width=*/1,
+                                         /*use_xn=*/false);
+    auto* exponent_type = MakeTypeAnnotation(/*is_signed=*/false, /*width=*/8,
+                                             /*use_xn=*/false);
+    auto* fraction_type = MakeTypeAnnotation(/*is_signed=*/false, /*width=*/23,
+                                             /*use_xn=*/false);
+    auto* imported_value = module_->Make<StructInstance>(
+        fake_span_, imported_type,
+        std::vector<std::pair<std::string, Expr*>>{
+            {"sign",
+             GenerateNumber(absl::Uniform<int64_t>(bit_gen_, 0, 2), sign_type)},
+            {"bexp", GenerateNumber(absl::Uniform<int64_t>(bit_gen_, 0, 256),
+                                    exponent_type)},
+            {"fraction",
+             GenerateNumber(absl::Uniform<int64_t>(bit_gen_, 0, 1 << 23),
+                            fraction_type)},
+        });
+    imported_value_name_def =
+        module_->Make<NameDef>(fake_span_, GenSym(), imported_value);
+    statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+        fake_span_, imported_value_name_def, imported_type, imported_value,
+        /*is_const=*/false)));
+  }
+
   auto make_constructor_ref = [&](NameDef* variant_name_def) {
     return module_->Make<ColonRef>(fake_span_,
                                    MakeTypeRefTypeAnnotation(sum_def),
@@ -2207,10 +2270,19 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
       }
       return constructor_ref;
     }
-    XLS_ASSIGN_OR_RETURN(TypedExpr payload_value,
-                         GenerateExprOfType(ctx, *want_payload_type));
-    return module_->Make<Invocation>(fake_span_, constructor_ref,
-                                     std::vector<Expr*>{payload_value.expr});
+    if (imported_value_name_def != nullptr) {
+      auto* fraction = module_->Make<Attr>(
+          fake_span_, MakeNameRef(imported_value_name_def), "fraction");
+      auto* payload_value =
+          module_->Make<Cast>(fake_span_, fraction, *want_payload_type);
+      return module_->Make<Invocation>(fake_span_, constructor_ref,
+                                       std::vector<Expr*>{payload_value});
+    } else {
+      XLS_ASSIGN_OR_RETURN(TypedExpr payload_value,
+                           GenerateExprOfType(ctx, *want_payload_type));
+      return module_->Make<Invocation>(fake_span_, constructor_ref,
+                                       std::vector<Expr*>{payload_value.expr});
+    }
   };
   XLS_ASSIGN_OR_RETURN(
       Expr * active_sum_expr,
@@ -3476,12 +3548,19 @@ absl::StatusOr<int64_t> AstGenerator::GenerateProcInModule(
 
 absl::StatusOr<AnnotatedModule> AstGenerator::Generate(
     const std::string& top_entity_name, const std::string& module_name) {
-  if (options_.generate_proc && options_.require_sum_type) {
-    return absl::InvalidArgumentError(
-        "require_sum_type is only supported for function generation.");
-  }
+  XLS_RETURN_IF_ERROR(options_.Validate());
   module_ = std::make_unique<Module>(module_name, /*fs_path=*/std::nullopt,
                                      file_table_);
+  if (options_.require_imported_parametric_type) {
+    imported_float32_name_def_ = MakeNameDef("float32");
+    auto* import =
+        module_->Make<Import>(fake_span_, std::vector<std::string>{"float32"},
+                              *imported_float32_name_def_, std::nullopt);
+    imported_float32_name_def_->set_definer(import);
+    XLS_RETURN_IF_ERROR(
+        module_->AddTop(import, /*make_collision_error=*/nullptr));
+  }
+
   int64_t min_stages = 1;
   if (options_.generate_proc) {
     XLS_ASSIGN_OR_RETURN(min_stages, GenerateProcInModule(top_entity_name));

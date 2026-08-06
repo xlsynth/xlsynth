@@ -52,6 +52,10 @@ ABSL_FLAG(bool, require_sum_type, false,
           "Require each generated function sample to include a semantic sum "
           "definition and constructor use. Not supported with "
           "`--generate_proc`.");
+ABSL_FLAG(bool, require_imported_parametric_type, false,
+          "Require each semantic-sum function sample to instantiate an "
+          "imported parametric standard-library type. Requires "
+          "`--require_sum_type`.");
 ABSL_FLAG(int64_t, max_width_aggregate_types, 1024,
           "The maximum width of aggregate types (tuples and arrays) in the "
           "generated samples.");
@@ -106,6 +110,7 @@ struct Options {
   bool force_failure;
   bool generate_proc;
   bool require_sum_type;
+  bool require_imported_parametric_type;
   int64_t max_width_aggregate_types;
   int64_t max_width_bits_types;
   int64_t proc_ticks;
@@ -134,10 +139,18 @@ absl::Status CheckOrCreateWritableDirectory(const std::filesystem::path& path) {
 }
 
 absl::Status RealMain(const Options& options) {
-  if (options.generate_proc && options.require_sum_type) {
-    return absl::InvalidArgumentError(
-        "require_sum_type is only supported for function samples.");
-  }
+  dslx::AstGeneratorOptions ast_generator_options;
+  ast_generator_options.emit_gate = !options.codegen;
+  ast_generator_options.emit_loops = options.emit_loops;
+  ast_generator_options.max_width_bits_types = options.max_width_bits_types;
+  ast_generator_options.max_width_aggregate_types =
+      options.max_width_aggregate_types;
+  ast_generator_options.generate_proc = options.generate_proc;
+  ast_generator_options.require_sum_type = options.require_sum_type;
+  ast_generator_options.require_imported_parametric_type =
+      options.require_imported_parametric_type;
+  XLS_RETURN_IF_ERROR(ast_generator_options.Validate());
+
   if (options.crash_path.has_value()) {
     XLS_RETURN_IF_ERROR(CheckOrCreateWritableDirectory(*options.crash_path));
   }
@@ -151,15 +164,6 @@ absl::Status RealMain(const Options& options) {
   } else {
     worker_count = std::max(AvailableCPUs(), 1);
   }
-
-  dslx::AstGeneratorOptions ast_generator_options;
-  ast_generator_options.emit_gate = !options.codegen;
-  ast_generator_options.emit_loops = options.emit_loops;
-  ast_generator_options.max_width_bits_types = options.max_width_bits_types;
-  ast_generator_options.max_width_aggregate_types =
-      options.max_width_aggregate_types;
-  ast_generator_options.generate_proc = options.generate_proc;
-  ast_generator_options.require_sum_type = options.require_sum_type;
 
   SampleOptions sample_options;
   sample_options.set_calls_per_sample(
@@ -238,6 +242,8 @@ int main(int argc, char** argv) {
       .force_failure = absl::GetFlag(FLAGS_force_failure),
       .generate_proc = absl::GetFlag(FLAGS_generate_proc),
       .require_sum_type = absl::GetFlag(FLAGS_require_sum_type),
+      .require_imported_parametric_type =
+          absl::GetFlag(FLAGS_require_imported_parametric_type),
       .max_width_aggregate_types =
           absl::GetFlag(FLAGS_max_width_aggregate_types),
       .max_width_bits_types = absl::GetFlag(FLAGS_max_width_bits_types),
