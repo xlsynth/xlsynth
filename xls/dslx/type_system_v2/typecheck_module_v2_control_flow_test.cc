@@ -899,7 +899,11 @@ fn f(value: E) -> u32 {
           AllOf(HasSpan(11, 4, 11, 8), HasSpan(12, 11, 12, 15))));
 }
 
-// TODO(dank): Enable when duplicate match checks resolve enum type aliases.
+// `E::A` and `Alias::A` denote the same enum member when `type Alias = E`.
+// Accepting both match arms is a bug: the later arm can never run, but the
+// duplicate check compares their different source spellings and misses it.
+// TODO(dank): Resolve each pattern to its enum member before comparing
+// identities, then enable this regression.
 TEST(TypecheckV2Test, DISABLED_MatchEnumVariantDuplicatedThroughTypeAlias) {
   EXPECT_THAT(
       R"(
