@@ -39,6 +39,24 @@ namespace xls::dslx {
 // reached the point that the arms are exhaustive.
 class MatchExhaustivenessChecker {
  public:
+  enum class PatternCoverage {
+    // The pattern matches at least one previously uncovered semantic value.
+    kAddsCoverage,
+    // Every semantic value matched by this pattern was already covered.
+    kPreviouslyCovered,
+    // The pattern does not match any inhabited value in the original domain.
+    kUnmatchable,
+  };
+
+  struct PatternAddResult {
+    PatternCoverage coverage;
+    bool is_exhaustive;
+    // Set for covered patterns, preferring an exactly equivalent earlier
+    // pattern over the first merely intersecting earlier pattern.
+    std::optional<Span> first_covering_span;
+    bool is_exact_duplicate = false;
+  };
+
   MatchExhaustivenessChecker(const Span& matched_expr_span,
                              const ImportData& import_data,
                              const TypeInfo& type_info,
@@ -49,9 +67,9 @@ class MatchExhaustivenessChecker {
   MatchExhaustivenessChecker& operator=(const MatchExhaustivenessChecker&) =
       delete;
 
-  // Returns whether we've reached a point of exhaustiveness after incorporating
-  // the given `pattern`.
-  bool AddPattern(const PatternTree& pattern);
+  // Incorporates `pattern` and reports its contribution, prior source
+  // provenance when fully covered, and resulting overall exhaustiveness.
+  PatternAddResult AddPattern(const PatternTree& pattern);
 
   // Returns whether, based on already-added patterns, we're exhaustive in the
   // checker's model. For sums, that means every declared constructor payload

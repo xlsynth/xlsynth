@@ -322,6 +322,32 @@ absl::Status MatchNotExhaustiveStatus(const Span& span, const Type* matched,
       file_table);
 }
 
+absl::Status MatchPatternAlreadyCoveredStatus(
+    const Span& original_span, const Span& duplicate_span,
+    std::string_view pattern, MatchPatternOverlapKind overlap_kind,
+    const FileTable& file_table) {
+  std::string message;
+  if (overlap_kind == MatchPatternOverlapKind::kExactDuplicate) {
+    message = absl::StrFormat(
+        "TypeInferenceError: Exact-duplicate pattern match detected `%s`; "
+        "only the first could possibly match; previously @ %s",
+        pattern, original_span.ToString(file_table));
+  } else {
+    message = absl::StrFormat(
+        "TypeInferenceError: Pattern match `%s` is fully covered by previous "
+        "patterns; previously @ %s",
+        pattern, original_span.ToString(file_table));
+  }
+  absl::Status status = absl::InvalidArgumentError(message);
+  StatusPayloadProto payload;
+  *payload.add_spans() = ToProto(duplicate_span, file_table);
+  if (original_span != duplicate_span) {
+    *payload.add_spans() = ToProto(original_span, file_table);
+  }
+  SetStatusPayload(status, payload);
+  return status;
+}
+
 absl::Status ConstAssertFailureStatus(const Span& span, const Expr* expr,
                                       std::string env_string,
                                       const FileTable& file_table) {

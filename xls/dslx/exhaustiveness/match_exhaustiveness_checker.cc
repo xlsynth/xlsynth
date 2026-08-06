@@ -32,6 +32,7 @@
 #include "xls/dslx/exhaustiveness/interp_value_interval.h"
 #include "xls/dslx/exhaustiveness/nd_region.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
@@ -39,6 +40,7 @@
 #include "xls/dslx/sum_type_encoding.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
+#include "xls/ir/bits.h"
 
 namespace xls::dslx {
 namespace {
@@ -251,6 +253,73 @@ std::vector<InterpValueInterval> GetFullIntervals(
   return result;
 }
 
+int64_t GetDenseEnumBitCount(const EnumType& enum_type) {
+  int64_t source_bit_count = enum_type.size().GetAsInt64().value();
+  int64_t member_count = enum_type.nominal_type().values().size();
+  int64_t maximum_member_index = std::max<int64_t>(0, member_count - 1);
+  return std::max(source_bit_count,
+                  Bits::MinBitCountUnsigned(maximum_member_index));
+}
+
+std::optional<int64_t> GetEnumMemberIndexByName(const EnumType& enum_type,
+                                                std::string_view member_name) {
+  const EnumDef& enum_def = enum_type.nominal_type();
+  for (int64_t i = 0; i < enum_def.values().size(); ++i) {
+    if (enum_def.values()[i].name_def->identifier() == member_name) {
+      return i;
+    }
+  }
+  return std::nullopt;
+}
+
+InterpValueInterval MakePointIntervalForEnumMember(const EnumType& enum_type,
+                                                   int64_t member_index) {
+  InterpValue member_position =
+      InterpValue::MakeUBits(GetDenseEnumBitCount(enum_type), member_index);
+  return InterpValueInterval(member_position, member_position);
+}
+
+// Follow local and imported constants back to their source enum declaration so
+// equal-valued declared variants do not lose their identities in InterpValue.
+const ColonRef* ResolveEnumPatternMember(const Expr& expression,
+                                         const TypeInfo& type_info) {
+  const Expr* current = &expression;
+  const TypeInfo* current_type_info = &type_info;
+  const ColonRef* member = nullptr;
+  while (current != nullptr) {
+    if (const NameRef* name_ref = dynamic_cast<const NameRef*>(current);
+        name_ref != nullptr) {
+      const ConstantDef* constant =
+          dynamic_cast<const ConstantDef*>(name_ref->GetDefiner());
+      current = constant == nullptr ? nullptr : constant->value();
+    } else if (const ColonRef* colon_ref =
+                   dynamic_cast<const ColonRef*>(current);
+               colon_ref != nullptr) {
+      std::optional<ImportSubject> import = colon_ref->ResolveImportSubject();
+      if (!import.has_value()) {
+        member = colon_ref;
+        current = nullptr;
+      } else if (std::optional<const ImportedInfo*> imported_info =
+                     current_type_info->GetImported(*import);
+                 imported_info.has_value()) {
+        std::optional<ConstantDef*> constant =
+            (*imported_info)->module->GetMember<ConstantDef>(colon_ref->attr());
+        if (constant.has_value()) {
+          current = (*constant)->value();
+          current_type_info = (*imported_info)->type_info;
+        } else {
+          current = nullptr;
+        }
+      } else {
+        current = nullptr;
+      }
+    } else {
+      current = nullptr;
+    }
+  }
+  return member;
+}
+
 InterpValueInterval MakePointIntervalForType(const Type& type,
                                              const InterpValue& value,
                                              const ImportData& import_data) {
@@ -290,6 +359,19 @@ std::optional<InterpValueInterval> PatternToIntervalInternal(
             std::optional<InterpValue> value =
                 type_info.GetConstExprOption(name_ref);
             if (value.has_value()) {
+              if (leaf_type.type->IsEnum()) {
+                const ColonRef* enum_member =
+                    ResolveEnumPatternMember(*name_ref, type_info);
+                if (enum_member != nullptr) {
+                  std::optional<int64_t> member_index =
+                      GetEnumMemberIndexByName(leaf_type.type->AsEnum(),
+                                               enum_member->attr());
+                  if (member_index.has_value()) {
+                    return MakePointIntervalForEnumMember(
+                        leaf_type.type->AsEnum(), *member_index);
+                  }
+                }
+              }
               return MakePointIntervalForType(*leaf_type.type, value.value(),
                                               import_data);
             }
@@ -327,6 +409,18 @@ std::optional<InterpValueInterval> PatternToIntervalInternal(
                     << colon_ref->ToString() << "` value: `"
                     << value.value().ToString() << "`" << " leaf_type: `"
                     << leaf_type.type->ToString() << "`";
+            if (leaf_type.type->IsEnum()) {
+              const ColonRef* enum_member =
+                  ResolveEnumPatternMember(*colon_ref, type_info);
+              if (enum_member != nullptr) {
+                std::optional<int64_t> member_index = GetEnumMemberIndexByName(
+                    leaf_type.type->AsEnum(), enum_member->attr());
+                if (member_index.has_value()) {
+                  return MakePointIntervalForEnumMember(
+                      leaf_type.type->AsEnum(), *member_index);
+                }
+              }
+            }
             return MakePointIntervalForType(*leaf_type.type, value.value(),
                                             import_data);
           },
@@ -779,10 +873,19 @@ std::optional<std::vector<InterpValue>> SampleSimplestUncoveredLeafValues(
 }  // namespace
 
 struct MatchExhaustivenessChecker::Impl {
+  struct CoveredPattern {
+    NdInterval interval;
+    Span span;
+    std::string spelling;
+    bool is_irrefutable;
+  };
+
   struct SumVariantState {
     std::string variant_name;
     FlattenedLeafTypes leaf_types;
+    NdRegion original;
     NdRegion remaining;
+    std::vector<CoveredPattern> covered_patterns;
   };
 
   Impl(const Span& matched_expr_span, const ImportData& import_data,
@@ -791,9 +894,76 @@ struct MatchExhaustivenessChecker::Impl {
         import_data_(import_data),
         type_info_(type_info),
         matched_type_(matched_type),
+        original_(NdRegion::MakeEmpty({})),
         remaining_(NdRegion::MakeEmpty({})) {}
 
   const FileTable& file_table() const { return type_info_.file_table(); }
+
+  PatternAddResult AddInterval(const PatternTree& pattern,
+                               const NdIntervalWithEmpty& interval,
+                               const NdRegion& original, NdRegion& remaining,
+                               std::vector<CoveredPattern>& covered_patterns) {
+    PatternAddResult result{
+        .coverage = PatternCoverage::kUnmatchable,
+        .is_exhaustive = false,
+    };
+    std::optional<NdInterval> nonempty_interval = interval.ToNonEmpty();
+    if (nonempty_interval.has_value()) {
+      bool matches_original_domain =
+          std::any_of(original.disjoint().begin(), original.disjoint().end(),
+                      [&](const NdInterval& original_interval) {
+                        return original_interval.Intersects(*nonempty_interval);
+                      });
+      if (matches_original_domain) {
+        bool adds_coverage = std::any_of(
+            remaining.disjoint().begin(), remaining.disjoint().end(),
+            [&](const NdInterval& remaining_interval) {
+              return remaining_interval.Intersects(*nonempty_interval);
+            });
+        if (adds_coverage) {
+          result.coverage = PatternCoverage::kAddsCoverage;
+          remaining = remaining.SubtractInterval(interval);
+        } else {
+          result.coverage = PatternCoverage::kPreviouslyCovered;
+          bool is_irrefutable = IsIrrefutablePattern(pattern);
+          std::string spelling = PatternToString(pattern);
+          for (const CoveredPattern& previous : covered_patterns) {
+            bool exact_interval =
+                previous.interval.Covers(*nonempty_interval) &&
+                nonempty_interval->Covers(previous.interval);
+            bool same_constructor_scope =
+                previous.is_irrefutable == is_irrefutable;
+            bool same_wildcard_spelling =
+                !is_irrefutable || previous.spelling == spelling;
+            if (exact_interval && same_constructor_scope &&
+                same_wildcard_spelling) {
+              result.first_covering_span = previous.span;
+              result.is_exact_duplicate = true;
+              break;
+            }
+          }
+          if (!result.first_covering_span.has_value()) {
+            for (const CoveredPattern& previous : covered_patterns) {
+              if (previous.interval.Intersects(*nonempty_interval)) {
+                result.first_covering_span = previous.span;
+                break;
+              }
+            }
+          }
+          CHECK(result.first_covering_span.has_value())
+              << "Covered pattern has no previously matching source: "
+              << spelling;
+        }
+        covered_patterns.push_back(CoveredPattern{
+            .interval = std::move(*nonempty_interval),
+            .span = GetPatternSpan(pattern),
+            .spelling = PatternToString(pattern),
+            .is_irrefutable = IsIrrefutablePattern(pattern),
+        });
+      }
+    }
+    return result;
+  }
 
   const Span matched_expr_span_;
   const ImportData& import_data_;
@@ -802,7 +972,9 @@ struct MatchExhaustivenessChecker::Impl {
   const SumType* matched_sum_type_ = nullptr;
   FlattenedLeafTypes leaf_types_;
   std::vector<SumVariantState> sum_variant_states_;
+  NdRegion original_;
   NdRegion remaining_;
+  std::vector<CoveredPattern> covered_patterns_;
 };
 
 // -- class MatchExhaustivenessChecker
@@ -820,15 +992,19 @@ MatchExhaustivenessChecker::MatchExhaustivenessChecker(
       FlattenedLeafTypes variant_leaf_types = GetSumVariantPayloadLeafTypes(
           *impl_->matched_sum_type_, variant.variant().identifier());
       NdRegion variant_remaining = MakeFullNdRegion(variant_leaf_types);
-      impl_->sum_variant_states_.push_back(Impl::SumVariantState{
-          std::string(variant.variant().identifier()),
-          std::move(variant_leaf_types), std::move(variant_remaining)});
+      impl_->sum_variant_states_.push_back(
+          Impl::SumVariantState{std::string(variant.variant().identifier()),
+                                std::move(variant_leaf_types),
+                                variant_remaining,
+                                std::move(variant_remaining),
+                                {}});
     }
     return;
   }
   impl_->leaf_types_ =
       GetLeafTypes(matched_type, matched_expr_span, file_table());
   impl_->remaining_ = MakeFullNdRegion(impl_->leaf_types_);
+  impl_->original_ = impl_->remaining_;
 }
 
 MatchExhaustivenessChecker::~MatchExhaustivenessChecker() = default;
@@ -848,12 +1024,17 @@ bool MatchExhaustivenessChecker::IsExhaustive() const {
   return impl_->remaining_.IsEmpty();
 }
 
-bool MatchExhaustivenessChecker::AddPattern(const PatternTree& pattern) {
+MatchExhaustivenessChecker::PatternAddResult
+MatchExhaustivenessChecker::AddPattern(const PatternTree& pattern) {
   VLOG(5) << "MatchExhaustivenessChecker::AddPattern: `"
           << PatternToString(pattern) << "` matched_type: `"
           << impl_->matched_type_.ToString() << "` @ "
           << GetPatternSpan(pattern).ToString(file_table());
 
+  PatternAddResult result{
+      .coverage = PatternCoverage::kUnmatchable,
+      .is_exhaustive = false,
+  };
   if (impl_->matched_sum_type_ != nullptr) {
     if (IsIrrefutablePattern(pattern)) {
       for (Impl::SumVariantState& variant_state : impl_->sum_variant_states_) {
@@ -862,32 +1043,43 @@ bool MatchExhaustivenessChecker::AddPattern(const PatternTree& pattern) {
         NdIntervalWithEmpty full_interval = PatternLeavesToInterval(
             payload_wildcards, variant_state.leaf_types.flat, impl_->type_info_,
             impl_->import_data_);
-        variant_state.remaining =
-            variant_state.remaining.SubtractInterval(full_interval);
+        PatternAddResult variant_result = impl_->AddInterval(
+            pattern, full_interval, variant_state.original,
+            variant_state.remaining, variant_state.covered_patterns);
+        if (variant_result.coverage == PatternCoverage::kAddsCoverage) {
+          result = variant_result;
+        } else if (result.coverage != PatternCoverage::kAddsCoverage &&
+                   (result.coverage == PatternCoverage::kUnmatchable ||
+                    variant_result.is_exact_duplicate)) {
+          result = variant_result;
+        }
       }
-      return IsExhaustive();
+    } else {
+      CHECK(!std::holds_alternative<TuplePattern*>(pattern))
+          << "Expected a leaf pattern for sum type, got `"
+          << PatternToString(pattern) << "`";
+      ExpandedSumVariantPattern variant_pattern =
+          ExpandSumVariantPayloadPatternLeaves(
+              pattern, *impl_->matched_sum_type_, file_table());
+      Impl::SumVariantState& variant_state =
+          impl_->sum_variant_states_.at(variant_pattern.variant_index);
+      NdIntervalWithEmpty payload_interval = PatternLeavesToInterval(
+          variant_pattern.leaves, variant_state.leaf_types.flat,
+          impl_->type_info_, impl_->import_data_);
+      result = impl_->AddInterval(
+          pattern, payload_interval, variant_state.original,
+          variant_state.remaining, variant_state.covered_patterns);
     }
-    CHECK(!std::holds_alternative<TuplePattern*>(pattern))
-        << "Expected a leaf pattern for sum type, got `"
-        << PatternToString(pattern) << "`";
-    ExpandedSumVariantPattern variant_pattern =
-        ExpandSumVariantPayloadPatternLeaves(pattern, *impl_->matched_sum_type_,
-                                             file_table());
-    Impl::SumVariantState& variant_state =
-        impl_->sum_variant_states_.at(variant_pattern.variant_index);
-    NdIntervalWithEmpty payload_interval = PatternLeavesToInterval(
-        variant_pattern.leaves, variant_state.leaf_types.flat,
+  } else {
+    NdIntervalWithEmpty this_pattern_interval = PatternToInterval(
+        pattern, impl_->matched_type_, impl_->leaf_types_.flat,
         impl_->type_info_, impl_->import_data_);
-    variant_state.remaining =
-        variant_state.remaining.SubtractInterval(payload_interval);
-    return IsExhaustive();
+    result =
+        impl_->AddInterval(pattern, this_pattern_interval, impl_->original_,
+                           impl_->remaining_, impl_->covered_patterns_);
   }
-
-  NdIntervalWithEmpty this_pattern_interval =
-      PatternToInterval(pattern, impl_->matched_type_, impl_->leaf_types_.flat,
-                        impl_->type_info_, impl_->import_data_);
-  impl_->remaining_ = impl_->remaining_.SubtractInterval(this_pattern_interval);
-  return IsExhaustive();
+  result.is_exhaustive = IsExhaustive();
+  return result;
 }
 
 std::optional<InterpValue>
@@ -928,7 +1120,7 @@ MatchExhaustivenessChecker::SampleSimplestUncoveredValue() const {
 }
 
 InterpValueInterval MakeFullIntervalForEnumType(const EnumType& enum_type) {
-  int64_t bit_count = enum_type.size().GetAsInt64().value();
+  int64_t bit_count = GetDenseEnumBitCount(enum_type);
   const EnumDef& enum_def = enum_type.nominal_type();
   int64_t enum_value_count = enum_def.values().size();
   VLOG(5) << "MakeFullIntervalForEnumType; enum_type: " << enum_type.ToString()
@@ -968,13 +1160,12 @@ InterpValueInterval MakePointIntervalForEnumType(
   CHECK(value.IsEnum())
       << "MakePointIntervalForEnumType; value is not an enum: "
       << value.ToString();
-  int64_t bit_count = enum_type.size().GetAsInt64().value();
   // The `value` provided is the `i`th value in the dense enum space -- let's
   // determine that value `i`.
   int64_t member_index =
       GetEnumMemberIndex(enum_type, value, import_data).value();
   const InterpValue value_as_bits =
-      InterpValue::MakeUBits(bit_count, member_index);
+      InterpValue::MakeUBits(GetDenseEnumBitCount(enum_type), member_index);
   VLOG(5) << "MakePointIntervalForEnumType; value_as_bits: "
           << value_as_bits.ToString() << " member_index: " << member_index;
   return InterpValueInterval(value_as_bits, value_as_bits);
