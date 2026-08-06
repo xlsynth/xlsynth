@@ -1043,6 +1043,22 @@ fn f(value: E) -> u32 {
 )"));
 }
 
+TEST(TypecheckV2Test, MatchOmittedSameValuedEnumVariantIsNonExhaustive) {
+  EXPECT_THAT(
+      R"(
+enum E: u2 { A = 0, B = 0, C = 1 }
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    E::C => u32:1,
+  }
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("Match patterns are not exhaustive"),
+                           HasSubstr("`E:0` is not covered"))));
+}
+
 TEST(TypecheckV2Test, MatchDistinctSameValuedEnumVariantsRemainDistinct) {
   XLS_EXPECT_OK(TypecheckV2(R"(
 enum E: u2 { A = 0, B = 0, C = 1 }
