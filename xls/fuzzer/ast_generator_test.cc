@@ -306,8 +306,13 @@ TEST(AstGeneratorMultiTest, GeneratesRequiredCrossModuleSumTypes) {
       << text;
   EXPECT_THAT(text, testing::HasSubstr("semantic_sum_provider::Option::None"))
       << text;
-  EXPECT_THAT(text, testing::Not(ContainsRegex(
-                        R"(fn main\([^\n]*semantic_sum_provider::Option)")))
+  std::optional<Function*> main = module.module->GetFunction("main");
+  ASSERT_TRUE(main.has_value()) << text;
+  ASSERT_FALSE((*main)->params().empty()) << text;
+  EXPECT_EQ((*main)->params().back()->type_annotation()->ToString(),
+            "semantic_sum_provider::Option")
+      << text;
+  EXPECT_EQ((*main)->return_type()->ToString(), "semantic_sum_provider::Option")
       << text;
   XLS_ASSERT_OK(ParseAndTypecheck<Function>(text, "imported_sum_sample"))
       << text;
