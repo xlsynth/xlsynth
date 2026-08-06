@@ -162,6 +162,46 @@ class RunFuzzMultiprocessTest(test_base.TestCase):
     )
     self.assertIn('source_seed_replay.binarypb', os.listdir(summaries_path))
 
+  def test_imported_parametric_semantic_sum_sample(self):
+    crasher_path = self.create_tempdir().full_path
+    samples_path = self.create_tempdir().full_path
+
+    subprocess.check_call([
+        RUN_FUZZ_MULTIPROCESS_PATH,
+        '--seed=42',
+        '--require_sum_type',
+        '--require_imported_parametric_type',
+        '--crash_path=' + crasher_path,
+        '--save_temps_path=' + samples_path,
+        '--sample_count=1',
+        '--calls_per_sample=1',
+        '--worker_count=1',
+    ])
+
+    self.assertSequenceEqual(os.listdir(crasher_path), ('test',))
+    self.assertSequenceEqual(os.listdir(samples_path), ('worker0-sample0',))
+    sample_path = os.path.join(samples_path, 'worker0-sample0')
+    with open(os.path.join(sample_path, 'sample.x'), encoding='utf-8') as source:
+      generated_program = source.read()
+    self.assertIn('import float32;', generated_program)
+    self.assertIn('float32::F32 {', generated_program)
+    self.assertRegex(
+        generated_program, r'x[0-9]+::x[0-9]+\([^)]*\.fraction as '
+    )
+
+    for artifact in (
+        'sample.x.results',
+        'sample.ir',
+        'sample.ir.results',
+        'sample.opt.ir',
+        'sample.opt.ir.results',
+    ):
+      artifact_path = os.path.join(sample_path, artifact)
+      self.assertTrue(os.path.isfile(artifact_path), artifact)
+      self.assertGreater(os.path.getsize(artifact_path), 0, artifact)
+
+    subprocess.check_call([os.path.join(sample_path, 'run.sh')], cwd=sample_path)
+
   def test_codegen_and_simulate(self):
     crasher_path = self.create_tempdir().full_path
     samples_path = self.create_tempdir().full_path
