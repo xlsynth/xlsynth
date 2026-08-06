@@ -874,6 +874,62 @@ const Z = match X {
                   HasSubstr("Exact-duplicate pattern match detected `u32:1`")));
 }
 
+TEST(TypecheckV2Test, MatchEnumVariantDuplicatedAcrossAlternativeArms) {
+  constexpr std::string_view kProgram = R"(
+enum E: u2 {
+  A = 0,
+  B = 1,
+  C = 2,
+}
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    E::B | E::A => u32:1,
+    E::C => u32:2,
+  }
+}
+)";
+
+  EXPECT_THAT(
+      kProgram,
+      TypecheckFailsWithPayload(
+          AllOf(HasSubstr("Exact-duplicate pattern match detected `E::A`"),
+                HasSubstr("previously @ fake.x:12:5-12:9")),
+          AllOf(HasSpan(11, 4, 11, 8), HasSpan(12, 11, 12, 15))));
+}
+
+// TODO(dank): Enable when duplicate match checks resolve enum type aliases.
+TEST(TypecheckV2Test, DISABLED_MatchEnumVariantDuplicatedThroughTypeAlias) {
+  EXPECT_THAT(
+      R"(
+enum E: u2 { A = 0, B = 1 }
+type Alias = E;
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    Alias::A => u32:1,
+    E::B => u32:2,
+  }
+}
+)",
+      TypecheckFails(HasSubstr("Exact-duplicate pattern match detected")));
+}
+
+TEST(TypecheckV2Test, MatchEnumVariantAlternativesRemainValid) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u2 { A = 0, B = 1, C = 2 }
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    E::B | E::C => u32:1,
+  }
+}
+)"));
+}
+
 TEST(TypecheckV2Test, MatchNonExhaustive) {
   EXPECT_THAT(R"(
 fn f(x: u1) -> u32 {
