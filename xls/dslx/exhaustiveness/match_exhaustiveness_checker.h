@@ -76,12 +76,10 @@ class MatchExhaustivenessChecker {
   // space is covered, not that every raw boundary encoding has been handled.
   bool IsExhaustive() const;
 
-  // This method returns an optional "sample" value from the uncovered input
-  // space. It picks (for now) the first uncovered ND region and for each
-  // dimension, takes the lower bound. If there is only one dimension the value
-  // is returned directly; otherwise the components are aggregated into a tuple.
-  //
-  std::optional<InterpValue> SampleSimplestUncoveredValue() const;
+  // Formats a sample from the first uncovered region for user-facing match
+  // diagnostics. Enum declarations and semantic-sum constructors retain their
+  // source names instead of exposing their numeric storage representations.
+  std::optional<std::string> FormatSimplestUncoveredValue() const;
 
  private:
   struct Impl;

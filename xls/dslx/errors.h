@@ -169,7 +169,7 @@ absl::Status ArrayDimTooLargeErrorStatus(const Span& span, uint64_t value,
 // To be raised when there exists a case not covered by a match arm and there
 // is no catch-all for the match.
 absl::Status MatchNotExhaustiveStatus(const Span& span, const Type* matched,
-                                      InterpValue& unmatched_sample,
+                                      std::string_view unmatched_sample,
                                       const FileTable& file_table);
 
 enum class MatchPatternOverlapKind {

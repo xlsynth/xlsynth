@@ -818,14 +818,10 @@ fn main(e: imported::MyEnum) -> u32 {
   ImportData import_data = CreateImportDataForTest(std::move(vfs));
   absl::StatusOr<TypecheckedModule> tm =
       ParseAndTypecheck(kProgram, "main.x", "main", &import_data);
-  // TODO(cdleary): 2025-02-09 We should make a layer where InterpValue can
-  // print out resolved enum member names. This needs constexpr-eval'd
-  // information on how to map bits values into enum member names.
-
   EXPECT_THAT(tm.status(),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        AllOf(HasSubstr("Match patterns are not exhaustive"),
-                             HasSubstr("`MyEnum:1` is not covered"))));
+                             HasSubstr("`MyEnum::B` is not covered"))));
 }
 
 }  // namespace

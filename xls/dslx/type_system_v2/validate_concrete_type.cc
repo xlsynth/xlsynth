@@ -401,8 +401,8 @@ class TypeValidator : public AstNodeVisitorWithDefault {
     }
 
     if (!exhaustiveness_checker.IsExhaustive()) {
-      std::optional<InterpValue> sample =
-          exhaustiveness_checker.SampleSimplestUncoveredValue();
+      std::optional<std::string> sample =
+          exhaustiveness_checker.FormatSimplestUncoveredValue();
       XLS_RET_CHECK(sample.has_value());
       return MatchNotExhaustiveStatus(node->span(), matched, *sample,
                                       file_table_);
