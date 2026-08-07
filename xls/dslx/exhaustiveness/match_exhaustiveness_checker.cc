@@ -996,39 +996,136 @@ NdRegion MakeFullNdRegion(const FlattenedLeafTypes& leaf_types) {
   return result;
 }
 
-std::optional<std::vector<InterpValue>> SampleSimplestUncoveredLeafValues(
-    const NdRegion& remaining, absl::Span<const FlattenedLeafType> leaf_types) {
-  if (remaining.IsEmpty()) {
-    return std::nullopt;
+bool ContainsNamedVariant(const Type& type) {
+  bool result;
+  if (type.IsEnum() || type.IsSum()) {
+    result = true;
+  } else if (type.IsTuple()) {
+    result = std::any_of(type.AsTuple().members().begin(),
+                         type.AsTuple().members().end(),
+                         [](const std::unique_ptr<Type>& member) {
+                           return ContainsNamedVariant(*member);
+                         });
+  } else {
+    result = false;
+  }
+  return result;
+}
+
+std::string FormatSumVariant(const SumType& sum_type,
+                             const SumTypeVariant& variant,
+                             absl::Span<const std::string> payload_values) {
+  CHECK_EQ(variant.size(), payload_values.size());
+  std::string result = sum_type.nominal_type().identifier();
+  result += "::";
+  result += variant.variant().identifier();
+
+  if (variant.is_unit()) {
+    CHECK(payload_values.empty());
+  } else if (variant.is_tuple()) {
+    result += "(";
+    for (int64_t i = 0; i < payload_values.size(); ++i) {
+      if (i != 0) {
+        result += ", ";
+      }
+      result += payload_values[i];
+    }
+    result += ")";
+  } else {
+    CHECK(variant.is_struct());
+    result += " {";
+    for (int64_t i = 0; i < payload_values.size(); ++i) {
+      result += i == 0 ? " " : ", ";
+      result += variant.GetMemberName(i);
+      result += ": ";
+      result += payload_values[i];
+    }
+    result += " }";
+  }
+  return result;
+}
+
+std::string FormatSampleForType(
+    const Type& type, absl::Span<const InterpValueInterval> dimensions,
+    int64_t* leaf_index) {
+  std::string result;
+  if (type.IsEnum()) {
+    CHECK_LT(*leaf_index, dimensions.size());
+    const EnumType& enum_type = type.AsEnum();
+    const EnumDef& enum_def = enum_type.nominal_type();
+    int64_t value_index =
+        dimensions[(*leaf_index)++].min().GetBitValueUnsigned().value();
+    std::vector<InterpValue> distinct_values =
+        MakeEnumValueDomain(enum_type).values;
+    CHECK_LT(value_index, distinct_values.size());
+    const InterpValue& value = distinct_values[value_index];
+    int64_t member_index = 0;
+    while (member_index < enum_type.members().size() &&
+           !enum_type.members()[member_index].Eq(value)) {
+      ++member_index;
+    }
+    CHECK_LT(member_index, enum_def.values().size());
+    result = enum_def.identifier();
+    result += "::";
+    result += enum_def.GetMemberName(member_index);
+  } else if (type.IsTuple()) {
+    result += "(";
+    const TupleType& tuple_type = type.AsTuple();
+    for (int64_t i = 0; i < tuple_type.size(); ++i) {
+      if (i != 0) {
+        result += ", ";
+      }
+      result += FormatSampleForType(tuple_type.GetMemberType(i), dimensions,
+                                    leaf_index);
+    }
+    result += ")";
+  } else if (type.IsSum()) {
+    CHECK_LT(*leaf_index, dimensions.size());
+    const SumType& sum_type = type.AsSum();
+    int64_t variant_index =
+        dimensions[(*leaf_index)++].min().GetBitValueUnsigned().value();
+    CHECK_LT(variant_index, sum_type.variant_count());
+    const SumTypeVariant& variant = sum_type.variants().at(variant_index);
+    const Phase1SumTypeEncoding encoding(sum_type);
+    Phase1SumTypeEncoding::VariantInfo variant_info =
+        encoding.GetVariant(variant.variant().identifier()).value();
+    std::vector<std::string> payload_values;
+    payload_values.reserve(variant.size());
+    CHECK_OK(encoding.VisitPayloadAssemblyOrder(
+        variant_info,
+        [&](int64_t active_index) -> absl::Status {
+          payload_values.push_back(FormatSampleForType(
+              variant.GetMemberType(active_index), dimensions, leaf_index));
+          return absl::OkStatus();
+        },
+        [&](const Type& inactive_type) -> absl::Status {
+          *leaf_index += GetLeafTypeCount(inactive_type);
+          CHECK_LE(*leaf_index, dimensions.size());
+          return absl::OkStatus();
+        }));
+    result = FormatSumVariant(sum_type, variant, payload_values);
+  } else {
+    CHECK_LT(*leaf_index, dimensions.size());
+    result = dimensions[(*leaf_index)++].min().ToString();
+  }
+  return result;
+}
+
+std::string FormatLegacySample(
+    absl::Span<const InterpValueInterval> dimensions) {
+  std::vector<InterpValue> components;
+  components.reserve(dimensions.size());
+  for (const InterpValueInterval& interval : dimensions) {
+    components.push_back(interval.min());
   }
 
-  const NdInterval& nd_interval = remaining.disjoint().front();
-  CHECK_EQ(nd_interval.dims().size(), leaf_types.size());
-  std::vector<InterpValue> components;
-  components.reserve(nd_interval.dims().size());
-  for (int64_t i = 0; i < nd_interval.dims().size(); ++i) {
-    const Type& type = *leaf_types[i].type;
-    const InterpValueInterval& interval = nd_interval.dims()[i];
-    const InterpValue& min = interval.min();
-    if (type.IsEnum()) {
-      const EnumType& enum_type = type.AsEnum();
-      CHECK(leaf_types[i].enum_domain.has_value());
-      const std::vector<InterpValue>& distinct_values =
-          leaf_types[i].enum_domain->values;
-      int64_t value_index = min.GetBitValueUnsigned().value();
-      CHECK_LT(value_index, distinct_values.size())
-          << "Value index out of bounds: " << value_index
-          << " for enum: " << enum_type.ToString();
-      InterpValue member_value = distinct_values[value_index];
-      VLOG(5) << "SampleSimplestUncoveredLeafValues; enum_type: "
-              << enum_type.ToString() << " value_index: " << value_index
-              << " member_value: " << member_value.ToString();
-      components.push_back(std::move(member_value));
-      continue;
-    }
-    components.push_back(min);
+  std::string result;
+  if (components.size() == 1) {
+    result = components.front().ToString();
+  } else {
+    result = InterpValue::MakeTuple(components).ToString();
   }
-  return components;
+  return result;
 }
 
 }  // namespace
@@ -1356,40 +1453,47 @@ MatchExhaustivenessChecker::AddPattern(const PatternTree& pattern) {
   return result;
 }
 
-std::optional<InterpValue>
-MatchExhaustivenessChecker::SampleSimplestUncoveredValue() const {
+std::optional<std::string>
+MatchExhaustivenessChecker::FormatSimplestUncoveredValue() const {
+  std::optional<std::string> result;
   if (impl_->matched_sum_type_ != nullptr) {
     for (const Impl::SumVariantState& variant_state :
          impl_->sum_variant_states_) {
-      std::optional<std::vector<InterpValue>> payload_values =
-          SampleSimplestUncoveredLeafValues(variant_state.coverage.remaining,
-                                            variant_state.leaf_types.flat);
-      if (!payload_values.has_value()) {
+      if (variant_state.coverage.remaining.IsEmpty()) {
         continue;
       }
-      absl::StatusOr<InterpValue> sample =
-          CreateSumValue(*impl_->matched_sum_type_, variant_state.variant_name,
-                         *payload_values);
-      CHECK_OK(sample.status());
-      return sample.value();
+      const SumTypeVariant& variant =
+          *Phase1SumTypeEncoding(*impl_->matched_sum_type_)
+               .GetVariant(variant_state.variant_name)
+               .value()
+               .variant;
+      absl::Span<const InterpValueInterval> dimensions =
+          variant_state.coverage.remaining.disjoint().front().dims();
+      int64_t leaf_index = 0;
+      std::vector<std::string> payload_values;
+      payload_values.reserve(variant.size());
+      for (int64_t i = 0; i < variant.size(); ++i) {
+        payload_values.push_back(FormatSampleForType(variant.GetMemberType(i),
+                                                     dimensions, &leaf_index));
+      }
+      CHECK_EQ(leaf_index, dimensions.size());
+      result =
+          FormatSumVariant(*impl_->matched_sum_type_, variant, payload_values);
+      break;
     }
-    return std::nullopt;
+  } else if (!impl_->coverage_.remaining.IsEmpty()) {
+    absl::Span<const InterpValueInterval> dimensions =
+        impl_->coverage_.remaining.disjoint().front().dims();
+    if (ContainsNamedVariant(impl_->matched_type_)) {
+      int64_t leaf_index = 0;
+      result =
+          FormatSampleForType(impl_->matched_type_, dimensions, &leaf_index);
+      CHECK_EQ(leaf_index, dimensions.size());
+    } else {
+      result = FormatLegacySample(dimensions);
+    }
   }
-
-  std::optional<std::vector<InterpValue>> components =
-      SampleSimplestUncoveredLeafValues(impl_->coverage_.remaining,
-                                        impl_->leaf_types_.flat);
-  if (!components.has_value()) {
-    return std::nullopt;
-  }
-
-  if (components->empty()) {
-    return InterpValue::MakeTuple({});
-  }
-  if (components->size() == 1) {
-    return (*components)[0];
-  }
-  return InterpValue::MakeTuple(*components);
+  return result;
 }
 
 }  // namespace xls::dslx
