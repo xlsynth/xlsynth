@@ -22,8 +22,6 @@
 #include <string_view>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -31,6 +29,8 @@
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "re2/re2.h"
 #include "xls/common/logging/log_lines.h"
 #include "xls/common/status/matchers.h"
@@ -199,6 +199,28 @@ TEST(AstGeneratorMultiTest, GeneratesValidProcsWithRandomState) {
   }
 }
 
+TEST(AstGeneratorMultiTest, GeneratesRequiredSumTypesInProcs) {
+  FileTable file_table;
+  std::mt19937_64 rng{0};
+  AstGeneratorOptions options;
+  options.generate_proc = true;
+  options.require_sum_type = true;
+  constexpr int64_t kNumSamples = 8;
+  for (int64_t i = 0; i < kNumSamples; ++i) {
+    AstGenerator g(options, rng, file_table);
+    LOG(INFO) << "Generating required-sum proc sample: " << i;
+    std::string module_name = absl::StrFormat("sum_proc_sample_%d", i);
+    XLS_ASSERT_OK_AND_ASSIGN(AnnotatedModule module,
+                             g.Generate("main", module_name));
+
+    std::string text = module.module->ToString();
+    EXPECT_THAT(text, ContainsRegex(R"(enum x[0-9]+ \{)")) << text;
+    EXPECT_THAT(text, ContainsRegex(R"(proc main)")) << text;
+    EXPECT_THAT(text, ContainsRegex(R"(recv\()")) << text;
+    XLS_ASSERT_OK(ParseAndTypecheck<Proc>(text, module_name)) << text;
+  }
+}
+
 // Helper function that is used in a TEST_P so we can shard the work.
 static void TestRepeatable(uint64_t seed) {
   FileTable file_table;
@@ -265,11 +287,9 @@ TEST(AstGeneratorMultiTest, GeneratesRequiredSumTypes) {
     EXPECT_THAT(text, ContainsRegex(R"(x[0-9]+::x[0-9]+\()")) << text;
     EXPECT_THAT(text, ContainsRegex(R"(match \()")) << text;
     EXPECT_THAT(text, ContainsRegex(R"(assert_eq\()")) << text;
-    EXPECT_THAT(text,
-                ContainsRegex(R"(assert_eq\(x[0-9]+, bool:(0x|0b)?1\))"))
+    EXPECT_THAT(text, ContainsRegex(R"(assert_eq\(x[0-9]+, bool:(0x|0b)?1\))"))
         << text;
-    EXPECT_THAT(text,
-                ContainsRegex(R"(assert_eq\(x[0-9]+, u32:(0x|0b)?1\))"))
+    EXPECT_THAT(text, ContainsRegex(R"(assert_eq\(x[0-9]+, u32:(0x|0b)?1\))"))
         << text;
     EXPECT_THAT(text, ContainsRegex(R"(==)")) << text;
     EXPECT_THAT(text, ContainsRegex(R"(== u32:(0x|0b)?1)")) << text;

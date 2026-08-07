@@ -34,8 +34,8 @@
 #include "xls/fuzzer/ast_generator.h"
 #include "xls/fuzzer/run_fuzz_multiprocess.h"
 #include "xls/fuzzer/sample.h"
-#include "xls/fuzzer/semantic_sum_source_seed_replay.h"
 #include "xls/fuzzer/sample.pb.h"
+#include "xls/fuzzer/semantic_sum_source_seed_replay.h"
 
 ABSL_FLAG(absl::Duration, duration, absl::InfiniteDuration(),
           "Duration to run the sample generator for.");
@@ -49,9 +49,10 @@ ABSL_FLAG(
     "Forces the samples to fail. Can be used to test failure code paths.");
 ABSL_FLAG(bool, generate_proc, false, "Generate a proc sample.");
 ABSL_FLAG(bool, require_sum_type, false,
-          "Require each generated function sample to include a semantic sum "
-          "definition and constructor use. Not supported with "
-          "`--generate_proc`.");
+          "Require each generated sample to include a semantic sum definition. "
+          "For function samples, the generated body uses semantic-sum "
+          "constructors and observers. For proc samples, a semantic sum is "
+          "forced onto proc channel/state boundaries.");
 ABSL_FLAG(int64_t, max_width_aggregate_types, 1024,
           "The maximum width of aggregate types (tuples and arrays) in the "
           "generated samples.");
@@ -69,8 +70,9 @@ ABSL_FLAG(std::optional<int64_t>, seed, std::nullopt,
           "Seed value for generation. By default, a nondetermistic seed is "
           "used; if a seed is provided, it is used for determinism");
 ABSL_FLAG(std::optional<std::string>, seed_manifest, std::nullopt,
-          "Manifest of semantic-sum source seeds to replay before random "
-          "sample generation.");
+          "Manifest of function-sample semantic-sum source seeds to replay "
+          "before random sample generation. Seed replay is not supported with "
+          "`--generate_proc`.");
 ABSL_FLAG(bool, simulate, false, "Run Verilog simulation.");
 ABSL_FLAG(std::optional<std::string>, simulator, std::nullopt,
           "Verilog simulator to use.");
@@ -134,10 +136,6 @@ absl::Status CheckOrCreateWritableDirectory(const std::filesystem::path& path) {
 }
 
 absl::Status RealMain(const Options& options) {
-  if (options.generate_proc && options.require_sum_type) {
-    return absl::InvalidArgumentError(
-        "require_sum_type is only supported for function samples.");
-  }
   if (options.crash_path.has_value()) {
     XLS_RETURN_IF_ERROR(CheckOrCreateWritableDirectory(*options.crash_path));
   }

@@ -430,6 +430,34 @@ ChannelOpInfo GetChannelOpInfo(ChannelOpType chan_op) {
 
 }  // namespace
 
+absl::StatusOr<NameRef*> AstGenerator::GenerateProcChannel(
+    ChannelDirection direction, TypeAnnotation* payload_type) {
+  // TODO(vmirian): 8-22-2022 If payload type exists, create an array of
+  // channels.
+  auto* channel_type_annotation = module_->Make<ChannelTypeAnnotation>(
+      fake_span_, direction, payload_type, std::nullopt);
+  Param* param = GenerateParam({.type = channel_type_annotation}).param;
+  auto to_member = [this](const Param* p) -> absl::StatusOr<ProcMember*> {
+    XLS_ASSIGN_OR_RETURN(NameDef * name_def, CloneNode(p->name_def()));
+    XLS_ASSIGN_OR_RETURN(
+        AstNode * type_annotation,
+        CloneAst(p->type_annotation(), &PreserveTypeDefinitionsReplacer));
+    FlowControl chan_flow_control =
+        RandomChoice(absl::MakeConstSpan(
+                         {FlowControl::kValidData, FlowControl::kReadyValid}),
+                     bit_gen_);
+    module_->AddAttribute(ModuleAttribute::kChannelAttributes);
+    return module_->Make<ProcMember>(
+        name_def, absl::down_cast<TypeAnnotation*>(type_annotation),
+        /*channel_strictness=*/std::nullopt, chan_flow_control);
+  };
+  XLS_ASSIGN_OR_RETURN(ProcMember * member, to_member(param));
+  proc_properties_.members.push_back(member);
+  proc_properties_.config_params.push_back(param);
+  return module_->Make<NameRef>(fake_span_, param->identifier(),
+                                param->name_def());
+}
+
 absl::StatusOr<TypedExpr> AstGenerator::GenerateChannelOp(Context* ctx) {
   // Equal distribution for channel ops.
   ChannelOpType chan_op_type =
@@ -519,33 +547,9 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateChannelOp(Context* ctx) {
     min_stage = std::max(min_stage, successor_min_stage);
   }
 
-  // Create the channel.
-  // TODO(vmirian): 8-22-2022 If payload type exists, create an array of
-  // channels.
-  ChannelTypeAnnotation* channel_type_annotation =
-      module_->Make<ChannelTypeAnnotation>(fake_span_,
-                                           chan_op_info.channel_direction,
-                                           channel_type, std::nullopt);
-  Param* param = GenerateParam({.type = channel_type_annotation}).param;
-  auto to_member = [this](const Param* p) -> absl::StatusOr<ProcMember*> {
-    XLS_ASSIGN_OR_RETURN(NameDef * name_def, CloneNode(p->name_def()));
-    XLS_ASSIGN_OR_RETURN(
-        AstNode * type_annotation,
-        CloneAst(p->type_annotation(), &PreserveTypeDefinitionsReplacer));
-    FlowControl chan_flow_control =
-        RandomChoice(absl::MakeConstSpan(
-                         {FlowControl::kValidData, FlowControl::kReadyValid}),
-                     bit_gen_);
-    module_->AddAttribute(ModuleAttribute::kChannelAttributes);
-    return module_->Make<ProcMember>(
-        name_def, absl::down_cast<TypeAnnotation*>(type_annotation),
-        /*channel_strictness=*/std::nullopt, chan_flow_control);
-  };
-  XLS_ASSIGN_OR_RETURN(ProcMember * member, to_member(param));
-  proc_properties_.members.push_back(member);
-  proc_properties_.config_params.push_back(param);
-  NameRef* chan_expr = module_->Make<NameRef>(fake_span_, param->identifier(),
-                                              param->name_def());
+  XLS_ASSIGN_OR_RETURN(
+      NameRef * chan_expr,
+      GenerateProcChannel(chan_op_info.channel_direction, channel_type));
 
   Expr* token_ref = nullptr;
   if (EnvContainsToken(ctx->env) && RandomBool(0.9)) {
@@ -754,6 +758,27 @@ class FindTypeVisitor : public AstNodeVisitorWithDefault {
     }
     if (std::holds_alternative<EnumDef*>(type_def)) {
       return std::get<EnumDef*>(type_def)->Accept(this);
+    }
+    if (std::holds_alternative<SumDef*>(type_def)) {
+      SumDef* sum_def = std::get<SumDef*>(type_def);
+      for (SumVariant* variant : sum_def->variants()) {
+        for (TypeAnnotation* member_type : variant->tuple_members()) {
+          if (found_) {
+            break;
+          }
+          XLS_RETURN_IF_ERROR(member_type->Accept(this));
+        }
+        for (StructMemberNode* member : variant->struct_members()) {
+          if (found_) {
+            break;
+          }
+          XLS_RETURN_IF_ERROR(member->type()->Accept(this));
+        }
+        if (found_) {
+          break;
+        }
+      }
+      return absl::OkStatus();
     }
     CHECK(std::holds_alternative<ColonRef*>(type_def));
     return std::get<ColonRef*>(type_def)->Accept(this);
@@ -2116,22 +2141,23 @@ TypeAnnotation* AstGenerator::GenerateType(
   return GenerateBitsType(max_width_bits_types);
 }
 
-absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
-    Context* ctx, std::vector<Statement*>* statements) {
-  XLS_RET_CHECK(!ctx->is_generating_proc);
-  XLS_RET_CHECK(statements != nullptr);
-
+AstGenerator::RequiredSumType& AstGenerator::GetOrCreateRequiredSumType() {
+  if (required_sum_type_.has_value()) {
+    return *required_sum_type_;
+  }
   NameDef* sum_name_def = MakeNameDef(GenSym());
   NameDef* unit_variant_name_def = MakeNameDef(GenSym());
   NameDef* active_variant_name_def = MakeNameDef(GenSym());
 
   std::vector<SumVariant*> variants;
   variants.reserve(2);
-  variants.push_back(module_->Make<SumVariant>(
+  auto* unit_variant = module_->Make<SumVariant>(
       fake_span_, unit_variant_name_def, SumVariant::PayloadShape::kUnit,
-      std::vector<TypeAnnotation*>{}, std::vector<StructMemberNode*>{}));
+      std::vector<TypeAnnotation*>{}, std::vector<StructMemberNode*>{});
+  variants.push_back(unit_variant);
 
   std::optional<TypeAnnotation*> payload_type;
+  SumVariant* active_variant;
   if (options_.max_width_bits_types > 0) {
     int64_t payload_width = absl::Uniform<int64_t>(
         absl::IntervalClosed, bit_gen_, 1,
@@ -2139,14 +2165,16 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
     payload_type = MakeTypeAnnotation(
         /*is_signed=*/options_.emit_signed_types && RandomBool(0.5),
         payload_width, /*use_xn=*/RandomBool(0.05));
-    variants.push_back(module_->Make<SumVariant>(
+    active_variant = module_->Make<SumVariant>(
         fake_span_, active_variant_name_def, SumVariant::PayloadShape::kTuple,
         std::vector<TypeAnnotation*>{*payload_type},
-        std::vector<StructMemberNode*>{}));
+        std::vector<StructMemberNode*>{});
+    variants.push_back(active_variant);
   } else {
-    variants.push_back(module_->Make<SumVariant>(
+    active_variant = module_->Make<SumVariant>(
         fake_span_, active_variant_name_def, SumVariant::PayloadShape::kTuple,
-        std::vector<TypeAnnotation*>{}, std::vector<StructMemberNode*>{}));
+        std::vector<TypeAnnotation*>{}, std::vector<StructMemberNode*>{});
+    variants.push_back(active_variant);
   }
 
   auto* sum_def = module_->Make<SumDef>(
@@ -2155,10 +2183,33 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
   sum_name_def->set_definer(sum_def);
   sum_defs_.push_back(sum_def);
   generated_required_sum_ = true;
+  required_sum_type_ = RequiredSumType{.sum_def = sum_def,
+                                       .unit_variant = unit_variant,
+                                       .active_variant = active_variant,
+                                       .active_payload_type = payload_type};
+  return *required_sum_type_;
+}
+
+TypeRefTypeAnnotation* AstGenerator::MakeRequiredSumTypeAnnotation() {
+  RequiredSumType& sum_type = GetOrCreateRequiredSumType();
+  auto* type_ref_type = MakeTypeRefTypeAnnotation(sum_type.sum_def);
+  int64_t payload_bits = 0;
+  if (sum_type.active_payload_type.has_value()) {
+    payload_bits = GetTypeBitCount(*sum_type.active_payload_type);
+  }
+  type_bit_counts_[type_ref_type->ToString()] = 1 + payload_bits;
+  return type_ref_type;
+}
+
+absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
+    Context* ctx, std::vector<Statement*>* statements) {
+  XLS_RET_CHECK(!ctx->is_generating_proc);
+  XLS_RET_CHECK(statements != nullptr);
+
+  RequiredSumType& sum_type = GetOrCreateRequiredSumType();
 
   auto make_constructor_ref = [&](NameDef* variant_name_def) {
-    return module_->Make<ColonRef>(fake_span_,
-                                   MakeTypeRefTypeAnnotation(sum_def),
+    return module_->Make<ColonRef>(fake_span_, MakeRequiredSumTypeAnnotation(),
                                    variant_name_def->identifier());
   };
   auto make_sum_expr = [&](NameDef* variant_name_def,
@@ -2178,25 +2229,23 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
     return module_->Make<Invocation>(fake_span_, constructor_ref,
                                      std::vector<Expr*>{payload_value.expr});
   };
-  XLS_ASSIGN_OR_RETURN(
-      Expr * active_sum_expr,
-      make_sum_expr(active_variant_name_def,
-                    sum_def->variants().back()->payload_shape(), payload_type));
+  XLS_ASSIGN_OR_RETURN(Expr * active_sum_expr,
+                       make_sum_expr(sum_type.active_variant->name_def(),
+                                     sum_type.active_variant->payload_shape(),
+                                     sum_type.active_payload_type));
 
   std::string sum_identifier = GenSym();
   auto* sum_binding =
       module_->Make<NameDef>(fake_span_, sum_identifier, active_sum_expr);
-  statements->push_back(module_->Make<Statement>(
-      module_->Make<Let>(fake_span_, sum_binding,
-                         MakeTypeRefTypeAnnotation(sum_def), active_sum_expr,
-                         /*is_const=*/false)));
+  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+      fake_span_, sum_binding, MakeRequiredSumTypeAnnotation(), active_sum_expr,
+      /*is_const=*/false)));
 
   auto* active_sum_ref = MakeNameRef(sum_binding);
   XLS_ASSIGN_OR_RETURN(
       Expr * unit_sum_expr,
-      make_sum_expr(unit_variant_name_def,
-                    sum_def->variants().front()->payload_shape(),
-                    std::nullopt));
+      make_sum_expr(sum_type.unit_variant->name_def(),
+                    sum_type.unit_variant->payload_shape(), std::nullopt));
   auto append_assert_eq = [&](Expr* lhs, Expr* rhs) {
     statements->push_back(module_->Make<Statement>(
         module_->Make<Invocation>(fake_span_, MakeBuiltinNameRef("assert_eq"),
@@ -2231,10 +2280,10 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
       /*has_trailing_comma=*/false);
 
   std::vector<MatchArm*> match_arms;
-  if (payload_type.has_value()) {
+  if (sum_type.active_payload_type.has_value()) {
     auto* first_payload_name = MakeNameDef(GenSym());
     auto* first_constructor_pattern = module_->Make<SumVariantPayloadPattern>(
-        fake_span_, make_constructor_ref(active_variant_name_def),
+        fake_span_, make_constructor_ref(sum_type.active_variant->name_def()),
         PatternTree{module_->Make<TuplePattern>(
             fake_span_, std::vector<PatternTree>{first_payload_name})});
     match_arms.push_back(module_->Make<MatchArm>(
@@ -2254,7 +2303,7 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
 
     auto* second_payload_name = MakeNameDef(GenSym());
     auto* second_constructor_pattern = module_->Make<SumVariantPayloadPattern>(
-        fake_span_, make_constructor_ref(active_variant_name_def),
+        fake_span_, make_constructor_ref(sum_type.active_variant->name_def()),
         PatternTree{module_->Make<TuplePattern>(
             fake_span_, std::vector<PatternTree>{second_payload_name})});
     match_arms.push_back(module_->Make<MatchArm>(
@@ -2273,7 +2322,7 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
             match_result_type)));
   } else {
     auto* active_constructor_pattern = module_->Make<SumVariantPayloadPattern>(
-        fake_span_, make_constructor_ref(active_variant_name_def),
+        fake_span_, make_constructor_ref(sum_type.active_variant->name_def()),
         PatternTree{module_->Make<TuplePattern>(fake_span_,
                                                 std::vector<PatternTree>{})});
     match_arms.push_back(module_->Make<MatchArm>(
@@ -2291,7 +2340,7 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
       std::vector<PatternTree>{module_->Make<TuplePattern>(
           fake_span_,
           std::vector<PatternTree>{
-              make_constructor_ref(unit_variant_name_def),
+              make_constructor_ref(sum_type.unit_variant->name_def()),
               module_->Make<WildcardPattern>(fake_span_),
           })},
       GenerateNumber(/*value=*/0, match_result_type)));
@@ -2326,6 +2375,84 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
                    .type = MakeBoolTypeAnnotation(),
                    .last_delaying_op = LastDelayingOp::kNone,
                    .min_stage = 1};
+}
+
+absl::StatusOr<AstGenerator::RequiredProcSumInput>
+AstGenerator::GenerateRequiredProcSumInput(
+    Context* ctx, std::vector<Statement*>* statements) {
+  XLS_RET_CHECK(ctx->is_generating_proc);
+  XLS_RET_CHECK(statements != nullptr);
+
+  TypeAnnotation* sum_type = MakeRequiredSumTypeAnnotation();
+  XLS_ASSIGN_OR_RETURN(NameRef * chan_expr,
+                       GenerateProcChannel(ChannelDirection::kIn, sum_type));
+  auto* token_type = module_->Make<BuiltinTypeAnnotation>(
+      fake_span_, BuiltinType::kToken,
+      module_->GetOrCreateBuiltinNameDef(BuiltinType::kToken));
+  auto* recv_expr = module_->Make<Invocation>(
+      fake_span_, MakeBuiltinNameRef("recv"),
+      std::vector<Expr*>{
+          module_->Make<Invocation>(fake_span_, MakeBuiltinNameRef("join"),
+                                    std::vector<Expr*>{}),
+          chan_expr});
+  auto* recv_tuple_type = MakeTupleType({token_type, sum_type});
+  auto* recv_tuple_def =
+      module_->Make<NameDef>(fake_span_, GenSym(), recv_expr);
+  statements->push_back(module_->Make<Statement>(
+      module_->Make<Let>(fake_span_, recv_tuple_def, recv_tuple_type, recv_expr,
+                         /*is_const=*/false)));
+
+  auto make_tuple_member = [&](int64_t index, TypeAnnotation* member_type,
+                               LastDelayingOp last_delaying_op) {
+    auto* member_def = module_->Make<NameDef>(fake_span_, GenSym(),
+                                              /*definer=*/nullptr);
+    auto* member_ref = MakeNameRef(member_def);
+    statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+        fake_span_, member_def, member_type,
+        module_->Make<TupleIndex>(fake_span_, MakeNameRef(recv_tuple_def),
+                                  MakeNumber(index)),
+        /*is_const=*/false)));
+    ctx->env[member_def->identifier()] =
+        TypedExpr{.expr = member_ref,
+                  .type = member_type,
+                  .last_delaying_op = last_delaying_op,
+                  .min_stage = 1};
+    return TypedExpr{.expr = member_ref,
+                     .type = member_type,
+                     .last_delaying_op = last_delaying_op,
+                     .min_stage = 1};
+  };
+
+  return RequiredProcSumInput{
+      .token =
+          make_tuple_member(/*index=*/0, token_type, LastDelayingOp::kRecv),
+      .payload =
+          make_tuple_member(/*index=*/1, sum_type, LastDelayingOp::kRecv)};
+}
+
+absl::Status AstGenerator::GenerateRequiredProcSumOutput(
+    Context* ctx, std::vector<Statement*>* statements, const TypedExpr& token,
+    const TypedExpr& payload) {
+  XLS_RET_CHECK(ctx->is_generating_proc);
+  XLS_RET_CHECK(statements != nullptr);
+
+  TypeAnnotation* sum_type = MakeRequiredSumTypeAnnotation();
+  XLS_ASSIGN_OR_RETURN(NameRef * chan_expr,
+                       GenerateProcChannel(ChannelDirection::kOut, sum_type));
+  auto* send_expr = module_->Make<Invocation>(
+      fake_span_, MakeBuiltinNameRef("send"),
+      std::vector<Expr*>{token.expr, chan_expr, payload.expr});
+  auto* send_token_def =
+      module_->Make<NameDef>(fake_span_, GenSym(), send_expr);
+  statements->push_back(module_->Make<Statement>(
+      module_->Make<Let>(fake_span_, send_token_def, token.type, send_expr,
+                         /*is_const=*/false)));
+  ctx->env[send_token_def->identifier()] =
+      TypedExpr{.expr = MakeNameRef(send_token_def),
+                .type = token.type,
+                .last_delaying_op = LastDelayingOp::kSend,
+                .min_stage = token.min_stage};
+  return absl::OkStatus();
 }
 
 std::optional<TypedExpr> AstGenerator::ChooseEnvValueOptional(
@@ -3035,6 +3162,16 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateBody(int64_t call_depth,
           .min_stage = required_sum_predicate->min_stage};
     }
   }
+  if (options_.require_sum_type && ctx->is_generating_proc && call_depth == 0) {
+    XLS_ASSIGN_OR_RETURN(RequiredProcSumInput required_sum_input,
+                         GenerateRequiredProcSumInput(ctx, &statements));
+    if (required_proc_sum_boundary_ ==
+        RequiredProcSumBoundary::kOutputChannel) {
+      XLS_RETURN_IF_ERROR(GenerateRequiredProcSumOutput(
+          ctx, &statements, required_sum_input.token,
+          required_sum_input.payload));
+    }
+  }
   for (int64_t i = 0; i < body_size; ++i) {
     XLS_ASSIGN_OR_RETURN(TypedExpr rhs, GenerateExpr(call_depth, ctx));
 
@@ -3265,11 +3402,11 @@ absl::StatusOr<int64_t> AstGenerator::GenerateFunctionInModule(
     XLS_RETURN_IF_ERROR(
         module_->AddTop(item.second, /*make_collision_error=*/nullptr));
   }
-  for (auto& item : type_aliases_) {
+  for (auto* item : sum_defs_) {
     XLS_RETURN_IF_ERROR(
         module_->AddTop(item, /*make_collision_error=*/nullptr));
   }
-  for (auto* item : sum_defs_) {
+  for (auto& item : type_aliases_) {
     XLS_RETURN_IF_ERROR(
         module_->AddTop(item, /*make_collision_error=*/nullptr));
   }
@@ -3319,8 +3456,19 @@ absl::StatusOr<AnnotatedFunction> AstGenerator::GenerateProcNextFunction(
 
   std::vector<Param*> params;
   TypeAnnotation* state_param_type = nullptr;
+  if (options_.require_sum_type) {
+    if (options_.emit_stateless_proc) {
+      required_proc_sum_boundary_ = RequiredProcSumBoundary::kOutputChannel;
+    } else if (RandomBool(0.5)) {
+      required_proc_sum_boundary_ = RequiredProcSumBoundary::kState;
+    } else {
+      required_proc_sum_boundary_ = RequiredProcSumBoundary::kOutputChannel;
+    }
+  }
   if (options_.emit_stateless_proc) {
     state_param_type = MakeTupleType({});
+  } else if (required_proc_sum_boundary_ == RequiredProcSumBoundary::kState) {
+    state_param_type = MakeRequiredSumTypeAnnotation();
   } else {
     state_param_type = GenerateType();
   }
@@ -3423,11 +3571,11 @@ absl::StatusOr<int64_t> AstGenerator::GenerateProcInModule(
     XLS_RETURN_IF_ERROR(
         module_->AddTop(item.second, /*make_collision_error=*/nullptr));
   }
-  for (auto& item : type_aliases_) {
+  for (auto* item : sum_defs_) {
     XLS_RETURN_IF_ERROR(
         module_->AddTop(item, /*make_collision_error=*/nullptr));
   }
-  for (auto* item : sum_defs_) {
+  for (auto& item : type_aliases_) {
     XLS_RETURN_IF_ERROR(
         module_->AddTop(item, /*make_collision_error=*/nullptr));
   }
@@ -3442,10 +3590,6 @@ absl::StatusOr<int64_t> AstGenerator::GenerateProcInModule(
 
 absl::StatusOr<AnnotatedModule> AstGenerator::Generate(
     const std::string& top_entity_name, const std::string& module_name) {
-  if (options_.generate_proc && options_.require_sum_type) {
-    return absl::InvalidArgumentError(
-        "require_sum_type is only supported for function generation.");
-  }
   module_ = std::make_unique<Module>(module_name, /*fs_path=*/std::nullopt,
                                      file_table_);
   int64_t min_stages = 1;
