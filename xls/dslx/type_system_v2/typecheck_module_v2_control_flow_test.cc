@@ -991,6 +991,31 @@ fn f(value: Alias) -> u32 {
                HasSubstr("Exact-duplicate pattern match detected `Alias::A`")));
 }
 
+TEST(TypecheckV2Test, MatchImportedAliasedEnumVariantShadowingNestedTuple) {
+  constexpr std::string_view kImported = R"(
+pub enum E: u1 { A = 0, B = 1 }
+pub type ImportedAlias = E;
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+type Alias = imported::ImportedAlias;
+
+fn f(value: (imported::E, bool)) -> u32 {
+  match value {
+    (imported::E::A, _) => u32:0,
+    (Alias::A, true) => u32:1,
+    _ => u32:2,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
+  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("fully covered by previous patterns")));
+}
+
 TEST(TypecheckV2Test, MatchImportedSameValuedEnumConstantsRemainDistinct) {
   constexpr std::string_view kImported = R"(
 pub enum E: u2 { A = 0, B = 0, C = 1 }
@@ -1012,6 +1037,32 @@ fn f(value: imported::E) -> u32 {
   ImportData import_data = CreateImportDataForTest();
   XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
   XLS_EXPECT_OK(TypecheckV2(kProgram, "main", &import_data));
+}
+
+TEST(TypecheckV2Test, MatchImportedEquivalentEnumConstantsAreRejected) {
+  constexpr std::string_view kImported = R"(
+pub enum E: u1 { A = 0, B = 1 }
+pub const FIRST = E::A;
+pub const SECOND = E::A;
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn f(value: imported::E) -> u32 {
+  match value {
+    imported::FIRST => u32:0,
+    imported::SECOND => u32:1,
+    imported::E::B => u32:2,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
+  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Exact-duplicate pattern match detected "
+                                 "`imported::SECOND`")));
 }
 
 TEST(TypecheckV2Test, MatchDistinctEnumVariantsThroughTypeAliasRemainValid) {
@@ -1120,6 +1171,34 @@ fn f(value: u4) -> u32 {
                   AllOf(HasSpan(5, 4, 5, 14), HasSpan(6, 4, 6, 14))));
 }
 
+TEST(TypecheckV2Test, MatchValueInsideEarlierRangeIsRejected) {
+  EXPECT_THAT(R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:0..u4:4 => u32:0,
+    u4:2 => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, MatchEquivalentInclusiveExclusiveRangesAreRejected) {
+  EXPECT_THAT(
+      R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:0..u4:4 => u32:0,
+    u4:0..=u4:3 => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+      TypecheckFails(HasSubstr("Exact-duplicate pattern match detected "
+                               "`u4:0..=u4:3`")));
+}
+
 TEST(TypecheckV2Test, MatchRangeCoveredByMultiplePatternsIsRejected) {
   EXPECT_THAT(R"(
 fn f(value: u4) -> u32 {
@@ -1128,6 +1207,19 @@ fn f(value: u4) -> u32 {
     u4:2..u4:4 => u32:1,
     u4:1..u4:3 => u32:2,
     _ => u32:3,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, MatchGroupedFullyCoveredRangeIsRejected) {
+  EXPECT_THAT(R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:0..u4:4 => u32:0,
+    u4:7 | u4:1..u4:3 => u32:1,
+    _ => u32:2,
   }
 }
 )",
@@ -1156,6 +1248,20 @@ fn f(value: (E, bool)) -> u32 {
     (E::A, _) => u32:0,
     (Alias::A, true) => u32:1,
     _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, MatchTupleCoveredByMultiplePatternsIsRejected) {
+  EXPECT_THAT(R"(
+fn f(value: (bool, bool)) -> u32 {
+  match value {
+    (false, _) => u32:0,
+    (true, false) => u32:1,
+    (_, false) => u32:2,
+    _ => u32:3,
   }
 }
 )",
@@ -1196,6 +1302,54 @@ fn f(value: u4) -> u32 {
                   "Exact-duplicate pattern match detected `SECOND`")));
 }
 
+TEST(TypecheckV2Test, MatchEquivalentNumericLiteralSpellingsAreRejected) {
+  EXPECT_THAT(R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:2 => u32:0,
+    u4:0x2 => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `u4:0x2`")));
+}
+
+TEST(TypecheckV2Test, MatchEquivalentDuplicateAfterExhaustivenessIsRejected) {
+  EXPECT_THAT(R"(
+fn f(value: u2) -> u32 {
+  match value {
+    u2:0 => u32:0,
+    u2:1 => u32:1,
+    u2:2 => u32:2,
+    u2:3 => u32:3,
+    u2:0x0 => u32:4,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `u2:0x0`")));
+}
+
+TEST(TypecheckV2Test, MatchEquivalentEnumValuedConstantsAreRejected) {
+  EXPECT_THAT(R"(
+enum E: u1 { A = 0, B = 1 }
+const FIRST = E::A;
+const SECOND = E::A;
+
+fn f(value: E) -> u32 {
+  match value {
+    FIRST => u32:0,
+    SECOND => u32:1,
+    E::B => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `SECOND`")));
+}
+
 TEST(TypecheckV2Test, MatchShadowedSumConstructorPayloadIsRejected) {
   EXPECT_THAT(R"(
 enum Option {
@@ -1208,6 +1362,24 @@ fn f(value: Option) -> u32 {
     Option::Some(_) => u32:0,
     Option::Some(u4:1) => u32:1,
     Option::None => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, MatchShadowedSumStructConstructorPayloadIsRejected) {
+  EXPECT_THAT(R"(
+enum Message {
+  Empty,
+  Data { state: u4 },
+}
+
+fn f(value: Message) -> u32 {
+  match value {
+    Message::Data { state: _ } => u32:0,
+    Message::Data { state: u4:1 } => u32:1,
+    Message::Empty => u32:2,
   }
 }
 )",
@@ -1227,6 +1399,20 @@ fn f() -> u32 {
 )",
               TypecheckFails(
                   HasSubstr("Exact-duplicate pattern match detected `u2:0`")));
+}
+
+TEST(TypecheckV2Test, ConstMatchFullyCoveredRangeIsRejected) {
+  EXPECT_THAT(R"(
+fn f() -> u32 {
+  const VALUE = u4:2;
+  const match VALUE {
+    u4:0..u4:4 => u32:0,
+    u4:1..u4:3 => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
 }
 
 TEST(TypecheckV2Test, ConstMatchDuplicateAliasedEnumVariantIsRejected) {
