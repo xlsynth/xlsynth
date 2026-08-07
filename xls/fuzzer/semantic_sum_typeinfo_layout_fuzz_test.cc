@@ -42,6 +42,7 @@
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/parse_and_typecheck.h"
+#include "xls/dslx/sum_type_encoding.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.pb.h"
 #include "xls/dslx/type_system/type_info_to_proto.h"
@@ -136,6 +137,7 @@ absl::Status VerifySumMetadata(std::string_view case_name,
           "type.");
     }
 
+    int64_t max_payload_bit_count = 0;
     for (int64_t i = 0; i < sum_def->variants().size(); ++i) {
       const dslx::SumVariant* ast_variant = sum_def->variants().at(i);
       const dslx::SumVariantDefProto& proto_variant =
@@ -154,7 +156,43 @@ absl::Status VerifySumMetadata(std::string_view case_name,
         return absl::FailedPreconditionError(
             "SumTypeProto variant kind did not match AST declaration kind.");
       }
+      XLS_ASSIGN_OR_RETURN(dslx::TypeDim payload_bit_count,
+                           sum_type->variants().at(i).GetTotalBitCount());
+      XLS_ASSIGN_OR_RETURN(int64_t payload_bit_count_value,
+                           payload_bit_count.GetAsInt64());
+      max_payload_bit_count =
+          std::max(max_payload_bit_count, payload_bit_count_value);
     }
+
+    const dslx::Phase1SumTypeEncoding encoding(*sum_type);
+    XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                         encoding.payload_slot_bit_count());
+    if (payload_slot_bit_count != max_payload_bit_count) {
+      return absl::FailedPreconditionError(
+          "Phase1SumTypeEncoding payload slot width did not match widest "
+          "payload.");
+    }
+
+    XLS_RETURN_IF_ERROR(encoding.ForEachVariant(
+        [&](const dslx::Phase1SumTypeEncoding::VariantInfo& variant)
+            -> absl::Status {
+          if (variant.variant_index < 0 ||
+              variant.variant_index >= sum_type->variant_count()) {
+            return absl::FailedPreconditionError(
+                "Variant index out of bounds.");
+          }
+          XLS_ASSIGN_OR_RETURN(int64_t encoded_payload_bit_count,
+                               variant.payload_bit_count());
+          XLS_ASSIGN_OR_RETURN(dslx::TypeDim concrete_payload_bit_count,
+                               variant.variant->GetTotalBitCount());
+          XLS_ASSIGN_OR_RETURN(int64_t expected_payload_bit_count,
+                               concrete_payload_bit_count.GetAsInt64());
+          if (encoded_payload_bit_count != expected_payload_bit_count) {
+            return absl::FailedPreconditionError(
+                "Variant payload bit count did not match concrete payload.");
+          }
+          return absl::OkStatus();
+        }));
   }
 
   return absl::OkStatus();

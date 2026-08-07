@@ -295,8 +295,10 @@ fn g<T: type, U: type>(a: T) -> U;
                            module->GetMemberOrError<Function>("f"));
   XLS_ASSERT_OK_AND_ASSIGN(const Function* g,
                            module->GetMemberOrError<Function>("g"));
-  const TypeAnnotation* actual_type = CreateFunctionTypeAnnotation(*module, *f);
-  const TypeAnnotation* formal_type = CreateFunctionTypeAnnotation(*module, *g);
+  const TypeAnnotation* actual_type =
+      CreateFunctionTypeAnnotation(*module, *f);
+  const TypeAnnotation* formal_type =
+      CreateFunctionTypeAnnotation(*module, *g);
   const ParametricBinding* t = g->parametric_bindings()[0];
   const ParametricBinding* u = g->parametric_bindings()[1];
   absl::flat_hash_map<const ParametricBinding*, InterpValueOrTypeAnnotation>

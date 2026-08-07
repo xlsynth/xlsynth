@@ -244,6 +244,7 @@ cc_library(
     deps = [
         "//xls/common/status:status_macros",
         "//xls/dslx/type_system:type",
+        "//xls/ir:bits",
         "@abseil-cpp//absl/functional:function_ref",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -360,6 +361,7 @@ cc_library(
         "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/log:check",
         "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",
         "@abseil-cpp//absl/strings:str_format",
         "@abseil-cpp//absl/types:span",
@@ -903,6 +905,7 @@ cc_library(
     hdrs = ["make_value_format_descriptor.h"],
     deps = [
         ":interp_value",
+        ":sum_type_encoding",
         ":value_format_descriptor",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",

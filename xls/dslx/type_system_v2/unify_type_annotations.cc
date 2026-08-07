@@ -57,6 +57,11 @@ bool operator!=(const SignednessAndSize& x, const SignednessAndSize& y) {
   return !(x == y);
 }
 
+bool IsSameSourceSumDef(const SumDef* lhs, const SumDef* rhs) {
+  return lhs == rhs ||
+         (lhs->identifier() == rhs->identifier() && lhs->span() == rhs->span());
+}
+
 // Returns the first annotation from `annotations` that is flagged as a slice
 // container type. If there is no such annotation, returns `nullopt`.
 std::optional<const TypeAnnotation*> GetSliceContainerSize(
@@ -238,7 +243,8 @@ class Unifier {
       for (const TypeAnnotation* annotation : annotations) {
         XLS_ASSIGN_OR_RETURN(std::optional<SumRef> next_sum_ref,
                              GetSumRef(annotation, import_data_));
-        if (!next_sum_ref.has_value() || next_sum_ref->def != sum_def) {
+        if (!next_sum_ref.has_value() ||
+            !IsSameSourceSumDef(next_sum_ref->def, sum_def)) {
           return error_generator_.TypeMismatchError(parametric_context_,
                                                     annotations[0], annotation);
         }

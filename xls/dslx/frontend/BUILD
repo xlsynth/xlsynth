@@ -829,6 +829,7 @@ cc_library(
         "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/container:flat_hash_set",
         "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",
         "@abseil-cpp//absl/strings:str_format",
     ],
@@ -844,6 +845,23 @@ cc_test(
         "//xls/dslx:create_import_data",
         "//xls/dslx:parse_and_typecheck",
         "@abseil-cpp//absl/base",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "semantics_analysis_test",
+    srcs = ["semantics_analysis_test.cc"],
+    deps = [
+        ":ast",
+        ":module",
+        ":semantics_analysis",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx:parse_and_typecheck",
+        "//xls/dslx:warning_collector",
         "@googletest//:gtest",
     ],
 )

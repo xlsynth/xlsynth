@@ -29,50 +29,21 @@
 
 namespace xls::dslx::internal {
 
-InterpValue CreateEncodedSumTuple(InterpValue tag,
-                                  std::vector<InterpValue> payload_slots) {
-  return InterpValue::MakeTuple(
-      {std::move(tag), InterpValue::MakeTuple(std::move(payload_slots))});
-}
-
 namespace {
 
 absl::StatusOr<InterpValue> CreateInternalPlaceholderValueForSum(
     const SumType& type) {
   const Phase1SumTypeEncoding encoding(type);
   XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
-  if (type.variant_count() == 0) {
-    return CreateEncodedSumTuple(InterpValue::MakeUBits(tag_bit_count, 0), {});
+  XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                       encoding.payload_slot_bit_count());
+  InterpValue tag = InterpValue::MakeUBits(tag_bit_count, 0);
+  if (type.variant_count() > 0) {
+    tag = InterpValue::MakeUnsigned(type.GetDiscriminant(0).GetBitsOrDie());
   }
-
-  const SumTypeVariant& first_variant = type.variants().front();
-  XLS_ASSIGN_OR_RETURN(
-      Phase1SumTypeEncoding::VariantInfo variant,
-      encoding.GetVariant(first_variant.variant().identifier()));
-
-  std::vector<InterpValue> payload_slots;
-  payload_slots.reserve(encoding.payload_slot_count());
-  XLS_RETURN_IF_ERROR(encoding.VisitPayloadAssemblyOrder(
-      variant,
-      [&](int64_t active_index) -> absl::Status {
-        XLS_ASSIGN_OR_RETURN(
-            InterpValue placeholder,
-            CreateInternalPlaceholderValueFromType(
-                variant.variant->GetMemberType(active_index)));
-        payload_slots.push_back(std::move(placeholder));
-        return absl::OkStatus();
-      },
-      [&](const Type& inactive_type) -> absl::Status {
-        XLS_ASSIGN_OR_RETURN(
-            InterpValue placeholder,
-            CreateInternalPlaceholderValueFromType(inactive_type));
-        payload_slots.push_back(std::move(placeholder));
-        return absl::OkStatus();
-      }));
-
   return CreateEncodedSumTuple(
-      InterpValue::MakeUBits(tag_bit_count, variant.variant_index),
-      std::move(payload_slots));
+      std::move(tag),
+      InterpValue::MakeUBits(payload_slot_bit_count, 0));
 }
 
 }  // namespace

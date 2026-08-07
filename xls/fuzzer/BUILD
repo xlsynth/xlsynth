@@ -783,6 +783,7 @@ cc_test(
         "//xls/dslx:create_import_data",
         "//xls/dslx:import_data",
         "//xls/dslx:parse_and_typecheck",
+        "//xls/dslx:sum_type_encoding",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info_cc_proto",
