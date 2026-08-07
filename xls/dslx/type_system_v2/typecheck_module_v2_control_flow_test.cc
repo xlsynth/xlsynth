@@ -1107,7 +1107,59 @@ fn f(value: E) -> u32 {
 }
 )",
       TypecheckFails(AllOf(HasSubstr("Match patterns are not exhaustive"),
-                           HasSubstr("`E:0` is not covered"))));
+                           HasSubstr("`E::B` is not covered"))));
+}
+
+TEST(TypecheckV2Test, NonExhaustiveNestedTupleReportsEnumVariantName) {
+  EXPECT_THAT(
+      R"(
+enum E: u2 { A = 0, B = 0, C = 1 }
+
+fn f(value: ((E, bool), u2)) -> u32 {
+  match value {
+    ((E::A, _), _) => u32:0,
+    ((E::C, _), _) => u32:1,
+  }
+}
+)",
+      TypecheckFails(
+          AllOf(HasSubstr("Match patterns are not exhaustive"),
+                HasSubstr("`((E::B, u1:0), u2:0)` is not covered"))));
+}
+
+TEST(TypecheckV2Test, NonExhaustiveBitsDiagnosticPreservesValueFormatting) {
+  EXPECT_THAT(R"(
+fn f(value: u2) -> u32 {
+  match value {
+    u2:0 => u32:0,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("`u2:1` is not covered")));
+}
+
+TEST(TypecheckV2Test, NonExhaustiveBitsTupleDiagnosticPreservesFormatting) {
+  EXPECT_THAT(R"(
+fn f(value: (u2, bool)) -> u32 {
+  match value {
+    (u2:0, _) => u32:0,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("`(u2:1, u1:0)` is not covered")));
+}
+
+TEST(TypecheckV2Test,
+     NonExhaustiveNestedBitsTupleDiagnosticPreservesFlatFormatting) {
+  EXPECT_THAT(
+      R"(
+fn f(value: ((bool, u2), bool)) -> u32 {
+  match value {
+    ((_, u2:0), _) => u32:0,
+  }
+}
+)",
+      TypecheckFails(HasSubstr("`(u1:0, u2:1, u1:0)` is not covered")));
 }
 
 TEST(TypecheckV2Test, MatchDistinctSameValuedEnumVariantsRemainDistinct) {

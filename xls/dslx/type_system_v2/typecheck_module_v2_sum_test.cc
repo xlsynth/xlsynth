@@ -539,7 +539,128 @@ fn unwrap_or_zero(x: Option) -> u32 {
   }
 }
 )",
-      TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+      TypecheckFails(
+          AllOf(HasSubstr("Match patterns are not exhaustive"),
+                HasSubstr("`Option::Pair { lhs: u32:0, rhs: u32:0 }` is not "
+                          "covered"))));
+}
+
+TEST(TypecheckV2Test, NonExhaustiveSemanticSumReportsMissingUnitConstructor) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn f(value: Option) -> u32 {
+  match value {
+    Option::Some(_) => u32:0,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("`Option::None` is not covered")));
+}
+
+TEST(TypecheckV2Test,
+     NonExhaustiveSemanticSumReportsEmptyTupleConstructorShape) {
+  EXPECT_THAT(R"(
+enum Shape {
+  Unit,
+  EmptyTuple(),
+}
+
+fn f(value: Shape) -> u32 {
+  match value {
+    Shape::Unit => u32:0,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("`Shape::EmptyTuple()` is not "
+                                       "covered")));
+}
+
+TEST(TypecheckV2Test,
+     NonExhaustiveSemanticSumReportsEmptyStructConstructorShape) {
+  EXPECT_THAT(R"(
+enum Shape {
+  Unit,
+  EmptyStruct {},
+}
+
+fn f(value: Shape) -> u32 {
+  match value {
+    Shape::Unit => u32:0,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("`Shape::EmptyStruct { }` is not "
+                                       "covered")));
+}
+
+TEST(TypecheckV2Test, NonExhaustiveSemanticSumReportsNamedEnumTuplePayload) {
+  EXPECT_THAT(
+      R"(
+enum E: u2 { A = 0, B = 0, C = 1 }
+
+enum Option {
+  None,
+  Some(E),
+}
+
+fn f(value: Option) -> u32 {
+  match value {
+    Option::None => u32:0,
+    Option::Some(E::A) => u32:1,
+    Option::Some(E::C) => u32:2,
+  }
+}
+)",
+      TypecheckFails(HasSubstr("`Option::Some(E::B)` is not covered")));
+}
+
+TEST(TypecheckV2Test, NonExhaustiveSemanticSumReportsNamedEnumStructPayload) {
+  EXPECT_THAT(
+      R"(
+enum E: u2 { A = 0, B = 0, C = 1 }
+
+enum Message {
+  Empty,
+  Data { flag: bool, state: E },
+}
+
+fn f(value: Message) -> u32 {
+  match value {
+    Message::Empty => u32:0,
+    Message::Data { flag: _, state: E::A } => u32:1,
+    Message::Data { flag: _, state: E::C } => u32:2,
+  }
+}
+)",
+      TypecheckFails(HasSubstr(
+          "`Message::Data { flag: u1:0, state: E::B }` is not covered")));
+}
+
+TEST(TypecheckV2Test, NonExhaustiveTupleReportsNestedSemanticSumConstructor) {
+  EXPECT_THAT(
+      R"(
+enum E: u2 { A = 0, B = 0, C = 1 }
+
+enum Option {
+  Before(u8),
+  Some(E),
+  After(u4),
+}
+
+fn f(value: (Option, bool)) -> u32 {
+  match value {
+    (Option::Before(_), _) => u32:0,
+    (Option::Some(E::A), _) => u32:1,
+    (Option::Some(E::C), _) => u32:2,
+    (Option::After(_), _) => u32:3,
+  }
+}
+)",
+      TypecheckFails(HasSubstr("`(Option::Some(E::B), u1:0)` is not covered")));
 }
 
 TEST(TypecheckV2Test, MatchWithSemanticSumConstructorsWildcardCompletes) {
