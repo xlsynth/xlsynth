@@ -1176,6 +1176,35 @@ fn f() -> u32 {
   XLS_EXPECT_OK(TypecheckV2(kProgram, "fake_main_path", &import_data));
 }
 
+TEST(TypecheckV2Test, MatchUseImportedNumericConstantPreservesExactValue) {
+  constexpr std::string_view kImported = R"(
+pub const FIRST = u2:0;
+)";
+  constexpr std::string_view kProgram = R"(#![feature(use_syntax)]
+use imported::FIRST;
+
+fn f(value: u2) -> u32 {
+  match value {
+    FIRST => u32:0,
+    u2:0 => u32:1,
+    _ => u32:2,
+  }
+}
+)";
+
+  absl::flat_hash_map<std::filesystem::path, std::string> files = {
+      {std::filesystem::path("/imported.x"), std::string(kImported)},
+      {std::filesystem::path("/fake_main_path.x"), std::string(kProgram)},
+  };
+  auto vfs = std::make_unique<FakeFilesystem>(
+      files, /*cwd=*/std::filesystem::path("/"));
+  ImportData import_data = CreateImportDataForTest(std::move(vfs));
+  EXPECT_THAT(TypecheckV2(kProgram, "fake_main_path", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Exact-duplicate pattern match detected "
+                                 "`u2:0`")));
+}
+
 TEST(TypecheckV2Test, MatchImportedEquivalentEnumConstantsAreRejected) {
   constexpr std::string_view kImported = R"(
 pub enum E: u1 { A = 0, B = 1 }
@@ -1385,6 +1414,24 @@ fn f(value: E) -> u32 {
   match value {
     E::A => u32:0,
     Holder::A => u32:1,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchAliasedAssociatedConstantUsesItsActualEnumValue) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u1 { A = 0, B = 1 }
+struct Holder {}
+impl Holder {
+  const A: E = E::B;
+}
+type Alias = Holder;
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    Alias::A => u32:1,
   }
 }
 )"));
@@ -1929,6 +1976,51 @@ fn f(value: Option) -> u32 {
 }
 
 TEST(TypecheckV2Test,
+     MatchAliasedSumAssociatedConstantUsesItsActualConstructor) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u1),
+}
+struct Holder {}
+impl Holder {
+  const None: Option = Option::Some(u1:1);
+}
+type Alias = Holder;
+
+fn f(value: Option) -> u32 {
+  match value {
+    Alias::None => u32:0,
+    Option::Some(_) => u32:1,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+}
+
+TEST(TypecheckV2Test,
+     MatchAliasedSumConstantNamedLikePayloadConstructorIsSupported) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum Option {
+  None,
+  Some(u1),
+}
+struct Holder {}
+impl Holder {
+  const Some: Option = Option::None;
+}
+type Alias = Holder;
+
+fn f(value: Option) -> u32 {
+  match value {
+    Alias::Some => u32:0,
+    Option::Some(_) => u32:1,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test,
      MatchNestedSumAssociatedConstantUsesItsActualConstructor) {
   EXPECT_THAT(R"(
 enum Option {
@@ -1943,6 +2035,29 @@ impl Holder {
 fn f(value: (Option, bool)) -> u32 {
   match value {
     (Holder::None, _) => u32:0,
+    (Option::Some(_), _) => u32:1,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+}
+
+TEST(TypecheckV2Test,
+     MatchNestedAliasedSumAssociatedConstantUsesItsActualConstructor) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u1),
+}
+struct Holder {}
+impl Holder {
+  const None: Option = Option::Some(u1:1);
+}
+type Alias = Holder;
+
+fn f(value: (Option, bool)) -> u32 {
+  match value {
+    (Alias::None, _) => u32:0,
     (Option::Some(_), _) => u32:1,
   }
 }

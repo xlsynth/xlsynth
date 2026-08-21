@@ -94,8 +94,9 @@ language feature for purposes of landing, but consensus was that it was useful
 enough to enable by default -- this is one of the top reported pain points for
 DSLX writing. Type-system v2 rejects exact duplicate patterns and patterns fully
 covered before exhaustiveness. Other patterns following an already-exhaustive
-match produce a warning instead; `const match` retains its existing exemptions
-from those warnings and final exhaustiveness checking.
+match produce a warning when `already_exhaustive_match` is enabled; that warning
+is disabled by default. `const match` retains its existing exemptions from those
+warnings and final exhaustiveness checking.
 
 ## Structure
 
@@ -113,7 +114,7 @@ The code is initially structured as follows:
     pattern-at-a-time interface also identifies fully covered patterns and
     exact semantic duplicates, together with the relevant earlier source span.
     Exact duplicates remain errors after exhaustion; other trailing patterns
-    preserve their existing warning behavior.
+    preserve their existing warning behavior when that warning is enabled.
 
     DSLX types and values of particular types are translated into intervals and
     points at this level to subtract from the `NdRegion` that we maintain to

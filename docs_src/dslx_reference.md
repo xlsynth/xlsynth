@@ -1470,9 +1470,10 @@ fn test_f() {
 `match` rejects exact duplicate patterns, including duplicates appearing after
 the match has already become exhaustive. It also rejects other fully covered
 patterns encountered before exhaustiveness. A nonduplicate pattern appearing
-after an already-exhaustive match instead produces a warning. `const match`
-performs the same overlap checks but does not emit trailing-pattern warnings or
-require its patterns to be exhaustive. For example:
+after an already-exhaustive match instead produces an
+`already_exhaustive_match` warning when that warning is enabled; it is disabled
+by default. `const match` performs the same overlap checks but does not emit
+trailing-pattern warnings or require its patterns to be exhaustive. For example:
 
 ```dslx-bad
 const FOO = u32:42;

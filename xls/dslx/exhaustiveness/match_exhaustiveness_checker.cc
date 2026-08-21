@@ -315,19 +315,14 @@ ConstantExpressionLeaf ResolveConstantExpression(
                colon_ref != nullptr) {
       std::optional<ImportSubject> import = colon_ref->ResolveImportSubject();
       if (!import.has_value()) {
-        const NameRef* subject = nullptr;
-        ColonRef::Subject colon_subject = colon_ref->subject();
-        if (const auto* name_ref = std::get_if<NameRef*>(&colon_subject);
-            name_ref != nullptr) {
-          subject = *name_ref;
-        }
-        const StructDefBase* struct_def =
-            subject == nullptr
-                ? nullptr
-                : dynamic_cast<const StructDefBase*>(subject->GetDefiner());
         std::optional<ConstantDef*> constant;
-        if (struct_def != nullptr) {
-          constant = struct_def->GetImplConstant(colon_ref->attr());
+        if (absl::StatusOr<TypeInfo::ResolvedColonRefSubject> resolved_subject =
+                current_type_info->GetResolvedColonRefSubject(colon_ref);
+            resolved_subject.ok()) {
+          if (Impl* const* impl = std::get_if<Impl*>(&*resolved_subject);
+              impl != nullptr) {
+            constant = (*impl)->GetConstant(colon_ref->attr());
+          }
         }
         if (constant.has_value()) {
           current = (*constant)->value();
@@ -361,12 +356,11 @@ ConstantExpressionLeaf ResolveConstantExpression(
 std::optional<InterpValue> GetConstantValue(const Expr& expression,
                                             const TypeInfo& type_info,
                                             const ImportData& import_data) {
-  ConstantExpressionLeaf resolved =
-      ResolveConstantExpression(expression, type_info, import_data);
-  std::optional<InterpValue> result =
-      resolved.type_info->GetConstExprOption(resolved.expression);
+  std::optional<InterpValue> result = type_info.GetConstExprOption(&expression);
   if (!result.has_value()) {
-    result = type_info.GetConstExprOption(&expression);
+    ConstantExpressionLeaf resolved =
+        ResolveConstantExpression(expression, type_info, import_data);
+    result = resolved.type_info->GetConstExprOption(resolved.expression);
   }
   return result;
 }
@@ -708,6 +702,20 @@ struct ExpandedSumVariantPattern {
   std::vector<IntervalPatternLeaf> leaves;
 };
 
+std::optional<Phase1SumTypeEncoding::VariantInfo> GetDirectUnitSumVariant(
+    const ColonRef& pattern, const SumType& type, const TypeInfo& type_info,
+    const ImportData& import_data) {
+  std::optional<Phase1SumTypeEncoding::VariantInfo> result;
+  if (!GetConstantValue(pattern, type_info, import_data).has_value()) {
+    absl::StatusOr<Phase1SumTypeEncoding::VariantInfo> variant =
+        Phase1SumTypeEncoding(type).GetVariant(pattern.attr());
+    if (variant.ok() && variant->variant->is_unit()) {
+      result.emplace(*variant);
+    }
+  }
+  return result;
+}
+
 ExpandedSumVariantPattern ExpandSumVariantPayloadPatternLeaves(
     const PatternTree& pattern, const SumType& type, const TypeInfo& type_info,
     const ImportData& import_data, const FileTable& file_table) {
@@ -719,38 +727,34 @@ ExpandedSumVariantPattern ExpandSumVariantPayloadPatternLeaves(
     return ExpandedSumVariantPattern{constant.variant_index, std::move(leaves)};
   };
   return absl::visit(
-      Visitor{
-          [&](SumVariantPayloadPattern* constructor_pattern)
-              -> ExpandedSumVariantPattern {
-            int64_t variant_index = GetSumVariantIndex(
-                type, constructor_pattern->constructor_ref()->attr());
-            std::vector<IntervalPatternLeaf> result;
-            AppendSumVariantPayloadPatternLeaves(
-                type.variants()[variant_index], constructor_pattern, type_info,
-                import_data, file_table, &result);
-            return ExpandedSumVariantPattern{variant_index, std::move(result)};
-          },
-          [&](ColonRef* colon_ref) -> ExpandedSumVariantPattern {
-            ConstantExpressionLeaf resolved =
-                ResolveConstantExpression(*colon_ref, type_info, import_data);
-            if (resolved.expression == colon_ref) {
-              absl::StatusOr<Phase1SumTypeEncoding::VariantInfo> variant =
-                  Phase1SumTypeEncoding(type).GetVariant(colon_ref->attr());
-              if (variant.ok()) {
-                CHECK(variant->variant->is_unit());
-                return ExpandedSumVariantPattern{variant->variant_index, {}};
-              }
-            }
-            return expand_constant(*colon_ref);
-          },
-          [&](NameRef* name_ref) -> ExpandedSumVariantPattern {
-            return expand_constant(*name_ref);
-          },
-          [&](const auto&) -> ExpandedSumVariantPattern {
-            LOG(FATAL) << "Unsupported pattern for sum type `"
-                       << type.ToString() << "`";
-            return {0, {}};
-          }},
+      Visitor{[&](SumVariantPayloadPattern* constructor_pattern)
+                  -> ExpandedSumVariantPattern {
+                int64_t variant_index = GetSumVariantIndex(
+                    type, constructor_pattern->constructor_ref()->attr());
+                std::vector<IntervalPatternLeaf> result;
+                AppendSumVariantPayloadPatternLeaves(
+                    type.variants()[variant_index], constructor_pattern,
+                    type_info, import_data, file_table, &result);
+                return ExpandedSumVariantPattern{variant_index,
+                                                 std::move(result)};
+              },
+              [&](ColonRef* colon_ref) -> ExpandedSumVariantPattern {
+                std::optional<Phase1SumTypeEncoding::VariantInfo> variant =
+                    GetDirectUnitSumVariant(*colon_ref, type, type_info,
+                                            import_data);
+                if (variant.has_value()) {
+                  return ExpandedSumVariantPattern{variant->variant_index, {}};
+                }
+                return expand_constant(*colon_ref);
+              },
+              [&](NameRef* name_ref) -> ExpandedSumVariantPattern {
+                return expand_constant(*name_ref);
+              },
+              [&](const auto&) -> ExpandedSumVariantPattern {
+                LOG(FATAL) << "Unsupported pattern for sum type `"
+                           << type.ToString() << "`";
+                return {0, {}};
+              }},
       pattern);
 }
 
@@ -798,16 +802,12 @@ std::vector<IntervalPatternLeaf> ExpandSumPatternLeaves(
             return make_variant_pattern_leaves(variant, constructor_pattern);
           },
           [&](ColonRef* colon_ref) -> std::vector<IntervalPatternLeaf> {
-            ConstantExpressionLeaf resolved =
-                ResolveConstantExpression(*colon_ref, type_info, import_data);
-            if (resolved.expression == colon_ref) {
-              absl::StatusOr<Phase1SumTypeEncoding::VariantInfo> variant =
-                  encoding.GetVariant(colon_ref->attr());
-              if (variant.ok()) {
-                CHECK(variant->variant->is_unit());
-                return make_variant_pattern_leaves(
-                    *variant, /*constructor_pattern=*/nullptr);
-              }
+            std::optional<Phase1SumTypeEncoding::VariantInfo> variant =
+                GetDirectUnitSumVariant(*colon_ref, type, type_info,
+                                        import_data);
+            if (variant.has_value()) {
+              return make_variant_pattern_leaves(
+                  *variant, /*constructor_pattern=*/nullptr);
             }
             SumConstantValue constant = ResolveSumConstantValue(
                 *colon_ref, type, type_info, import_data);

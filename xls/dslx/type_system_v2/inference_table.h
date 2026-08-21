@@ -157,6 +157,7 @@ class TypeInferenceFlag {
 
 // Forward declaration.
 class InferenceTable;
+class ModuleInfo;
 
 // The details for a `ParametricContext` that is for an invocation.
 struct ParametricInvocationDetails {
@@ -548,6 +549,15 @@ class InferenceTable {
   // Returns the stored target of a `ColonRef`.
   virtual std::optional<const AstNode*> GetColonRefTarget(
       const ColonRef* colon_ref) const = 0;
+
+  // Retains the canonical module resolved for a `use` entry during table
+  // population until conversion can register it with the module's `TypeInfo`.
+  virtual void SetImportedModuleForUse(const UseTreeEntry* use_tree_entry,
+                                       ModuleInfo* module_info) = 0;
+
+  // Returns the module already resolved for the given `use` entry, if any.
+  virtual std::optional<ModuleInfo*> GetImportedModuleForUse(
+      const UseTreeEntry* use_tree_entry) const = 0;
 
   // When the converter resolves the callee for an `Invocation` node, it uses
   // this to store the callee to avoid any need for redundant resolution later.

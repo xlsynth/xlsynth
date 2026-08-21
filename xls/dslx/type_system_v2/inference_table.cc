@@ -693,6 +693,19 @@ class InferenceTableImpl : public InferenceTable {
                                           : std::make_optional(it->second);
   }
 
+  void SetImportedModuleForUse(const UseTreeEntry* use_tree_entry,
+                               ModuleInfo* module_info) override {
+    imported_modules_for_use_[use_tree_entry] = module_info;
+  }
+
+  std::optional<ModuleInfo*> GetImportedModuleForUse(
+      const UseTreeEntry* use_tree_entry) const override {
+    const auto it = imported_modules_for_use_.find(use_tree_entry);
+    return it == imported_modules_for_use_.end()
+               ? std::nullopt
+               : std::make_optional(it->second);
+  }
+
   void SetCalleeInCallerContext(
       const Invocation* invocation,
       std::optional<const ParametricContext*> caller_context,
@@ -1040,6 +1053,8 @@ class InferenceTableImpl : public InferenceTable {
   absl::flat_hash_map<const TypeAnnotation*, TypeInferenceFlag>
       annotation_flags_;
   absl::flat_hash_map<const ColonRef*, const AstNode*> colon_ref_targets_;
+  absl::flat_hash_map<const UseTreeEntry*, ModuleInfo*>
+      imported_modules_for_use_;
   absl::flat_hash_map<
       const StructDefBase*,
       absl::flat_hash_map<ParametricEnv, const ParametricContext*>>

@@ -143,6 +143,8 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
                          subject.name_def().span(), import_data_.file_table(),
                          import_data_.vfs()));
       XLS_RET_CHECK(result.imported_member != nullptr);
+      table_.SetImportedModuleForUse(&subject.use_tree_entry(),
+                                     result.imported_module);
       for (NameDef* name_def :
            ModuleMemberGetNameDefs(*result.imported_member)) {
         std::optional<const NameRef*> type_var =
@@ -308,6 +310,11 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       XLS_ASSIGN_OR_RETURN(struct_ref,
                            GetStructOrProcRefForSubject(node, import_data_));
       if (struct_ref.has_value()) {
+        if (std::optional<ConstantDef*> constant =
+                struct_ref->def->GetImplConstant(node->attr());
+            constant.has_value()) {
+          table_.SetColonRefTarget(node, *constant);
+        }
         const TypeAnnotation* subject_annotation =
             struct_ref->type_ref_type_annotation.has_value()
                 ? *struct_ref->type_ref_type_annotation
