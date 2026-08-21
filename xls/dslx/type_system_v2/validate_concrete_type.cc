@@ -369,8 +369,8 @@ class TypeValidator : public AstNodeVisitorWithDefault {
     XLS_RET_CHECK(matched_type.has_value());
 
     Type* matched = const_cast<Type*>(*matched_type);
-    MatchExhaustivenessChecker exhaustiveness_checker(
-        node->matched()->span(), import_data_, ti_, *matched);
+    MatchExhaustivenessChecker exhaustiveness_checker(node->matched()->span(),
+                                                      ti_, *matched);
 
     for (MatchArm* arm : node->arms()) {
       for (const PatternTree& pattern : arm->patterns()) {

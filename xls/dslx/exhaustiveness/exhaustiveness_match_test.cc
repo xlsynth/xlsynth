@@ -72,8 +72,8 @@ void CheckExhaustiveOnlyAfterLastPattern(std::string_view program) {
   ASSERT_TRUE(matched_type.has_value());
   ASSERT_NE(matched_type.value(), nullptr);
 
-  MatchExhaustivenessChecker checker(match->matched()->span(), import_data,
-                                     *tm.type_info, *matched_type.value());
+  MatchExhaustivenessChecker checker(match->matched()->span(), *tm.type_info,
+                                     *matched_type.value());
 
   std::vector<PatternTree> patterns = GetPatterns(*match);
   for (int64_t i = 0; i < patterns.size(); ++i) {
@@ -104,8 +104,8 @@ void CheckExhaustiveBeforeAnyPattern(std::string_view program) {
   ASSERT_TRUE(matched_type.has_value());
   ASSERT_NE(matched_type.value(), nullptr);
 
-  MatchExhaustivenessChecker checker(match->matched()->span(), import_data,
-                                     *tm.type_info, *matched_type.value());
+  MatchExhaustivenessChecker checker(match->matched()->span(), *tm.type_info,
+                                     *matched_type.value());
   EXPECT_TRUE(checker.IsExhaustive());
 
   for (const PatternTree& pattern : GetPatterns(*match)) {
@@ -245,8 +245,8 @@ TEST(ExhaustivenessMatchTest, CheckerOwnsCopiedPatternWrappers) {
   std::optional<Type*> matched_type = tm.type_info->GetItem(match->matched());
   ASSERT_TRUE(matched_type.has_value());
 
-  MatchExhaustivenessChecker checker(match->matched()->span(), import_data,
-                                     *tm.type_info, **matched_type);
+  MatchExhaustivenessChecker checker(match->matched()->span(), *tm.type_info,
+                                     **matched_type);
   PatternTree caller_owned_pattern = match->arms()[0]->patterns()[0];
   checker.AddPattern(caller_owned_pattern);
   caller_owned_pattern = match->arms()[1]->patterns()[0];

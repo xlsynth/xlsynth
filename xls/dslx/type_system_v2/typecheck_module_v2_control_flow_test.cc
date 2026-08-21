@@ -1666,8 +1666,26 @@ fn f(value: u8) -> u32 {
   }
 }
 )",
-              TypecheckFails(HasSubstr(
-                  "Exact-duplicate pattern match detected `u8:0x1`")));
+              TypecheckFails(AllOf(
+                  HasSubstr("Exact-duplicate pattern match detected `u8:0x1`"),
+                  HasSubstr("previously @ fake.x:7:5-7:9"))));
+}
+
+TEST(TypecheckV2Test, MatchRangeExhaustedTrailingDuplicateKeepsExactSource) {
+  EXPECT_THAT(R"(
+fn f(value: u8) -> u32 {
+  match value {
+    u8:0..u8:255 => u32:0,
+    u8:255 => u32:1,
+    u8:1 => u32:2,
+    u8:2 => u32:3,
+    u8:0x1 => u32:4,
+  }
+}
+)",
+              TypecheckFails(AllOf(
+                  HasSubstr("Exact-duplicate pattern match detected `u8:0x1`"),
+                  HasSubstr("previously @ fake.x:8:5-8:9"))));
 }
 
 TEST(TypecheckV2Test, MatchEquivalentDuplicateAfterExhaustivenessIsRejected) {
@@ -1920,6 +1938,27 @@ fn f(value: Message) -> u32 {
   }
 }
 )"));
+}
+
+TEST(TypecheckV2Test, MatchNamedSumStructConstantPreservesAllPayloadValues) {
+  EXPECT_THAT(
+      R"(
+enum Message {
+  Empty,
+  Point { x: u2, y: bool },
+}
+const POINT = Message::Point { x: u2:1, y: true };
+
+fn f(value: Message) -> u32 {
+  match value {
+    POINT => u32:0,
+    Message::Point { x: u2:1, y: true } => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("Exact-duplicate pattern match detected"),
+                           HasSubstr("x: u2:1"), HasSubstr("y: true"))));
 }
 
 TEST(TypecheckV2Test, MatchNamedSumConstructorNestedInTupleRemainsSupported) {

@@ -21,12 +21,10 @@
 #include <variant>
 #include <vector>
 
-#include "xls/dslx/exhaustiveness/interp_value_interval.h"
 #include "xls/dslx/exhaustiveness/match_pattern_overlap.h"
 #include "xls/dslx/exhaustiveness/nd_region.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/pos.h"
-#include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
@@ -67,7 +65,6 @@ class MatchExhaustivenessChecker {
   };
 
   MatchExhaustivenessChecker(const Span& matched_expr_span,
-                             const ImportData& import_data,
                              const TypeInfo& type_info,
                              const Type& matched_type);
   ~MatchExhaustivenessChecker();
@@ -98,15 +95,6 @@ class MatchExhaustivenessChecker {
 
   std::unique_ptr<Impl> impl_;
 };
-
-// Returns the full interval range we use to represent the contents of an enum
-// type -- exposed in the header for purposes of testing.
-InterpValueInterval MakeFullIntervalForEnumType(const EnumType& enum_type);
-
-// Returns the point interval range we use to represent the contents of an enum
-// value -- exposed in the header for purposes of testing.
-InterpValueInterval MakePointIntervalForEnumType(const EnumType& enum_type,
-                                                 const InterpValue& value);
 
 }  // namespace xls::dslx
 
