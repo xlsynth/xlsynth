@@ -1161,7 +1161,7 @@ pub enum Option {
   Some(u1),
 }
 pub const FIRST = Option::Some(u1:1);
-pub const SECOND = Option::Some(u1:1);
+pub const SECOND = Option::Some(u1:0);
 )";
   constexpr std::string_view kProgram = R"(#![feature(use_syntax)]
 use imported::{FIRST, SECOND};
@@ -1182,10 +1182,33 @@ fn f() -> u32 {
   auto vfs = std::make_unique<FakeFilesystem>(
       files, /*cwd=*/std::filesystem::path("/"));
   ImportData import_data = CreateImportDataForTest(std::move(vfs));
-  EXPECT_THAT(TypecheckV2(kProgram, "fake_main_path", &import_data),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("Exact-duplicate pattern match detected "
-                                 "`SECOND`")));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckResult result,
+      TypecheckV2(kProgram, "fake_main_path", &import_data));
+  int imported_entries = 0;
+  for (const ModuleMember& member : result.tm.module->top()) {
+    if (const auto* use = std::get_if<Use*>(&member); use != nullptr) {
+      for (UseSubject& subject : (*use)->LinearizeToSubjects()) {
+        auto imported_value =
+            result.tm.type_info->GetConstExprOption(&subject.name_def());
+        ASSERT_TRUE(imported_value.has_value());
+        ASSERT_TRUE(imported_value->IsTuple());
+        const auto& encoded = imported_value->GetValuesOrDie();
+        ASSERT_EQ(encoded.size(), 2);
+        EXPECT_THAT(encoded.at(0).GetBitValueUnsigned(),
+                    IsOkAndHolds(uint64_t{1}));
+        ASSERT_TRUE(encoded.at(1).IsTuple());
+        const auto& payload_slots = encoded.at(1).GetValuesOrDie();
+        ASSERT_EQ(payload_slots.size(), 1);
+        EXPECT_THAT(payload_slots.at(0).GetBitValueUnsigned(),
+                    IsOkAndHolds(subject.name_def().identifier() == "FIRST"
+                                     ? uint64_t{1}
+                                     : uint64_t{0}));
+        ++imported_entries;
+      }
+    }
+  }
+  EXPECT_EQ(imported_entries, 2);
 }
 
 TEST(TypecheckV2Test, MatchUseImportedEnumConstantsUseTheirOwningModule) {
