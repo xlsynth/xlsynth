@@ -15,6 +15,7 @@
 #include "xls/dslx/exhaustiveness/match_exhaustiveness_checker.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
