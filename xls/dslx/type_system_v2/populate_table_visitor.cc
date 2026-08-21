@@ -629,6 +629,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
 
     std::vector<TypeAnnotation*> type_annotation_members;
     absl::flat_hash_map<std::string, const MatchArm*> seen_arms;
+    absl::flat_hash_map<std::string, Span> seen_patterns;
     for (MatchArm* arm : node->arms()) {
       // Identify syntactically identical match arms.
       std::string patterns_string = PatternsToString(arm);
@@ -655,6 +656,13 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       }
 
       for (const PatternTree& pattern : arm->patterns()) {
+        if (auto [it, inserted] = seen_patterns.try_emplace(
+                PatternToString(pattern), GetPatternSpan(pattern));
+            !inserted) {
+          return MatchPatternAlreadyCoveredStatus(
+              GetPatternSpan(pattern), it->second, it->first,
+              MatchPatternOverlapKind::kExactDuplicate, file_table_);
+        }
         XLS_RETURN_IF_ERROR(
             table_.SetTypeVariable(ToAstNode(pattern), matched_var));
       }

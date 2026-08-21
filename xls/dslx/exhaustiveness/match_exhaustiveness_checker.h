@@ -41,8 +41,8 @@ class MatchExhaustivenessChecker {
  public:
   enum class PatternCoverage {
     // The pattern matches at least one previously uncovered semantic value.
-    // Enum declarations remain distinct even when their discriminants are
-    // equal; coverage uses their dense declaration-order positions.
+    // Numeric enum aliases with the same represented value are the same
+    // semantic case; distinct semantic-sum constructors remain separate cases.
     kAddsCoverage,
     // Every semantic value matched by this pattern was already covered.
     kPreviouslyCovered,
@@ -55,8 +55,8 @@ class MatchExhaustivenessChecker {
     // Set for covered patterns, preferring an exactly equivalent previous
     // pattern over the first merely intersecting previous pattern.
     std::optional<Span> previous_pattern_span;
-    // True when the two patterns cover the same inhabited semantic values.
-    // Differently spelled irrefutable patterns remain non-duplicates.
+    // True when equally refutable patterns cover the same inhabited semantic
+    // values. Differently spelled irrefutable patterns remain non-duplicates.
     bool is_exact_duplicate = false;
   };
 
@@ -100,8 +100,7 @@ InterpValueInterval MakeFullIntervalForEnumType(const EnumType& enum_type);
 // Returns the point interval range we use to represent the contents of an enum
 // value -- exposed in the header for purposes of testing.
 InterpValueInterval MakePointIntervalForEnumType(const EnumType& enum_type,
-                                                 const InterpValue& value,
-                                                 const ImportData& import_data);
+                                                 const InterpValue& value);
 
 }  // namespace xls::dslx
 

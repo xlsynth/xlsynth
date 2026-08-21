@@ -1043,7 +1043,7 @@ fn f(value: (imported::E, bool)) -> u32 {
                        HasSubstr("fully covered by previous patterns")));
 }
 
-TEST(TypecheckV2Test, MatchImportedSameValuedEnumConstantsRemainDistinct) {
+TEST(TypecheckV2Test, MatchImportedSameValuedEnumConstantsAreRejected) {
   constexpr std::string_view kImported = R"(
 pub enum E: u2 { A = 0, B = 0, C = 1 }
 pub const FIRST = E::A;
@@ -1063,10 +1063,13 @@ fn f(value: imported::E) -> u32 {
 
   ImportData import_data = CreateImportDataForTest();
   XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
-  XLS_EXPECT_OK(TypecheckV2(kProgram, "main", &import_data));
+  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Exact-duplicate pattern match detected "
+                                 "`imported::SECOND`")));
 }
 
-TEST(TypecheckV2Test, MatchUseImportedSameValuedEnumConstantsRemainDistinct) {
+TEST(TypecheckV2Test, MatchUseImportedSameValuedEnumConstantsAreRejected) {
   constexpr std::string_view kImported = R"(
 pub enum E: u2 { A = 0, B = 0, C = 1 }
 pub const FIRST = E::A;
@@ -1086,6 +1089,67 @@ fn f() -> u32 {
 
   absl::flat_hash_map<std::filesystem::path, std::string> files = {
       {std::filesystem::path("/imported.x"), std::string(kImported)},
+      {std::filesystem::path("/fake_main_path.x"), std::string(kProgram)},
+  };
+  auto vfs = std::make_unique<FakeFilesystem>(
+      files, /*cwd=*/std::filesystem::path("/"));
+  ImportData import_data = CreateImportDataForTest(std::move(vfs));
+  EXPECT_THAT(TypecheckV2(kProgram, "fake_main_path", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Exact-duplicate pattern match detected "
+                                 "`SECOND`")));
+}
+
+TEST(TypecheckV2Test, MatchUseImportedNumericConstantsPreserveTheirValues) {
+  constexpr std::string_view kImported = R"(
+pub const FIRST = u2:0;
+pub const SECOND = u2:1;
+)";
+  constexpr std::string_view kProgram = R"(#![feature(use_syntax)]
+use imported::{FIRST, SECOND};
+
+fn f(value: u2) -> u32 {
+  match value {
+    FIRST => u32:0,
+    SECOND => u32:1,
+    _ => u32:2,
+  }
+}
+)";
+
+  absl::flat_hash_map<std::filesystem::path, std::string> files = {
+      {std::filesystem::path("/imported.x"), std::string(kImported)},
+      {std::filesystem::path("/fake_main_path.x"), std::string(kProgram)},
+  };
+  auto vfs = std::make_unique<FakeFilesystem>(
+      files, /*cwd=*/std::filesystem::path("/"));
+  ImportData import_data = CreateImportDataForTest(std::move(vfs));
+  XLS_EXPECT_OK(TypecheckV2(kProgram, "fake_main_path", &import_data));
+}
+
+TEST(TypecheckV2Test, MatchUseImportedEnumConstantsUseTheirOwningModule) {
+  constexpr std::string_view kTypes = R"(
+pub enum E: u1 { A = 0, B = 1 }
+)";
+  constexpr std::string_view kConstants = R"(
+import types;
+pub const FIRST = types::E::A;
+pub const SECOND = types::E::B;
+)";
+  constexpr std::string_view kProgram = R"(#![feature(use_syntax)]
+use constants::{FIRST, SECOND};
+
+fn f() -> u32 {
+  match FIRST {
+    FIRST => u32:0,
+    SECOND => u32:1,
+  }
+}
+)";
+
+  absl::flat_hash_map<std::filesystem::path, std::string> files = {
+      {std::filesystem::path("/types.x"), std::string(kTypes)},
+      {std::filesystem::path("/constants.x"), std::string(kConstants)},
       {std::filesystem::path("/fake_main_path.x"), std::string(kProgram)},
   };
   auto vfs = std::make_unique<FakeFilesystem>(
@@ -1134,8 +1198,8 @@ fn f(value: E) -> u32 {
 )"));
 }
 
-TEST(TypecheckV2Test, MatchDistinctSameValuedEnumVariantsAreExhaustive) {
-  XLS_EXPECT_OK(TypecheckV2(R"(
+TEST(TypecheckV2Test, MatchSameValuedEnumVariantsAreRejectedAsDuplicates) {
+  EXPECT_THAT(R"(
 enum E: u2 { A = 0, B = 0, C = 1 }
 type Alias = E;
 
@@ -1146,12 +1210,13 @@ fn f(value: E) -> u32 {
     E::C => u32:2,
   }
 }
-)"));
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `Alias::B`")));
 }
 
-TEST(TypecheckV2Test, MatchOmittedSameValuedEnumVariantIsNonExhaustive) {
-  EXPECT_THAT(
-      R"(
+TEST(TypecheckV2Test, MatchOneAliasCoversAllSameValuedEnumVariants) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
 enum E: u2 { A = 0, B = 0, C = 1 }
 
 fn f(value: E) -> u32 {
@@ -1160,13 +1225,54 @@ fn f(value: E) -> u32 {
     E::C => u32:1,
   }
 }
-)",
-      TypecheckFails(AllOf(HasSubstr("Match patterns are not exhaustive"),
-                           HasSubstr("`E:0` is not covered"))));
+)"));
 }
 
-TEST(TypecheckV2Test, MatchDistinctSameValuedEnumVariantsRemainDistinct) {
+TEST(TypecheckV2Test, MatchSparseSignedEnumAliasesRemainExhaustive) {
   XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: s4 { Negative = -3, Alias = -3, Positive = 7 }
+
+fn f(value: E) -> u32 {
+  match value {
+    E::Negative => u32:0,
+    E::Positive => u32:1,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchSparseSignedEnumReportsDistinctUncoveredValue) {
+  EXPECT_THAT(
+      R"(
+enum E: s4 { Negative = -3, Alias = -3, Positive = 7 }
+
+fn f(value: E) -> u32 {
+  match value {
+    E::Negative => u32:0,
+  }
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("Match patterns are not exhaustive"),
+                           HasSubstr("`E:7` is not covered"))));
+}
+
+TEST(TypecheckV2Test, MatchDifferentNominalEnumTypesRemainIncomparable) {
+  EXPECT_THAT(R"(
+enum First: u1 { A = 0, B = 1 }
+enum Second: u1 { A = 0, B = 1 }
+
+fn f(value: First) -> u32 {
+  match value {
+    Second::A => u32:0,
+    _ => u32:1,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("type mismatch")));
+}
+
+TEST(TypecheckV2Test, MatchSameValuedEnumVariantsBeforeCatchallAreRejected) {
+  EXPECT_THAT(R"(
 enum E: u2 { A = 0, B = 0, C = 1 }
 type Alias = E;
 
@@ -1177,7 +1283,9 @@ fn f(value: E) -> u32 {
     _ => u32:2,
   }
 }
-)"));
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `Alias::B`")));
 }
 
 TEST(TypecheckV2Test, MatchEnumVariantCountCanExceedUnderlyingValueCount) {
@@ -1187,15 +1295,14 @@ enum E: u1 { A = 0, B = 0, C = 1 }
 fn f(value: E) -> u32 {
   match value {
     E::A => u32:0,
-    E::B => u32:1,
-    E::C => u32:2,
+    E::C => u32:1,
   }
 }
 )"));
 }
 
-TEST(TypecheckV2Test, MatchDistinctSameValuedEnumConstantsAreExhaustive) {
-  XLS_EXPECT_OK(TypecheckV2(R"(
+TEST(TypecheckV2Test, MatchSameValuedEnumConstantsAreRejectedAsDuplicates) {
+  EXPECT_THAT(R"(
 enum E: u2 { A = 0, B = 0, C = 1 }
 const FIRST = E::A;
 const SECOND = E::B;
@@ -1207,11 +1314,14 @@ fn f(value: E) -> u32 {
     E::C => u32:2,
   }
 }
-)"));
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `SECOND`")));
 }
 
-TEST(TypecheckV2Test, MatchFunctionLocalSameValuedEnumConstantsRemainDistinct) {
-  XLS_EXPECT_OK(TypecheckV2(R"(
+TEST(TypecheckV2Test,
+     MatchFunctionLocalSameValuedEnumConstantsAreRejectedAsDuplicates) {
+  EXPECT_THAT(R"(
 enum E: u2 { A = 0, B = 0, C = 1 }
 
 fn f(value: E) -> u32 {
@@ -1221,6 +1331,25 @@ fn f(value: E) -> u32 {
     FIRST => u32:0,
     SECOND => u32:1,
     E::C => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `SECOND`")));
+}
+
+TEST(TypecheckV2Test, MatchAssociatedConstantUsesItsActualEnumValue) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u1 { A = 0, B = 1 }
+struct Holder {}
+impl Holder {
+  const A: E = E::B;
+}
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    Holder::A => u32:1,
   }
 }
 )"));
@@ -1268,6 +1397,20 @@ fn f(value: u4) -> u32 {
 )",
       TypecheckFails(HasSubstr("Exact-duplicate pattern match detected "
                                "`u4:0..=u4:3`")));
+}
+
+TEST(TypecheckV2Test, MatchRepeatedEmptyRangeInGroupedArmsIsRejected) {
+  EXPECT_THAT(R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:1..u4:1 | u4:2 => u32:0,
+    u4:1..u4:1 | u4:3 => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `u4:1..u4:1`")));
 }
 
 TEST(TypecheckV2Test, MatchRangeCoveredByMultiplePatternsIsRejected) {
@@ -1639,8 +1782,8 @@ fn f(value: (Option, bool)) -> u32 {
 )"));
 }
 
-TEST(TypecheckV2Test, MatchNamedSumPayloadPreservesEnumDeclarationIdentity) {
-  XLS_EXPECT_OK(TypecheckV2(R"(
+TEST(TypecheckV2Test, MatchNamedSumPayloadUsesNumericEnumValueSemantics) {
+  EXPECT_THAT(R"(
 enum E: u1 { A = 0, B = 0 }
 enum Option {
   None,
@@ -1654,6 +1797,67 @@ fn f(value: Option) -> u32 {
     FIRST => u32:0,
     SECOND => u32:1,
     Option::None => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `SECOND`")));
+}
+
+TEST(TypecheckV2Test, MatchNamedComputedSumConstructorRemainsSupported) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum Option {
+  None,
+  Some(u2),
+}
+
+fn make_some() -> Option { Option::Some(u2:1) }
+
+const SOME = make_some();
+
+fn f(value: Option) -> u32 {
+  match value {
+    SOME => u32:0,
+    Option::Some(_) => u32:1,
+    Option::None => u32:2,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchImportedSumConstructorConstantRemainsSupported) {
+  constexpr std::string_view kImported = R"(
+pub enum Option {
+  None,
+  Some(u2),
+}
+pub const SOME = Option::Some(u2:1);
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn f(value: imported::Option) -> u32 {
+  match value {
+    imported::SOME => u32:0,
+    imported::Option::Some(_) => u32:1,
+    imported::Option::None => u32:2,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
+  XLS_EXPECT_OK(TypecheckV2(kProgram, "main", &import_data));
+}
+
+TEST(TypecheckV2Test, ConstMatchNamedTupleConstantRemainsSupported) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+const TARGET = (u1:0, u1:1);
+
+fn f() -> u32 {
+  const VALUE = (u1:0, u1:1);
+  const match VALUE {
+    TARGET => u32:0,
   }
 }
 )"));
