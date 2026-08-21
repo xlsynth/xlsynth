@@ -96,6 +96,7 @@ cc_library(
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info",
         "//xls/ir:bits",
+        "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/container:flat_hash_set",
         "@abseil-cpp//absl/log",
         "@abseil-cpp//absl/log:check",

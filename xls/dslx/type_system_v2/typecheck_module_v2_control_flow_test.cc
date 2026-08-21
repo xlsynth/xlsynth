@@ -1655,6 +1655,21 @@ fn f(value: u4) -> u32 {
                   "Exact-duplicate pattern match detected `u4:0x2`")));
 }
 
+TEST(TypecheckV2Test, MatchTrailingDuplicateKeepsItsExactEarlierPattern) {
+  EXPECT_THAT(R"(
+fn f(value: u8) -> u32 {
+  match value {
+    _ => u32:0,
+    u8:1 => u32:1,
+    u8:2 => u32:2,
+    u8:0x1 => u32:3,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `u8:0x1`")));
+}
+
 TEST(TypecheckV2Test, MatchEquivalentDuplicateAfterExhaustivenessIsRejected) {
   EXPECT_THAT(R"(
 fn f(value: u2) -> u32 {
@@ -2216,6 +2231,22 @@ fn f() -> u32 {
   }
 }
 )"));
+}
+
+TEST(TypecheckV2Test, MatchNamedTupleConstantPreservesItsMemberValues) {
+  EXPECT_THAT(R"(
+const PAIR = (u1:0, u1:1);
+
+fn f(value: ((u1, u1), bool)) -> u32 {
+  match value {
+    (PAIR, true) => u32:0,
+    ((u1:0, u1:1), true) => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("Exact-duplicate pattern match detected "
+                                       "`((u1:0, u1:1), true)`")));
 }
 
 TEST(TypecheckV2Test, MatchNestedNamedTupleConstantRemainsSupported) {

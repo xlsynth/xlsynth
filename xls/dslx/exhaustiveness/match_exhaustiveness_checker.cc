@@ -24,6 +24,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
@@ -46,10 +47,29 @@
 namespace xls::dslx {
 namespace {
 
+struct EnumValueDomain {
+  std::vector<InterpValue> values;
+  absl::flat_hash_map<Bits, int64_t> value_indices;
+};
+
+EnumValueDomain MakeEnumValueDomain(const EnumType& enum_type) {
+  EnumValueDomain result;
+  result.values.reserve(enum_type.members().size());
+  for (const InterpValue& member : enum_type.members()) {
+    if (result.value_indices
+            .try_emplace(member.GetBitsOrDie(), result.values.size())
+            .second) {
+      result.values.push_back(member);
+    }
+  }
+  return result;
+}
+
 struct FlattenedLeafType {
   const Type* type;
   std::optional<int64_t> dense_max_value;
   std::vector<int64_t> excluded_dense_values;
+  std::optional<EnumValueDomain> enum_domain;
 };
 
 struct FlattenedLeafTypes {
@@ -154,6 +174,7 @@ void AppendStorageLeafTypes(const Type& type, FlattenedLeafTypes* result) {
           .type = result->owned.back().get(),
           .dense_max_value = type.AsSum().variant_count() - 1,
           .excluded_dense_values = std::move(excluded_dense_values),
+          .enum_domain = std::nullopt,
       });
       CHECK_OK(encoding.ForEachPayloadType(
           [&](const Type& payload_type) -> absl::Status {
@@ -162,10 +183,15 @@ void AppendStorageLeafTypes(const Type& type, FlattenedLeafTypes* result) {
           }));
     }
   } else {
+    std::optional<EnumValueDomain> enum_domain;
+    if (type.IsEnum()) {
+      enum_domain = MakeEnumValueDomain(type.AsEnum());
+    }
     result->flat.push_back(FlattenedLeafType{
         .type = &type,
         .dense_max_value = std::nullopt,
         .excluded_dense_values = {},
+        .enum_domain = std::move(enum_domain),
     });
   }
 }
@@ -232,8 +258,13 @@ InterpValueInterval MakeFullIntervalForLeafType(const FlattenedLeafType& type) {
         InterpValue::MakeUBits(bit_count, 0),
         InterpValue::MakeUBits(bit_count, *type.dense_max_value));
   }
-  if (type.type->IsEnum()) {
-    return MakeFullIntervalForEnumType(type.type->AsEnum());
+  if (type.enum_domain.has_value()) {
+    const EnumType& enum_type = type.type->AsEnum();
+    CHECK(!type.enum_domain->values.empty());
+    int64_t bit_count = enum_type.size().GetAsInt64().value();
+    return InterpValueInterval(
+        InterpValue::MakeUBits(bit_count, 0),
+        InterpValue::MakeUBits(bit_count, type.enum_domain->values.size() - 1));
   }
   std::optional<BitsLikeProperties> bits_like = GetBitsLike(*type.type);
   CHECK(bits_like.has_value())
@@ -256,18 +287,6 @@ std::vector<InterpValueInterval> GetFullIntervals(
   std::vector<InterpValueInterval> result;
   for (const FlattenedLeafType& leaf_type : leaf_types) {
     result.push_back(MakeFullIntervalForLeafType(leaf_type));
-  }
-  return result;
-}
-
-std::vector<InterpValue> GetDistinctEnumValues(const EnumType& enum_type) {
-  absl::flat_hash_set<Bits> seen_values;
-  std::vector<InterpValue> result;
-  result.reserve(enum_type.members().size());
-  for (const InterpValue& member : enum_type.members()) {
-    if (seen_values.insert(member.GetBitsOrDie()).second) {
-      result.push_back(member);
-    }
   }
   return result;
 }
@@ -358,12 +377,22 @@ std::optional<InterpValue> GetConstantValue(const Expr& expression,
   return type_info.GetConstExprOption(&expression);
 }
 
-InterpValueInterval MakePointIntervalForType(const Type& type,
-                                             const InterpValue& value) {
-  VLOG(5) << "MakePointIntervalForType; type: `" << type.ToString()
+InterpValueInterval MakePointIntervalForLeafType(
+    const FlattenedLeafType& leaf_type, const InterpValue& value) {
+  const Type& type = *leaf_type.type;
+  VLOG(5) << "MakePointIntervalForLeafType; type: `" << type.ToString()
           << "` value: `" << value.ToString() << "`";
   if (type.IsEnum()) {
-    return MakePointIntervalForEnumType(type.AsEnum(), value);
+    CHECK(value.IsEnum());
+    CHECK_EQ(value.GetEnumData()->def, &type.AsEnum().nominal_type())
+        << "Enum value belongs to a different nominal enum type.";
+    CHECK(leaf_type.enum_domain.has_value());
+    const auto it =
+        leaf_type.enum_domain->value_indices.find(value.GetBitsOrDie());
+    CHECK(it != leaf_type.enum_domain->value_indices.end());
+    InterpValue coordinate = InterpValue::MakeUBits(
+        type.AsEnum().size().GetAsInt64().value(), it->second);
+    return InterpValueInterval(coordinate, coordinate);
   }
   std::optional<BitsLikeProperties> bits_like = GetBitsLike(type);
   CHECK(bits_like.has_value())
@@ -389,13 +418,13 @@ std::optional<InterpValueInterval> PatternToIntervalInternal(
             return MakeFullIntervalForLeafType(leaf_type);
           },
           [&](const InterpValue& value) -> std::optional<InterpValueInterval> {
-            return MakePointIntervalForType(*leaf_type.type, value);
+            return MakePointIntervalForLeafType(leaf_type, value);
           },
           [&](NameRef* name_ref) -> std::optional<InterpValueInterval> {
             std::optional<InterpValue> value =
                 GetConstantValue(*name_ref, type_info);
             if (value.has_value()) {
-              return MakePointIntervalForType(*leaf_type.type, *value);
+              return MakePointIntervalForLeafType(leaf_type, *value);
             }
             return MakeFullIntervalForLeafType(leaf_type);
           },
@@ -431,13 +460,13 @@ std::optional<InterpValueInterval> PatternToIntervalInternal(
                     << colon_ref->ToString() << "` value: `"
                     << value.value().ToString() << "`" << " leaf_type: `"
                     << leaf_type.type->ToString() << "`";
-            return MakePointIntervalForType(*leaf_type.type, *value);
+            return MakePointIntervalForLeafType(leaf_type, *value);
           },
           [&](Number* number) -> std::optional<InterpValueInterval> {
             std::optional<InterpValue> value =
                 type_info.GetConstExprOption(number);
             CHECK(value.has_value());
-            return MakePointIntervalForType(*leaf_type.type, *value);
+            return MakePointIntervalForLeafType(leaf_type, *value);
           }},
       leaf);
   VLOG(5) << "PatternToIntervalInternal; leaf_type: `"
@@ -1042,8 +1071,9 @@ std::optional<std::vector<InterpValue>> SampleSimplestUncoveredLeafValues(
     const InterpValue& min = interval.min();
     if (type.IsEnum()) {
       const EnumType& enum_type = type.AsEnum();
-      std::vector<InterpValue> distinct_values =
-          GetDistinctEnumValues(enum_type);
+      CHECK(leaf_types[i].enum_domain.has_value());
+      const std::vector<InterpValue>& distinct_values =
+          leaf_types[i].enum_domain->values;
       int64_t value_index = min.GetBitValueUnsigned().value();
       CHECK_LT(value_index, distinct_values.size())
           << "Value index out of bounds: " << value_index
@@ -1069,6 +1099,9 @@ struct MatchExhaustivenessChecker::Impl {
     // PatternTree wrappers are copyable values containing AST-owned pointers.
     // Retain the wrapper itself because callers may pass temporary wrappers.
     std::vector<PatternTree> covered_patterns;
+    // Preserve scalar predecessor spans without replay after a catch-all.
+    absl::flat_hash_map<Bits, Span> covered_point_spans;
+    std::optional<Span> covering_pattern_span;
   };
 
   struct SumVariantState {
@@ -1087,6 +1120,8 @@ struct MatchExhaustivenessChecker::Impl {
             .original = NdRegion::MakeEmpty({}),
             .remaining = NdRegion::MakeEmpty({}),
             .covered_patterns = {},
+            .covered_point_spans = {},
+            .covering_pattern_span = std::nullopt,
         }) {}
 
   const FileTable& file_table() const { return type_info_.file_table(); }
@@ -1167,23 +1202,36 @@ struct MatchExhaustivenessChecker::Impl {
           std::string spelling = PatternToString(pattern);
           std::optional<Span> first_intersecting_span;
           std::optional<Span> exact_previous_span;
-          for (const PatternTree& previous : domain.covered_patterns) {
-            NdInterval previous_interval =
-                ReconstructCoveredInterval(previous, domain_leaf_types);
-            if (!first_intersecting_span.has_value() &&
-                previous_interval.Intersects(*nonempty_interval)) {
-              first_intersecting_span = GetPatternSpan(previous);
+          bool scalar_point = nonempty_interval->dims().size() == 1 &&
+                              nonempty_interval->dims()[0].min() ==
+                                  nonempty_interval->dims()[0].max();
+          if (!is_irrefutable && scalar_point &&
+              domain.covering_pattern_span.has_value()) {
+            first_intersecting_span = domain.covering_pattern_span;
+            const auto previous = domain.covered_point_spans.find(
+                nonempty_interval->dims()[0].min().GetBitsOrDie());
+            if (previous != domain.covered_point_spans.end()) {
+              exact_previous_span = previous->second;
             }
-            bool exact_interval = CoversSameInhabitedValues(
-                previous_interval, *nonempty_interval, domain.original);
-            bool same_constructor_scope =
-                IsIrrefutablePattern(previous) == is_irrefutable;
-            bool same_wildcard_spelling =
-                !is_irrefutable || PatternToString(previous) == spelling;
-            if (exact_interval && same_constructor_scope &&
-                same_wildcard_spelling) {
-              exact_previous_span = GetPatternSpan(previous);
-              break;
+          } else {
+            for (const PatternTree& previous : domain.covered_patterns) {
+              NdInterval previous_interval =
+                  ReconstructCoveredInterval(previous, domain_leaf_types);
+              if (!first_intersecting_span.has_value() &&
+                  previous_interval.Intersects(*nonempty_interval)) {
+                first_intersecting_span = GetPatternSpan(previous);
+              }
+              bool exact_interval = CoversSameInhabitedValues(
+                  previous_interval, *nonempty_interval, domain.original);
+              bool same_constructor_scope =
+                  IsIrrefutablePattern(previous) == is_irrefutable;
+              bool same_wildcard_spelling =
+                  !is_irrefutable || PatternToString(previous) == spelling;
+              if (exact_interval && same_constructor_scope &&
+                  same_wildcard_spelling) {
+                exact_previous_span = GetPatternSpan(previous);
+                break;
+              }
             }
           }
           CHECK(exact_previous_span.has_value() ||
@@ -1198,6 +1246,17 @@ struct MatchExhaustivenessChecker::Impl {
                                            ? *exact_previous_span
                                            : *first_intersecting_span,
           };
+        }
+        if (IsIrrefutablePattern(pattern)) {
+          if (!domain.covering_pattern_span.has_value()) {
+            domain.covering_pattern_span = GetPatternSpan(pattern);
+          }
+        } else if (nonempty_interval->dims().size() == 1 &&
+                   nonempty_interval->dims()[0].min() ==
+                       nonempty_interval->dims()[0].max()) {
+          domain.covered_point_spans.try_emplace(
+              nonempty_interval->dims()[0].min().GetBitsOrDie(),
+              GetPatternSpan(pattern));
         }
         domain.covered_patterns.push_back(pattern);
       }
@@ -1362,7 +1421,7 @@ MatchExhaustivenessChecker::SampleSimplestUncoveredValue() const {
 
 InterpValueInterval MakeFullIntervalForEnumType(const EnumType& enum_type) {
   int64_t bit_count = enum_type.size().GetAsInt64().value();
-  int64_t enum_value_count = GetDistinctEnumValues(enum_type).size();
+  int64_t enum_value_count = MakeEnumValueDomain(enum_type).values.size();
   VLOG(5) << "MakeFullIntervalForEnumType; enum_type: " << enum_type.ToString()
           << " enum_value_count: " << enum_value_count;
   CHECK_GT(enum_value_count, 0)
@@ -1380,13 +1439,10 @@ InterpValueInterval MakeFullIntervalForEnumType(const EnumType& enum_type) {
 
 std::optional<int64_t> GetEnumValueIndex(const EnumType& enum_type,
                                          const InterpValue& value) {
-  std::vector<InterpValue> distinct_values = GetDistinctEnumValues(enum_type);
-  for (int64_t i = 0; i < distinct_values.size(); ++i) {
-    if (distinct_values[i].Eq(value)) {
-      return i;
-    }
-  }
-  return std::nullopt;
+  EnumValueDomain domain = MakeEnumValueDomain(enum_type);
+  const auto it = domain.value_indices.find(value.GetBitsOrDie());
+  return it == domain.value_indices.end() ? std::nullopt
+                                          : std::make_optional(it->second);
 }
 
 InterpValueInterval MakePointIntervalForEnumType(const EnumType& enum_type,
