@@ -16,79 +16,111 @@
 #define XLS_DSLX_SUM_TYPE_ENCODING_H_
 
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <string_view>
+#include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xls/dslx/type_system/type.h"
+#include "xls/ir/bits.h"
 
 namespace xls::dslx {
 
-// View of the current semantic-sum storage encoding.
+// Shared semantic-sum storage encoding.
 //
-// Interpreter value construction and validation share the `(tag,
-// payload_slots)` layout exposed here. The storage tag is a dense
-// declaration-order index, not a source-level discriminant. Payload slots for
-// every variant remain present, with inactive slots holding canonical
-// placeholders. The storage layout is an internal implementation detail rather
-// than a stable source-language or serialization contract.
+// The runtime representation is one semantic-discriminant tag plus one shared
+// low-bit-aligned payload bit slot sized to the widest flattened variant
+// payload.
 class Phase1SumTypeEncoding {
  public:
   struct VariantInfo {
     const int64_t variant_index;
     const SumTypeVariant* const variant;
-    // First payload slot for this variant in the flattened payload tuple.
-    const int64_t payload_start;
+    const InterpValue* const discriminant;
 
     int64_t payload_size() const { return variant->size(); }
-    int64_t payload_end() const { return payload_start + payload_size(); }
+    absl::StatusOr<int64_t> payload_bit_count() const;
 
    private:
     friend class Phase1SumTypeEncoding;
 
     VariantInfo(int64_t variant_index, const SumTypeVariant& variant,
-                int64_t payload_start)
+                const InterpValue& discriminant)
         : variant_index(variant_index),
           variant(&variant),
-          payload_start(payload_start) {}
+          discriminant(&discriminant) {}
+  };
+
+  class StoredLeafInfo {
+   public:
+    static StoredLeafInfo MakeDenseTag(BitsType tag_type,
+                                       int64_t dense_max_value) {
+      return StoredLeafInfo(StoredType(tag_type), dense_max_value);
+    }
+
+    static StoredLeafInfo MakePayload(const Type& type) {
+      return StoredLeafInfo(StoredType(std::cref(type)), std::nullopt);
+    }
+
+    static StoredLeafInfo MakePayloadBits(BitsType payload_type) {
+      return StoredLeafInfo(StoredType(std::move(payload_type)), std::nullopt);
+    }
+
+    const Type& type() const {
+      if (std::holds_alternative<BitsType>(type_)) {
+        return std::get<BitsType>(type_);
+      }
+      return std::get<std::reference_wrapper<const Type>>(type_).get();
+    }
+
+    std::optional<int64_t> dense_max_value() const { return dense_max_value_; }
+
+   private:
+    using StoredType =
+        std::variant<BitsType, std::reference_wrapper<const Type>>;
+
+    StoredLeafInfo(StoredType type, std::optional<int64_t> dense_max_value)
+        : type_(type), dense_max_value_(dense_max_value) {}
+
+    StoredType type_;
+    std::optional<int64_t> dense_max_value_;
   };
 
   explicit Phase1SumTypeEncoding(const SumType& type);
 
-  int64_t payload_slot_count() const { return payload_slot_types_.size(); }
+  absl::StatusOr<int64_t> payload_slot_bit_count() const;
   absl::StatusOr<int64_t> tag_bit_count() const;
 
   absl::StatusOr<VariantInfo> GetVariant(std::string_view variant_name) const;
+  absl::StatusOr<VariantInfo> GetVariantByTagBits(const Bits& tag_bits) const;
   absl::Status ForEachVariant(
       absl::FunctionRef<absl::Status(const VariantInfo& variant)> visitor)
       const;
-  // Visits stored payload slot types in canonical storage order.
-  absl::Status ForEachPayloadType(
-      absl::FunctionRef<absl::Status(const Type& type)> visitor) const;
-  // Visits only the active payload members for one variant, providing the
-  // canonical storage slot index and the payload index within the variant.
-  absl::Status ForEachActivePayloadSlot(
+  // Visits the stored leaves for the encoded sum value: one dense tag leaf
+  // first, followed by the shared payload-bit slot. Both leaves are carried by
+  // value inside `StoredLeafInfo`.
+  absl::Status ForEachStoredLeafType(
+      absl::FunctionRef<absl::Status(const StoredLeafInfo& leaf)> visitor)
+      const;
+  // Visits the semantic payload members for one variant in declaration order.
+  absl::Status ForEachPayloadMember(
       const VariantInfo& variant,
-      absl::FunctionRef<absl::Status(int64_t slot_index, int64_t active_index,
-                                     const Type& type)>
+      absl::FunctionRef<absl::Status(int64_t active_index, const Type& type)>
           visitor) const;
-  // Replays canonical payload storage order for one variant without exposing
-  // raw slot metadata to callers.
-  absl::Status VisitPayloadAssemblyOrder(
-      const VariantInfo& variant,
-      absl::FunctionRef<absl::Status(int64_t active_index)> active_visitor,
-      absl::FunctionRef<absl::Status(const Type& inactive_type)>
-          inactive_visitor) const;
 
  private:
   absl::Status ValidateVariantInfo(const VariantInfo& variant) const;
   absl::StatusOr<const VariantInfo*> FindVariant(
       std::string_view variant_name) const;
+  absl::StatusOr<const VariantInfo*> FindVariantByTagBits(
+      const Bits& tag_bits) const;
 
   const SumType& type_;
-  std::vector<const Type*> payload_slot_types_;
   std::vector<VariantInfo> variants_;
 };
 

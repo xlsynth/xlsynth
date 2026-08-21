@@ -86,6 +86,11 @@ absl::StatusOr<InferenceTableConverter*> ImportData::GetInferenceTableConverter(
   return GetInferenceTableConverter(&info->module());
 }
 
+void ImportData::RetainTransientModuleInfo(
+    std::unique_ptr<ModuleInfo> module_info) {
+  transient_module_infos_.push_back(std::move(module_info));
+}
+
 absl::StatusOr<ModuleInfo*> ImportData::Put(
     const ImportTokens& subject, std::unique_ptr<ModuleInfo> module_info) {
   auto* pmodule_info = module_info.get();

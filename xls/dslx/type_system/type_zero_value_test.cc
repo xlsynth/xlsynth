@@ -79,14 +79,10 @@ TEST(TypeZeroValueTest, ConstructsNestedSumPayloadZeroValue) {
   ASSERT_EQ(outer.size(), 2);
   EXPECT_TRUE(outer.at(0).IsUBits());
   EXPECT_TRUE(outer.at(0).GetBitsOrDie().IsZero());
-
   const std::vector<InterpValue>& payload = outer.at(1).GetValuesOrDie();
   ASSERT_EQ(payload.size(), 1);
-  const std::vector<InterpValue>& inner = payload.at(0).GetValuesOrDie();
-  ASSERT_EQ(inner.size(), 2);
-  EXPECT_TRUE(inner.at(0).IsUBits());
-  EXPECT_TRUE(inner.at(0).GetBitsOrDie().IsZero());
-  EXPECT_TRUE(inner.at(1).GetValuesOrDie().empty());
+  EXPECT_TRUE(payload.at(0).IsUBits());
+  EXPECT_TRUE(payload.at(0).GetBitsOrDie().IsZero());
 }
 
 TEST(TypeZeroValueTest, ConstructsDeeplyNestedSumZerosWithoutRevalidation) {
@@ -132,19 +128,12 @@ TEST(TypeZeroValueTest, ConstructsDeeplyNestedSumZerosWithoutRevalidation) {
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue result,
                            MakeZeroValue(*current, import_data, span));
-  const InterpValue* value = &result;
-  for (int depth = 0; depth < kNestingDepth; ++depth) {
-    const std::vector<InterpValue>& encoded = value->GetValuesOrDie();
-    ASSERT_EQ(encoded.size(), 2);
-    EXPECT_TRUE(encoded.at(0).GetBitsOrDie().IsZero());
-    const std::vector<InterpValue>& payload = encoded.at(1).GetValuesOrDie();
-    if (depth + 1 == kNestingDepth) {
-      EXPECT_TRUE(payload.empty());
-    } else {
-      ASSERT_EQ(payload.size(), 1);
-      value = &payload.at(0);
-    }
-  }
+  const std::vector<InterpValue>& encoded = result.GetValuesOrDie();
+  ASSERT_EQ(encoded.size(), 2);
+  EXPECT_TRUE(encoded.at(0).GetBitsOrDie().IsZero());
+  const std::vector<InterpValue>& payload = encoded.at(1).GetValuesOrDie();
+  ASSERT_EQ(payload.size(), 1);
+  EXPECT_TRUE(payload.at(0).GetBitsOrDie().IsZero());
 }
 
 TEST(TypeZeroValueTest, UsesExplicitZeroDiscriminantInsteadOfDenseStorageTag) {
@@ -196,23 +185,29 @@ TEST(TypeZeroValueTest, UsesExplicitZeroDiscriminantInsteadOfDenseStorageTag) {
   std::vector<std::unique_ptr<Type>> idle_members;
   idle_members.push_back(std::make_unique<BitsType>(false, 16));
   variants.push_back(SumTypeVariant::MakeTuple(*idle, std::move(idle_members)));
-  SumType sum_type(*sum_def, std::move(variants));
+  SumType sum_type(
+      *sum_def, std::move(variants), TypeDim::CreateU32(2),
+      {InterpValue::MakeUBits(2, 1), InterpValue::MakeUBits(2, 0)});
 
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue result,
                            MakeZeroValue(sum_type, import_data, span));
   const std::vector<InterpValue>& encoded = result.GetValuesOrDie();
   ASSERT_EQ(encoded.size(), 2);
-  EXPECT_EQ(encoded.at(0).GetBitValueUnsigned().value(), 1);
+  EXPECT_EQ(encoded.at(0).GetBitValueUnsigned().value(), 0);
   const std::vector<InterpValue>& payload = encoded.at(1).GetValuesOrDie();
-  ASSERT_EQ(payload.size(), 2);
-  EXPECT_EQ(payload.at(0).GetBitCount().value(), 8);
-  EXPECT_EQ(payload.at(1).GetBitCount().value(), 16);
+  ASSERT_EQ(payload.size(), 1);
+  EXPECT_EQ(payload.at(0).GetBitCount().value(), 16);
   EXPECT_TRUE(payload.at(0).GetBitsOrDie().IsZero());
-  EXPECT_TRUE(payload.at(1).GetBitsOrDie().IsZero());
   EXPECT_FALSE(MakeAllOnesValue(sum_type, import_data, span).ok());
 
-  tm.type_info->NoteConstExpr(idle_discriminant, InterpValue::MakeUBits(2, 2));
-  EXPECT_FALSE(MakeZeroValue(sum_type, import_data, span).ok());
+  std::vector<SumTypeVariant> no_zero_variants;
+  for (const SumTypeVariant& variant : sum_type.variants()) {
+    no_zero_variants.push_back(variant.Clone());
+  }
+  SumType no_zero_type(
+      *sum_def, std::move(no_zero_variants), TypeDim::CreateU32(2),
+      {InterpValue::MakeUBits(2, 1), InterpValue::MakeUBits(2, 2)});
+  EXPECT_FALSE(MakeZeroValue(no_zero_type, import_data, span).ok());
 }
 
 TEST(TypeZeroValueTest, RejectsAnEmptySumWithoutAZeroVariant) {

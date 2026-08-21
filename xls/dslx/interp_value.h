@@ -717,17 +717,16 @@ struct RangeData {
 
 namespace internal {
 
-// Borrowed view of the current semantic-sum `(tag, payload_slots)` carrier.
+// Borrowed view of the semantic-sum `(tag, packed-payload-slot)` carrier.
 struct EncodedSumView {
   const InterpValue& tag;
-  absl::Span<const InterpValue> payload_slots;
+  const InterpValue& payload_slot;
 };
 
 absl::StatusOr<EncodedSumView> GetEncodedSumView(const InterpValue& value);
 
 // Constructs the interpreter-owned tuple carrier for an encoded semantic sum.
-InterpValue CreateEncodedSumTuple(InterpValue tag,
-                                  std::vector<InterpValue> payload_slots);
+InterpValue CreateEncodedSumTuple(InterpValue tag, InterpValue payload_slot);
 
 }  // namespace internal
 

@@ -93,8 +93,10 @@ absl::StatusOr<ValueFormatDescriptor> MakeEnumFormatDescriptor(
     XLS_RET_CHECK(v.IsEnum());
     value_to_name[v.GetBitsOrDie()] = s;
   }
+  XLS_ASSIGN_OR_RETURN(int64_t bit_count, type.size().GetAsInt64());
   return ValueFormatDescriptor::MakeEnum(enum_def.identifier(),
-                                         std::move(value_to_name));
+                                         std::move(value_to_name), bit_count,
+                                         type.is_signed());
 }
 
 }  // namespace
@@ -103,12 +105,12 @@ absl::StatusOr<ValueFormatDescriptor> SumValueFormatBuilder::Build(
     const SumType& type, FormatPreference field_preference) {
   const Phase1SumTypeEncoding encoding(type);
   std::vector<ValueFormatSumVariantDescriptor> variants;
-  std::vector<size_t> payload_starts;
+  std::vector<Bits> variant_tag_bits;
   variants.reserve(type.variant_count());
-  payload_starts.reserve(type.variant_count());
+  variant_tag_bits.reserve(type.variant_count());
   XLS_RETURN_IF_ERROR(encoding.ForEachVariant(
       [&](const Phase1SumTypeEncoding::VariantInfo& info) -> absl::Status {
-        payload_starts.push_back(static_cast<size_t>(info.payload_start));
+        variant_tag_bits.push_back(info.discriminant->GetBitsOrDie());
         const SumTypeVariant& variant = *info.variant;
         std::vector<ValueFormatDescriptor> payload_formats;
         payload_formats.reserve(variant.size());
@@ -137,9 +139,12 @@ absl::StatusOr<ValueFormatDescriptor> SumValueFormatBuilder::Build(
         }
         return absl::OkStatus();
       }));
-  return ValueFormatDescriptor::MakeSum(type.nominal_type().identifier(),
-                                        variants, payload_starts,
-                                        encoding.payload_slot_count());
+  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
+  XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                       encoding.payload_slot_bit_count());
+  return ValueFormatDescriptor::MakeSum(
+      type.nominal_type().identifier(), variants, tag_bit_count,
+      payload_slot_bit_count, variant_tag_bits);
 }
 
 absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
@@ -151,7 +156,12 @@ absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
 
     absl::Status HandleArray(const ArrayType& t) override {
       if (IsBitsLike(t)) {
-        result_ = ValueFormatDescriptor::MakeLeafValue(field_preference_);
+        std::optional<BitsLikeProperties> bits_like = GetBitsLike(t);
+        XLS_RET_CHECK(bits_like.has_value());
+        XLS_ASSIGN_OR_RETURN(int64_t bit_count, bits_like->size.GetAsInt64());
+        XLS_ASSIGN_OR_RETURN(bool is_signed, bits_like->is_signed.GetAsBool());
+        result_ = ValueFormatDescriptor::MakeLeafValue(field_preference_,
+                                                       bit_count, is_signed);
         return absl::OkStatus();
       }
       XLS_ASSIGN_OR_RETURN(result_,
@@ -184,7 +194,9 @@ absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
       return absl::OkStatus();
     }
     absl::Status HandleBits(const BitsType& t) override {
-      result_ = ValueFormatDescriptor::MakeLeafValue(field_preference_);
+      XLS_ASSIGN_OR_RETURN(int64_t bit_count, t.size().GetAsInt64());
+      result_ = ValueFormatDescriptor::MakeLeafValue(field_preference_,
+                                                     bit_count, t.is_signed());
       return absl::OkStatus();
     }
     absl::Status HandleFunction(const FunctionType& t) override {
