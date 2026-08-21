@@ -284,11 +284,6 @@ std::vector<InterpValueInterval> GetFullIntervals(
   return result;
 }
 
-std::optional<InterpValue> GetConstantValue(const Expr& expression,
-                                            const TypeInfo& type_info) {
-  return type_info.GetConstExprOption(&expression);
-}
-
 InterpValueInterval MakePointIntervalForLeafType(
     const FlattenedLeafType& leaf_type, const InterpValue& value) {
   const Type& type = *leaf_type.type;
@@ -334,7 +329,7 @@ std::optional<InterpValueInterval> PatternToIntervalInternal(
           },
           [&](NameRef* name_ref) -> std::optional<InterpValueInterval> {
             std::optional<InterpValue> value =
-                GetConstantValue(*name_ref, type_info);
+                type_info.GetConstExprOption(name_ref);
             if (value.has_value()) {
               return MakePointIntervalForLeafType(leaf_type, *value);
             }
@@ -366,7 +361,7 @@ std::optional<InterpValueInterval> PatternToIntervalInternal(
           },
           [&](ColonRef* colon_ref) -> std::optional<InterpValueInterval> {
             std::optional<InterpValue> value =
-                GetConstantValue(*colon_ref, type_info);
+                type_info.GetConstExprOption(colon_ref);
             CHECK(value.has_value());
             VLOG(5) << "PatternToIntervalInternal; colon_ref: `"
                     << colon_ref->ToString() << "` value: `"
@@ -470,7 +465,7 @@ struct SumConstantValue {
 SumConstantValue ResolveSumConstantValue(const Expr& expression,
                                          const SumType& sum_type,
                                          const TypeInfo& type_info) {
-  std::optional<InterpValue> value = GetConstantValue(expression, type_info);
+  std::optional<InterpValue> value = type_info.GetConstExprOption(&expression);
   if (!value.has_value()) {
     const Expr* constructor_expression = &expression;
     bool resolving_local_alias = true;
@@ -678,7 +673,7 @@ struct ExpandedSumVariantPattern {
 std::optional<Phase1SumTypeEncoding::VariantInfo> GetDirectUnitSumVariant(
     const ColonRef& pattern, const SumType& type, const TypeInfo& type_info) {
   std::optional<Phase1SumTypeEncoding::VariantInfo> result;
-  if (!GetConstantValue(pattern, type_info).has_value()) {
+  if (!type_info.IsKnownConstExpr(&pattern)) {
     absl::StatusOr<Phase1SumTypeEncoding::VariantInfo> variant =
         Phase1SumTypeEncoding(type).GetVariant(pattern.attr());
     if (variant.ok() && variant->variant->is_unit()) {
@@ -824,7 +819,7 @@ std::vector<IntervalPatternLeaf> ExpandPatternLeaves(
   }
   if (const auto* name_ref = std::get_if<NameRef*>(&pattern);
       name_ref != nullptr) {
-    std::optional<InterpValue> value = GetConstantValue(**name_ref, type_info);
+    std::optional<InterpValue> value = type_info.GetConstExprOption(*name_ref);
     CHECK(value.has_value()) << "Missing tuple constexpr value for `"
                              << (*name_ref)->ToString() << "`";
     std::vector<IntervalPatternLeaf> result;
@@ -832,7 +827,7 @@ std::vector<IntervalPatternLeaf> ExpandPatternLeaves(
     return result;
   } else if (const auto* colon_ref = std::get_if<ColonRef*>(&pattern);
              colon_ref != nullptr) {
-    std::optional<InterpValue> value = GetConstantValue(**colon_ref, type_info);
+    std::optional<InterpValue> value = type_info.GetConstExprOption(*colon_ref);
     CHECK(value.has_value()) << "Missing tuple constexpr value for `"
                              << (*colon_ref)->ToString() << "`";
     std::vector<IntervalPatternLeaf> result;
