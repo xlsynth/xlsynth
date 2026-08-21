@@ -635,7 +635,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       if (auto [it, inserted] = seen_arms.try_emplace(patterns_string, arm);
           !inserted) {
         return MatchPatternAlreadyCoveredStatus(
-            it->second->GetPatternSpan(), arm->GetPatternSpan(),
+            arm->GetPatternSpan(), it->second->GetPatternSpan(),
             patterns_string, MatchPatternOverlapKind::kExactDuplicate,
             file_table_);
       }

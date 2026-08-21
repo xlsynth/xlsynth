@@ -177,9 +177,10 @@ enum class MatchPatternOverlapKind {
   kFullyCovered,
 };
 
-// Returns a two-location error for a pattern already covered by earlier arms.
+// Reports `duplicate_span` as the primary error. The payload also contains
+// `previous_span` when the two source locations differ.
 absl::Status MatchPatternAlreadyCoveredStatus(
-    const Span& original_span, const Span& duplicate_span,
+    const Span& duplicate_span, const Span& previous_span,
     std::string_view pattern, MatchPatternOverlapKind overlap_kind,
     const FileTable& file_table);
 

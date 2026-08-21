@@ -210,9 +210,17 @@ FlattenedLeafTypes GetSumVariantPayloadLeafTypes(
 // WildcardPattern and NameDef.
 struct SomeWildcard {};
 
+// Retains the AST and its owning type information so enum-valued constructor
+// payloads preserve declaration identity across imported constants.
+struct ConstantExpressionLeaf {
+  const Expr* expression;
+  const TypeInfo* type_info;
+};
+
 // PatternLeaf but where RestOfTuple has been resolved.
-using IntervalPatternLeaf = std::variant<SomeWildcard, InterpValue, NameRef*,
-                                         Range*, ColonRef*, Number*>;
+using IntervalPatternLeaf =
+    std::variant<SomeWildcard, InterpValue, NameRef*, Range*, ColonRef*,
+                 Number*, ConstantExpressionLeaf>;
 
 InterpValueInterval MakeFullIntervalForLeafType(const FlattenedLeafType& type) {
   if (type.dense_max_value.has_value()) {
@@ -279,26 +287,51 @@ InterpValueInterval MakePointIntervalForEnumMember(const EnumType& enum_type,
   return InterpValueInterval(member_position, member_position);
 }
 
-// Follow local and imported constants back to their source enum declaration so
-// equal-valued declared variants do not lose their identities in InterpValue.
-const ColonRef* ResolveEnumPatternMember(const Expr& expression,
-                                         const TypeInfo& type_info) {
+// Follows constant bindings without converting their source declarations to
+// numeric interpreter values.
+ConstantExpressionLeaf ResolveConstantExpression(const Expr& expression,
+                                                 const TypeInfo& type_info) {
   const Expr* current = &expression;
   const TypeInfo* current_type_info = &type_info;
-  const ColonRef* member = nullptr;
-  while (current != nullptr) {
+  bool resolved = false;
+  while (!resolved) {
     if (const NameRef* name_ref = dynamic_cast<const NameRef*>(current);
         name_ref != nullptr) {
-      const ConstantDef* constant =
-          dynamic_cast<const ConstantDef*>(name_ref->GetDefiner());
-      current = constant == nullptr ? nullptr : constant->value();
+      const AstNode* definer = name_ref->GetDefiner();
+      if (const ConstantDef* constant =
+              dynamic_cast<const ConstantDef*>(definer);
+          constant != nullptr) {
+        current = constant->value();
+      } else if (const Let* binding = dynamic_cast<const Let*>(definer);
+                 binding != nullptr && binding->is_const()) {
+        current = binding->rhs();
+      } else if (const UseTreeEntry* imported_name =
+                     dynamic_cast<const UseTreeEntry*>(definer);
+                 imported_name != nullptr) {
+        std::optional<const ImportedInfo*> imported_info =
+            current_type_info->GetImported(
+                const_cast<UseTreeEntry*>(imported_name));
+        std::optional<ConstantDef*> constant;
+        if (imported_info.has_value()) {
+          constant =
+              (*imported_info)
+                  ->module->GetMember<ConstantDef>(name_ref->identifier());
+        }
+        if (constant.has_value()) {
+          current = (*constant)->value();
+          current_type_info = (*imported_info)->type_info;
+        } else {
+          resolved = true;
+        }
+      } else {
+        resolved = true;
+      }
     } else if (const ColonRef* colon_ref =
                    dynamic_cast<const ColonRef*>(current);
                colon_ref != nullptr) {
       std::optional<ImportSubject> import = colon_ref->ResolveImportSubject();
       if (!import.has_value()) {
-        member = colon_ref;
-        current = nullptr;
+        resolved = true;
       } else if (std::optional<const ImportedInfo*> imported_info =
                      current_type_info->GetImported(*import);
                  imported_info.has_value()) {
@@ -308,16 +341,19 @@ const ColonRef* ResolveEnumPatternMember(const Expr& expression,
           current = (*constant)->value();
           current_type_info = (*imported_info)->type_info;
         } else {
-          current = nullptr;
+          resolved = true;
         }
       } else {
-        current = nullptr;
+        resolved = true;
       }
     } else {
-      current = nullptr;
+      resolved = true;
     }
   }
-  return member;
+  return ConstantExpressionLeaf{
+      .expression = current,
+      .type_info = current_type_info,
+  };
 }
 
 InterpValueInterval MakePointIntervalForType(const Type& type,
@@ -332,6 +368,29 @@ InterpValueInterval MakePointIntervalForType(const Type& type,
   CHECK(bits_like.has_value())
       << "MakePointIntervalForType; got non-bits type: " << type.ToString();
   return InterpValueInterval(value, value);
+}
+
+InterpValueInterval MakePointIntervalForExpression(
+    const Expr& expression, const InterpValue& value, const Type& type,
+    const TypeInfo& type_info, const ImportData& import_data) {
+  std::optional<InterpValueInterval> result;
+  if (type.IsEnum()) {
+    ConstantExpressionLeaf resolved =
+        ResolveConstantExpression(expression, type_info);
+    if (const ColonRef* enum_member =
+            dynamic_cast<const ColonRef*>(resolved.expression);
+        enum_member != nullptr) {
+      std::optional<int64_t> member_index =
+          GetEnumMemberIndexByName(type.AsEnum(), enum_member->attr());
+      if (member_index.has_value()) {
+        result = MakePointIntervalForEnumMember(type.AsEnum(), *member_index);
+      }
+    }
+  }
+  if (!result.has_value()) {
+    result = MakePointIntervalForType(type, value, import_data);
+  }
+  return *result;
 }
 
 InterpValueInterval MakeIntervalForType(const Type& type,
@@ -356,24 +415,36 @@ std::optional<InterpValueInterval> PatternToIntervalInternal(
                                             import_data);
           },
           [&](NameRef* name_ref) -> std::optional<InterpValueInterval> {
+            ConstantExpressionLeaf resolved =
+                ResolveConstantExpression(*name_ref, type_info);
             std::optional<InterpValue> value =
                 type_info.GetConstExprOption(name_ref);
-            if (value.has_value()) {
-              if (leaf_type.type->IsEnum()) {
-                const ColonRef* enum_member =
-                    ResolveEnumPatternMember(*name_ref, type_info);
-                if (enum_member != nullptr) {
-                  std::optional<int64_t> member_index =
-                      GetEnumMemberIndexByName(leaf_type.type->AsEnum(),
-                                               enum_member->attr());
-                  if (member_index.has_value()) {
-                    return MakePointIntervalForEnumMember(
-                        leaf_type.type->AsEnum(), *member_index);
-                  }
+            if (!value.has_value()) {
+              value =
+                  resolved.type_info->GetConstExprOption(resolved.expression);
+            }
+            if (!value.has_value() && leaf_type.type->IsEnum() &&
+                dynamic_cast<const UseTreeEntry*>(name_ref->GetDefiner()) !=
+                    nullptr) {
+              const EnumDef& enum_def = leaf_type.type->AsEnum().nominal_type();
+              if (std::optional<ConstantDef*> imported_constant =
+                      enum_def.owner()->GetMember<ConstantDef>(
+                          name_ref->identifier());
+                  imported_constant.has_value()) {
+                absl::StatusOr<const TypeInfo*> imported_type_info =
+                    import_data.GetRootTypeInfoForNode(*imported_constant);
+                if (imported_type_info.ok()) {
+                  resolved = ResolveConstantExpression(
+                      *(*imported_constant)->value(), **imported_type_info);
+                  value = resolved.type_info->GetConstExprOption(
+                      resolved.expression);
                 }
               }
-              return MakePointIntervalForType(*leaf_type.type, value.value(),
-                                              import_data);
+            }
+            if (value.has_value()) {
+              return MakePointIntervalForExpression(
+                  *resolved.expression, *value, *leaf_type.type,
+                  *resolved.type_info, import_data);
             }
             return MakeFullIntervalForLeafType(leaf_type);
           },
@@ -409,20 +480,8 @@ std::optional<InterpValueInterval> PatternToIntervalInternal(
                     << colon_ref->ToString() << "` value: `"
                     << value.value().ToString() << "`" << " leaf_type: `"
                     << leaf_type.type->ToString() << "`";
-            if (leaf_type.type->IsEnum()) {
-              const ColonRef* enum_member =
-                  ResolveEnumPatternMember(*colon_ref, type_info);
-              if (enum_member != nullptr) {
-                std::optional<int64_t> member_index = GetEnumMemberIndexByName(
-                    leaf_type.type->AsEnum(), enum_member->attr());
-                if (member_index.has_value()) {
-                  return MakePointIntervalForEnumMember(
-                      leaf_type.type->AsEnum(), *member_index);
-                }
-              }
-            }
-            return MakePointIntervalForType(*leaf_type.type, value.value(),
-                                            import_data);
+            return MakePointIntervalForExpression(
+                *colon_ref, *value, *leaf_type.type, type_info, import_data);
           },
           [&](Number* number) -> std::optional<InterpValueInterval> {
             std::optional<InterpValue> value =
@@ -430,6 +489,17 @@ std::optional<InterpValueInterval> PatternToIntervalInternal(
             CHECK(value.has_value());
             return MakePointIntervalForType(*leaf_type.type, value.value(),
                                             import_data);
+          },
+          [&](const ConstantExpressionLeaf& constant)
+              -> std::optional<InterpValueInterval> {
+            std::optional<InterpValue> value =
+                constant.type_info->GetConstExprOption(constant.expression);
+            CHECK(value.has_value())
+                << "Missing constexpr value for constructor payload `"
+                << constant.expression->ToString() << "`";
+            return MakePointIntervalForExpression(
+                *constant.expression, *value, *leaf_type.type,
+                *constant.type_info, import_data);
           }},
       leaf);
   VLOG(5) << "PatternToIntervalInternal; leaf_type: `"
@@ -511,21 +581,160 @@ void AppendWildcardLeavesForType(const Type& type,
 }
 
 std::vector<IntervalPatternLeaf> ExpandPatternLeaves(
-    const PatternTree& pattern, const Type& type, const FileTable& file_table);
+    const PatternTree& pattern, const Type& type, const TypeInfo& type_info,
+    const FileTable& file_table);
+
+// Coverage runs before constructor expressions have been canonicalized into
+// SumInstance nodes, so retain their original source expressions and TypeInfo.
+struct SumConstructorExpression {
+  const ColonRef* constructor_ref;
+  const Expr* expression;
+  const TypeInfo* type_info;
+};
+
+SumConstructorExpression ResolveSumConstructorExpression(
+    const Expr& expression, const TypeInfo& type_info) {
+  ConstantExpressionLeaf resolved =
+      ResolveConstantExpression(expression, type_info);
+  const ColonRef* constructor_ref = nullptr;
+  if (const auto* instance =
+          dynamic_cast<const SumInstance*>(resolved.expression);
+      instance != nullptr) {
+    constructor_ref = instance->constructor_ref();
+  } else if (const auto* unit =
+                 dynamic_cast<const ColonRef*>(resolved.expression);
+             unit != nullptr) {
+    constructor_ref = unit;
+  } else if (const auto* invocation =
+                 dynamic_cast<const Invocation*>(resolved.expression);
+             invocation != nullptr) {
+    constructor_ref = dynamic_cast<const ColonRef*>(invocation->callee());
+  } else if (const auto* instance =
+                 dynamic_cast<const StructInstance*>(resolved.expression);
+             instance != nullptr) {
+    const auto* annotation =
+        dynamic_cast<const TypeRefTypeAnnotation*>(instance->struct_ref());
+    CHECK_NE(annotation, nullptr);
+    const TypeDefinition& definition =
+        annotation->type_ref()->type_definition();
+    if (const auto* reference = std::get_if<ColonRef*>(&definition);
+        reference != nullptr) {
+      constructor_ref = *reference;
+    }
+  }
+  CHECK_NE(constructor_ref, nullptr)
+      << "Expected a semantic-sum constructor, got "
+      << resolved.expression->GetNodeTypeName() << " `"
+      << resolved.expression->ToString() << "`";
+  return SumConstructorExpression{
+      .constructor_ref = constructor_ref,
+      .expression = resolved.expression,
+      .type_info = resolved.type_info,
+  };
+}
+
+const Expr& GetSumConstructorPayloadExpression(
+    const SumConstructorExpression& constructor, const SumTypeVariant& variant,
+    int64_t active_index) {
+  const Expr* result = nullptr;
+  if (const auto* instance =
+          dynamic_cast<const SumInstance*>(constructor.expression);
+      instance != nullptr) {
+    if (instance->is_tuple()) {
+      result = instance->tuple_payload_args().at(active_index);
+    } else if (instance->is_struct()) {
+      std::string_view member_name = variant.GetMemberName(active_index);
+      const auto& fields = instance->struct_payload_field_args();
+      auto it =
+          std::find_if(fields.begin(), fields.end(),
+                       [&](const SumInstance::StructPayloadFieldArg& field) {
+                         return field.first == member_name;
+                       });
+      CHECK(it != fields.end())
+          << "Missing constructor argument for member `" << member_name << "`";
+      result = it->second;
+    }
+  } else if (const auto* invocation =
+                 dynamic_cast<const Invocation*>(constructor.expression);
+             invocation != nullptr) {
+    result = invocation->args().at(active_index);
+  } else if (const auto* instance =
+                 dynamic_cast<const StructInstance*>(constructor.expression);
+             instance != nullptr) {
+    result = instance->GetExpr(variant.GetMemberName(active_index)).value();
+  }
+  CHECK_NE(result, nullptr) << "Missing constructor payload for `"
+                            << constructor.expression->ToString() << "`";
+  return *result;
+}
+
+void AppendConstantExpressionLeaves(const Expr& expression, const Type& type,
+                                    const TypeInfo& type_info,
+                                    std::vector<IntervalPatternLeaf>* result) {
+  ConstantExpressionLeaf resolved =
+      ResolveConstantExpression(expression, type_info);
+  if (type.IsTuple()) {
+    const auto* tuple = dynamic_cast<const XlsTuple*>(resolved.expression);
+    CHECK_NE(tuple, nullptr) << "Expected a tuple constant, got `"
+                             << resolved.expression->ToString() << "`";
+    absl::Span<const std::unique_ptr<Type>> members = type.AsTuple().members();
+    CHECK_EQ(tuple->members().size(), members.size());
+    for (int64_t i = 0; i < members.size(); ++i) {
+      AppendConstantExpressionLeaves(*tuple->members()[i], *members[i],
+                                     *resolved.type_info, result);
+    }
+  } else if (type.IsSum()) {
+    SumConstructorExpression constructor = ResolveSumConstructorExpression(
+        *resolved.expression, *resolved.type_info);
+    const SumType& sum_type = type.AsSum();
+    const Phase1SumTypeEncoding encoding(sum_type);
+    Phase1SumTypeEncoding::VariantInfo variant =
+        encoding.GetVariant(constructor.constructor_ref->attr()).value();
+    result->push_back(MakeSumTagValue(sum_type, variant.variant_index));
+    CHECK_OK(encoding.VisitPayloadAssemblyOrder(
+        variant,
+        [&](int64_t active_index) -> absl::Status {
+          const Expr& member = GetSumConstructorPayloadExpression(
+              constructor, *variant.variant, active_index);
+          AppendConstantExpressionLeaves(
+              member, variant.variant->GetMemberType(active_index),
+              *constructor.type_info, result);
+          return absl::OkStatus();
+        },
+        [&](const Type& inactive_type) -> absl::Status {
+          AppendWildcardLeavesForType(inactive_type, result);
+          return absl::OkStatus();
+        }));
+  } else {
+    result->push_back(resolved);
+  }
+}
+
+void AppendSumConstructorPayloadLeaves(
+    const SumConstructorExpression& constructor, const SumTypeVariant& variant,
+    std::vector<IntervalPatternLeaf>* result) {
+  for (int64_t i = 0; i < variant.size(); ++i) {
+    const Expr& member =
+        GetSumConstructorPayloadExpression(constructor, variant, i);
+    AppendConstantExpressionLeaves(member, variant.GetMemberType(i),
+                                   *constructor.type_info, result);
+  }
+}
 
 // Expands one active payload member. Callers decide how to represent inactive
 // storage slots, such as adding wildcard leaves for the full storage layout.
 std::vector<IntervalPatternLeaf> ExpandActiveSumPayloadMemberPatternLeaves(
     const SumTypeVariant& variant,
     const SumVariantPayloadPattern& constructor_pattern, int64_t active_index,
-    const FileTable& file_table) {
+    const TypeInfo& type_info, const FileTable& file_table) {
   if (variant.is_tuple()) {
     const auto* payload =
         std::get_if<TuplePattern*>(&constructor_pattern.payload());
     CHECK(payload != nullptr);
     CHECK_EQ((*payload)->members().size(), variant.size());
     return ExpandPatternLeaves((*payload)->members()[active_index],
-                               variant.GetMemberType(active_index), file_table);
+                               variant.GetMemberType(active_index), type_info,
+                               file_table);
   } else {
     CHECK(variant.is_struct());
     const auto* payload =
@@ -541,14 +750,15 @@ std::vector<IntervalPatternLeaf> ExpandActiveSumPayloadMemberPatternLeaves(
     CHECK(it != fields.end())
         << "Missing named pattern for member `" << member_name << "`";
     return ExpandPatternLeaves(it->second, variant.GetMemberType(active_index),
-                               file_table);
+                               type_info, file_table);
   }
 }
 
 void AppendSumVariantPayloadPatternLeaves(
     const SumTypeVariant& variant,
     const SumVariantPayloadPattern* constructor_pattern,
-    const FileTable& file_table, std::vector<IntervalPatternLeaf>* result) {
+    const TypeInfo& type_info, const FileTable& file_table,
+    std::vector<IntervalPatternLeaf>* result) {
   if (constructor_pattern == nullptr) {
     CHECK(variant.is_unit());
     return;
@@ -556,8 +766,8 @@ void AppendSumVariantPayloadPatternLeaves(
   for (int64_t member_index = 0; member_index < variant.size();
        ++member_index) {
     std::vector<IntervalPatternLeaf> member_leaves =
-        ExpandActiveSumPayloadMemberPatternLeaves(variant, *constructor_pattern,
-                                                  member_index, file_table);
+        ExpandActiveSumPayloadMemberPatternLeaves(
+            variant, *constructor_pattern, member_index, type_info, file_table);
     result->insert(result->end(), member_leaves.begin(), member_leaves.end());
   }
 }
@@ -568,7 +778,7 @@ struct ExpandedSumVariantPattern {
 };
 
 ExpandedSumVariantPattern ExpandSumVariantPayloadPatternLeaves(
-    const PatternTree& pattern, const SumType& type,
+    const PatternTree& pattern, const SumType& type, const TypeInfo& type_info,
     const FileTable& file_table) {
   return absl::visit(
       Visitor{
@@ -578,7 +788,7 @@ ExpandedSumVariantPattern ExpandSumVariantPayloadPatternLeaves(
                 type, constructor_pattern->constructor_ref()->attr());
             std::vector<IntervalPatternLeaf> result;
             AppendSumVariantPayloadPatternLeaves(type.variants()[variant_index],
-                                                 constructor_pattern,
+                                                 constructor_pattern, type_info,
                                                  file_table, &result);
             return ExpandedSumVariantPattern{variant_index, std::move(result)};
           },
@@ -586,6 +796,16 @@ ExpandedSumVariantPattern ExpandSumVariantPayloadPatternLeaves(
             int64_t variant_index = GetSumVariantIndex(type, colon_ref->attr());
             CHECK(type.variants()[variant_index].is_unit());
             return ExpandedSumVariantPattern{variant_index, {}};
+          },
+          [&](NameRef* name_ref) -> ExpandedSumVariantPattern {
+            SumConstructorExpression constructor =
+                ResolveSumConstructorExpression(*name_ref, type_info);
+            int64_t variant_index =
+                GetSumVariantIndex(type, constructor.constructor_ref->attr());
+            std::vector<IntervalPatternLeaf> result;
+            AppendSumConstructorPayloadLeaves(
+                constructor, type.variants()[variant_index], &result);
+            return ExpandedSumVariantPattern{variant_index, std::move(result)};
           },
           [&](const auto&) -> ExpandedSumVariantPattern {
             LOG(FATAL) << "Unsupported pattern for sum type `"
@@ -596,12 +816,13 @@ ExpandedSumVariantPattern ExpandSumVariantPayloadPatternLeaves(
 }
 
 std::vector<IntervalPatternLeaf> ExpandSumPatternLeaves(
-    const PatternTree& pattern, const SumType& type,
+    const PatternTree& pattern, const SumType& type, const TypeInfo& type_info,
     const FileTable& file_table) {
   const Phase1SumTypeEncoding encoding(type);
   auto make_variant_pattern_leaves =
       [&](const Phase1SumTypeEncoding::VariantInfo& active_variant,
-          const SumVariantPayloadPattern* constructor_pattern)
+          const SumVariantPayloadPattern* constructor_pattern,
+          const SumConstructorExpression* constant_constructor)
       -> std::vector<IntervalPatternLeaf> {
     std::vector<IntervalPatternLeaf> result;
     result.push_back(MakeSumTagValue(type, active_variant.variant_index));
@@ -609,12 +830,21 @@ std::vector<IntervalPatternLeaf> ExpandSumPatternLeaves(
     CHECK_OK(encoding.VisitPayloadAssemblyOrder(
         active_variant,
         [&](int64_t active_index) -> absl::Status {
-          CHECK_NE(constructor_pattern, nullptr);
-          std::vector<IntervalPatternLeaf> member_leaves =
-              ExpandActiveSumPayloadMemberPatternLeaves(
-                  variant, *constructor_pattern, active_index, file_table);
-          result.insert(result.end(), member_leaves.begin(),
-                        member_leaves.end());
+          if (constructor_pattern != nullptr) {
+            std::vector<IntervalPatternLeaf> member_leaves =
+                ExpandActiveSumPayloadMemberPatternLeaves(
+                    variant, *constructor_pattern, active_index, type_info,
+                    file_table);
+            result.insert(result.end(), member_leaves.begin(),
+                          member_leaves.end());
+          } else {
+            CHECK_NE(constant_constructor, nullptr);
+            const Expr& member = GetSumConstructorPayloadExpression(
+                *constant_constructor, variant, active_index);
+            AppendConstantExpressionLeaves(
+                member, variant.GetMemberType(active_index),
+                *constant_constructor->type_info, &result);
+          }
           return absl::OkStatus();
         },
         [&](const Type& inactive_type) -> absl::Status {
@@ -625,32 +855,45 @@ std::vector<IntervalPatternLeaf> ExpandSumPatternLeaves(
   };
 
   return absl::visit(
-      Visitor{
-          [&](SumVariantPayloadPattern* constructor_pattern)
-              -> std::vector<IntervalPatternLeaf> {
-            Phase1SumTypeEncoding::VariantInfo variant =
-                encoding
-                    .GetVariant(constructor_pattern->constructor_ref()->attr())
-                    .value();
-            return make_variant_pattern_leaves(variant, constructor_pattern);
-          },
-          [&](ColonRef* colon_ref) -> std::vector<IntervalPatternLeaf> {
-            Phase1SumTypeEncoding::VariantInfo variant =
-                encoding.GetVariant(colon_ref->attr()).value();
-            CHECK(variant.variant->is_unit());
-            return make_variant_pattern_leaves(variant,
-                                               /*constructor_pattern=*/nullptr);
-          },
-          [&](const auto&) -> std::vector<IntervalPatternLeaf> {
-            LOG(FATAL) << "Unsupported pattern for sum type `"
-                       << type.ToString() << "`";
-            return {};
-          }},
+      Visitor{[&](SumVariantPayloadPattern* constructor_pattern)
+                  -> std::vector<IntervalPatternLeaf> {
+                Phase1SumTypeEncoding::VariantInfo variant =
+                    encoding
+                        .GetVariant(
+                            constructor_pattern->constructor_ref()->attr())
+                        .value();
+                return make_variant_pattern_leaves(
+                    variant, constructor_pattern,
+                    /*constant_constructor=*/nullptr);
+              },
+              [&](ColonRef* colon_ref) -> std::vector<IntervalPatternLeaf> {
+                Phase1SumTypeEncoding::VariantInfo variant =
+                    encoding.GetVariant(colon_ref->attr()).value();
+                CHECK(variant.variant->is_unit());
+                return make_variant_pattern_leaves(
+                    variant, /*constructor_pattern=*/nullptr,
+                    /*constant_constructor=*/nullptr);
+              },
+              [&](NameRef* name_ref) -> std::vector<IntervalPatternLeaf> {
+                SumConstructorExpression constructor =
+                    ResolveSumConstructorExpression(*name_ref, type_info);
+                Phase1SumTypeEncoding::VariantInfo variant =
+                    encoding.GetVariant(constructor.constructor_ref->attr())
+                        .value();
+                return make_variant_pattern_leaves(
+                    variant, /*constructor_pattern=*/nullptr, &constructor);
+              },
+              [&](const auto&) -> std::vector<IntervalPatternLeaf> {
+                LOG(FATAL) << "Unsupported pattern for sum type `"
+                           << type.ToString() << "`";
+                return {};
+              }},
       pattern);
 }
 
 std::vector<IntervalPatternLeaf> ExpandPatternLeaves(
-    const PatternTree& pattern, const Type& type, const FileTable& file_table) {
+    const PatternTree& pattern, const Type& type, const TypeInfo& type_info,
+    const FileTable& file_table) {
   VLOG(5) << "ExpandPatternLeaves; pattern: `" << PatternToString(pattern)
           << "` type: `" << type.ToString() << "`";
   // For an irrefutable pattern, simply return wildcards for every leaf.
@@ -662,7 +905,7 @@ std::vector<IntervalPatternLeaf> ExpandPatternLeaves(
     CHECK(!std::holds_alternative<TuplePattern*>(pattern))
         << "Expected a leaf pattern for sum type, got `"
         << PatternToString(pattern) << "`";
-    return ExpandSumPatternLeaves(pattern, type.AsSum(), file_table);
+    return ExpandSumPatternLeaves(pattern, type.AsSum(), type_info, file_table);
   }
   // If the type is not a tuple then we expect the pattern to be a single leaf.
   if (!type.IsTuple()) {
@@ -709,7 +952,7 @@ std::vector<IntervalPatternLeaf> ExpandPatternLeaves(
       const Type& type_at_index = *tuple_members[types_index];
 
       std::vector<IntervalPatternLeaf> sub_pattern_leaves =
-          ExpandPatternLeaves(node, type_at_index, file_table);
+          ExpandPatternLeaves(node, type_at_index, type_info, file_table);
 
       result.insert(result.end(), sub_pattern_leaves.begin(),
                     sub_pattern_leaves.end());
@@ -721,7 +964,8 @@ std::vector<IntervalPatternLeaf> ExpandPatternLeaves(
       const Type& type_at_index = *tuple_members[types_index];
       if (type_at_index.IsSum()) {
         std::vector<IntervalPatternLeaf> sum_pattern_leaves =
-            ExpandSumPatternLeaves(node, type_at_index.AsSum(), file_table);
+            ExpandSumPatternLeaves(node, type_at_index.AsSum(), type_info,
+                                   file_table);
         result.insert(result.end(), sum_pattern_leaves.begin(),
                       sum_pattern_leaves.end());
       } else {
@@ -786,8 +1030,8 @@ NdIntervalWithEmpty PatternToInterval(
     const PatternTree& pattern, const Type& matched_type,
     absl::Span<const FlattenedLeafType> leaf_types, const TypeInfo& type_info,
     const ImportData& import_data) {
-  std::vector<IntervalPatternLeaf> pattern_leaves =
-      ExpandPatternLeaves(pattern, matched_type, type_info.file_table());
+  std::vector<IntervalPatternLeaf> pattern_leaves = ExpandPatternLeaves(
+      pattern, matched_type, type_info, type_info.file_table());
   NdIntervalWithEmpty result = PatternLeavesToInterval(
       pattern_leaves, leaf_types, type_info, import_data);
   VLOG(5) << "PatternToInterval; pattern: `" << PatternToString(pattern)
@@ -886,12 +1130,16 @@ struct MatchExhaustivenessChecker::Impl {
     bool is_irrefutable;
   };
 
-  struct SumVariantState {
-    std::string variant_name;
-    FlattenedLeafTypes leaf_types;
+  struct CoverageDomain {
     NdRegion original;
     NdRegion remaining;
     std::vector<CoveredPattern> covered_patterns;
+  };
+
+  struct SumVariantState {
+    std::string variant_name;
+    FlattenedLeafTypes leaf_types;
+    CoverageDomain coverage;
   };
 
   Impl(const Span& matched_expr_span, const ImportData& import_data,
@@ -900,67 +1148,88 @@ struct MatchExhaustivenessChecker::Impl {
         import_data_(import_data),
         type_info_(type_info),
         matched_type_(matched_type),
-        original_(NdRegion::MakeEmpty({})),
-        remaining_(NdRegion::MakeEmpty({})) {}
+        coverage_(CoverageDomain{
+            .original = NdRegion::MakeEmpty({}),
+            .remaining = NdRegion::MakeEmpty({}),
+            .covered_patterns = {},
+        }) {}
 
   const FileTable& file_table() const { return type_info_.file_table(); }
 
+  static bool CoversSameInhabitedValues(const NdInterval& first,
+                                        const NdInterval& second,
+                                        const NdRegion& domain) {
+    auto has_coverage_outside = [&](const NdInterval& included,
+                                    const NdInterval& excluded) {
+      return std::any_of(domain.disjoint().begin(), domain.disjoint().end(),
+                         [&](const NdInterval& original_interval) {
+                           std::vector<NdInterval> uncovered =
+                               original_interval.SubtractInterval(excluded);
+                           return std::any_of(
+                               uncovered.begin(), uncovered.end(),
+                               [&](const NdInterval& candidate) {
+                                 return included.Intersects(candidate);
+                               });
+                         });
+    };
+    return !has_coverage_outside(first, second) &&
+           !has_coverage_outside(second, first);
+  }
+
   PatternAddResult AddInterval(const PatternTree& pattern,
                                const NdIntervalWithEmpty& interval,
-                               const NdRegion& original, NdRegion& remaining,
-                               std::vector<CoveredPattern>& covered_patterns) {
+                               CoverageDomain& domain) {
     PatternAddResult result{
         .coverage = PatternCoverage::kUnmatchable,
-        .is_exhaustive = false,
     };
     std::optional<NdInterval> nonempty_interval = interval.ToNonEmpty();
     if (nonempty_interval.has_value()) {
-      bool matches_original_domain =
-          std::any_of(original.disjoint().begin(), original.disjoint().end(),
-                      [&](const NdInterval& original_interval) {
-                        return original_interval.Intersects(*nonempty_interval);
-                      });
+      bool matches_original_domain = std::any_of(
+          domain.original.disjoint().begin(), domain.original.disjoint().end(),
+          [&](const NdInterval& original_interval) {
+            return original_interval.Intersects(*nonempty_interval);
+          });
       if (matches_original_domain) {
         bool adds_coverage = std::any_of(
-            remaining.disjoint().begin(), remaining.disjoint().end(),
+            domain.remaining.disjoint().begin(),
+            domain.remaining.disjoint().end(),
             [&](const NdInterval& remaining_interval) {
               return remaining_interval.Intersects(*nonempty_interval);
             });
         if (adds_coverage) {
           result.coverage = PatternCoverage::kAddsCoverage;
-          remaining = remaining.SubtractInterval(interval);
+          domain.remaining = domain.remaining.SubtractInterval(interval);
         } else {
           result.coverage = PatternCoverage::kPreviouslyCovered;
           bool is_irrefutable = IsIrrefutablePattern(pattern);
           std::string spelling = PatternToString(pattern);
-          for (const CoveredPattern& previous : covered_patterns) {
-            bool exact_interval =
-                previous.interval.Covers(*nonempty_interval) &&
-                nonempty_interval->Covers(previous.interval);
+          for (const CoveredPattern& previous : domain.covered_patterns) {
+            bool exact_interval = CoversSameInhabitedValues(
+                previous.interval, *nonempty_interval, domain.original);
             bool same_constructor_scope =
                 previous.is_irrefutable == is_irrefutable;
             bool same_wildcard_spelling =
                 !is_irrefutable || previous.spelling == spelling;
             if (exact_interval && same_constructor_scope &&
                 same_wildcard_spelling) {
-              result.first_covering_span = previous.span;
+              result.previous_pattern_span = previous.span;
               result.is_exact_duplicate = true;
               break;
             }
           }
-          if (!result.first_covering_span.has_value()) {
-            for (const CoveredPattern& previous : covered_patterns) {
+          if (!result.previous_pattern_span.has_value()) {
+            for (const CoveredPattern& previous : domain.covered_patterns) {
               if (previous.interval.Intersects(*nonempty_interval)) {
-                result.first_covering_span = previous.span;
+                result.previous_pattern_span = previous.span;
                 break;
               }
             }
           }
-          CHECK(result.first_covering_span.has_value())
+          CHECK(result.previous_pattern_span.has_value())
               << "Covered pattern has no previously matching source: "
               << spelling;
         }
-        covered_patterns.push_back(CoveredPattern{
+        domain.covered_patterns.push_back(CoveredPattern{
             .interval = std::move(*nonempty_interval),
             .span = GetPatternSpan(pattern),
             .spelling = PatternToString(pattern),
@@ -978,9 +1247,7 @@ struct MatchExhaustivenessChecker::Impl {
   const SumType* matched_sum_type_ = nullptr;
   FlattenedLeafTypes leaf_types_;
   std::vector<SumVariantState> sum_variant_states_;
-  NdRegion original_;
-  NdRegion remaining_;
-  std::vector<CoveredPattern> covered_patterns_;
+  CoverageDomain coverage_;
 };
 
 // -- class MatchExhaustivenessChecker
@@ -998,19 +1265,23 @@ MatchExhaustivenessChecker::MatchExhaustivenessChecker(
       FlattenedLeafTypes variant_leaf_types = GetSumVariantPayloadLeafTypes(
           *impl_->matched_sum_type_, variant.variant().identifier());
       NdRegion variant_remaining = MakeFullNdRegion(variant_leaf_types);
-      impl_->sum_variant_states_.push_back(
-          Impl::SumVariantState{std::string(variant.variant().identifier()),
-                                std::move(variant_leaf_types),
-                                variant_remaining,
-                                std::move(variant_remaining),
-                                {}});
+      impl_->sum_variant_states_.push_back(Impl::SumVariantState{
+          .variant_name = std::string(variant.variant().identifier()),
+          .leaf_types = std::move(variant_leaf_types),
+          .coverage =
+              Impl::CoverageDomain{
+                  .original = variant_remaining,
+                  .remaining = std::move(variant_remaining),
+                  .covered_patterns = {},
+              },
+      });
     }
     return;
   }
   impl_->leaf_types_ =
       GetLeafTypes(matched_type, matched_expr_span, file_table());
-  impl_->remaining_ = MakeFullNdRegion(impl_->leaf_types_);
-  impl_->original_ = impl_->remaining_;
+  impl_->coverage_.remaining = MakeFullNdRegion(impl_->leaf_types_);
+  impl_->coverage_.original = impl_->coverage_.remaining;
 }
 
 MatchExhaustivenessChecker::~MatchExhaustivenessChecker() = default;
@@ -1024,10 +1295,10 @@ bool MatchExhaustivenessChecker::IsExhaustive() const {
     return std::all_of(impl_->sum_variant_states_.begin(),
                        impl_->sum_variant_states_.end(),
                        [](const Impl::SumVariantState& variant_state) {
-                         return variant_state.remaining.IsEmpty();
+                         return variant_state.coverage.remaining.IsEmpty();
                        });
   }
-  return impl_->remaining_.IsEmpty();
+  return impl_->coverage_.remaining.IsEmpty();
 }
 
 MatchExhaustivenessChecker::PatternAddResult
@@ -1039,7 +1310,6 @@ MatchExhaustivenessChecker::AddPattern(const PatternTree& pattern) {
 
   PatternAddResult result{
       .coverage = PatternCoverage::kUnmatchable,
-      .is_exhaustive = false,
   };
   if (impl_->matched_sum_type_ != nullptr) {
     if (IsIrrefutablePattern(pattern)) {
@@ -1049,9 +1319,8 @@ MatchExhaustivenessChecker::AddPattern(const PatternTree& pattern) {
         NdIntervalWithEmpty full_interval = PatternLeavesToInterval(
             payload_wildcards, variant_state.leaf_types.flat, impl_->type_info_,
             impl_->import_data_);
-        PatternAddResult variant_result = impl_->AddInterval(
-            pattern, full_interval, variant_state.original,
-            variant_state.remaining, variant_state.covered_patterns);
+        PatternAddResult variant_result =
+            impl_->AddInterval(pattern, full_interval, variant_state.coverage);
         if (variant_result.coverage == PatternCoverage::kAddsCoverage) {
           result = variant_result;
         } else if (result.coverage != PatternCoverage::kAddsCoverage &&
@@ -1065,26 +1334,24 @@ MatchExhaustivenessChecker::AddPattern(const PatternTree& pattern) {
           << "Expected a leaf pattern for sum type, got `"
           << PatternToString(pattern) << "`";
       ExpandedSumVariantPattern variant_pattern =
-          ExpandSumVariantPayloadPatternLeaves(
-              pattern, *impl_->matched_sum_type_, file_table());
+          ExpandSumVariantPayloadPatternLeaves(pattern,
+                                               *impl_->matched_sum_type_,
+                                               impl_->type_info_, file_table());
       Impl::SumVariantState& variant_state =
           impl_->sum_variant_states_.at(variant_pattern.variant_index);
       NdIntervalWithEmpty payload_interval = PatternLeavesToInterval(
           variant_pattern.leaves, variant_state.leaf_types.flat,
           impl_->type_info_, impl_->import_data_);
-      result = impl_->AddInterval(
-          pattern, payload_interval, variant_state.original,
-          variant_state.remaining, variant_state.covered_patterns);
+      result =
+          impl_->AddInterval(pattern, payload_interval, variant_state.coverage);
     }
   } else {
     NdIntervalWithEmpty this_pattern_interval = PatternToInterval(
         pattern, impl_->matched_type_, impl_->leaf_types_.flat,
         impl_->type_info_, impl_->import_data_);
     result =
-        impl_->AddInterval(pattern, this_pattern_interval, impl_->original_,
-                           impl_->remaining_, impl_->covered_patterns_);
+        impl_->AddInterval(pattern, this_pattern_interval, impl_->coverage_);
   }
-  result.is_exhaustive = IsExhaustive();
   return result;
 }
 
@@ -1094,7 +1361,7 @@ MatchExhaustivenessChecker::SampleSimplestUncoveredValue() const {
     for (const Impl::SumVariantState& variant_state :
          impl_->sum_variant_states_) {
       std::optional<std::vector<InterpValue>> payload_values =
-          SampleSimplestUncoveredLeafValues(variant_state.remaining,
+          SampleSimplestUncoveredLeafValues(variant_state.coverage.remaining,
                                             variant_state.leaf_types.flat,
                                             impl_->import_data_);
       if (!payload_values.has_value()) {
@@ -1110,8 +1377,9 @@ MatchExhaustivenessChecker::SampleSimplestUncoveredValue() const {
   }
 
   std::optional<std::vector<InterpValue>> components =
-      SampleSimplestUncoveredLeafValues(
-          impl_->remaining_, impl_->leaf_types_.flat, impl_->import_data_);
+      SampleSimplestUncoveredLeafValues(impl_->coverage_.remaining,
+                                        impl_->leaf_types_.flat,
+                                        impl_->import_data_);
   if (!components.has_value()) {
     return std::nullopt;
   }

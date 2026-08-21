@@ -77,7 +77,8 @@ void CheckExhaustiveOnlyAfterLastPattern(std::string_view program) {
 
   std::vector<PatternTree> patterns = GetPatterns(*match);
   for (int64_t i = 0; i < patterns.size(); ++i) {
-    bool now_exhaustive = checker.AddPattern(patterns[i]).is_exhaustive;
+    checker.AddPattern(patterns[i]);
+    bool now_exhaustive = checker.IsExhaustive();
     // We expect it to become exhaustive with the last match arm.
     bool expect_now_exhaustive = i + 1 == patterns.size();
     EXPECT_EQ(now_exhaustive, expect_now_exhaustive)
@@ -108,7 +109,8 @@ void CheckExhaustiveBeforeAnyPattern(std::string_view program) {
   EXPECT_TRUE(checker.IsExhaustive());
 
   for (const PatternTree& pattern : GetPatterns(*match)) {
-    EXPECT_TRUE(checker.AddPattern(pattern).is_exhaustive)
+    checker.AddPattern(pattern);
+    EXPECT_TRUE(checker.IsExhaustive())
         << "Expected match to stay exhaustive after adding pattern `"
         << PatternToString(pattern) << "`";
   }

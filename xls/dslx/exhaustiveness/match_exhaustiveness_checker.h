@@ -41,6 +41,8 @@ class MatchExhaustivenessChecker {
  public:
   enum class PatternCoverage {
     // The pattern matches at least one previously uncovered semantic value.
+    // Enum declarations remain distinct even when their discriminants are
+    // equal; coverage uses their dense declaration-order positions.
     kAddsCoverage,
     // Every semantic value matched by this pattern was already covered.
     kPreviouslyCovered,
@@ -50,10 +52,11 @@ class MatchExhaustivenessChecker {
 
   struct PatternAddResult {
     PatternCoverage coverage;
-    bool is_exhaustive;
-    // Set for covered patterns, preferring an exactly equivalent earlier
-    // pattern over the first merely intersecting earlier pattern.
-    std::optional<Span> first_covering_span;
+    // Set for covered patterns, preferring an exactly equivalent previous
+    // pattern over the first merely intersecting previous pattern.
+    std::optional<Span> previous_pattern_span;
+    // True when the two patterns cover the same inhabited semantic values.
+    // Differently spelled irrefutable patterns remain non-duplicates.
     bool is_exact_duplicate = false;
   };
 
@@ -67,8 +70,8 @@ class MatchExhaustivenessChecker {
   MatchExhaustivenessChecker& operator=(const MatchExhaustivenessChecker&) =
       delete;
 
-  // Incorporates `pattern` and reports its contribution, prior source
-  // provenance when fully covered, and resulting overall exhaustiveness.
+  // Incorporates `pattern` and reports its contribution and the previous
+  // source provenance when it is already fully covered.
   PatternAddResult AddPattern(const PatternTree& pattern);
 
   // Returns whether, based on already-added patterns, we're exhaustive in the
