@@ -633,7 +633,7 @@ fn f(value: Shape) -> u32 {
 TEST(TypecheckV2Test, NonExhaustiveSemanticSumReportsNamedEnumTuplePayload) {
   EXPECT_THAT(
       R"(
-enum E: u2 { A = 0, B = 0, C = 1 }
+enum E: u2 { A = 0, B = 1, C = 2 }
 
 enum Option {
   None,
@@ -654,7 +654,7 @@ fn f(value: Option) -> u32 {
 TEST(TypecheckV2Test, NonExhaustiveSemanticSumReportsNamedEnumStructPayload) {
   EXPECT_THAT(
       R"(
-enum E: u2 { A = 0, B = 0, C = 1 }
+enum E: u2 { A = 0, B = 1, C = 2 }
 
 enum Message {
   Empty,
@@ -676,7 +676,7 @@ fn f(value: Message) -> u32 {
 TEST(TypecheckV2Test, NonExhaustiveTupleReportsNestedSemanticSumConstructor) {
   EXPECT_THAT(
       R"(
-enum E: u2 { A = 0, B = 0, C = 1 }
+enum E: u2 { A = 0, B = 1, C = 2 }
 
 enum Option {
   Before(u8),

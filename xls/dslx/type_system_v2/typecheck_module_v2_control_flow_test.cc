@@ -1344,7 +1344,7 @@ fn f(value: E) -> u32 {
 TEST(TypecheckV2Test, NonExhaustiveNestedTupleReportsEnumVariantName) {
   EXPECT_THAT(
       R"(
-enum E: u2 { A = 0, B = 0, C = 1 }
+enum E: u2 { A = 0, B = 1, C = 2 }
 
 fn f(value: ((E, bool), u2)) -> u32 {
   match value {
