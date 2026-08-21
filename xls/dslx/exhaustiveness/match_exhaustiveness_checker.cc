@@ -996,22 +996,6 @@ NdRegion MakeFullNdRegion(const FlattenedLeafTypes& leaf_types) {
   return result;
 }
 
-bool ContainsNamedVariant(const Type& type) {
-  bool result;
-  if (type.IsEnum() || type.IsSum()) {
-    result = true;
-  } else if (type.IsTuple()) {
-    result = std::any_of(type.AsTuple().members().begin(),
-                         type.AsTuple().members().end(),
-                         [](const std::unique_ptr<Type>& member) {
-                           return ContainsNamedVariant(*member);
-                         });
-  } else {
-    result = false;
-  }
-  return result;
-}
-
 std::string FormatSumVariant(const SumType& sum_type,
                              const SumTypeVariant& variant,
                              absl::Span<const std::string> payload_values) {
@@ -1486,7 +1470,8 @@ MatchExhaustivenessChecker::FormatSimplestUncoveredValue() const {
   } else if (!impl_->coverage_.remaining.IsEmpty()) {
     absl::Span<const InterpValueInterval> dimensions =
         impl_->coverage_.remaining.disjoint().front().dims();
-    if (ContainsNamedVariant(impl_->matched_type_)) {
+    if (impl_->matched_type_.HasEnum() ||
+        TypeContainsSemanticSum(impl_->matched_type_)) {
       int64_t leaf_index = 0;
       result = FormatSampleForType(impl_->matched_type_, dimensions,
                                    impl_->leaf_types_.flat, &leaf_index);
