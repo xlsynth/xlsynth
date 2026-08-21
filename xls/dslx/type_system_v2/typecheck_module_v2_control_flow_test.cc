@@ -1688,6 +1688,40 @@ fn f(value: u8) -> u32 {
                   HasSubstr("previously @ fake.x:8:5-8:9"))));
 }
 
+TEST(TypecheckV2Test, MatchTrailingTupleDuplicateKeepsExactEarlierPattern) {
+  EXPECT_THAT(
+      R"(
+fn f(value: (u8, u8)) -> u32 {
+  match value {
+    _ => u32:0,
+    (u8:1, u8:2) => u32:1,
+    (u8:3, u8:4) => u32:2,
+    (u8:0x1, u8:0x2) => u32:3,
+  }
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("Exact-duplicate pattern match detected"),
+                           HasSubstr("(u8:0x1, u8:0x2)"),
+                           HasSubstr("previously @ fake.x:7:5-7:17"))));
+}
+
+TEST(TypecheckV2Test, MatchTrailingRangeDuplicateKeepsExactEarlierPattern) {
+  EXPECT_THAT(
+      R"(
+fn f(value: u8) -> u32 {
+  match value {
+    _ => u32:0,
+    u8:1..u8:4 => u32:1,
+    u8:5..u8:8 => u32:2,
+    u8:0x1..u8:0x4 => u32:3,
+  }
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("Exact-duplicate pattern match detected"),
+                           HasSubstr("u8:0x1..u8:0x4"),
+                           HasSubstr("previously @ fake.x:7:5-7:15"))));
+}
+
 TEST(TypecheckV2Test, MatchEquivalentDuplicateAfterExhaustivenessIsRejected) {
   EXPECT_THAT(R"(
 fn f(value: u2) -> u32 {
@@ -1888,7 +1922,7 @@ fn f() -> u32 {
 }
 
 TEST(TypecheckV2Test, MatchNamedSumUnitConstructorRemainsSupported) {
-  XLS_EXPECT_OK(TypecheckV2(R"(
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
 enum Option {
   None,
   Some(u1),
@@ -1902,6 +1936,18 @@ fn f(value: Option) -> u32 {
   }
 }
 )"));
+  std::optional<ConstantDef*> constant =
+      result.tm.module->GetMember<ConstantDef>("NONE");
+  ASSERT_TRUE(constant.has_value());
+  EXPECT_TRUE(result.tm.type_info->GetConstExprOption((*constant)->name_def())
+                  .has_value());
+  std::optional<Function*> function = result.tm.module->GetFunction("f");
+  ASSERT_TRUE(function.has_value());
+  const Statement& statement = *(*function)->body()->statements().back();
+  auto* match = dynamic_cast<Match*>(std::get<Expr*>(statement.wrapped()));
+  ASSERT_NE(match, nullptr);
+  NameRef* pattern = std::get<NameRef*>(match->arms()[0]->patterns()[0]);
+  EXPECT_TRUE(result.tm.type_info->GetConstExprOption(pattern).has_value());
 }
 
 TEST(TypecheckV2Test, MatchNamedSumTupleConstructorRemainsSupported) {

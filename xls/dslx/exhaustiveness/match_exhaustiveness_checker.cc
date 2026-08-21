@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/hash/hash.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/types/span.h"
@@ -33,7 +34,6 @@
 #include "xls/dslx/exhaustiveness/interp_value_interval.h"
 #include "xls/dslx/exhaustiveness/nd_region.h"
 #include "xls/dslx/frontend/ast.h"
-#include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/interp_value_utils.h"
@@ -235,12 +235,6 @@ FlattenedLeafTypes GetSumVariantPayloadLeafTypes(
 // WildcardPattern and NameDef.
 struct SomeWildcard {};
 
-// Retains a constant expression together with the module that evaluated it.
-struct ConstantExpressionLeaf {
-  const Expr* expression;
-  const TypeInfo* type_info;
-};
-
 // PatternLeaf but where RestOfTuple has been resolved.
 using IntervalPatternLeaf = std::variant<SomeWildcard, InterpValue, NameRef*,
                                          Range*, ColonRef*, Number*>;
@@ -287,86 +281,6 @@ std::vector<InterpValueInterval> GetFullIntervals(
     result.push_back(MakeFullIntervalForLeafType(leaf_type));
   }
   return result;
-}
-
-ConstantExpressionLeaf ResolveConstantExpression(const Expr& expression,
-                                                 const TypeInfo& type_info) {
-  const Expr* current = &expression;
-  const TypeInfo* current_type_info = &type_info;
-  bool resolved = false;
-  while (!resolved) {
-    if (const NameRef* name_ref = dynamic_cast<const NameRef*>(current);
-        name_ref != nullptr) {
-      const AstNode* definer = name_ref->GetDefiner();
-      if (const ConstantDef* constant =
-              dynamic_cast<const ConstantDef*>(definer);
-          constant != nullptr) {
-        current = constant->value();
-      } else if (const Let* binding = dynamic_cast<const Let*>(definer);
-                 binding != nullptr && binding->is_const()) {
-        current = binding->rhs();
-      } else if (const UseTreeEntry* imported_name =
-                     dynamic_cast<const UseTreeEntry*>(definer);
-                 imported_name != nullptr) {
-        if (absl::StatusOr<const ImportedInfo*> imported_info =
-                current_type_info->GetImportedOrError(imported_name);
-            imported_info.ok()) {
-          std::optional<ConstantDef*> constant =
-              (*imported_info)
-                  ->module->GetMember<ConstantDef>(name_ref->identifier());
-          if (constant.has_value()) {
-            current = (*constant)->value();
-            current_type_info = (*imported_info)->type_info;
-          } else {
-            resolved = true;
-          }
-        } else {
-          resolved = true;
-        }
-      } else {
-        resolved = true;
-      }
-    } else if (const ColonRef* colon_ref =
-                   dynamic_cast<const ColonRef*>(current);
-               colon_ref != nullptr) {
-      std::optional<ImportSubject> import = colon_ref->ResolveImportSubject();
-      if (!import.has_value()) {
-        std::optional<ConstantDef*> constant;
-        if (absl::StatusOr<TypeInfo::ResolvedColonRefSubject> resolved_subject =
-                current_type_info->GetResolvedColonRefSubject(colon_ref);
-            resolved_subject.ok()) {
-          if (Impl* const* impl = std::get_if<Impl*>(&*resolved_subject);
-              impl != nullptr) {
-            constant = (*impl)->GetConstant(colon_ref->attr());
-          }
-        }
-        if (constant.has_value()) {
-          current = (*constant)->value();
-        } else {
-          resolved = true;
-        }
-      } else if (std::optional<const ImportedInfo*> imported_info =
-                     current_type_info->GetImported(*import);
-                 imported_info.has_value()) {
-        std::optional<ConstantDef*> constant =
-            (*imported_info)->module->GetMember<ConstantDef>(colon_ref->attr());
-        if (constant.has_value()) {
-          current = (*constant)->value();
-          current_type_info = (*imported_info)->type_info;
-        } else {
-          resolved = true;
-        }
-      } else {
-        resolved = true;
-      }
-    } else {
-      resolved = true;
-    }
-  }
-  return ConstantExpressionLeaf{
-      .expression = current,
-      .type_info = current_type_info,
-  };
 }
 
 std::optional<InterpValue> GetConstantValue(const Expr& expression,
@@ -557,15 +471,59 @@ SumConstantValue ResolveSumConstantValue(const Expr& expression,
                                          const TypeInfo& type_info) {
   std::optional<InterpValue> value = GetConstantValue(expression, type_info);
   if (!value.has_value()) {
-    ConstantExpressionLeaf resolved =
-        ResolveConstantExpression(expression, type_info);
-    if (const auto* constructor =
-            dynamic_cast<const ColonRef*>(resolved.expression);
-        constructor != nullptr) {
-      absl::StatusOr<Phase1SumTypeEncoding::VariantInfo> variant =
-          Phase1SumTypeEncoding(sum_type).GetVariant(constructor->attr());
-      if (variant.ok() && variant->variant->is_unit()) {
-        value = CreateSumValue(sum_type, constructor->attr(), {}).value();
+    const Expr* constructor_expression = &expression;
+    bool resolving_local_alias = true;
+    while (resolving_local_alias) {
+      resolving_local_alias = false;
+      if (const auto* name_ref =
+              dynamic_cast<const NameRef*>(constructor_expression);
+          name_ref != nullptr) {
+        const AstNode* definer = name_ref->GetDefiner();
+        if (const auto* constant = dynamic_cast<const ConstantDef*>(definer);
+            constant != nullptr) {
+          value = type_info.GetConstExprOption(constant->name_def());
+          if (!value.has_value()) {
+            constructor_expression = constant->value();
+            resolving_local_alias = true;
+          }
+        } else if (const auto* binding = dynamic_cast<const Let*>(definer);
+                   binding != nullptr && binding->is_const()) {
+          constructor_expression = binding->rhs();
+          resolving_local_alias = true;
+        }
+      } else if (const auto* colon_ref =
+                     dynamic_cast<const ColonRef*>(constructor_expression);
+                 colon_ref != nullptr) {
+        absl::StatusOr<TypeInfo::ResolvedColonRefSubject> subject =
+            type_info.GetResolvedColonRefSubject(colon_ref);
+        if (subject.ok()) {
+          if (Impl* const* impl = std::get_if<Impl*>(&*subject);
+              impl != nullptr) {
+            std::optional<ConstantDef*> constant =
+                (*impl)->GetConstant(colon_ref->attr());
+            if (constant.has_value()) {
+              value = type_info.GetConstExprOption((*constant)->name_def());
+              if (!value.has_value()) {
+                constructor_expression = (*constant)->value();
+                resolving_local_alias = true;
+              }
+            }
+          }
+        }
+      }
+    }
+    if (!value.has_value()) {
+      // Validation precedes collection for phase-1 unit-constructor aliases.
+      // Preserve only this timing gap; payload/import values are owned by the
+      // authoritative TypeInfo constexpr producer.
+      if (const auto* constructor =
+              dynamic_cast<const ColonRef*>(constructor_expression);
+          constructor != nullptr) {
+        absl::StatusOr<Phase1SumTypeEncoding::VariantInfo> variant =
+            Phase1SumTypeEncoding(sum_type).GetVariant(constructor->attr());
+        if (variant.ok() && variant->variant->is_unit()) {
+          value = CreateSumValue(sum_type, constructor->attr(), {}).value();
+        }
       }
     }
   }
@@ -1086,8 +1044,9 @@ struct MatchExhaustivenessChecker::Impl {
     // PatternTree wrappers are copyable values containing AST-owned pointers.
     // Retain the wrapper itself because callers may pass temporary wrappers.
     std::vector<PatternTree> covered_patterns;
-    // Preserve scalar predecessor spans without replay after a catch-all.
-    absl::flat_hash_map<Bits, Span> covered_point_spans;
+    // Compact semantic fingerprints point into owned wrappers; collisions are
+    // resolved against the actual inhabited intervals.
+    absl::flat_hash_map<size_t, std::vector<int64_t>> covered_pattern_indices;
     std::optional<Span> covering_pattern_span;
     // Trailing patterns cannot add coverage; their history need not be
     // replayed.
@@ -1109,12 +1068,38 @@ struct MatchExhaustivenessChecker::Impl {
             .original = NdRegion::MakeEmpty({}),
             .remaining = NdRegion::MakeEmpty({}),
             .covered_patterns = {},
-            .covered_point_spans = {},
+            .covered_pattern_indices = {},
             .covering_pattern_span = std::nullopt,
             .exhaustive_pattern_count = std::nullopt,
         }) {}
 
   const FileTable& file_table() const { return type_info_.file_table(); }
+
+  static size_t SemanticPatternFingerprint(const NdInterval& interval,
+                                           const NdRegion& domain,
+                                           bool is_irrefutable,
+                                           std::string_view spelling) {
+    size_t fingerprint = absl::HashOf(
+        is_irrefutable, is_irrefutable ? spelling : std::string_view{});
+    for (const NdInterval& original : domain.disjoint()) {
+      if (!original.Intersects(interval)) {
+        continue;
+      }
+      for (int64_t i = 0; i < interval.dims().size(); ++i) {
+        const InterpValueInterval& candidate = interval.dims()[i];
+        const InterpValueInterval& inhabited = original.dims()[i];
+        const InterpValue& minimum = candidate.min() < inhabited.min()
+                                         ? inhabited.min()
+                                         : candidate.min();
+        const InterpValue& maximum = inhabited.max() < candidate.max()
+                                         ? inhabited.max()
+                                         : candidate.max();
+        fingerprint = absl::HashOf(fingerprint, minimum.GetBitsOrDie(),
+                                   maximum.GetBitsOrDie());
+      }
+    }
+    return fingerprint;
+  }
 
   static bool CoversSameInhabitedValues(const NdInterval& first,
                                         const NdInterval& second,
@@ -1176,6 +1161,10 @@ struct MatchExhaustivenessChecker::Impl {
             return original_interval.Intersects(*nonempty_interval);
           });
       if (matches_original_domain) {
+        bool is_irrefutable = IsIrrefutablePattern(pattern);
+        std::string spelling = PatternToString(pattern);
+        size_t fingerprint = SemanticPatternFingerprint(
+            *nonempty_interval, domain.original, is_irrefutable, spelling);
         bool adds_coverage = std::any_of(
             domain.remaining.disjoint().begin(),
             domain.remaining.disjoint().end(),
@@ -1190,49 +1179,41 @@ struct MatchExhaustivenessChecker::Impl {
                 domain.covered_patterns.size() + 1;
           }
         } else {
-          bool is_irrefutable = IsIrrefutablePattern(pattern);
-          std::string spelling = PatternToString(pattern);
           std::optional<Span> first_intersecting_span;
           std::optional<Span> exact_previous_span;
-          bool scalar_point = nonempty_interval->dims().size() == 1 &&
-                              nonempty_interval->dims()[0].min() ==
-                                  nonempty_interval->dims()[0].max();
-          if (!is_irrefutable && scalar_point &&
-              domain.exhaustive_pattern_count.has_value()) {
-            const auto previous = domain.covered_point_spans.find(
-                nonempty_interval->dims()[0].min().GetBitsOrDie());
-            if (previous != domain.covered_point_spans.end()) {
-              exact_previous_span = previous->second;
-              first_intersecting_span = previous->second;
-            } else if (domain.covering_pattern_span.has_value()) {
-              first_intersecting_span = domain.covering_pattern_span;
-            } else {
-              for (int64_t i = 0; i < *domain.exhaustive_pattern_count; ++i) {
-                const PatternTree& earlier = domain.covered_patterns[i];
-                if (ReconstructCoveredInterval(earlier, domain_leaf_types)
-                        .Intersects(*nonempty_interval)) {
-                  first_intersecting_span = GetPatternSpan(earlier);
-                  break;
-                }
-              }
-            }
-          } else {
-            for (const PatternTree& previous : domain.covered_patterns) {
+          const auto candidates =
+              domain.covered_pattern_indices.find(fingerprint);
+          if (candidates != domain.covered_pattern_indices.end()) {
+            for (int64_t candidate_index : candidates->second) {
+              const PatternTree& previous =
+                  domain.covered_patterns[candidate_index];
               NdInterval previous_interval =
                   ReconstructCoveredInterval(previous, domain_leaf_types);
-              if (!first_intersecting_span.has_value() &&
-                  previous_interval.Intersects(*nonempty_interval)) {
-                first_intersecting_span = GetPatternSpan(previous);
-              }
-              bool exact_interval = CoversSameInhabitedValues(
-                  previous_interval, *nonempty_interval, domain.original);
               bool same_constructor_scope =
                   IsIrrefutablePattern(previous) == is_irrefutable;
               bool same_wildcard_spelling =
                   !is_irrefutable || PatternToString(previous) == spelling;
-              if (exact_interval && same_constructor_scope &&
-                  same_wildcard_spelling) {
+              if (same_constructor_scope && same_wildcard_spelling &&
+                  CoversSameInhabitedValues(
+                      previous_interval, *nonempty_interval, domain.original)) {
                 exact_previous_span = GetPatternSpan(previous);
+                break;
+              }
+            }
+          }
+          if (exact_previous_span.has_value()) {
+            first_intersecting_span = exact_previous_span;
+          } else if (domain.covering_pattern_span.has_value()) {
+            first_intersecting_span = domain.covering_pattern_span;
+          } else {
+            int64_t search_count = domain.exhaustive_pattern_count.value_or(
+                domain.covered_patterns.size());
+            for (int64_t i = 0; i < search_count; ++i) {
+              const PatternTree& previous = domain.covered_patterns[i];
+              NdInterval previous_interval =
+                  ReconstructCoveredInterval(previous, domain_leaf_types);
+              if (previous_interval.Intersects(*nonempty_interval)) {
+                first_intersecting_span = GetPatternSpan(previous);
                 break;
               }
             }
@@ -1250,17 +1231,11 @@ struct MatchExhaustivenessChecker::Impl {
                                            : *first_intersecting_span,
           };
         }
-        if (IsIrrefutablePattern(pattern)) {
-          if (!domain.covering_pattern_span.has_value()) {
-            domain.covering_pattern_span = GetPatternSpan(pattern);
-          }
-        } else if (nonempty_interval->dims().size() == 1 &&
-                   nonempty_interval->dims()[0].min() ==
-                       nonempty_interval->dims()[0].max()) {
-          domain.covered_point_spans.try_emplace(
-              nonempty_interval->dims()[0].min().GetBitsOrDie(),
-              GetPatternSpan(pattern));
+        if (is_irrefutable && !domain.covering_pattern_span.has_value()) {
+          domain.covering_pattern_span = GetPatternSpan(pattern);
         }
+        domain.covered_pattern_indices[fingerprint].push_back(
+            domain.covered_patterns.size());
         domain.covered_patterns.push_back(pattern);
       }
     }
