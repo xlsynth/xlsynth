@@ -150,13 +150,10 @@ numeric value; those names are aliases for one match case. For example,
 `Alias::C`. Distinct numeric enum types remain nominally incomparable, while
 constructors of a semantic sum remain distinct regardless of payload values.
 
-Empty enums (i.e. enums with no defined values in its namespace) are similar to
-**zero-bit values** in that they have no real representable values. These
-bit-space could be defined to be trivially exhaustive, or impossible to match
-on -- we choose the latter for now because it's more convenient for
-implementation, we can call it a one-bit space and any value with this type
-trivially that one value (so we need to have one pattern covering it, but the
-pattern matches by definition).
+Empty numeric enums have no represented values and are uninhabited. Their
+coverage domain is empty, so a match on an empty numeric enum is vacuously
+exhaustive, and any semantic-sum constructor with an empty-enum payload is
+likewise uninhabited.
 
 **Tokens**: Note that there is also a question of tokens which are
 zero-bit-like, but I imagine we don't want to re-bind tokens through a pattern

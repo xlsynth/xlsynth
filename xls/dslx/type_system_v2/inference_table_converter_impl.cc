@@ -1315,7 +1315,8 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
               imported->module->type_info()->GetConstExprOption(
                   imported->constant_name_def);
           if (value.has_value()) {
-            base_type_info_->NoteConstExpr(&subject.name_def(), *value);
+            base_type_info_->NoteConstExpr(&subject.name_def(),
+                                           std::move(*value));
           }
         }
       }
