@@ -80,6 +80,7 @@ cc_library(
         ":interp_value_interval",
         ":nd_region",
         "//xls/common:visitor",
+        "//xls/dslx:errors",
         "//xls/dslx:import_data",
         "//xls/dslx:interp_value",
         "//xls/dslx:interp_value_utils",

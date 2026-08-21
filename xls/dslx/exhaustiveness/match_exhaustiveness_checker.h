@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "xls/dslx/errors.h"
 #include "xls/dslx/exhaustiveness/interp_value_interval.h"
 #include "xls/dslx/exhaustiveness/nd_region.h"
 #include "xls/dslx/frontend/ast.h"
@@ -52,12 +53,16 @@ class MatchExhaustivenessChecker {
 
   struct PatternAddResult {
     PatternCoverage coverage;
-    // Set for covered patterns, preferring an exactly equivalent previous
-    // pattern over the first merely intersecting previous pattern.
-    std::optional<Span> previous_pattern_span;
-    // True when equally refutable patterns cover the same inhabited semantic
-    // values. Differently spelled irrefutable patterns remain non-duplicates.
-    bool is_exact_duplicate = false;
+    struct Overlap {
+      // Equally refutable patterns covering the same inhabited values are
+      // exact duplicates; differently spelled catch-alls are merely covered.
+      MatchPatternOverlapKind kind;
+      // An exact semantic predecessor is preferred over the first pattern
+      // that merely intersects collective previous coverage.
+      Span previous_pattern_span;
+    };
+    // Present exactly when coverage is kPreviouslyCovered.
+    std::optional<Overlap> overlap;
   };
 
   MatchExhaustivenessChecker(const Span& matched_expr_span,

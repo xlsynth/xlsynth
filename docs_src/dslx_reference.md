@@ -1467,9 +1467,12 @@ fn test_f() {
 
 #### Redundant Patterns
 
-`match` rejects duplicate patterns and patterns entirely covered by earlier
-patterns before the match becomes exhaustive. Other patterns appearing after an
-already-exhaustive match produce a warning. For example:
+`match` rejects exact duplicate patterns, including duplicates appearing after
+the match has already become exhaustive. It also rejects other fully covered
+patterns encountered before exhaustiveness. A nonduplicate pattern appearing
+after an already-exhaustive match instead produces a warning. `const match`
+performs the same overlap checks but does not emit trailing-pattern warnings or
+require its patterns to be exhaustive. For example:
 
 ```dslx-bad
 const FOO = u32:42;

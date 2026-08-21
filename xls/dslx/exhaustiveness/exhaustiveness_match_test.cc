@@ -225,6 +225,38 @@ TEST(ExhaustivenessMatchTest, MatchRedundantPatternIsRejected) {
                HasSubstr("fully covered by previous patterns")));
 }
 
+TEST(ExhaustivenessMatchTest, CheckerOwnsCopiedPatternWrappers) {
+  constexpr std::string_view kMatch = R"(fn main(value: bool) -> u32 {
+    match value {
+      false => u32:0,
+      true => u32:1,
+    }
+  })";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kMatch, "test.x", "test", &import_data));
+  std::optional<Function*> function = tm.module->GetFunction("main");
+  ASSERT_TRUE(function.has_value());
+  const Statement& statement = *(*function)->body()->statements().back();
+  auto* match = dynamic_cast<Match*>(std::get<Expr*>(statement.wrapped()));
+  ASSERT_NE(match, nullptr);
+  std::optional<Type*> matched_type = tm.type_info->GetItem(match->matched());
+  ASSERT_TRUE(matched_type.has_value());
+
+  MatchExhaustivenessChecker checker(match->matched()->span(), import_data,
+                                     *tm.type_info, **matched_type);
+  PatternTree caller_owned_pattern = match->arms()[0]->patterns()[0];
+  checker.AddPattern(caller_owned_pattern);
+  caller_owned_pattern = match->arms()[1]->patterns()[0];
+
+  MatchExhaustivenessChecker::PatternAddResult duplicate =
+      checker.AddPattern(match->arms()[0]->patterns()[0]);
+  ASSERT_TRUE(duplicate.overlap.has_value());
+  EXPECT_EQ(duplicate.overlap->kind, MatchPatternOverlapKind::kExactDuplicate);
+}
+
 // Dense enum values but missing the top value in the underlying type.
 TEST(ExhaustivenessMatchTest, MatchOnDenseZeroAlignedEnum) {
   constexpr std::string_view kMatch = R"(enum E : u2 {

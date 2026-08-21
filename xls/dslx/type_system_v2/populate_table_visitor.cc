@@ -630,6 +630,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     std::vector<TypeAnnotation*> type_annotation_members;
     absl::flat_hash_map<std::string, const MatchArm*> seen_arms;
     absl::flat_hash_map<std::string, Span> seen_patterns;
+    absl::flat_hash_map<const NameDef*, Span> seen_enum_members;
     for (MatchArm* arm : node->arms()) {
       // Identify syntactically identical match arms.
       std::string patterns_string = PatternsToString(arm);
@@ -662,6 +663,20 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
           return MatchPatternAlreadyCoveredStatus(
               GetPatternSpan(pattern), it->second, it->first,
               MatchPatternOverlapKind::kExactDuplicate, file_table_);
+        }
+        if (const auto* colon_ref = std::get_if<ColonRef*>(&pattern);
+            colon_ref != nullptr) {
+          XLS_ASSIGN_OR_RETURN(std::optional<const NameDef*> enum_member,
+                               ResolveEnumMember(*colon_ref, import_data_));
+          if (enum_member.has_value()) {
+            if (auto [it, inserted] = seen_enum_members.try_emplace(
+                    *enum_member, GetPatternSpan(pattern));
+                !inserted) {
+              return MatchPatternAlreadyCoveredStatus(
+                  GetPatternSpan(pattern), it->second, PatternToString(pattern),
+                  MatchPatternOverlapKind::kExactDuplicate, file_table_);
+            }
+          }
         }
         XLS_RETURN_IF_ERROR(
             table_.SetTypeVariable(ToAstNode(pattern), matched_var));

@@ -1301,6 +1301,22 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
                                  &imported_module_info->module(),
                                  imported_module_info->type_info());
       return absl::OkStatus();
+    } else if (node->kind() == AstNodeKind::kUse) {
+      auto* use = const_cast<Use*>(absl::down_cast<const Use*>(node));
+      for (UseSubject& subject : use->LinearizeToSubjects()) {
+        absl::StatusOr<ModuleInfo*> imported_module_info =
+            import_data_.Get(ImportTokens::FromSpan(subject.identifiers()));
+        if (!imported_module_info.ok()) {
+          imported_module_info = import_data_.Get(
+              ImportTokens::FromSpan(subject.identifiers().subspan(
+                  0, subject.identifiers().size() - 1)));
+        }
+        XLS_RETURN_IF_ERROR(imported_module_info.status());
+        base_type_info_->AddImport(&subject.use_tree_entry(),
+                                   &(*imported_module_info)->module(),
+                                   (*imported_module_info)->type_info());
+      }
+      return absl::OkStatus();
     }
 
     XLS_ASSIGN_OR_RETURN(TypeInfo * ti, GetTypeInfo(parametric_context));
