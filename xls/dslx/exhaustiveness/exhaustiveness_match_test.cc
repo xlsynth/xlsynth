@@ -253,8 +253,9 @@ TEST(ExhaustivenessMatchTest, CheckerOwnsCopiedPatternWrappers) {
 
   MatchExhaustivenessChecker::PatternAddResult duplicate =
       checker.AddPattern(match->arms()[0]->patterns()[0]);
-  ASSERT_TRUE(duplicate.overlap.has_value());
-  EXPECT_EQ(duplicate.overlap->kind, MatchPatternOverlapKind::kExactDuplicate);
+  ASSERT_NE(duplicate.overlap(), nullptr);
+  EXPECT_EQ(duplicate.overlap()->kind,
+            MatchPatternOverlapKind::kExactDuplicate);
 }
 
 // Dense enum values but missing the top value in the underlying type.

@@ -19,11 +19,11 @@
 #include <utility>
 #include <variant>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/frontend/ast.h"
@@ -1138,11 +1138,52 @@ fn f(value: u2) -> u32 {
         EXPECT_TRUE(
             result.tm.type_info->GetImportedOrError(&subject.use_tree_entry())
                 .ok());
+        auto imported_value =
+            result.tm.type_info->GetConstExprOption(&subject.name_def());
+        ASSERT_TRUE(imported_value.has_value());
+        EXPECT_THAT(imported_value->GetBitValueUnsigned(),
+                    IsOkAndHolds(subject.name_def().identifier() == "FIRST"
+                                     ? uint64_t{0}
+                                     : uint64_t{1}));
         ++imported_entries;
       }
     }
   }
   EXPECT_EQ(imported_entries, 2);
+}
+
+TEST(TypecheckV2Test, MatchUseImportedSumConstantsPreserveTheirValues) {
+  constexpr std::string_view kImported = R"(
+pub enum Option {
+  None,
+  Some(u1),
+}
+pub const FIRST = Option::Some(u1:1);
+pub const SECOND = Option::Some(u1:1);
+)";
+  constexpr std::string_view kProgram = R"(#![feature(use_syntax)]
+use imported::{FIRST, SECOND};
+
+fn f() -> u32 {
+  match FIRST {
+    FIRST => u32:0,
+    SECOND => u32:1,
+    _ => u32:2,
+  }
+}
+)";
+
+  absl::flat_hash_map<std::filesystem::path, std::string> files = {
+      {std::filesystem::path("/imported.x"), std::string(kImported)},
+      {std::filesystem::path("/fake_main_path.x"), std::string(kProgram)},
+  };
+  auto vfs = std::make_unique<FakeFilesystem>(
+      files, /*cwd=*/std::filesystem::path("/"));
+  ImportData import_data = CreateImportDataForTest(std::move(vfs));
+  EXPECT_THAT(TypecheckV2(kProgram, "fake_main_path", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Exact-duplicate pattern match detected "
+                                 "`SECOND`")));
 }
 
 TEST(TypecheckV2Test, MatchUseImportedEnumConstantsUseTheirOwningModule) {
@@ -1646,6 +1687,24 @@ fn f(value: E) -> u32 {
 )",
               TypecheckFails(HasSubstr(
                   "Exact-duplicate pattern match detected `SECOND`")));
+}
+
+TEST(TypecheckV2Test, MatchSumConstructorsWithEqualPayloadsStayDistinct) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum Either {
+  Left(u1),
+  Right(u1),
+}
+
+fn f(value: Either) -> u32 {
+  match value {
+    Either::Left(u1:0) => u32:0,
+    Either::Right(u1:0) => u32:1,
+    Either::Left(u1:1) => u32:2,
+    Either::Right(u1:1) => u32:3,
+  }
+}
+)"));
 }
 
 TEST(TypecheckV2Test, MatchShadowedSumConstructorPayloadIsRejected) {

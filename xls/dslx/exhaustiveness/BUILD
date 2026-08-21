@@ -73,14 +73,19 @@ cc_test(
 )
 
 cc_library(
+    name = "match_pattern_overlap",
+    hdrs = ["match_pattern_overlap.h"],
+)
+
+cc_library(
     name = "match_exhaustiveness_checker",
     srcs = ["match_exhaustiveness_checker.cc"],
     hdrs = ["match_exhaustiveness_checker.h"],
     deps = [
         ":interp_value_interval",
+        ":match_pattern_overlap",
         ":nd_region",
         "//xls/common:visitor",
-        "//xls/dslx:errors",
         "//xls/dslx:import_data",
         "//xls/dslx:interp_value",
         "//xls/dslx:interp_value_utils",

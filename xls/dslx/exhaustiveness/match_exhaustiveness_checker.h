@@ -18,10 +18,11 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
-#include "xls/dslx/errors.h"
 #include "xls/dslx/exhaustiveness/interp_value_interval.h"
+#include "xls/dslx/exhaustiveness/match_pattern_overlap.h"
 #include "xls/dslx/exhaustiveness/nd_region.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/pos.h"
@@ -40,19 +41,11 @@ namespace xls::dslx {
 // reached the point that the arms are exhaustive.
 class MatchExhaustivenessChecker {
  public:
-  enum class PatternCoverage {
-    // The pattern matches at least one previously uncovered semantic value.
-    // Numeric enum aliases with the same represented value are the same
-    // semantic case; distinct semantic-sum constructors remain separate cases.
-    kAddsCoverage,
-    // Every semantic value matched by this pattern was already covered.
-    kPreviouslyCovered,
-    // The pattern does not match any inhabited value in the original domain.
-    kUnmatchable,
-  };
-
   struct PatternAddResult {
-    PatternCoverage coverage;
+    // Numeric enum aliases denote one value; distinct sum constructors do not.
+    struct AddsCoverage {};
+    // The pattern does not match any inhabited value in the original domain.
+    struct Unmatchable {};
     struct Overlap {
       // Equally refutable patterns covering the same inhabited values are
       // exact duplicates; differently spelled catch-alls are merely covered.
@@ -61,8 +54,16 @@ class MatchExhaustivenessChecker {
       // that merely intersects collective previous coverage.
       Span previous_pattern_span;
     };
-    // Present exactly when coverage is kPreviouslyCovered.
-    std::optional<Overlap> overlap;
+
+    std::variant<AddsCoverage, Unmatchable, Overlap> outcome;
+
+    bool adds_coverage() const {
+      return std::holds_alternative<AddsCoverage>(outcome);
+    }
+    bool is_unmatchable() const {
+      return std::holds_alternative<Unmatchable>(outcome);
+    }
+    const Overlap* overlap() const { return std::get_if<Overlap>(&outcome); }
   };
 
   MatchExhaustivenessChecker(const Span& matched_expr_span,

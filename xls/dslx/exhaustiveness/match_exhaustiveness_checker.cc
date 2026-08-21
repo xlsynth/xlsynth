@@ -354,15 +354,8 @@ ConstantExpressionLeaf ResolveConstantExpression(
 }
 
 std::optional<InterpValue> GetConstantValue(const Expr& expression,
-                                            const TypeInfo& type_info,
-                                            const ImportData& import_data) {
-  std::optional<InterpValue> result = type_info.GetConstExprOption(&expression);
-  if (!result.has_value()) {
-    ConstantExpressionLeaf resolved =
-        ResolveConstantExpression(expression, type_info, import_data);
-    result = resolved.type_info->GetConstExprOption(resolved.expression);
-  }
-  return result;
+                                            const TypeInfo& type_info) {
+  return type_info.GetConstExprOption(&expression);
 }
 
 InterpValueInterval MakePointIntervalForType(const Type& type,
@@ -400,7 +393,7 @@ std::optional<InterpValueInterval> PatternToIntervalInternal(
           },
           [&](NameRef* name_ref) -> std::optional<InterpValueInterval> {
             std::optional<InterpValue> value =
-                GetConstantValue(*name_ref, type_info, import_data);
+                GetConstantValue(*name_ref, type_info);
             if (value.has_value()) {
               return MakePointIntervalForType(*leaf_type.type, *value);
             }
@@ -432,7 +425,7 @@ std::optional<InterpValueInterval> PatternToIntervalInternal(
           },
           [&](ColonRef* colon_ref) -> std::optional<InterpValueInterval> {
             std::optional<InterpValue> value =
-                GetConstantValue(*colon_ref, type_info, import_data);
+                GetConstantValue(*colon_ref, type_info);
             CHECK(value.has_value());
             VLOG(5) << "PatternToIntervalInternal; colon_ref: `"
                     << colon_ref->ToString() << "` value: `"
@@ -538,8 +531,7 @@ SumConstantValue ResolveSumConstantValue(const Expr& expression,
                                          const SumType& sum_type,
                                          const TypeInfo& type_info,
                                          const ImportData& import_data) {
-  std::optional<InterpValue> value =
-      GetConstantValue(expression, type_info, import_data);
+  std::optional<InterpValue> value = GetConstantValue(expression, type_info);
   if (!value.has_value()) {
     ConstantExpressionLeaf resolved =
         ResolveConstantExpression(expression, type_info, import_data);
@@ -706,7 +698,7 @@ std::optional<Phase1SumTypeEncoding::VariantInfo> GetDirectUnitSumVariant(
     const ColonRef& pattern, const SumType& type, const TypeInfo& type_info,
     const ImportData& import_data) {
   std::optional<Phase1SumTypeEncoding::VariantInfo> result;
-  if (!GetConstantValue(pattern, type_info, import_data).has_value()) {
+  if (!GetConstantValue(pattern, type_info).has_value()) {
     absl::StatusOr<Phase1SumTypeEncoding::VariantInfo> variant =
         Phase1SumTypeEncoding(type).GetVariant(pattern.attr());
     if (variant.ok() && variant->variant->is_unit()) {
@@ -855,8 +847,7 @@ std::vector<IntervalPatternLeaf> ExpandPatternLeaves(
   }
   if (const auto* name_ref = std::get_if<NameRef*>(&pattern);
       name_ref != nullptr) {
-    std::optional<InterpValue> value =
-        GetConstantValue(**name_ref, type_info, import_data);
+    std::optional<InterpValue> value = GetConstantValue(**name_ref, type_info);
     CHECK(value.has_value()) << "Missing tuple constexpr value for `"
                              << (*name_ref)->ToString() << "`";
     std::vector<IntervalPatternLeaf> result;
@@ -864,8 +855,7 @@ std::vector<IntervalPatternLeaf> ExpandPatternLeaves(
     return result;
   } else if (const auto* colon_ref = std::get_if<ColonRef*>(&pattern);
              colon_ref != nullptr) {
-    std::optional<InterpValue> value =
-        GetConstantValue(**colon_ref, type_info, import_data);
+    std::optional<InterpValue> value = GetConstantValue(**colon_ref, type_info);
     CHECK(value.has_value()) << "Missing tuple constexpr value for `"
                              << (*colon_ref)->ToString() << "`";
     std::vector<IntervalPatternLeaf> result;
@@ -1153,7 +1143,7 @@ struct MatchExhaustivenessChecker::Impl {
                                const FlattenedLeafTypes& domain_leaf_types,
                                CoverageDomain& domain) {
     PatternAddResult result{
-        .coverage = PatternCoverage::kUnmatchable,
+        .outcome = PatternAddResult::Unmatchable{},
     };
     std::optional<NdInterval> nonempty_interval = interval.ToNonEmpty();
     if (nonempty_interval.has_value()) {
@@ -1170,10 +1160,9 @@ struct MatchExhaustivenessChecker::Impl {
               return remaining_interval.Intersects(*nonempty_interval);
             });
         if (adds_coverage) {
-          result.coverage = PatternCoverage::kAddsCoverage;
+          result.outcome = PatternAddResult::AddsCoverage{};
           domain.remaining = domain.remaining.SubtractInterval(interval);
         } else {
-          result.coverage = PatternCoverage::kPreviouslyCovered;
           bool is_irrefutable = IsIrrefutablePattern(pattern);
           std::string spelling = PatternToString(pattern);
           std::optional<Span> first_intersecting_span;
@@ -1201,7 +1190,7 @@ struct MatchExhaustivenessChecker::Impl {
                 first_intersecting_span.has_value())
               << "Covered pattern has no previously matching source: "
               << spelling;
-          result.overlap = PatternAddResult::Overlap{
+          result.outcome = PatternAddResult::Overlap{
               .kind = exact_previous_span.has_value()
                           ? MatchPatternOverlapKind::kExactDuplicate
                           : MatchPatternOverlapKind::kFullyCovered,
@@ -1285,7 +1274,7 @@ MatchExhaustivenessChecker::AddPattern(const PatternTree& pattern) {
           << GetPatternSpan(pattern).ToString(file_table());
 
   PatternAddResult result{
-      .coverage = PatternCoverage::kUnmatchable,
+      .outcome = PatternAddResult::Unmatchable{},
   };
   if (impl_->matched_sum_type_ != nullptr) {
     if (IsIrrefutablePattern(pattern)) {
@@ -1298,12 +1287,12 @@ MatchExhaustivenessChecker::AddPattern(const PatternTree& pattern) {
         PatternAddResult variant_result =
             impl_->AddInterval(pattern, full_interval, variant_state.leaf_types,
                                variant_state.coverage);
-        if (variant_result.coverage == PatternCoverage::kAddsCoverage) {
+        if (variant_result.adds_coverage()) {
           result = variant_result;
-        } else if (result.coverage != PatternCoverage::kAddsCoverage &&
-                   (result.coverage == PatternCoverage::kUnmatchable ||
-                    (variant_result.overlap.has_value() &&
-                     variant_result.overlap->kind ==
+        } else if (!result.adds_coverage() &&
+                   (result.is_unmatchable() ||
+                    (variant_result.overlap() != nullptr &&
+                     variant_result.overlap()->kind ==
                          MatchPatternOverlapKind::kExactDuplicate))) {
           result = variant_result;
         }

@@ -143,8 +143,12 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
                          subject.name_def().span(), import_data_.file_table(),
                          import_data_.vfs()));
       XLS_RET_CHECK(result.imported_member != nullptr);
-      table_.SetImportedModuleForUse(&subject.use_tree_entry(),
-                                     result.imported_module);
+      const auto* constant = std::get_if<ConstantDef*>(result.imported_member);
+      table_.SetResolvedUseImport(
+          &subject.use_tree_entry(),
+          {.module = result.imported_module,
+           .constant_name_def =
+               constant == nullptr ? nullptr : (*constant)->name_def()});
       for (NameDef* name_def :
            ModuleMemberGetNameDefs(*result.imported_member)) {
         std::optional<const NameRef*> type_var =

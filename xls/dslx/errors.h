@@ -21,6 +21,7 @@
 
 #include "absl/status/status.h"
 #include "absl/types/span.h"
+#include "xls/dslx/exhaustiveness/match_pattern_overlap.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/ast_node.h"
 #include "xls/dslx/frontend/pos.h"
@@ -171,11 +172,6 @@ absl::Status ArrayDimTooLargeErrorStatus(const Span& span, uint64_t value,
 absl::Status MatchNotExhaustiveStatus(const Span& span, const Type* matched,
                                       InterpValue& unmatched_sample,
                                       const FileTable& file_table);
-
-enum class MatchPatternOverlapKind {
-  kExactDuplicate,
-  kFullyCovered,
-};
 
 // Reports `duplicate_span` as the primary error. The payload also contains
 // `previous_span` when the two source locations differ.

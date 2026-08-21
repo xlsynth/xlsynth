@@ -550,13 +550,19 @@ class InferenceTable {
   virtual std::optional<const AstNode*> GetColonRefTarget(
       const ColonRef* colon_ref) const = 0;
 
-  // Retains the canonical module resolved for a `use` entry during table
-  // population until conversion can register it with the module's `TypeInfo`.
-  virtual void SetImportedModuleForUse(const UseTreeEntry* use_tree_entry,
-                                       ModuleInfo* module_info) = 0;
+  struct ResolvedUseImport {
+    ModuleInfo* module;
+    // Null when the imported member is not a constant.
+    const NameDef* constant_name_def;
+  };
 
-  // Returns the module already resolved for the given `use` entry, if any.
-  virtual std::optional<ModuleInfo*> GetImportedModuleForUse(
+  // Retains the authoritative module and constant identity resolved for a
+  // `use` entry until conversion can populate the importing module's TypeInfo.
+  virtual void SetResolvedUseImport(const UseTreeEntry* use_tree_entry,
+                                    ResolvedUseImport imported) = 0;
+
+  // Returns the already resolved import for the given `use` entry, if any.
+  virtual std::optional<ResolvedUseImport> GetResolvedUseImport(
       const UseTreeEntry* use_tree_entry) const = 0;
 
   // When the converter resolves the callee for an `Invocation` node, it uses

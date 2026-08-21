@@ -1304,12 +1304,20 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
     } else if (node->kind() == AstNodeKind::kUse) {
       auto* use = const_cast<Use*>(absl::down_cast<const Use*>(node));
       for (UseSubject& subject : use->LinearizeToSubjects()) {
-        std::optional<ModuleInfo*> imported_module_info =
-            table_.GetImportedModuleForUse(&subject.use_tree_entry());
-        XLS_RET_CHECK(imported_module_info.has_value());
+        std::optional<InferenceTable::ResolvedUseImport> imported =
+            table_.GetResolvedUseImport(&subject.use_tree_entry());
+        XLS_RET_CHECK(imported.has_value());
         base_type_info_->AddImport(&subject.use_tree_entry(),
-                                   &(*imported_module_info)->module(),
-                                   (*imported_module_info)->type_info());
+                                   &imported->module->module(),
+                                   imported->module->type_info());
+        if (imported->constant_name_def != nullptr) {
+          std::optional<InterpValue> value =
+              imported->module->type_info()->GetConstExprOption(
+                  imported->constant_name_def);
+          if (value.has_value()) {
+            base_type_info_->NoteConstExpr(&subject.name_def(), *value);
+          }
+        }
       }
       return absl::OkStatus();
     }

@@ -380,13 +380,13 @@ class TypeValidator : public AstNodeVisitorWithDefault {
         // Exact duplicates remain errors after exhaustiveness; other trailing
         // patterns retain their warning-only behavior. Const matches share
         // overlap checking but skip those warnings and final exhaustiveness.
-        if (coverage.overlap.has_value() &&
+        const auto* overlap = coverage.overlap();
+        if (overlap != nullptr &&
             (!exhaustive_before ||
-             coverage.overlap->kind ==
-                 MatchPatternOverlapKind::kExactDuplicate)) {
+             overlap->kind == MatchPatternOverlapKind::kExactDuplicate)) {
           return MatchPatternAlreadyCoveredStatus(
-              GetPatternSpan(pattern), coverage.overlap->previous_pattern_span,
-              PatternToString(pattern), coverage.overlap->kind, file_table_);
+              GetPatternSpan(pattern), overlap->previous_pattern_span,
+              PatternToString(pattern), overlap->kind, file_table_);
         } else if (exhaustive_before && !node->IsConst()) {
           warning_collector_.Add(
               GetPatternSpan(pattern), WarningKind::kAlreadyExhaustiveMatch,
