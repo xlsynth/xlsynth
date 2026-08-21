@@ -1047,16 +1047,18 @@ std::string FormatSumVariant(const SumType& sum_type,
 
 std::string FormatSampleForType(
     const Type& type, absl::Span<const InterpValueInterval> dimensions,
-    int64_t* leaf_index) {
+    absl::Span<const FlattenedLeafType> leaf_types, int64_t* leaf_index) {
   std::string result;
   if (type.IsEnum()) {
     CHECK_LT(*leaf_index, dimensions.size());
     const EnumType& enum_type = type.AsEnum();
     const EnumDef& enum_def = enum_type.nominal_type();
+    const FlattenedLeafType& leaf_type = leaf_types[*leaf_index];
+    CHECK(leaf_type.enum_domain.has_value());
     int64_t value_index =
         dimensions[(*leaf_index)++].min().GetBitValueUnsigned().value();
-    std::vector<InterpValue> distinct_values =
-        MakeEnumValueDomain(enum_type).values;
+    const std::vector<InterpValue>& distinct_values =
+        leaf_type.enum_domain->values;
     CHECK_LT(value_index, distinct_values.size());
     const InterpValue& value = distinct_values[value_index];
     int64_t member_index = 0;
@@ -1076,7 +1078,7 @@ std::string FormatSampleForType(
         result += ", ";
       }
       result += FormatSampleForType(tuple_type.GetMemberType(i), dimensions,
-                                    leaf_index);
+                                    leaf_types, leaf_index);
     }
     result += ")";
   } else if (type.IsSum()) {
@@ -1095,7 +1097,8 @@ std::string FormatSampleForType(
         variant_info,
         [&](int64_t active_index) -> absl::Status {
           payload_values.push_back(FormatSampleForType(
-              variant.GetMemberType(active_index), dimensions, leaf_index));
+              variant.GetMemberType(active_index), dimensions, leaf_types,
+              leaf_index));
           return absl::OkStatus();
         },
         [&](const Type& inactive_type) -> absl::Status {
@@ -1471,8 +1474,9 @@ MatchExhaustivenessChecker::FormatSimplestUncoveredValue() const {
       std::vector<std::string> payload_values;
       payload_values.reserve(variant.size());
       for (int64_t i = 0; i < variant.size(); ++i) {
-        payload_values.push_back(FormatSampleForType(variant.GetMemberType(i),
-                                                     dimensions, &leaf_index));
+        payload_values.push_back(FormatSampleForType(
+            variant.GetMemberType(i), dimensions, variant_state.leaf_types.flat,
+            &leaf_index));
       }
       CHECK_EQ(leaf_index, dimensions.size());
       result =
@@ -1484,8 +1488,8 @@ MatchExhaustivenessChecker::FormatSimplestUncoveredValue() const {
         impl_->coverage_.remaining.disjoint().front().dims();
     if (ContainsNamedVariant(impl_->matched_type_)) {
       int64_t leaf_index = 0;
-      result =
-          FormatSampleForType(impl_->matched_type_, dimensions, &leaf_index);
+      result = FormatSampleForType(impl_->matched_type_, dimensions,
+                                   impl_->leaf_types_.flat, &leaf_index);
       CHECK_EQ(leaf_index, dimensions.size());
     } else {
       result = FormatLegacySample(dimensions);
