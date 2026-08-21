@@ -329,16 +329,17 @@ absl::Status MatchPatternAlreadyCoveredStatus(
   std::string message;
   if (overlap_kind == MatchPatternOverlapKind::kExactDuplicate) {
     message = absl::StrFormat(
-        "TypeInferenceError: Exact-duplicate pattern match detected `%s`; "
+        "Exact-duplicate pattern match detected `%s`; "
         "only the first could possibly match; previously @ %s",
         pattern, original_span.ToString(file_table));
   } else {
     message = absl::StrFormat(
-        "TypeInferenceError: Pattern match `%s` is fully covered by previous "
+        "Pattern match `%s` is fully covered by previous "
         "patterns; previously @ %s",
         pattern, original_span.ToString(file_table));
   }
-  absl::Status status = absl::InvalidArgumentError(message);
+  absl::Status status =
+      TypeInferenceErrorStatus(duplicate_span, nullptr, message, file_table);
   StatusPayloadProto payload;
   *payload.add_spans() = ToProto(duplicate_span, file_table);
   if (original_span != duplicate_span) {

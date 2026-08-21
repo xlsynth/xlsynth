@@ -866,7 +866,7 @@ const Z:u31 = match X {
 }
 
 TEST(TypecheckV2Test, MatchArmDuplicated) {
-  EXPECT_THAT(R"(
+  constexpr std::string_view kProgram = R"(
 const X = u32:1;
 const Y = u32:2;
 const Z = match X {
@@ -875,9 +875,15 @@ const Z = match X {
   u32:1 => Y,
   _ => Y
 };
-)",
-              TypecheckFails(
-                  HasSubstr("Exact-duplicate pattern match detected `u32:1`")));
+)";
+
+  EXPECT_THAT(
+      kProgram,
+      TypecheckFailsWithPayload(
+          AllOf(HasSubstr("TypeInferenceError: fake.x:9:3-9:8 "
+                          "Exact-duplicate pattern match detected `u32:1`"),
+                HasSubstr("previously @ fake.x:7:3-7:8")),
+          AllOf(HasSpan(6, 2, 6, 7), HasSpan(8, 2, 8, 7))));
 }
 
 TEST(TypecheckV2Test, MatchEnumVariantDuplicatedAcrossAlternativeArms) {
