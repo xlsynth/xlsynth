@@ -1463,10 +1463,8 @@ MatchExhaustivenessChecker::FormatSimplestUncoveredValue() const {
         continue;
       }
       const SumTypeVariant& variant =
-          *Phase1SumTypeEncoding(*impl_->matched_sum_type_)
-               .GetVariant(variant_state.variant_name)
-               .value()
-               .variant;
+          impl_->matched_sum_type_->variants().at(GetSumVariantIndex(
+              *impl_->matched_sum_type_, variant_state.variant_name));
       absl::Span<const InterpValueInterval> dimensions =
           variant_state.coverage.remaining.disjoint().front().dims();
       int64_t leaf_index = 0;
