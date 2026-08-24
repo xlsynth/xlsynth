@@ -89,18 +89,16 @@ TEST_F(IrConverterTest, MatchTupleOfTuplesRestOfTuple) {
   let t = (u32:1, (u32:2, u32:3, u32:4), u32:5, u32:6);
   match t {
     (u32:1, .., a) => a,
-    (u32:1, (b, ..), ..) => b,
+    (u32:2, (b, ..), ..) => b,
     (u32:0, (.., d), ..) => d,
-    (u32:0, (e, .., g), ..) => g,
+    (u32:3, (e, .., g), ..) => g,
     (.., h, u32:5) => h,
     _ => u32:0
   }
 })";
-  RunComparator run_comparator(CompareMode::kInterpreter);
-  XLS_ASSERT_OK(ParseAndTest(program, "", "test_module.x",
-                             ParseAndTestOptions{
-                                 .run_comparator = &run_comparator,
-                             }));
+  XLS_ASSERT_OK_AND_ASSIGN(std::string converted,
+                           ConvertOneFunctionForTest(program, "f"));
+  ExpectIr(converted);
 }
 
 TEST_F(IrConverterTest, MatchRestOfTupleAsTrailingArm) {

@@ -73,14 +73,19 @@ cc_test(
 )
 
 cc_library(
+    name = "match_pattern_overlap",
+    hdrs = ["match_pattern_overlap.h"],
+)
+
+cc_library(
     name = "match_exhaustiveness_checker",
     srcs = ["match_exhaustiveness_checker.cc"],
     hdrs = ["match_exhaustiveness_checker.h"],
     deps = [
         ":interp_value_interval",
+        ":match_pattern_overlap",
         ":nd_region",
         "//xls/common:visitor",
-        "//xls/dslx:import_data",
         "//xls/dslx:interp_value",
         "//xls/dslx:interp_value_utils",
         "//xls/dslx:sum_type_encoding",
@@ -88,6 +93,9 @@ cc_library(
         "//xls/dslx/frontend:pos",
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info",
+        "//xls/ir:bits",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/hash",
         "@abseil-cpp//absl/log",
         "@abseil-cpp//absl/log:check",
         "@abseil-cpp//absl/types:span",
