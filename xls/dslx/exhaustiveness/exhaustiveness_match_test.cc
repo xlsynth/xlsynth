@@ -72,12 +72,13 @@ void CheckExhaustiveOnlyAfterLastPattern(std::string_view program) {
   ASSERT_TRUE(matched_type.has_value());
   ASSERT_NE(matched_type.value(), nullptr);
 
-  MatchExhaustivenessChecker checker(match->matched()->span(), import_data,
-                                     *tm.type_info, *matched_type.value());
+  MatchExhaustivenessChecker checker(match->matched()->span(), *tm.type_info,
+                                     *matched_type.value());
 
   std::vector<PatternTree> patterns = GetPatterns(*match);
   for (int64_t i = 0; i < patterns.size(); ++i) {
-    bool now_exhaustive = checker.AddPattern(patterns[i]);
+    checker.AddPattern(patterns[i]);
+    bool now_exhaustive = checker.IsExhaustive();
     // We expect it to become exhaustive with the last match arm.
     bool expect_now_exhaustive = i + 1 == patterns.size();
     EXPECT_EQ(now_exhaustive, expect_now_exhaustive)
@@ -103,12 +104,13 @@ void CheckExhaustiveBeforeAnyPattern(std::string_view program) {
   ASSERT_TRUE(matched_type.has_value());
   ASSERT_NE(matched_type.value(), nullptr);
 
-  MatchExhaustivenessChecker checker(match->matched()->span(), import_data,
-                                     *tm.type_info, *matched_type.value());
+  MatchExhaustivenessChecker checker(match->matched()->span(), *tm.type_info,
+                                     *matched_type.value());
   EXPECT_TRUE(checker.IsExhaustive());
 
   for (const PatternTree& pattern : GetPatterns(*match)) {
-    EXPECT_TRUE(checker.AddPattern(pattern))
+    checker.AddPattern(pattern);
+    EXPECT_TRUE(checker.IsExhaustive())
         << "Expected match to stay exhaustive after adding pattern `"
         << PatternToString(pattern) << "`";
   }
@@ -207,9 +209,56 @@ TEST(ExhaustivenessMatchTest, MatchNestedTuple) {
   CheckExhaustiveOnlyAfterLastPattern(kMatch);
 }
 
-TEST(ExhaustivenessMatchTest, MatchRedundantPattern) {
-  // Even if one of the arms is redundant, the overall match is only complete
-  // once a catch-all branch is reached.
+TEST(ExhaustivenessMatchTest, RuntimeNamesDoNotProveCoverage) {
+  CheckExhaustiveOnlyAfterLastPattern(R"(fn main(x: u2, y: u2, z: u2) -> u32 {
+    match x {
+      y => u32:1,
+      z => u32:2,
+      _ => u32:0,
+    }
+  })");
+  CheckNonExhaustive(R"(fn main(x: u2, y: u2) -> u32 {
+    match x { y => u32:1 }
+  })");
+}
+
+TEST(ExhaustivenessMatchTest, NestedRuntimeNamesDoNotProveCoverage) {
+  CheckExhaustiveOnlyAfterLastPattern(R"(
+  fn main(x: (u2, (u2, u2)), y: u2, z: u2) -> u32 {
+    match x {
+      (u2:0, (y, _)) => u32:1,
+      (u2:0, (z, _)) => u32:2,
+      _ => u32:0,
+    }
+  })");
+}
+
+TEST(ExhaustivenessMatchTest, SumPayloadRuntimeNamesDoNotProveCoverage) {
+  CheckExhaustiveOnlyAfterLastPattern(R"(#![feature(type_inference_v2)]
+  enum Message { Empty, Data(u2, u2) }
+  fn main(x: Message, y: u2, z: u2) -> u32 {
+    match x {
+      Message::Data(y, _) => u32:1,
+      Message::Data(z, _) => u32:2,
+      _ => u32:0,
+    }
+  })");
+}
+
+TEST(ExhaustivenessMatchTest, SumStructPayloadRuntimeNamesDoNotProveCoverage) {
+  CheckExhaustiveOnlyAfterLastPattern(R"(#![feature(type_inference_v2)]
+  enum Message { Empty, Data { value: u2, flag: u2 } }
+  fn main(x: Message, y: u2, z: u2) -> u32 {
+    match x {
+      Message::Data { value: y, flag: _ } => u32:1,
+      Message::Data { value: z, flag: _ } => u32:2,
+      _ => u32:0,
+    }
+  })");
+}
+
+TEST(ExhaustivenessMatchTest, MatchRedundantPatternIsRejected) {
+  // A pattern fully covered before the match is exhaustive is unreachable.
   constexpr std::string_view kMatch = R"(fn main(t: (bool, bool)) -> u32 {
     match t {
       (true, _) => u32:1,
@@ -217,7 +266,44 @@ TEST(ExhaustivenessMatchTest, MatchRedundantPattern) {
       _ => u32:0,
     }
   })";
-  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+  ImportData import_data = CreateImportDataForTest();
+  EXPECT_THAT(
+      ParseAndTypecheck(kMatch, "test.x", "test", &import_data).status(),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(ExhaustivenessMatchTest, CheckerOwnsCopiedPatternWrappers) {
+  constexpr std::string_view kMatch = R"(fn main(value: bool) -> u32 {
+    match value {
+      false => u32:0,
+      true => u32:1,
+    }
+  })";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kMatch, "test.x", "test", &import_data));
+  std::optional<Function*> function = tm.module->GetFunction("main");
+  ASSERT_TRUE(function.has_value());
+  const Statement& statement = *(*function)->body()->statements().back();
+  auto* match = dynamic_cast<Match*>(std::get<Expr*>(statement.wrapped()));
+  ASSERT_NE(match, nullptr);
+  std::optional<Type*> matched_type = tm.type_info->GetItem(match->matched());
+  ASSERT_TRUE(matched_type.has_value());
+
+  MatchExhaustivenessChecker checker(match->matched()->span(), *tm.type_info,
+                                     **matched_type);
+  PatternTree caller_owned_pattern = match->arms()[0]->patterns()[0];
+  checker.AddPattern(caller_owned_pattern);
+  caller_owned_pattern = match->arms()[1]->patterns()[0];
+
+  MatchExhaustivenessChecker::PatternAddResult duplicate =
+      checker.AddPattern(match->arms()[0]->patterns()[0]);
+  ASSERT_NE(duplicate.overlap(), nullptr);
+  EXPECT_EQ(duplicate.overlap()->kind,
+            MatchPatternOverlapKind::kExactDuplicate);
 }
 
 // Dense enum values but missing the top value in the underlying type.
@@ -713,7 +799,6 @@ TEST(ExhaustivenessMatchTest, OverlappingRangesForSignedIntegers) {
     match x {
       s4:-8..s4:-2 => u32:10,
       s4:-4..s4:1  => u32:20,
-      s4:0        => u32:30,
       _           => u32:40,
     }
   })";
