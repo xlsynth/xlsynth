@@ -441,6 +441,9 @@ Note the use of the double-colon to reference the enum value. This code
 specifies that the enum behaves like a `u3`: its storage and extension (via
 casting) behavior are defined to be those of a `u3`. Attempts to define an enum
 value outside of the representable `u3` range will produce a compile time error.
+Different members of the same enum may name the same underlying numeric value.
+Such members compare equal and cover the same value in a `match` expression;
+enum values from different enum types remain incomparable.
 
 ```dslx-bad
 enum Opcode : u3 {
@@ -1464,8 +1467,13 @@ fn test_f() {
 
 #### Redundant Patterns
 
-`match` will flag an error if a *syntactically identical* pattern is typed
-twice; e.g.,
+`match` rejects exact duplicate patterns, including duplicates appearing after
+the match has already become exhaustive. It also rejects other fully covered
+patterns encountered before exhaustiveness. A nonduplicate pattern appearing
+after an already-exhaustive match instead produces an
+`already_exhaustive_match` warning when that warning is enabled; it is disabled
+by default. `const match` performs the same overlap checks but does not emit
+trailing-pattern warnings or require its patterns to be exhaustive. For example:
 
 ```dslx-bad
 const FOO = u32:42;
@@ -1478,18 +1486,17 @@ fn f(x: u32) -> u2 {
 }
 ```
 
-Only the first pattern will ever match, so it is fully redundant (and therefore
-likely a user error they'd like to be informed of). Note that *equivalent* but
-not *syntactically identical* patterns will not be flagged in this way.
+Only the first pattern can match, so the second is fully redundant. Patterns
+with different spellings are also rejected when they represent the same value:
 
-```dslx
+```dslx-bad
 const FOO = u32:42;
 const BAR = u32:42;  // Compares `==` to `FOO`.
 
 fn f(x: u32) -> u2 {
     match x {
         FOO => 0,
-        BAR => 1,  // _Equivalent_ pattern, but not syntactically identical.
+        BAR => 1,  // Equivalent pattern, so this arm can never match.
         _ => 2,
     }
 }
