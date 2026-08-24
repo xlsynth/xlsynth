@@ -12,20 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/create_import_data.h"
+#include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/module.h"
 #include "xls/dslx/import_data.h"
+#include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/type_system/typecheck_test_utils.h"
 #include "xls/dslx/type_system_v2/matchers.h"
 #include "xls/dslx/virtualizable_file_system.h"
@@ -866,7 +872,7 @@ const Z:u31 = match X {
 }
 
 TEST(TypecheckV2Test, MatchArmDuplicated) {
-  EXPECT_THAT(R"(
+  constexpr std::string_view kProgram = R"(
 const X = u32:1;
 const Y = u32:2;
 const Z = match X {
@@ -875,9 +881,36 @@ const Z = match X {
   u32:1 => Y,
   _ => Y
 };
-)",
-              TypecheckFails(
-                  HasSubstr("Exact-duplicate pattern match detected `u32:1`")));
+)";
+
+  EXPECT_THAT(
+      kProgram,
+      TypecheckFailsWithPayload(
+          AllOf(HasSubstr("TypeInferenceError: fake.x:9:3-9:8 "
+                          "Exact-duplicate pattern match detected `u32:1`"),
+                HasSubstr("previously @ fake.x:7:3-7:8")),
+          AllOf(HasSpan(6, 2, 6, 7), HasSpan(8, 2, 8, 7))));
+}
+
+TEST(TypecheckV2Test, MatchDuplicatedGroupedArmsPreserveWholeGroupSpans) {
+  constexpr std::string_view kProgram = R"(
+enum E: u2 { A = 0, B = 1, C = 2 }
+fn f(value: E) -> u32 {
+  match value {
+    E::A | E::B => u32:0,
+    E::A | E::B => u32:1,
+    E::C => u32:2,
+  }
+}
+)";
+
+  EXPECT_THAT(
+      kProgram,
+      TypecheckFailsWithPayload(
+          AllOf(
+              HasSubstr("Exact-duplicate pattern match detected `E::A | E::B`"),
+              HasSubstr("previously @ fake.x:7:5-7:16")),
+          AllOf(HasSpan(6, 4, 6, 15), HasSpan(7, 4, 7, 15))));
 }
 
 TEST(TypecheckV2Test, MatchEnumVariantDuplicatedAcrossAlternativeArms) {
@@ -991,6 +1024,279 @@ fn f(value: Alias) -> u32 {
                HasSubstr("Exact-duplicate pattern match detected `Alias::A`")));
 }
 
+TEST(TypecheckV2Test, MatchImportedAliasedEnumVariantShadowingNestedTuple) {
+  constexpr std::string_view kImported = R"(
+pub enum E: u1 { A = 0, B = 1 }
+pub type ImportedAlias = E;
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+type Alias = imported::ImportedAlias;
+
+fn f(value: (imported::E, bool)) -> u32 {
+  match value {
+    (imported::E::A, _) => u32:0,
+    (Alias::A, true) => u32:1,
+    _ => u32:2,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
+  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, MatchImportedSameValuedEnumConstantsAreRejected) {
+  constexpr std::string_view kImported = R"(
+pub enum E: u2 { A = 0, B = 0, C = 1 }
+pub const FIRST = E::A;
+pub const SECOND = E::B;
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn f(value: imported::E) -> u32 {
+  match value {
+    imported::FIRST => u32:0,
+    imported::SECOND => u32:1,
+    imported::E::C => u32:2,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
+  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Exact-duplicate pattern match detected "
+                                 "`imported::SECOND`")));
+}
+
+TEST(TypecheckV2Test, MatchUseImportedSameValuedEnumConstantsAreRejected) {
+  constexpr std::string_view kImported = R"(
+pub enum E: u2 { A = 0, B = 0, C = 1 }
+pub const FIRST = E::A;
+pub const SECOND = E::B;
+)";
+  constexpr std::string_view kProgram = R"(#![feature(use_syntax)]
+use imported::{FIRST, SECOND};
+
+fn f() -> u32 {
+  match FIRST {
+    FIRST => u32:0,
+    SECOND => u32:1,
+    _ => u32:2,
+  }
+}
+)";
+
+  absl::flat_hash_map<std::filesystem::path, std::string> files = {
+      {std::filesystem::path("/imported.x"), std::string(kImported)},
+      {std::filesystem::path("/fake_main_path.x"), std::string(kProgram)},
+  };
+  auto vfs = std::make_unique<FakeFilesystem>(
+      files, /*cwd=*/std::filesystem::path("/"));
+  ImportData import_data = CreateImportDataForTest(std::move(vfs));
+  EXPECT_THAT(TypecheckV2(kProgram, "fake_main_path", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Exact-duplicate pattern match detected "
+                                 "`SECOND`")));
+}
+
+TEST(TypecheckV2Test, MatchUseImportedNumericConstantsPreserveTheirValues) {
+  constexpr std::string_view kImported = R"(
+pub const FIRST = u2:0;
+pub const SECOND = u2:1;
+)";
+  constexpr std::string_view kProgram = R"(#![feature(use_syntax)]
+use imported::{FIRST, SECOND};
+
+fn f(value: u2) -> u32 {
+  match value {
+    FIRST => u32:0,
+    SECOND => u32:1,
+    _ => u32:2,
+  }
+}
+)";
+
+  absl::flat_hash_map<std::filesystem::path, std::string> files = {
+      {std::filesystem::path("/imported.x"), std::string(kImported)},
+      {std::filesystem::path("/fake_main_path.x"), std::string(kProgram)},
+  };
+  auto vfs = std::make_unique<FakeFilesystem>(
+      files, /*cwd=*/std::filesystem::path("/"));
+  ImportData import_data = CreateImportDataForTest(std::move(vfs));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckResult result,
+      TypecheckV2(kProgram, "fake_main_path", &import_data));
+  int imported_entries = 0;
+  for (const ModuleMember& member : result.tm.module->top()) {
+    if (const auto* use = std::get_if<Use*>(&member); use != nullptr) {
+      for (UseSubject& subject : (*use)->LinearizeToSubjects()) {
+        EXPECT_TRUE(
+            result.tm.type_info->GetImportedOrError(&subject.use_tree_entry())
+                .ok());
+        auto imported_value =
+            result.tm.type_info->GetConstExprOption(&subject.name_def());
+        ASSERT_TRUE(imported_value.has_value());
+        EXPECT_THAT(imported_value->GetBitValueUnsigned(),
+                    IsOkAndHolds(subject.name_def().identifier() == "FIRST"
+                                     ? uint64_t{0}
+                                     : uint64_t{1}));
+        ++imported_entries;
+      }
+    }
+  }
+  EXPECT_EQ(imported_entries, 2);
+}
+
+TEST(TypecheckV2Test, MatchUseImportedSumConstantsPreserveTheirValues) {
+  constexpr std::string_view kImported = R"(
+pub enum Option {
+  None,
+  Some(u1),
+}
+pub const FIRST = Option::Some(u1:1);
+pub const SECOND = Option::Some(u1:0);
+)";
+  constexpr std::string_view kProgram = R"(#![feature(use_syntax)]
+use imported::{FIRST, SECOND};
+
+fn f() -> u32 {
+  match FIRST {
+    FIRST => u32:0,
+    SECOND => u32:1,
+    _ => u32:2,
+  }
+}
+)";
+
+  absl::flat_hash_map<std::filesystem::path, std::string> files = {
+      {std::filesystem::path("/imported.x"), std::string(kImported)},
+      {std::filesystem::path("/fake_main_path.x"), std::string(kProgram)},
+  };
+  auto vfs = std::make_unique<FakeFilesystem>(
+      files, /*cwd=*/std::filesystem::path("/"));
+  ImportData import_data = CreateImportDataForTest(std::move(vfs));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckResult result,
+      TypecheckV2(kProgram, "fake_main_path", &import_data));
+  int imported_entries = 0;
+  for (const ModuleMember& member : result.tm.module->top()) {
+    if (const auto* use = std::get_if<Use*>(&member); use != nullptr) {
+      for (UseSubject& subject : (*use)->LinearizeToSubjects()) {
+        auto imported_value =
+            result.tm.type_info->GetConstExprOption(&subject.name_def());
+        ASSERT_TRUE(imported_value.has_value());
+        ASSERT_TRUE(imported_value->IsTuple());
+        const auto& encoded = imported_value->GetValuesOrDie();
+        ASSERT_EQ(encoded.size(), 2);
+        EXPECT_THAT(encoded.at(0).GetBitValueUnsigned(),
+                    IsOkAndHolds(uint64_t{1}));
+        ASSERT_TRUE(encoded.at(1).IsTuple());
+        const auto& payload_slots = encoded.at(1).GetValuesOrDie();
+        ASSERT_EQ(payload_slots.size(), 1);
+        EXPECT_THAT(payload_slots.at(0).GetBitValueUnsigned(),
+                    IsOkAndHolds(subject.name_def().identifier() == "FIRST"
+                                     ? uint64_t{1}
+                                     : uint64_t{0}));
+        ++imported_entries;
+      }
+    }
+  }
+  EXPECT_EQ(imported_entries, 2);
+}
+
+TEST(TypecheckV2Test, MatchUseImportedEnumConstantsUseTheirOwningModule) {
+  constexpr std::string_view kTypes = R"(
+pub enum E: u1 { A = 0, B = 1 }
+)";
+  constexpr std::string_view kConstants = R"(
+import types;
+pub const FIRST = types::E::A;
+pub const SECOND = types::E::B;
+)";
+  constexpr std::string_view kProgram = R"(#![feature(use_syntax)]
+use constants::{FIRST, SECOND};
+
+fn f() -> u32 {
+  match FIRST {
+    FIRST => u32:0,
+    SECOND => u32:1,
+  }
+}
+)";
+
+  absl::flat_hash_map<std::filesystem::path, std::string> files = {
+      {std::filesystem::path("/types.x"), std::string(kTypes)},
+      {std::filesystem::path("/constants.x"), std::string(kConstants)},
+      {std::filesystem::path("/fake_main_path.x"), std::string(kProgram)},
+  };
+  auto vfs = std::make_unique<FakeFilesystem>(
+      files, /*cwd=*/std::filesystem::path("/"));
+  ImportData import_data = CreateImportDataForTest(std::move(vfs));
+  XLS_EXPECT_OK(TypecheckV2(kProgram, "fake_main_path", &import_data));
+}
+
+TEST(TypecheckV2Test, MatchUseImportedNumericConstantPreservesExactValue) {
+  constexpr std::string_view kImported = R"(
+pub const FIRST = u2:0;
+)";
+  constexpr std::string_view kProgram = R"(#![feature(use_syntax)]
+use imported::FIRST;
+
+fn f(value: u2) -> u32 {
+  match value {
+    FIRST => u32:0,
+    u2:0 => u32:1,
+    _ => u32:2,
+  }
+}
+)";
+
+  absl::flat_hash_map<std::filesystem::path, std::string> files = {
+      {std::filesystem::path("/imported.x"), std::string(kImported)},
+      {std::filesystem::path("/fake_main_path.x"), std::string(kProgram)},
+  };
+  auto vfs = std::make_unique<FakeFilesystem>(
+      files, /*cwd=*/std::filesystem::path("/"));
+  ImportData import_data = CreateImportDataForTest(std::move(vfs));
+  EXPECT_THAT(TypecheckV2(kProgram, "fake_main_path", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Exact-duplicate pattern match detected "
+                                 "`u2:0`")));
+}
+
+TEST(TypecheckV2Test, MatchImportedEquivalentEnumConstantsAreRejected) {
+  constexpr std::string_view kImported = R"(
+pub enum E: u1 { A = 0, B = 1 }
+pub const FIRST = E::A;
+pub const SECOND = E::A;
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn f(value: imported::E) -> u32 {
+  match value {
+    imported::FIRST => u32:0,
+    imported::SECOND => u32:1,
+    imported::E::B => u32:2,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
+  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Exact-duplicate pattern match detected "
+                                 "`imported::SECOND`")));
+}
+
 TEST(TypecheckV2Test, MatchDistinctEnumVariantsThroughTypeAliasRemainValid) {
   XLS_EXPECT_OK(TypecheckV2(R"(
 enum E: u2 { A = 0, B = 1, C = 2 }
@@ -1000,6 +1306,1067 @@ fn f(value: E) -> u32 {
   match value {
     E::A => u32:0,
     Alias::B | Alias::C => u32:1,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchSameValuedEnumVariantsAreRejectedAsDuplicates) {
+  EXPECT_THAT(R"(
+enum E: u2 { A = 0, B = 0, C = 1 }
+type Alias = E;
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    Alias::B => u32:1,
+    E::C => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `Alias::B`")));
+}
+
+TEST(TypecheckV2Test, MatchOneAliasCoversAllSameValuedEnumVariants) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u2 { A = 0, B = 0, C = 1 }
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    E::C => u32:1,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchSparseSignedEnumAliasesRemainExhaustive) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: s4 { Negative = -3, Alias = -3, Positive = 7 }
+
+fn f(value: E) -> u32 {
+  match value {
+    E::Negative => u32:0,
+    E::Positive => u32:1,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchSparseSignedEnumReportsDistinctUncoveredValue) {
+  EXPECT_THAT(
+      R"(
+enum E: s4 { Negative = -3, Alias = -3, Positive = 7 }
+
+fn f(value: E) -> u32 {
+  match value {
+    E::Negative => u32:0,
+  }
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("Match patterns are not exhaustive"),
+                           HasSubstr("`E:7` is not covered"))));
+}
+
+TEST(TypecheckV2Test, MatchDifferentNominalEnumTypesRemainIncomparable) {
+  EXPECT_THAT(R"(
+enum First: u1 { A = 0, B = 1 }
+enum Second: u1 { A = 0, B = 1 }
+
+fn f(value: First) -> u32 {
+  match value {
+    Second::A => u32:0,
+    _ => u32:1,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("type mismatch")));
+}
+
+TEST(TypecheckV2Test, MatchEnumAliasDuplicatePrecedesInvalidArmExpression) {
+  EXPECT_THAT(R"(
+enum E: u1 { A = 0, B = 1 }
+type Alias = E;
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    Alias::A => u16:1,
+    E::B => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `Alias::A`")));
+}
+
+TEST(TypecheckV2Test, MatchSameValuedEnumVariantsBeforeCatchallAreRejected) {
+  EXPECT_THAT(R"(
+enum E: u2 { A = 0, B = 0, C = 1 }
+type Alias = E;
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    Alias::B => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `Alias::B`")));
+}
+
+TEST(TypecheckV2Test, MatchEnumVariantCountCanExceedUnderlyingValueCount) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u1 { A = 0, B = 0, C = 1 }
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    E::C => u32:1,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchSameValuedEnumConstantsAreRejectedAsDuplicates) {
+  EXPECT_THAT(R"(
+enum E: u2 { A = 0, B = 0, C = 1 }
+const FIRST = E::A;
+const SECOND = E::B;
+
+fn f(value: E) -> u32 {
+  match value {
+    FIRST => u32:0,
+    SECOND => u32:1,
+    E::C => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `SECOND`")));
+}
+
+TEST(TypecheckV2Test,
+     MatchFunctionLocalSameValuedEnumConstantsAreRejectedAsDuplicates) {
+  EXPECT_THAT(R"(
+enum E: u2 { A = 0, B = 0, C = 1 }
+
+fn f(value: E) -> u32 {
+  const FIRST = E::A;
+  const SECOND = E::B;
+  match value {
+    FIRST => u32:0,
+    SECOND => u32:1,
+    E::C => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `SECOND`")));
+}
+
+TEST(TypecheckV2Test, MatchAssociatedConstantUsesItsActualEnumValue) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u1 { A = 0, B = 1 }
+struct Holder {}
+impl Holder {
+  const A: E = E::B;
+}
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    Holder::A => u32:1,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchAliasedAssociatedConstantUsesItsActualEnumValue) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u1 { A = 0, B = 1 }
+struct Holder {}
+impl Holder {
+  const A: E = E::B;
+}
+type Alias = Holder;
+
+fn f(value: E) -> u32 {
+  match value {
+    E::A => u32:0,
+    Alias::A => u32:1,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchFullyContainedRangeIsRejected) {
+  EXPECT_THAT(R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:0..u4:4 => u32:0,
+    u4:1..u4:3 => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFailsWithPayload(
+                  AllOf(HasSubstr("fully covered by previous patterns"),
+                        HasSubstr("previously @ fake.x:6:5-6:15")),
+                  AllOf(HasSpan(5, 4, 5, 14), HasSpan(6, 4, 6, 14))));
+}
+
+TEST(TypecheckV2Test, MatchValueInsideEarlierRangeIsRejected) {
+  EXPECT_THAT(R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:0..u4:4 => u32:0,
+    u4:2 => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, MatchEquivalentInclusiveExclusiveRangesAreRejected) {
+  EXPECT_THAT(
+      R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:0..u4:4 => u32:0,
+    u4:0..=u4:3 => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+      TypecheckFails(HasSubstr("Exact-duplicate pattern match detected "
+                               "`u4:0..=u4:3`")));
+}
+
+TEST(TypecheckV2Test, MatchRepeatedEmptyRangeInGroupedArmsIsRejected) {
+  EXPECT_THAT(R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:1..u4:1 | u4:2 => u32:0,
+    u4:1..u4:1 | u4:3 => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `u4:1..u4:1`")));
+}
+
+TEST(TypecheckV2Test, MatchRangeCoveredByMultiplePatternsIsRejected) {
+  EXPECT_THAT(R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:0..u4:2 => u32:0,
+    u4:2..u4:4 => u32:1,
+    u4:1..u4:3 => u32:2,
+    _ => u32:3,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, MatchGroupedFullyCoveredRangeIsRejected) {
+  EXPECT_THAT(R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:0..u4:4 => u32:0,
+    u4:7 | u4:1..u4:3 => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, MatchPartiallyOverlappingRangesRemainValid) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:0..u4:3 => u32:0,
+    u4:2..u4:5 => u32:1,
+    _ => u32:2,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchNestedAliasedEnumVariantShadowingIsRejected) {
+  EXPECT_THAT(R"(
+enum E: u1 { A = 0, B = 1 }
+type Alias = E;
+
+fn f(value: (E, bool)) -> u32 {
+  match value {
+    (E::A, _) => u32:0,
+    (Alias::A, true) => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, MatchTupleCoveredByMultiplePatternsIsRejected) {
+  EXPECT_THAT(R"(
+fn f(value: (bool, bool)) -> u32 {
+  match value {
+    (false, _) => u32:0,
+    (true, false) => u32:1,
+    (_, false) => u32:2,
+    _ => u32:3,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, MatchDuplicateReportsExactEarlierPattern) {
+  EXPECT_THAT(
+      R"(
+const SAME_TRUE = true;
+
+fn f(value: (bool, bool, bool)) -> u32 {
+  match value {
+    (true, _, _) => u32:0,
+    (_, true, _) => u32:1,
+    (false, false, true) | (_, SAME_TRUE, _) => u32:2,
+    _ => u32:3,
+  }
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("Exact-duplicate pattern match detected "
+                                     "`(_, SAME_TRUE, _)`"),
+                           HasSubstr("previously @ fake.x:9:5-9:17"))));
+}
+
+TEST(TypecheckV2Test, MatchEquivalentNamedConstantsAreRejected) {
+  EXPECT_THAT(R"(
+const FIRST = u4:2;
+const SECOND = u4:2;
+
+fn f(value: u4) -> u32 {
+  match value {
+    FIRST => u32:0,
+    SECOND => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `SECOND`")));
+}
+
+TEST(TypecheckV2Test, MatchEquivalentNumericLiteralSpellingsAreRejected) {
+  EXPECT_THAT(R"(
+fn f(value: u4) -> u32 {
+  match value {
+    u4:2 => u32:0,
+    u4:0x2 => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `u4:0x2`")));
+}
+
+TEST(TypecheckV2Test, MatchTrailingDuplicateKeepsItsExactEarlierPattern) {
+  EXPECT_THAT(R"(
+fn f(value: u8) -> u32 {
+  match value {
+    _ => u32:0,
+    u8:1 => u32:1,
+    u8:2 => u32:2,
+    u8:0x1 => u32:3,
+  }
+}
+)",
+              TypecheckFails(AllOf(
+                  HasSubstr("Exact-duplicate pattern match detected `u8:0x1`"),
+                  HasSubstr("previously @ fake.x:7:5-7:9"))));
+}
+
+TEST(TypecheckV2Test, MatchRangeExhaustedTrailingDuplicateKeepsExactSource) {
+  EXPECT_THAT(R"(
+fn f(value: u8) -> u32 {
+  match value {
+    u8:0..u8:255 => u32:0,
+    u8:255 => u32:1,
+    u8:1 => u32:2,
+    u8:2 => u32:3,
+    u8:0x1 => u32:4,
+  }
+}
+)",
+              TypecheckFails(AllOf(
+                  HasSubstr("Exact-duplicate pattern match detected `u8:0x1`"),
+                  HasSubstr("previously @ fake.x:8:5-8:9"))));
+}
+
+TEST(TypecheckV2Test, MatchTrailingTupleDuplicateKeepsExactEarlierPattern) {
+  EXPECT_THAT(
+      R"(
+fn f(value: (u8, u8)) -> u32 {
+  match value {
+    _ => u32:0,
+    (u8:1, u8:2) => u32:1,
+    (u8:3, u8:4) => u32:2,
+    (u8:0x1, u8:0x2) => u32:3,
+  }
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("Exact-duplicate pattern match detected"),
+                           HasSubstr("(u8:0x1, u8:0x2)"),
+                           HasSubstr("previously @ fake.x:7:5-7:17"))));
+}
+
+TEST(TypecheckV2Test, MatchTrailingRangeDuplicateKeepsExactEarlierPattern) {
+  EXPECT_THAT(
+      R"(
+fn f(value: u8) -> u32 {
+  match value {
+    _ => u32:0,
+    u8:1..u8:4 => u32:1,
+    u8:5..u8:8 => u32:2,
+    u8:0x1..u8:0x4 => u32:3,
+  }
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("Exact-duplicate pattern match detected"),
+                           HasSubstr("u8:0x1..u8:0x4"),
+                           HasSubstr("previously @ fake.x:7:5-7:15"))));
+}
+
+TEST(TypecheckV2Test, MatchEquivalentDuplicateAfterExhaustivenessIsRejected) {
+  EXPECT_THAT(R"(
+fn f(value: u2) -> u32 {
+  match value {
+    u2:0 => u32:0,
+    u2:1 => u32:1,
+    u2:2 => u32:2,
+    u2:3 => u32:3,
+    u2:0x0 => u32:4,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `u2:0x0`")));
+}
+
+TEST(TypecheckV2Test, MatchEquivalentEnumValuedConstantsAreRejected) {
+  EXPECT_THAT(R"(
+enum E: u1 { A = 0, B = 1 }
+const FIRST = E::A;
+const SECOND = E::A;
+
+fn f(value: E) -> u32 {
+  match value {
+    FIRST => u32:0,
+    SECOND => u32:1,
+    E::B => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `SECOND`")));
+}
+
+TEST(TypecheckV2Test, MatchSumConstructorsWithEqualPayloadsStayDistinct) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum Either {
+  Left(u1),
+  Right(u1),
+}
+
+fn f(value: Either) -> u32 {
+  match value {
+    Either::Left(u1:0) => u32:0,
+    Either::Right(u1:0) => u32:1,
+    Either::Left(u1:1) => u32:2,
+    Either::Right(u1:1) => u32:3,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchShadowedSumConstructorPayloadIsRejected) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u4),
+}
+
+fn f(value: Option) -> u32 {
+  match value {
+    Option::Some(_) => u32:0,
+    Option::Some(u4:1) => u32:1,
+    Option::None => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, MatchShadowedSumStructConstructorPayloadIsRejected) {
+  EXPECT_THAT(R"(
+enum Message {
+  Empty,
+  Data { state: u4 },
+}
+
+fn f(value: Message) -> u32 {
+  match value {
+    Message::Data { state: _ } => u32:0,
+    Message::Data { state: u4:1 } => u32:1,
+    Message::Empty => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, MatchShadowedNestedSumConstructorPayloadIsRejected) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u4),
+}
+
+fn f(value: (Option, bool)) -> u32 {
+  match value {
+    (Option::Some(_), _) => u32:0,
+    (Option::Some(u4:1), true) => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test,
+     MatchExactDuplicateIgnoresUninhabitedSumConstructorCoordinates) {
+  EXPECT_THAT(R"(
+enum Never {}
+enum S {
+  Unit,
+  Impossible(Never),
+}
+
+fn f(value: (S, bool)) -> u32 {
+  match value {
+    (S::Unit, true) => u32:0,
+    (S::Unit, false) => u32:1,
+    (_, true) => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `(_, true)`")));
+}
+
+TEST(TypecheckV2Test, ConstMatchDuplicateGroupedPatternIsRejected) {
+  EXPECT_THAT(R"(
+fn f() -> u32 {
+  const VALUE = u2:0;
+  const match VALUE {
+    u2:0 | u2:1 => u32:0,
+    u2:0 => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(
+                  HasSubstr("Exact-duplicate pattern match detected `u2:0`")));
+}
+
+TEST(TypecheckV2Test, ConstMatchFullyCoveredRangeIsRejected) {
+  EXPECT_THAT(R"(
+fn f() -> u32 {
+  const VALUE = u4:2;
+  const match VALUE {
+    u4:0..u4:4 => u32:0,
+    u4:1..u4:3 => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("fully covered by previous patterns")));
+}
+
+TEST(TypecheckV2Test, ConstMatchDuplicateAliasedEnumVariantIsRejected) {
+  EXPECT_THAT(R"(
+enum E: u1 { A = 0, B = 1 }
+type Alias = E;
+
+fn f() -> u32 {
+  const VALUE = E::A;
+  const match VALUE {
+    E::A => u32:0,
+    Alias::A => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `Alias::A`")));
+}
+
+TEST(TypecheckV2Test, ConstMatchMayRemainNonExhaustive) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+fn f() -> u32 {
+  const VALUE = true;
+  const match VALUE {
+    true => u32:1,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, ConstMatchDoesNotWarnAfterExhaustiveness) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+fn f() -> u32 {
+  const VALUE = true;
+  const match VALUE {
+    true => u32:0,
+    false => u32:1,
+    _ => u32:2,
+  }
+}
+)"));
+  EXPECT_TRUE(result.tm.warnings.warnings().empty());
+}
+
+TEST(TypecheckV2Test, MatchNamedSumUnitConstructorRemainsSupported) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+enum Option {
+  None,
+  Some(u1),
+}
+const NONE = Option::None;
+
+fn f(value: Option) -> u32 {
+  match value {
+    NONE => u32:0,
+    Option::Some(_) => u32:1,
+  }
+}
+)"));
+  std::optional<ConstantDef*> constant =
+      result.tm.module->GetMember<ConstantDef>("NONE");
+  ASSERT_TRUE(constant.has_value());
+  EXPECT_TRUE(result.tm.type_info->GetConstExprOption((*constant)->name_def())
+                  .has_value());
+  std::optional<Function*> function = result.tm.module->GetFunction("f");
+  ASSERT_TRUE(function.has_value());
+  const Statement& statement = *(*function)->body()->statements().back();
+  auto* match = dynamic_cast<Match*>(std::get<Expr*>(statement.wrapped()));
+  ASSERT_NE(match, nullptr);
+  NameRef* pattern = std::get<NameRef*>(match->arms()[0]->patterns()[0]);
+  EXPECT_TRUE(result.tm.type_info->GetConstExprOption(pattern).has_value());
+}
+
+TEST(TypecheckV2Test, MatchNamedSumTupleConstructorRemainsSupported) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum Option {
+  None,
+  Some(u2),
+}
+const SOME = Option::Some(u2:1);
+
+fn f(value: Option) -> u32 {
+  match value {
+    SOME => u32:0,
+    Option::Some(_) => u32:1,
+    Option::None => u32:2,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchNamedSumStructConstructorRemainsSupported) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum Message {
+  Empty,
+  Point { x: u2, y: bool },
+}
+const POINT = Message::Point { x: u2:1, y: true };
+
+fn f(value: Message) -> u32 {
+  match value {
+    POINT => u32:0,
+    Message::Point { x: _, y: _ } => u32:1,
+    Message::Empty => u32:2,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchNamedSumStructConstantPreservesAllPayloadValues) {
+  EXPECT_THAT(
+      R"(
+enum Message {
+  Empty,
+  Point { x: u2, y: bool },
+}
+const POINT = Message::Point { x: u2:1, y: true };
+
+fn f(value: Message) -> u32 {
+  match value {
+    POINT => u32:0,
+    Message::Point { x: u2:1, y: true } => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+      TypecheckFails(AllOf(HasSubstr("Exact-duplicate pattern match detected"),
+                           HasSubstr("x: u2:1"), HasSubstr("y: true"))));
+}
+
+TEST(TypecheckV2Test, MatchNamedSumConstructorNestedInTupleRemainsSupported) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum Option {
+  None,
+  Some(u1),
+}
+const NONE = Option::None;
+
+fn f(value: (Option, bool)) -> u32 {
+  match value {
+    (NONE, true) => u32:0,
+    (NONE, false) => u32:1,
+    (Option::Some(_), _) => u32:2,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchNamedSumPayloadUsesNumericEnumValueSemantics) {
+  EXPECT_THAT(R"(
+enum E: u1 { A = 0, B = 0 }
+enum Option {
+  None,
+  Some(E),
+}
+const FIRST = Option::Some(E::A);
+const SECOND = Option::Some(E::B);
+
+fn f(value: Option) -> u32 {
+  match value {
+    FIRST => u32:0,
+    SECOND => u32:1,
+    Option::None => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `SECOND`")));
+}
+
+TEST(TypecheckV2Test, MatchNamedComputedSumConstructorRemainsSupported) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum Option {
+  None,
+  Some(u2),
+}
+
+fn make_some() -> Option { Option::Some(u2:1) }
+
+const SOME = make_some();
+
+fn f(value: Option) -> u32 {
+  match value {
+    SOME => u32:0,
+    Option::Some(_) => u32:1,
+    Option::None => u32:2,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchNamedComputedSumConstructorPreservesPayloadValue) {
+  EXPECT_THAT(
+      R"(
+enum Option {
+  None,
+  Some(u2),
+}
+
+fn make_some() -> Option { Option::Some(u2:1) }
+
+const SOME = make_some();
+
+fn f(value: Option) -> u32 {
+  match value {
+    SOME => u32:0,
+    Option::Some(u2:1) => u32:1,
+    Option::Some(_) => u32:2,
+    Option::None => u32:3,
+  }
+}
+)",
+      TypecheckFails(HasSubstr(
+          "Exact-duplicate pattern match detected `Option::Some(u2:1)`")));
+}
+
+TEST(TypecheckV2Test, MatchSumAssociatedConstantUsesItsActualConstructor) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u1),
+}
+struct Holder {}
+impl Holder {
+  const None: Option = Option::Some(u1:1);
+}
+
+fn f(value: Option) -> u32 {
+  match value {
+    Holder::None => u32:0,
+    Option::Some(_) => u32:1,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+}
+
+TEST(TypecheckV2Test, MatchSumConstantNamedLikePayloadConstructorIsSupported) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum Option {
+  None,
+  Some(u1),
+}
+struct Holder {}
+impl Holder {
+  const Some: Option = Option::None;
+}
+
+fn f(value: Option) -> u32 {
+  match value {
+    Holder::Some => u32:0,
+    Option::Some(_) => u32:1,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test,
+     MatchAliasedSumAssociatedConstantUsesItsActualConstructor) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u1),
+}
+struct Holder {}
+impl Holder {
+  const None: Option = Option::Some(u1:1);
+}
+type Alias = Holder;
+
+fn f(value: Option) -> u32 {
+  match value {
+    Alias::None => u32:0,
+    Option::Some(_) => u32:1,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+}
+
+TEST(TypecheckV2Test,
+     MatchAliasedSumConstantNamedLikePayloadConstructorIsSupported) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum Option {
+  None,
+  Some(u1),
+}
+struct Holder {}
+impl Holder {
+  const Some: Option = Option::None;
+}
+type Alias = Holder;
+
+fn f(value: Option) -> u32 {
+  match value {
+    Alias::Some => u32:0,
+    Option::Some(_) => u32:1,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test,
+     MatchNestedSumAssociatedConstantUsesItsActualConstructor) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u1),
+}
+struct Holder {}
+impl Holder {
+  const None: Option = Option::Some(u1:1);
+}
+
+fn f(value: (Option, bool)) -> u32 {
+  match value {
+    (Holder::None, _) => u32:0,
+    (Option::Some(_), _) => u32:1,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+}
+
+TEST(TypecheckV2Test,
+     MatchNestedAliasedSumAssociatedConstantUsesItsActualConstructor) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u1),
+}
+struct Holder {}
+impl Holder {
+  const None: Option = Option::Some(u1:1);
+}
+type Alias = Holder;
+
+fn f(value: (Option, bool)) -> u32 {
+  match value {
+    (Alias::None, _) => u32:0,
+    (Option::Some(_), _) => u32:1,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+}
+
+TEST(TypecheckV2Test, MatchImportedSumConstructorConstantRemainsSupported) {
+  constexpr std::string_view kImported = R"(
+pub enum Option {
+  None,
+  Some(u2),
+}
+pub const SOME = Option::Some(u2:1);
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn f(value: imported::Option) -> u32 {
+  match value {
+    imported::SOME => u32:0,
+    imported::Option::Some(_) => u32:1,
+    imported::Option::None => u32:2,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
+  XLS_EXPECT_OK(TypecheckV2(kProgram, "main", &import_data));
+}
+
+TEST(TypecheckV2Test, MatchImportedSumConstantUsesItsActualConstructor) {
+  constexpr std::string_view kImported = R"(
+pub enum Option {
+  None,
+  Some(u1),
+}
+pub const None = Option::Some(u1:1);
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn f(value: imported::Option) -> u32 {
+  match value {
+    imported::None => u32:0,
+    imported::Option::Some(_) => u32:1,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
+  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Match patterns are not exhaustive")));
+}
+
+TEST(TypecheckV2Test,
+     MatchImportedSumConstructorConstantPreservesPayloadValue) {
+  constexpr std::string_view kImported = R"(
+pub enum Option {
+  None,
+  Some(u2),
+}
+pub const SOME = Option::Some(u2:1);
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn f(value: imported::Option) -> u32 {
+  match value {
+    imported::SOME => u32:0,
+    imported::Option::Some(u2:1) => u32:1,
+    imported::Option::Some(_) => u32:2,
+    imported::Option::None => u32:3,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_EXPECT_OK(TypecheckV2(kImported, "imported", &import_data));
+  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Exact-duplicate pattern match detected "
+                                 "`imported::Option::Some(u2:1)`")));
+}
+
+TEST(TypecheckV2Test, ConstMatchNamedTupleConstantRemainsSupported) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+const TARGET = (u1:0, u1:1);
+
+fn f() -> u32 {
+  const VALUE = (u1:0, u1:1);
+  const match VALUE {
+    TARGET => u32:0,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchNamedTupleConstantPreservesItsMemberValues) {
+  EXPECT_THAT(R"(
+const PAIR = (u1:0, u1:1);
+
+fn f(value: ((u1, u1), bool)) -> u32 {
+  match value {
+    (PAIR, true) => u32:0,
+    ((u1:0, u1:1), true) => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr("Exact-duplicate pattern match detected "
+                                       "`((u1:0, u1:1), true)`")));
+}
+
+TEST(TypecheckV2Test, MatchNestedNamedTupleConstantRemainsSupported) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+const PAIR = (u1:0, u1:1);
+
+fn f(value: ((u1, u1), bool)) -> u32 {
+  match value {
+    (PAIR, true) => u32:0,
+    _ => u32:1,
   }
 }
 )"));
@@ -1040,6 +2407,20 @@ fn f(x: u4) -> u32 {
 }
 )"));
   ASSERT_THAT(result.tm.warnings.warnings().size(), 1);
+  EXPECT_EQ(result.tm.warnings.warnings()[0].message,
+            "Match is already exhaustive before this pattern");
+}
+
+TEST(TypecheckV2Test, DifferentCatchAllPatternsRemainWarningOnly) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+fn f(value: bool) -> u32 {
+  match value {
+    _ => u32:0,
+    otherwise => otherwise as u32,
+  }
+}
+)"));
+  ASSERT_EQ(result.tm.warnings.warnings().size(), 1);
   EXPECT_EQ(result.tm.warnings.warnings()[0].message,
             "Match is already exhaustive before this pattern");
 }

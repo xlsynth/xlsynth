@@ -18,13 +18,13 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
-#include "xls/dslx/exhaustiveness/interp_value_interval.h"
+#include "xls/dslx/exhaustiveness/match_pattern_overlap.h"
 #include "xls/dslx/exhaustiveness/nd_region.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/pos.h"
-#include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
@@ -39,8 +39,32 @@ namespace xls::dslx {
 // reached the point that the arms are exhaustive.
 class MatchExhaustivenessChecker {
  public:
+  struct PatternAddResult {
+    // Numeric enum aliases denote one value; distinct sum constructors do not.
+    struct AddsCoverage {};
+    // The pattern does not match any inhabited value in the original domain.
+    struct Unmatchable {};
+    struct Overlap {
+      // Equally refutable patterns covering the same inhabited values are
+      // exact duplicates; differently spelled catch-alls are merely covered.
+      MatchPatternOverlapKind kind;
+      // An exact semantic predecessor is preferred over the first pattern
+      // that merely intersects collective previous coverage.
+      Span previous_pattern_span;
+    };
+
+    std::variant<AddsCoverage, Unmatchable, Overlap> outcome;
+
+    bool adds_coverage() const {
+      return std::holds_alternative<AddsCoverage>(outcome);
+    }
+    bool is_unmatchable() const {
+      return std::holds_alternative<Unmatchable>(outcome);
+    }
+    const Overlap* overlap() const { return std::get_if<Overlap>(&outcome); }
+  };
+
   MatchExhaustivenessChecker(const Span& matched_expr_span,
-                             const ImportData& import_data,
                              const TypeInfo& type_info,
                              const Type& matched_type);
   ~MatchExhaustivenessChecker();
@@ -49,9 +73,9 @@ class MatchExhaustivenessChecker {
   MatchExhaustivenessChecker& operator=(const MatchExhaustivenessChecker&) =
       delete;
 
-  // Returns whether we've reached a point of exhaustiveness after incorporating
-  // the given `pattern`.
-  bool AddPattern(const PatternTree& pattern);
+  // Incorporates `pattern` and reports its contribution and the previous
+  // source provenance when it is already fully covered.
+  PatternAddResult AddPattern(const PatternTree& pattern);
 
   // Returns whether, based on already-added patterns, we're exhaustive in the
   // checker's model. For sums, that means every declared constructor payload
@@ -71,16 +95,6 @@ class MatchExhaustivenessChecker {
 
   std::unique_ptr<Impl> impl_;
 };
-
-// Returns the full interval range we use to represent the contents of an enum
-// type -- exposed in the header for purposes of testing.
-InterpValueInterval MakeFullIntervalForEnumType(const EnumType& enum_type);
-
-// Returns the point interval range we use to represent the contents of an enum
-// value -- exposed in the header for purposes of testing.
-InterpValueInterval MakePointIntervalForEnumType(const EnumType& enum_type,
-                                                 const InterpValue& value,
-                                                 const ImportData& import_data);
 
 }  // namespace xls::dslx
 
