@@ -310,7 +310,7 @@ absl::Status ArrayDimTooLargeErrorStatus(const Span& span, uint64_t value,
 }
 
 absl::Status MatchNotExhaustiveStatus(const Span& span, const Type* matched,
-                                      InterpValue& unmatched_sample,
+                                      std::string_view unmatched_sample,
                                       const FileTable& file_table) {
   return TypeInferenceErrorStatus(
       span, matched,
@@ -318,7 +318,7 @@ absl::Status MatchNotExhaustiveStatus(const Span& span, const Type* matched,
           "Match patterns are not exhaustive; e.g. `%s` is not covered; "
           "please add additional patterns to complete the match or a "
           "default case via `_ => ...`",
-          unmatched_sample.ToString()),
+          unmatched_sample),
       file_table);
 }
 
