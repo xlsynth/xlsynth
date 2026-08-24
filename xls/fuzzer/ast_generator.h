@@ -46,6 +46,9 @@
 
 namespace xls::dslx {
 
+class Type;
+class TypeInfo;
+
 // While building our AST, our choices can affect the legal scheduling options;
 // in particular, some ASTs cannot be scheduled in anything under N cycles (for
 // some N > 1).
@@ -564,7 +567,10 @@ class AstGenerator {
 
   // Generates a match-arm PatternTree with type 'type'.
   absl::StatusOr<PatternTree> GenerateMatchArmPattern(
-      Context* ctx, const TypeAnnotation* type);
+      const TypeAnnotation* type, TypeInfo& type_info);
+
+  // Makes the concrete bits/tuple type required by match coverage checking.
+  std::unique_ptr<Type> MakeMatchType(const TypeAnnotation* type);
 
   // Generate a Match expression.
   absl::StatusOr<TypedExpr> GenerateMatch(Context* ctx);

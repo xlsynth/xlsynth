@@ -53,6 +53,7 @@
 #include "xls/common/status/status_macros.h"
 #include "xls/common/symbolized_stacktrace.h"
 #include "xls/dslx/channel_direction.h"
+#include "xls/dslx/exhaustiveness/match_exhaustiveness_checker.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/ast_cloner.h"
 #include "xls/dslx/frontend/ast_node_visitor_with_default.h"
@@ -60,6 +61,8 @@
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/frontend/proc.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/type_system/type.h"
+#include "xls/dslx/type_system/type_info.h"
 #include "xls/fuzzer/ast_generator_options.pb.h"
 #include "xls/fuzzer/value_generator.h"
 #include "xls/ir/bits.h"
@@ -928,7 +931,7 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateExprOfType(
 }
 
 absl::StatusOr<PatternTree> AstGenerator::GenerateMatchArmPattern(
-    Context* ctx, const TypeAnnotation* type) {
+    const TypeAnnotation* type, TypeInfo& type_info) {
   XLS_RET_CHECK(!IsTypeRef(type)) << "Matched-on TypeRefs-typed values are not "
                                      "supported by the fuzzer; got: "
                                   << type->ToString();
@@ -969,7 +972,7 @@ absl::StatusOr<PatternTree> AstGenerator::GenerateMatchArmPattern(
 
       XLS_ASSIGN_OR_RETURN(
           PatternTree pattern,
-          GenerateMatchArmPattern(ctx, tuple_type->members()[index]));
+          GenerateMatchArmPattern(tuple_type->members()[index], type_info));
       pattern_members.push_back(pattern);
     }
     return PatternTree{
@@ -1002,6 +1005,7 @@ absl::StatusOr<PatternTree> AstGenerator::GenerateMatchArmPattern(
     bool inclusive_end = RandomBool(0.2);
 
     TypedExpr limit_type_expr;
+    Bits limit_bits;
     // 30% of the time make a random number, rest of the time make it a
     // non-empty range.
     //
@@ -1009,8 +1013,8 @@ absl::StatusOr<PatternTree> AstGenerator::GenerateMatchArmPattern(
     // easy RNG available to select out of the remaining range.
     if (RandomBool(0.3) || bit_count >= 64 || !start_lt_max) {
       // Sometimes pick an arbitrary limit in the bitwidth.
-      limit_type_expr =
-          GenerateNumberWithType(BitsAndSignedness{bit_count, is_signed});
+      limit_type_expr = GenerateNumberWithType(
+          BitsAndSignedness{bit_count, is_signed}, &limit_bits);
     } else {
       // Other times pick a limit that's >= the start value. Note that this can
       // still be an empty range if we chose the value that's equal to the start
@@ -1022,18 +1026,41 @@ absl::StatusOr<PatternTree> AstGenerator::GenerateMatchArmPattern(
                                              start_int64, max_int64);
       limit_type_expr = TypedExpr{MakeNumber(limit, start_type_expr.type),
                                   start_type_expr.type};
+      limit_bits =
+          is_signed ? SBits(limit, bit_count) : UBits(limit, bit_count);
     }
+    type_info.NoteConstExpr(start_type_expr.expr, start);
+    type_info.NoteConstExpr(limit_type_expr.expr,
+                            InterpValue::MakeBits(is_signed, limit_bits));
     Range* range = module_->Make<Range>(fake_span_, start_type_expr.expr,
                                         inclusive_end, limit_type_expr.expr);
     return PatternTree{range};
   }
 
   // Rest of the time we generate a simple number as the pattern to match.
+  bool is_signed = BitsTypeIsSigned(type).value();
+  Bits bits;
   TypedExpr type_expr = GenerateNumberWithType(
-      BitsAndSignedness{GetTypeBitCount(type), BitsTypeIsSigned(type).value()});
+      BitsAndSignedness{GetTypeBitCount(type), is_signed}, &bits);
   Number* number = dynamic_cast<Number*>(type_expr.expr);
   CHECK_NE(number, nullptr);
+  type_info.NoteConstExpr(number, InterpValue::MakeBits(is_signed, bits));
   return PatternTree{number};
+}
+
+std::unique_ptr<Type> AstGenerator::MakeMatchType(const TypeAnnotation* type) {
+  if (const auto* tuple = dynamic_cast<const TupleTypeAnnotation*>(type)) {
+    std::vector<std::unique_ptr<Type>> members;
+    members.reserve(tuple->size());
+    for (const TypeAnnotation* member : tuple->members()) {
+      members.push_back(MakeMatchType(member));
+    }
+    return std::make_unique<TupleType>(std::move(members));
+  } else {
+    CHECK(IsBits(type));
+    return std::make_unique<BitsType>(BitsTypeIsSigned(type).value(),
+                                      GetTypeBitCount(type));
+  }
 }
 
 absl::StatusOr<TypedExpr> AstGenerator::GenerateMatch(Context* ctx) {
@@ -1054,10 +1081,14 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateMatch(Context* ctx) {
   int64_t max_arm_count =
       absl::Uniform<int64_t>(absl::IntervalClosed, bit_gen_, 1, 4);
   std::vector<MatchArm*> match_arms;
-  // `match` will flag an error if a syntactically identical pattern is typed
-  // twice. Using the `std::string` equivalent of the pattern for comparing
-  // syntactically identical patterns. Ref:
-  // https://google.github.io/xls/dslx_reference/#redundant-patterns.
+  TypeInfoOwner type_info_owner;
+  XLS_ASSIGN_OR_RETURN(TypeInfo * type_info,
+                       type_info_owner.New(file_table_, module_->name()));
+  std::unique_ptr<Type> matched_type = MakeMatchType(match.type);
+  MatchExhaustivenessChecker coverage_checker(match.expr->span(), *type_info,
+                                              *matched_type);
+  // Empty ranges add no semantic coverage, but repeated spellings are still
+  // rejected by the frontend. Keep this check alongside semantic coverage.
   absl::flat_hash_set<std::string> all_match_arms_patterns;
   for (int64_t arm_count = 0; arm_count < max_arm_count; ++arm_count) {
     std::vector<PatternTree> match_arm_patterns;
@@ -1067,13 +1098,16 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateMatch(Context* ctx) {
     for (int64_t pattern_count = 0; pattern_count < max_pattern_count;
          ++pattern_count) {
       XLS_ASSIGN_OR_RETURN(PatternTree pattern,
-                           GenerateMatchArmPattern(ctx, match.type));
+                           GenerateMatchArmPattern(match.type, *type_info));
       // Early exit when a wildcard pattern is created.
       if (IsWildcardLeaf(pattern)) {
         break;
       }
       std::string pattern_str = PatternToString(pattern);
       if (all_match_arms_patterns.contains(pattern_str)) {
+        continue;
+      }
+      if (coverage_checker.AddPattern(pattern).overlap() != nullptr) {
         continue;
       }
       all_match_arms_patterns.insert(pattern_str);
