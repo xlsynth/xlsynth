@@ -92,8 +92,11 @@ lowering in the `default` case.
 It was discussed among XLS steering folks whether to make this an opt-in
 language feature for purposes of landing, but consensus was that it was useful
 enough to enable by default -- this is one of the top reported pain points for
-DSLX writing -- just with warnings for redundant patterns default-off for now so
-that real-world code bases have time to transition.
+DSLX writing. Type-system v2 rejects exact duplicate patterns and patterns fully
+covered before exhaustiveness. Other patterns following an already-exhaustive
+match produce a warning when `already_exhaustive_match` is enabled; that warning
+is disabled by default. `const match` retains its existing exemptions from those
+warnings and final exhaustiveness checking.
 
 ## Structure
 
@@ -108,9 +111,10 @@ The code is initially structured as follows:
 
     The deduce rule feeds this object pattern by pattern to check whether a
     pattern has led us to the point of exhaustion. This streaming
-    pattern-at-a-time interface allows us also give a helpful warning when a
-    pattern is fully redundant with previous patterns, or if we have similarly
-    added patterns even though we've passed the point of exhaustion.
+    pattern-at-a-time interface also identifies fully covered patterns and
+    exact semantic duplicates, together with the relevant earlier source span.
+    Exact duplicates remain errors after exhaustion; other trailing patterns
+    preserve their existing warning behavior when that warning is enabled.
 
     DSLX types and values of particular types are translated into intervals and
     points at this level to subtract from the `NdRegion` that we maintain to
@@ -138,18 +142,18 @@ bit space representation, and may be sparse within that space. That is, there's
 nothing wrong with making `enum E : u8 { A = u8:5, B = u8:10 }`. The language
 contract is that there can never be an enum value that takes on an
 out-of-defined-namespace value. As a result, we project the enum namespace into
-a dense unsigned bit space and make intervals over that dense space. i.e. for
-the enum `E` above we would require two values to cover the entire space.
-Effectively, we don't care what the underlying bit representation is for the
-purpose of pattern matching exhaustion.
+a dense unsigned bit space and make intervals over **distinct represented
+numeric values** in that space. The enum `E` above requires two values to cover
+the entire space. Different names within the same enum may represent the same
+numeric value; those names are aliases for one match case. For example,
+`enum Alias : u2 { A = 0, B = 0, C = 1 }` is fully covered by `Alias::A` and
+`Alias::C`. Distinct numeric enum types remain nominally incomparable, while
+constructors of a semantic sum remain distinct regardless of payload values.
 
-Empty enums (i.e. enums with no defined values in its namespace) are similar to
-**zero-bit values** in that they have no real representable values. These
-bit-space could be defined to be trivially exhaustive, or impossible to match
-on -- we choose the latter for now because it's more convenient for
-implementation, we can call it a one-bit space and any value with this type
-trivially that one value (so we need to have one pattern covering it, but the
-pattern matches by definition).
+Empty numeric enums have no represented values and are uninhabited. Their
+coverage domain is empty, so a match on an empty numeric enum is vacuously
+exhaustive, and any semantic-sum constructor with an empty-enum payload is
+likewise uninhabited.
 
 **Tokens**: Note that there is also a question of tokens which are
 zero-bit-like, but I imagine we don't want to re-bind tokens through a pattern
