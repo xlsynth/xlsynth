@@ -369,23 +369,34 @@ class TypeValidator : public AstNodeVisitorWithDefault {
     XLS_RET_CHECK(matched_type.has_value());
 
     Type* matched = const_cast<Type*>(*matched_type);
-    MatchExhaustivenessChecker exhaustiveness_checker(
-        node->matched()->span(), import_data_, ti_, *matched);
-
-    if (node->IsConst()) {
-      return absl::OkStatus();
-    }
+    MatchExhaustivenessChecker exhaustiveness_checker(node->matched()->span(),
+                                                      ti_, *matched);
 
     for (MatchArm* arm : node->arms()) {
       for (const PatternTree& pattern : arm->patterns()) {
         bool exhaustive_before = exhaustiveness_checker.IsExhaustive();
-        exhaustiveness_checker.AddPattern(pattern);
-        if (exhaustive_before) {
+        MatchExhaustivenessChecker::PatternAddResult coverage =
+            exhaustiveness_checker.AddPattern(pattern);
+        // Exact duplicates remain errors after exhaustiveness; other trailing
+        // patterns retain their warning-only behavior. Const matches share
+        // overlap checking but skip those warnings and final exhaustiveness.
+        const auto* overlap = coverage.overlap();
+        if (overlap != nullptr &&
+            (!exhaustive_before ||
+             overlap->kind == MatchPatternOverlapKind::kExactDuplicate)) {
+          return MatchPatternAlreadyCoveredStatus(
+              GetPatternSpan(pattern), overlap->previous_pattern_span,
+              PatternToString(pattern), overlap->kind, file_table_);
+        } else if (exhaustive_before && !node->IsConst()) {
           warning_collector_.Add(
               GetPatternSpan(pattern), WarningKind::kAlreadyExhaustiveMatch,
               "Match is already exhaustive before this pattern");
         }
       }
+    }
+
+    if (node->IsConst()) {
+      return absl::OkStatus();
     }
 
     if (!exhaustiveness_checker.IsExhaustive()) {

@@ -54,7 +54,6 @@
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/import_routines.h"
-#include "xls/dslx/status_payload_utils.h"
 #include "xls/dslx/type_system/deduce_utils.h"
 #include "xls/dslx/type_system_v2/import_utils.h"
 #include "xls/dslx/type_system_v2/inference_table.h"
@@ -144,6 +143,12 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
                          subject.name_def().span(), import_data_.file_table(),
                          import_data_.vfs()));
       XLS_RET_CHECK(result.imported_member != nullptr);
+      const auto* constant = std::get_if<ConstantDef*>(result.imported_member);
+      table_.SetResolvedUseImport(
+          &subject.use_tree_entry(),
+          {.module = result.imported_module,
+           .constant_name_def =
+               constant == nullptr ? nullptr : (*constant)->name_def()});
       for (NameDef* name_def :
            ModuleMemberGetNameDefs(*result.imported_member)) {
         std::optional<const NameRef*> type_var =
@@ -309,6 +314,11 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       XLS_ASSIGN_OR_RETURN(struct_ref,
                            GetStructOrProcRefForSubject(node, import_data_));
       if (struct_ref.has_value()) {
+        if (std::optional<ConstantDef*> constant =
+                struct_ref->def->GetImplConstant(node->attr());
+            constant.has_value()) {
+          table_.SetColonRefTarget(node, *constant);
+        }
         const TypeAnnotation* subject_annotation =
             struct_ref->type_ref_type_annotation.has_value()
                 ? *struct_ref->type_ref_type_annotation
@@ -628,21 +638,6 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
                                       file_table_);
     }
 
-    auto duplicate_pattern_error = [this](const Span& original_span,
-                                          const Span& duplicate_span,
-                                          std::string_view pattern) {
-      absl::Status status = TypeInferenceErrorStatus(
-          duplicate_span, /*type=*/nullptr,
-          absl::StrFormat(
-              "Exact-duplicate pattern match detected `%s`; "
-              "only the first could possibly match; previously @ %s",
-              pattern, original_span.ToString(file_table_)),
-          file_table_);
-      AddSpanToStatusPayload(status, duplicate_span, import_data_.file_table());
-      AddSpanToStatusPayload(status, original_span, import_data_.file_table());
-      return status;
-    };
-
     std::vector<TypeAnnotation*> type_annotation_members;
     absl::flat_hash_map<std::string, const MatchArm*> seen_arms;
     absl::flat_hash_map<std::string, Span> seen_patterns;
@@ -652,8 +647,10 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       std::string patterns_string = PatternsToString(arm);
       if (auto [it, inserted] = seen_arms.try_emplace(patterns_string, arm);
           !inserted) {
-        return duplicate_pattern_error(it->second->GetPatternSpan(),
-                                       arm->GetPatternSpan(), patterns_string);
+        return MatchPatternAlreadyCoveredStatus(
+            arm->GetPatternSpan(), it->second->GetPatternSpan(),
+            patterns_string, MatchPatternOverlapKind::kExactDuplicate,
+            file_table_);
       }
 
       if (node->IsConst()) {
@@ -674,25 +671,24 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
         if (auto [it, inserted] = seen_patterns.try_emplace(
                 PatternToString(pattern), GetPatternSpan(pattern));
             !inserted) {
-          return duplicate_pattern_error(it->second, GetPatternSpan(pattern),
-                                         it->first);
+          return MatchPatternAlreadyCoveredStatus(
+              GetPatternSpan(pattern), it->second, it->first,
+              MatchPatternOverlapKind::kExactDuplicate, file_table_);
         }
-
-        if (std::holds_alternative<ColonRef*>(pattern)) {
-          const ColonRef* colon_ref = std::get<ColonRef*>(pattern);
+        if (const auto* colon_ref = std::get_if<ColonRef*>(&pattern);
+            colon_ref != nullptr) {
           XLS_ASSIGN_OR_RETURN(std::optional<const NameDef*> enum_member,
-                               ResolveEnumMember(colon_ref, import_data_));
+                               ResolveEnumMember(*colon_ref, import_data_));
           if (enum_member.has_value()) {
             if (auto [it, inserted] = seen_enum_members.try_emplace(
                     *enum_member, GetPatternSpan(pattern));
                 !inserted) {
-              return duplicate_pattern_error(it->second,
-                                             GetPatternSpan(pattern),
-                                             PatternToString(pattern));
+              return MatchPatternAlreadyCoveredStatus(
+                  GetPatternSpan(pattern), it->second, PatternToString(pattern),
+                  MatchPatternOverlapKind::kExactDuplicate, file_table_);
             }
           }
         }
-
         XLS_RETURN_IF_ERROR(
             table_.SetTypeVariable(ToAstNode(pattern), matched_var));
       }

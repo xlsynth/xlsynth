@@ -205,6 +205,7 @@ cc_library(
         ":interp_value",
         ":status_payload_cc_proto",
         ":status_payload_utils",
+        "//xls/dslx/exhaustiveness:match_pattern_overlap",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:ast_node",
         "//xls/dslx/frontend:pos",
