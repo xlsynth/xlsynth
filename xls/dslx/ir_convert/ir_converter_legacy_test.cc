@@ -495,9 +495,9 @@ TEST_F(IrConverterLegacyTest, MatchTupleOfTuplesRestOfTuple) {
   let t = (u32:1, (u32:2, u32:3, u32:4), u32:5, u32:6);
   match t {
     (u32:1, .., a) => a,
-    (u32:1, (b, ..), ..) => b,
+    (u32:2, (b, ..), ..) => b,
     (u32:0, (.., d), ..) => d,
-    (u32:0, (e, .., g), ..) => g,
+    (u32:3, (e, .., g), ..) => g,
     (.., h, u32:5) => h,
     _ => u32:0
   }

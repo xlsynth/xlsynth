@@ -17,9 +17,9 @@
 #include <memory>
 #include <optional>
 
+#include "absl/status/status.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "absl/status/status.h"
 #include "xls/common/proto_test_utils.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/module.h"
@@ -31,6 +31,7 @@
 namespace xls::dslx {
 namespace {
 
+using ::testing::ElementsAre;
 using ::testing::UnorderedElementsAre;
 using ::xls::proto_testing::EqualsProto;
 
@@ -46,6 +47,22 @@ TEST(ErrorsTest, TypeInferenceErrorMessage) {
       status.ToString(),
       "INVALID_ARGUMENT: TypeInferenceError: <no-file>:1:1-2:2 uN[32] this "
       "is the message!");
+}
+
+TEST(ErrorsTest, MatchPatternAlreadyCoveredPayloadKeepsPrimarySpanFirst) {
+  FileTable file_table;
+  const Span duplicate(Pos(Fileno(0), 8, 2), Pos(Fileno(0), 8, 3));
+  const Span previous(Pos(Fileno(0), 4, 2), Pos(Fileno(0), 4, 3));
+
+  absl::Status status = MatchPatternAlreadyCoveredStatus(
+      duplicate, previous, "VALUE", MatchPatternOverlapKind::kExactDuplicate,
+      file_table);
+
+  std::optional<StatusPayloadProto> payload = GetStatusPayload(status);
+  ASSERT_TRUE(payload.has_value());
+  EXPECT_THAT(payload->spans(),
+              ElementsAre(EqualsProto(ToProto(duplicate, file_table)),
+                          EqualsProto(ToProto(previous, file_table))));
 }
 
 TEST(ErrorsTest, SignednessMismatchErrorAnnotationPayload) {
