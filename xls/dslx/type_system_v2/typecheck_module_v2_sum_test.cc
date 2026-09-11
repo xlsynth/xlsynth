@@ -434,7 +434,7 @@ fn make(x: u16) -> OptionN<u32:8> {
 }
 )",
       TypecheckFails(AllOf(HasSubstr("size mismatch"), HasSubstr("u16"),
-                           HasSubstr("uN[u32:8]"))));
+                           HasSubstr("uN[8]"))));
 }
 
 TEST(TypecheckV2Test,
@@ -805,7 +805,7 @@ const Y = zero!<Message>();
           HasNodeWithType("Y", "Message { Request(uN[8]) | Idle() }")));
 }
 
-TEST(TypecheckV2Test, ZeroMacroTupleContainingSemanticSumFailsInPhase1) {
+TEST(TypecheckV2Test, ZeroMacroTupleContainingSemanticSumSucceeds) {
   EXPECT_THAT(
       R"(
 enum Option {
@@ -814,12 +814,10 @@ enum Option {
 }
 const Y = zero!<(Option,)>();
 )",
-      TypecheckFails(
-          HasSubstr("aggregate types containing semantic sums are not "
-                    "supported")));
+      TypecheckSucceeds(::testing::_));
 }
 
-TEST(TypecheckV2Test, ZeroMacroArrayContainingSemanticSumFailsInPhase1) {
+TEST(TypecheckV2Test, ZeroMacroArrayContainingSemanticSumSucceeds) {
   EXPECT_THAT(
       R"(
 enum Option {
@@ -828,12 +826,10 @@ enum Option {
 }
 const Y = zero!<Option[1]>();
 )",
-      TypecheckFails(
-          HasSubstr("aggregate types containing semantic sums are not "
-                    "supported")));
+      TypecheckSucceeds(::testing::_));
 }
 
-TEST(TypecheckV2Test, ZeroMacroStructContainingSemanticSumFailsInPhase1) {
+TEST(TypecheckV2Test, ZeroMacroStructContainingSemanticSumSucceeds) {
   EXPECT_THAT(
       R"(
 enum Option {
@@ -845,9 +841,7 @@ struct Wrapper {
 }
 const Y = zero!<Wrapper>();
 )",
-      TypecheckFails(
-          HasSubstr("aggregate types containing semantic sums are not "
-                    "supported")));
+      TypecheckSucceeds(::testing::_));
 }
 
 TEST(TypecheckV2Test, ZeroMacroExplicitSemanticSumWithoutZeroFails) {
