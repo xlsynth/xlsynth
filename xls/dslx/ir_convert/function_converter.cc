@@ -3264,7 +3264,7 @@ absl::Status FunctionConverter::HandleSumConstructorInvocation(
       [&](const Type& inactive_type) -> absl::Status {
         XLS_ASSIGN_OR_RETURN(
             InterpValue zero,
-            internal::CreateInternalPlaceholderValueFromType(inactive_type));
+            CreateInternalPlaceholderValueFromType(inactive_type));
         XLS_ASSIGN_OR_RETURN(Value zero_value, zero.ConvertToIr());
         payload_slots.push_back(function_builder_->Literal(zero_value));
         return absl::OkStatus();
@@ -3321,7 +3321,7 @@ absl::Status FunctionConverter::HandleSumInstance(const SumInstance* node) {
       [&](const Type& inactive_type) -> absl::Status {
         XLS_ASSIGN_OR_RETURN(
             InterpValue zero,
-            internal::CreateInternalPlaceholderValueFromType(inactive_type));
+            CreateInternalPlaceholderValueFromType(inactive_type));
         XLS_ASSIGN_OR_RETURN(Value zero_value, zero.ConvertToIr());
         payload_slots.push_back(function_builder_->Literal(zero_value));
         return absl::OkStatus();
@@ -5250,7 +5250,7 @@ absl::Status FunctionConverter::HandleSumStructInstance(
       [&](const Type& inactive_type) -> absl::Status {
         XLS_ASSIGN_OR_RETURN(
             InterpValue zero,
-            internal::CreateInternalPlaceholderValueFromType(inactive_type));
+            CreateInternalPlaceholderValueFromType(inactive_type));
         XLS_ASSIGN_OR_RETURN(Value zero_value, zero.ConvertToIr());
         payload_slots.push_back(function_builder_->Literal(zero_value));
         return absl::OkStatus();
