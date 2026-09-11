@@ -525,8 +525,8 @@ SumConstantValue ResolveSumConstantValue(const Expr& expression,
   }
   CHECK(value.has_value()) << "Missing semantic-sum constexpr value for `"
                            << expression.ToString() << "`";
-  absl::StatusOr<internal::EncodedSumView> encoded =
-      internal::GetEncodedSumView(*value);
+  absl::StatusOr<EncodedSumView> encoded =
+      GetEncodedSumView(*value);
   CHECK_OK(encoded.status()) << "Invalid semantic-sum constexpr value for `"
                              << expression.ToString() << "`";
   int64_t variant_index = encoded->tag.GetBitValueUnsigned().value();
@@ -547,8 +547,8 @@ void AppendConstantValueLeaves(const InterpValue& value, const Type& type,
     }
   } else if (type.IsSum()) {
     const SumType& sum_type = type.AsSum();
-    absl::StatusOr<internal::EncodedSumView> encoded =
-        internal::GetEncodedSumView(value);
+    absl::StatusOr<EncodedSumView> encoded =
+        GetEncodedSumView(value);
     CHECK_OK(encoded.status());
     int64_t variant_index = encoded->tag.GetBitValueUnsigned().value();
     CHECK_LT(variant_index, sum_type.variants().size());
@@ -599,8 +599,8 @@ void AppendSumConstructorPayloadLeaves(
                           .variant()
                           .identifier())
           .value();
-  absl::StatusOr<internal::EncodedSumView> encoded =
-      internal::GetEncodedSumView(constant.value);
+  absl::StatusOr<EncodedSumView> encoded =
+      GetEncodedSumView(constant.value);
   CHECK_OK(encoded.status());
   CHECK_OK(encoding.ForEachActivePayloadSlot(
       variant,
