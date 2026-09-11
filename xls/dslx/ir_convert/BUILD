@@ -167,6 +167,7 @@ cc_test(
         "//xls/dslx/type_system:type",
         "//xls/ir",
         "//xls/ir:type",
+        "@abseil-cpp//absl/status",
         "@googletest//:gtest",
     ],
 )
