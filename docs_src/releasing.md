@@ -1,5 +1,38 @@
 # Releasing
 
+## xlsynth release branches
+
+`release-base` points to **one fork-specific commit** whose parent is an exact
+`google/xls` upstream commit. That fork-specific commit collects the changes
+needed by xlsynth that will not be submitted upstream. `release-candidate`
+builds on `release-base`, keeping changes intended for upstream submission as
+separate commits.
+
+When adding a fork-only change without advancing the upstream base:
+
+1. Open a PR targeting `release-base` and squash-merge it after review.
+2. Fold the resulting commit into the existing fork-specific commit. Preserve
+   its upstream parent and the combined file contents, leaving one fork-specific
+   commit on `release-base`.
+3. Rebase the pending commits on `release-candidate` from the `release-base`
+   commit they previously used onto the updated `release-base`. Preserve their
+   changes and order.
+4. Push the rewritten `release-base` and `release-candidate` branches, using
+   `--force-with-lease` with explicit expected remote tips.
+
+After the squash merge and before rewriting, record both remote branch tips and
+the base used by `release-candidate`, and preserve rollback refs. Use those
+recorded remote tips as the expected values for `--force-with-lease`. Before
+pushing, verify the upstream parent, the combined file contents on
+`release-base`, and the changes and order of the rebased candidate commits.
+
+A squash merge alone temporarily leaves two fork-specific commits on
+`release-base`; folding them together restores the convention. For example,
+suppose upstream commit `U` has fork commit `B` above it, and a PR adds commit
+`D`. Combine `B` and `D` into `B'`, whose parent is still `U`. A pending
+candidate commit `C` then moves from above `B` to above `B'` and remains
+a separate commit.
+
 ## xlsynth release versions
 
 This convention applies to `vX.Y.Z` release tags in
@@ -29,7 +62,7 @@ For example, starting from `v0.55.2` based on upstream commit `A`:
 | Small patch, still based on `A`       | `v0.55.3` |
 | Sync the upstream base forward to `B` | `v0.56.0` |
 
-These are the fork's release versions. The following sections describe the
+These are the fork's release conventions. The following sections describe the
 upstream Google XLS release process.
 
 ## Versioning

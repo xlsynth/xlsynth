@@ -5,7 +5,7 @@
 # **XLS**: Accelerated HW Synthesis
 
 For releases from the xlsynth fork, follow the
-[xlsynth release version convention](docs_src/releasing.md#xlsynth-release-versions).
+[xlsynth release conventions](docs_src/releasing.md).
 
 [**Docs**](https://google.github.io/xls/) | [**Quick Start**](https://google.github.io/xls/tools_quick_start/) [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://bit.ly/learn-xls) | [**Tutorials**](https://google.github.io/xls/tutorials/)
 
