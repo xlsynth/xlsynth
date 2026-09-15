@@ -32,6 +32,9 @@ This file provides a context for the XLS project.
 
 **Development Workflow:**
 
+*   **xlsynth releases:** When preparing or reviewing a release from this fork,
+    read and follow the
+    [xlsynth release version convention](docs_src/releasing.md#xlsynth-release-versions).
 *   **Build Tool:** Use `bazelisk` for building and testing the open source
     version.
 *   To close GitHub issues, use keywords like `Fixes google/xls#NNN` in the

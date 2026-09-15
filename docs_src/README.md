@@ -4,6 +4,9 @@
 
 # **XLS**: Accelerated HW Synthesis
 
+For releases from the xlsynth fork, follow the
+[xlsynth release version convention](releasing.md#xlsynth-release-versions).
+
 <!-- GitHub banner -->
 
 ## What is XLS?

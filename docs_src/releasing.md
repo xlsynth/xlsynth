@@ -1,8 +1,40 @@
 # Releasing
 
+## xlsynth release versions
+
+This convention applies to `vX.Y.Z` release tags in
+[`xlsynth/xlsynth`](https://github.com/xlsynth/xlsynth), including `libxls` and
+the accompanying tools. Here, `Y` is the minor version and `Z` is the patch
+version.
+
+The **upstream base** of a release is the exact `google/xls` commit on which its
+fork-specific changes are based. Compare the upstream base of the release line
+being updated with that of the proposed release. The tips of `release-base` and
+`release-candidate` can change without changing this upstream base.
+
+- When advancing the upstream base, increment the minor version and reset the
+  patch version to zero: `vX.Y.Z` becomes `vX.(Y+1).0`.
+- Use a patch-version bump only for a small patch to an existing minor release
+  line while keeping its upstream base unchanged: `vX.Y.Z` becomes `vX.Y.(Z+1)`.
+  This also applies when patching an older minor release line.
+
+Keeping the upstream base fixed is necessary for a patch release; it does not
+make every change suitable for one. Patch releases are for small changes that
+keep the release line stable.
+
+For example, starting from `v0.55.2` based on upstream commit `A`:
+
+| Proposed release                      | Version   |
+| ------------------------------------- | --------- |
+| Small patch, still based on `A`       | `v0.55.3` |
+| Sync the upstream base forward to `B` | `v0.56.0` |
+
+These are the fork's release versions. The following sections describe the
+upstream Google XLS release process.
+
 ## Versioning
 
-The project use the following versioning scheme:
+Upstream Google XLS uses the following versioning scheme:
 `v${SEM_VER}-${COMMITS_COUNT_SINCE_LAST_ANNOTATED_TAG}-g${GIT_HASH)`
 
 > The [v0.0.0](https://github.com/google/xls/tree/v0.0.0) annotated tag points
