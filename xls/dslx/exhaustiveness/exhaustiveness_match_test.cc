@@ -431,12 +431,12 @@ fn main(x: (Packet, bool)) -> u32 {
 TEST(ExhaustivenessMatchTest, RuntimeSumPayloadNamesDoNotCompleteCoverage) {
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
 
-enum Packet : u3 { Empty = 5, Data { bits: (u1, u1) } = 2 }
+enum Packet : u3 { Empty = 5, Data { pair: (u1, u1) } = 2 }
 
 fn main(x: Packet, y: u1, z: u1) -> u32 {
   match x {
-    Packet::Data { bits: (y, _) } => u32:0,
-    Packet::Data { bits: (z, _) } => u32:1,
+    Packet::Data { pair: (y, _) } => u32:0,
+    Packet::Data { pair: (z, _) } => u32:1,
     Packet::Empty => u32:2,
   }
 })";

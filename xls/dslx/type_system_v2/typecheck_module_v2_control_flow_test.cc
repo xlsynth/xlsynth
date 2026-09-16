@@ -1331,12 +1331,12 @@ fn f(value: Packet, y: u1, z: u1) -> u32 {
 
 TEST(TypecheckV2Test, MatchSparseSumRuntimeNamedPayloadNamesRemainValid) {
   XLS_EXPECT_OK(TypecheckV2(R"(
-enum Packet: u3 { Empty = 5, Data { bits: (u1, u1) } = 2 }
+enum Packet: u3 { Empty = 5, Data { pair: (u1, u1) } = 2 }
 
 fn f(value: Packet, y: u1, z: u1) -> u32 {
   match value {
-    Packet::Data { bits: (y, _) } => u32:0,
-    Packet::Data { bits: (z, _) } => u32:1,
+    Packet::Data { pair: (y, _) } => u32:0,
+    Packet::Data { pair: (z, _) } => u32:1,
     _ => u32:2,
   }
 }
