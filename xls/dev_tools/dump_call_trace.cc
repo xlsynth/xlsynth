@@ -137,6 +137,18 @@ static void PrintCallPrettyAtDepth(const CallNode& node, int64_t depth) {
   std::string indent(depth * kIndentSpaces, ' ');
   std::string loc_prefix = LocationPrefix(tm);
   const std::string& fn = call.function_name();
+  std::string_view semantic_message = tm.message();
+  while (!semantic_message.empty() && semantic_message.front() == ' ') {
+    semantic_message.remove_prefix(1);
+  }
+  const std::string call_prefix = fn + "(";
+  if (call.args_size() == 0 && semantic_message.starts_with(call_prefix) &&
+      semantic_message.ends_with(")") &&
+      semantic_message.size() > call_prefix.size() + 1) {
+    printf("%s%s%.*s\n", indent.c_str(), loc_prefix.c_str(),
+           static_cast<int>(semantic_message.size()), semantic_message.data());
+    return;
+  }
   printf("%s%s%s(\n", indent.c_str(), loc_prefix.c_str(), fn.c_str());
   std::string arg_indent = indent + std::string(kIndentSpaces, ' ');
   for (const ValueProto& vp : call.args()) {
@@ -160,6 +172,15 @@ static void PrintReturnPrettyAtDepth(const CallNode& node, int64_t depth) {
   std::string indent(depth * kIndentSpaces, ' ');
   const std::string& fn = call.function_name();
   const TraceCallReturnProto& cr = node.return_msg->call_return();
+  if (!cr.has_return_value()) {
+    std::string_view semantic_message = node.return_msg->message();
+    while (!semantic_message.empty() && semantic_message.front() == ' ') {
+      semantic_message.remove_prefix(1);
+    }
+    printf("%s%.*s\n", indent.c_str(),
+           static_cast<int>(semantic_message.size()), semantic_message.data());
+    return;
+  }
   absl::StatusOr<Value> ret_v = Value::FromProto(cr.return_value());
   if (!ret_v.ok()) {
     printf("%s%s(...) => <invalid return: %s>\n", indent.c_str(), fn.c_str(),

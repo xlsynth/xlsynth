@@ -1160,6 +1160,24 @@ absl::StatusOr<std::optional<int64_t>> FindFirstDifferingIndex(
   return std::nullopt;
 }
 
+absl::StatusOr<std::optional<int64_t>> FindFirstDifferingIndex(
+    absl::Span<const InterpValue> lhs, absl::Span<const InterpValue> rhs,
+    const Type& element_type) {
+  if (lhs.size() != rhs.size()) {
+    return absl::InvalidArgumentError(
+        absl::StrFormat("LHS and RHS must have the same size: %d vs. %d.",
+                        lhs.size(), rhs.size()));
+  }
+  for (int64_t i = 0; i < lhs.size(); ++i) {
+    XLS_ASSIGN_OR_RETURN(bool equal,
+                         SemanticValuesEqual(lhs[i], rhs[i], element_type));
+    if (!equal) {
+      return i;
+    }
+  }
+  return std::nullopt;
+}
+
 absl::StatusOr<InterpValue> SignConvertValue(const Type& type,
                                              const InterpValue& value) {
   if (auto* sum_type = dynamic_cast<const SumType*>(&type)) {

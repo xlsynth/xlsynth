@@ -8387,6 +8387,61 @@ fn option_if_let_test() {
   EXPECT_EQ(result.GetSkippedCount(), 0);
 }
 
+TEST_F(IrConverterTest, SemanticSumTraceFormattingUsesActivePayloadOnly) {
+  constexpr std::string_view program = R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn trace_option(x: Option) {
+  trace_fmt!("x = {}", x);
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(std::string converted,
+                           ConvertOneFunctionForTest(program, "trace_option"));
+  EXPECT_THAT(converted,
+              HasSubstr("Cannot trace malformed semantic sum value."));
+  EXPECT_THAT(converted, HasSubstr("x = {?}Option::None{/}"));
+  EXPECT_THAT(converted, HasSubstr("{?}Option::Some("));
+  EXPECT_THAT(converted, HasSubstr("{?}Option::Pair {{lhs: "));
+}
+
+TEST_F(IrConverterTest,
+       SemanticSumTraceUsesOneEventForIndependentConstructors) {
+  constexpr std::string_view program = R"(
+enum Choice {
+  Left(),
+  Right(),
+}
+
+fn trace_choices(values: Choice[20]) {
+  trace_fmt!("values = {}", values);
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(std::string converted,
+                           ConvertOneFunctionForTest(program, "trace_choices"));
+
+  int64_t trace_count = 0;
+  size_t position = 0;
+  while ((position = converted.find(" = trace(", position)) !=
+         std::string::npos) {
+    ++trace_count;
+    ++position;
+  }
+  EXPECT_EQ(trace_count, 1) << converted;
+
+  int64_t guarded_constructor_count = 0;
+  position = 0;
+  while ((position = converted.find("{?}", position)) != std::string::npos) {
+    ++guarded_constructor_count;
+    ++position;
+  }
+  EXPECT_EQ(guarded_constructor_count, 40);
+  EXPECT_LT(converted.size(), 200000);
+}
+
 TEST_F(IrConverterTest,
        SemanticSumEqualityInsideAggregatesCompareWithInterpreter) {
   constexpr std::string_view program = R"(
