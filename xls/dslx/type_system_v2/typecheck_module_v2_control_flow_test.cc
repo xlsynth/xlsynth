@@ -1892,6 +1892,7 @@ fn f(value: Either) -> u32 {
     Either::Right(u1:0) => u32:1,
     Either::Left(u1:1) => u32:2,
     Either::Right(u1:1) => u32:3,
+    invalid! => u32:4,
   }
 }
 )"));

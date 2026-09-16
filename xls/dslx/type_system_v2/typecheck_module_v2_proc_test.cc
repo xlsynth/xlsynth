@@ -444,8 +444,9 @@ impl P {
 
   XLS_ASSERT_OK_AND_ASSIGN(Module * builtins,
                            result.import_data->GetBuiltinStubsModule());
-  XLS_ASSERT_OK_AND_ASSIGN(StructDef * state_struct_def,
-                           builtins->GetMemberOrError<StructDef>("State"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      StructDef * state_struct_def,
+      builtins->GetMemberOrError<StructDef>(kBuiltinProcStateStructName));
   XLS_ASSERT_OK_AND_ASSIGN(ProcDef * proc,
                            result.tm.module->GetMemberOrError<ProcDef>("P"));
   ASSERT_EQ(proc->members().size(), 1);

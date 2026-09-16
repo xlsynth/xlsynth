@@ -106,24 +106,6 @@ bool NeedsMetaType(const InferenceTable& table, const AstNode* node) {
           node->parent()->kind() == AstNodeKind::kTypeAlias);
 }
 
-// Phase One sum comparison lowering asserts that both operands are well-formed.
-// These assertions require an implicit token, including for sums in aggregates.
-bool IsComparisonRequiringImplicitToken(const AstNode* node,
-                                        const TypeInfo& type_info) {
-  if (node->kind() == AstNodeKind::kBinop) {
-    const auto* binop = absl::down_cast<const Binop*>(node);
-    if (binop->binop_kind() == BinopKind::kEq ||
-        binop->binop_kind() == BinopKind::kNe) {
-      std::optional<Type*> lhs_type = type_info.GetItem(binop->lhs());
-      return lhs_type.has_value() && TypeContainsSemanticSum(**lhs_type);
-    } else {
-      return false;
-    }
-  } else {
-    return false;
-  }
-}
-
 // RAII guard for a frame on the proc type info stack.
 class ProcTypeInfoFrame {
  public:
@@ -1342,22 +1324,6 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       ti->SetItem(node, meta_type);
     } else {
       ti->SetItem(node, **type);
-    }
-
-    if (node->kind() == AstNodeKind::kMatch) {
-      const auto* match = absl::down_cast<const Match*>(node);
-      std::optional<Type*> matched_type = ti->GetItem(match->matched());
-      std::optional<const Function*> caller = GetContainingFunction(node);
-      if (matched_type.has_value() && TypeContainsSemanticSum(**matched_type) &&
-          caller.has_value()) {
-        ti->NoteRequiresImplicitToken(**caller, true);
-      }
-    }
-    if (IsComparisonRequiringImplicitToken(node, *ti)) {
-      if (std::optional<const Function*> caller = GetContainingFunction(node);
-          caller.has_value()) {
-        ti->NoteRequiresImplicitToken(**caller, true);
-      }
     }
 
     trace.SetResult(**type);
