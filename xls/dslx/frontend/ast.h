@@ -98,6 +98,7 @@
   X(FuzzTestFunction)               \
   X(Impl)                           \
   X(Import)                         \
+  X(InvalidPattern)                 \
   X(Let)                            \
   X(MatchArm)                       \
   X(Module)                         \
@@ -200,21 +201,23 @@ Span ExprOrTypeSpan(const ExprOrType& expr_or_type);
 
 // A pattern is represented directly by its concrete syntax node. Tuple, struct,
 // and semantic-sum constructor patterns recursively contain nested patterns.
-using PatternLeaf = std::variant<NameDef*, NameRef*, WildcardPattern*, Number*,
-                                 ColonRef*, Range*, RestOfTuple*>;
-using PatternTree = std::variant<NameDef*, NameRef*, WildcardPattern*, Number*,
-                                 ColonRef*, SumVariantPayloadPattern*, Range*,
-                                 RestOfTuple*, TuplePattern*, StructPattern*>;
+using PatternLeaf =
+    std::variant<NameDef*, NameRef*, WildcardPattern*, InvalidPattern*, Number*,
+                 ColonRef*, Range*, RestOfTuple*>;
+using PatternTree =
+    std::variant<NameDef*, NameRef*, WildcardPattern*, InvalidPattern*, Number*,
+                 ColonRef*, SumVariantPayloadPattern*, Range*, RestOfTuple*,
+                 TuplePattern*, StructPattern*>;
 // Const pattern views preserve read-only capability when traversed through the
 // PatternTree helper APIs. PatternTree itself remains mutable for AST
 // construction and lowering paths.
 using ConstPatternLeaf =
     std::variant<const NameDef*, const NameRef*, const WildcardPattern*,
-                 const Number*, const ColonRef*, const Range*,
-                 const RestOfTuple*>;
+                 const InvalidPattern*, const Number*, const ColonRef*,
+                 const Range*, const RestOfTuple*>;
 using ConstPatternTree =
     std::variant<const NameDef*, const NameRef*, const WildcardPattern*,
-                 const Number*, const ColonRef*,
+                 const InvalidPattern*, const Number*, const ColonRef*,
                  const SumVariantPayloadPattern*, const Range*,
                  const RestOfTuple*, const TuplePattern*, const StructPattern*>;
 
@@ -862,11 +865,16 @@ class ReturnTypeAnnotation : public TypeAnnotation {
 // either a `FunctionTypeAnnotation` or something that expands into to one.
 class ParamTypeAnnotation : public TypeAnnotation {
  public:
+  // Argument constraints can depend on the callee's unresolved parametrics;
+  // pattern bindings instead obtain their types from an existing matched value.
+  enum class InferenceRole { kArgument, kPatternBinding };
+
   static constexpr TypeAnnotationKind kAnnotationKind =
       TypeAnnotationKind::kParam;
 
   ParamTypeAnnotation(Module* owner, TypeAnnotation* function_type,
-                      int param_index);
+                      int param_index,
+                      InferenceRole role = InferenceRole::kArgument);
 
   absl::Status Accept(AstNodeVisitor* v) const override {
     return v->HandleParamTypeAnnotation(this);
@@ -878,6 +886,7 @@ class ParamTypeAnnotation : public TypeAnnotation {
 
   TypeAnnotation* function_type() const { return function_type_; }
   int param_index() const { return param_index_; }
+  InferenceRole inference_role() const { return inference_role_; }
 
   std::vector<AstNode*> GetChildren(bool want_types) const override {
     return {function_type_};
@@ -888,6 +897,7 @@ class ParamTypeAnnotation : public TypeAnnotation {
  private:
   TypeAnnotation* function_type_;
   int param_index_;
+  InferenceRole inference_role_;
 };
 
 // Used internally in type inference to indicate an unknown type that is
@@ -1123,6 +1133,38 @@ class WildcardPattern : public AstNode {
 
  private:
   Span span_;
+};
+
+// Represents the malformed-value pattern forms `invalid!` and
+// `invalid!(raw)`.
+//
+// Unlike a wildcard, this pattern matches only an undeclared semantic-sum tag.
+class InvalidPattern : public AstNode {
+ public:
+  InvalidPattern(Module* owner, Span span, NameDef* raw_name_def)
+      : AstNode(owner), span_(std::move(span)), raw_name_def_(raw_name_def) {}
+
+  ~InvalidPattern() override;
+
+  AstNodeKind kind() const override { return AstNodeKind::kInvalidPattern; }
+
+  absl::Status Accept(AstNodeVisitor* v) const override {
+    return v->HandleInvalidPattern(this);
+  }
+
+  std::string_view GetNodeTypeName() const override { return "InvalidPattern"; }
+  std::string ToString() const override;
+
+  std::vector<AstNode*> GetChildren(bool want_types) const override;
+
+  const Span& span() const { return span_; }
+  std::optional<Span> GetSpan() const override { return span_; }
+  NameDef* raw_name_def() const { return raw_name_def_; }
+  bool binds_raw_bits() const { return raw_name_def_ != nullptr; }
+
+ private:
+  Span span_;
+  NameDef* raw_name_def_;
 };
 
 // Represents the definition of a name (identifier).

@@ -327,6 +327,23 @@ absl::Status RunBuiltinAndReduce(const Bytecode& bytecode,
   return absl::OkStatus();
 }
 
+static absl::StatusOr<const Type*> GetAssertArgumentType(
+    const Bytecode& bytecode, const Frame& frame) {
+  const TypeInfo* type_info = frame.type_info();
+  XLS_ASSIGN_OR_RETURN(Bytecode::InvocationData invocation_data,
+                       bytecode.invocation_data());
+  XLS_ASSIGN_OR_RETURN(
+      Type * lhs_type,
+      type_info->GetItemOrError(invocation_data.invocation()->args()[0]));
+  XLS_ASSIGN_OR_RETURN(
+      Type * rhs_type,
+      type_info->GetItemOrError(invocation_data.invocation()->args()[1]));
+  XLS_RET_CHECK_EQ(*lhs_type, *rhs_type) << absl::StreamFormat(
+      "Assert arguments are not the same type: `%s` vs `%s`",
+      lhs_type->ToString(), rhs_type->ToString());
+  return lhs_type;
+}
+
 // Returns appropriately formatted lhs and rhs values for use within an
 // assert_eq (lt, etc) message. Assert failure messages preserve the value
 // formatting (hex, binary) of literal numbers which appear in the assert
@@ -355,39 +372,12 @@ GetAssertFormattedStrings(const InterpreterStack::FormattedInterpValue& lhs,
                               ? *lhs.format_descriptor
                               : *rhs.format_descriptor);
   }
-  const TypeInfo* type_info = frame.type_info();
-  XLS_ASSIGN_OR_RETURN(Bytecode::InvocationData invocation_data,
-                       bytecode.invocation_data());
-  XLS_ASSIGN_OR_RETURN(
-      Type * lhs_type,
-      type_info->GetItemOrError(invocation_data.invocation()->args()[0]));
-  XLS_ASSIGN_OR_RETURN(
-      Type * rhs_type,
-      type_info->GetItemOrError(invocation_data.invocation()->args()[1]));
-  XLS_RET_CHECK_EQ(*lhs_type, *rhs_type) << absl::StreamFormat(
-      "Assert arguments are not the same type: `%s` vs `%s`",
-      lhs_type->ToString(), rhs_type->ToString());
+  XLS_ASSIGN_OR_RETURN(const Type* lhs_type,
+                       GetAssertArgumentType(bytecode, frame));
   XLS_ASSIGN_OR_RETURN(
       ValueFormatDescriptor fmt,
       MakeValueFormatDescriptor(*lhs_type, options.format_preference()));
   return formatted_pair(fmt);
-}
-
-static absl::StatusOr<const Type*> GetAssertOperandType(
-    const Bytecode& bytecode, const Frame& frame) {
-  const TypeInfo* type_info = frame.type_info();
-  XLS_ASSIGN_OR_RETURN(Bytecode::InvocationData invocation_data,
-                       bytecode.invocation_data());
-  XLS_ASSIGN_OR_RETURN(
-      Type * lhs_type,
-      type_info->GetItemOrError(invocation_data.invocation()->args()[0]));
-  XLS_ASSIGN_OR_RETURN(
-      Type * rhs_type,
-      type_info->GetItemOrError(invocation_data.invocation()->args()[1]));
-  XLS_RET_CHECK_EQ(*lhs_type, *rhs_type) << absl::StreamFormat(
-      "Assert arguments are not the same type: `%s` vs `%s`",
-      lhs_type->ToString(), rhs_type->ToString());
-  return lhs_type;
 }
 
 absl::Status RunBuiltinAssertEq(const Bytecode& bytecode,
@@ -403,13 +393,26 @@ absl::Status RunBuiltinAssertEq(const Bytecode& bytecode,
                        stack.PopFormattedValue());
   const InterpValue& lhs = formatted_lhs.value;
   const InterpValue& rhs = formatted_rhs.value;
+  XLS_ASSIGN_OR_RETURN(const Type* argument_type,
+                       GetAssertArgumentType(bytecode, frame));
+  bool eq;
+  if (TypeContainsSemanticSum(*argument_type)) {
+    absl::StatusOr<bool> equal = SemanticValuesEqual(lhs, rhs, *argument_type);
+    if (!equal.ok()) {
+      return FailureErrorStatus(
+          bytecode.source_span(),
+          absl::StrCat("Semantic sum assert_eq received a malformed value: ",
+                       equal.status().message()),
+          stack.file_table());
+    }
+    eq = *equal;
+  } else {
+    eq = lhs.Eq(rhs);
+  }
   stack.Push(InterpValue::MakeUnit());
-  bool eq = lhs.Eq(rhs);
   if (!eq) {
-    XLS_ASSIGN_OR_RETURN(const Type* operand_type,
-                         GetAssertOperandType(bytecode, frame));
     std::string message;
-    if (TypeContainsSemanticSum(*operand_type)) {
+    if (TypeContainsSemanticSum(*argument_type)) {
       message =
           "\n  lhs and rhs were not equal; formatting values containing "
           "semantic sums is not supported.";

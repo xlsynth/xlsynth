@@ -203,11 +203,19 @@ TypeAnnotationFilter TypeAnnotationFilter::FilterMultiAny() {
       })));
 }
 
-TypeAnnotationFilter TypeAnnotationFilter::FilterParamTypes() {
+TypeAnnotationFilter TypeAnnotationFilter::FilterArgumentParamTypes() {
   return TypeAnnotationFilter(std::make_unique<Impl>(
       FilterElement(TypeAnnotationFilterKind::kMultiAny,
                     [](const TypeAnnotation* annotation) {
-                      return annotation->IsAnnotation<ParamTypeAnnotation>();
+                      // A pattern binding gets its payload type from the
+                      // matched sum. It does not depend on the call's
+                      // unresolved formal parameters. Actual constructor
+                      // arguments still need filtering to avoid inference
+                      // cycles.
+                      return annotation->IsAnnotation<ParamTypeAnnotation>() &&
+                             annotation->AsAnnotation<ParamTypeAnnotation>()
+                                     ->inference_role() ==
+                                 ParamTypeAnnotation::InferenceRole::kArgument;
                     })));
 }
 

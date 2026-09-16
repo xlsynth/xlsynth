@@ -244,6 +244,7 @@ cc_library(
     deps = [
         "//xls/common/status:status_macros",
         "//xls/dslx/type_system:type",
+        "//xls/ir:bits",
         "@abseil-cpp//absl/functional:function_ref",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -297,6 +298,28 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "interp_value_generator",
+    srcs = ["interp_value_generator.cc"],
+    hdrs = ["interp_value_generator.h"],
+    deps = [
+        ":interp_value",
+        ":interp_value_utils",
+        "//xls/common/status:ret_check",
+        "//xls/common/status:status_macros",
+        "//xls/data_structures:inline_bitmap",
+        "//xls/dslx/type_system:type",
+        "//xls/ir:bits",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/functional:function_ref",
+        "@abseil-cpp//absl/random:bit_gen_ref",
+        "@abseil-cpp//absl/random:distributions",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/types:span",
+    ],
+)
+
 cc_test(
     name = "interp_value_utils_test",
     srcs = ["interp_value_utils_test.cc"],
@@ -343,6 +366,9 @@ cc_library(
         "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/log:check",
         "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/strings:str_format",
         "@abseil-cpp//absl/types:span",
     ],
 )

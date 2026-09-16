@@ -25,14 +25,18 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/substitute.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
+#include "xls/common/status/status_macros.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/ast_cloner.h"
 #include "xls/dslx/frontend/ast_utils.h"
 #include "xls/dslx/frontend/module.h"
+#include "xls/dslx/frontend/semantics_analysis.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/ir_convert/convert_options.h"
@@ -42,6 +46,7 @@
 #include "xls/dslx/type_system/typecheck_test_utils.h"
 #include "xls/dslx/type_system_v2/matchers.h"
 #include "xls/dslx/type_system_v2/type_system_test_utils.h"
+#include "xls/dslx/type_system_v2/typecheck_module_v2.h"
 #include "xls/dslx/virtualizable_file_system.h"
 #include "xls/dslx/warning_collector.h"
 #include "xls/dslx/warning_kind.h"
@@ -50,6 +55,7 @@ namespace xls::dslx {
 namespace {
 
 using ::absl_testing::IsOkAndHolds;
+using ::absl_testing::StatusIs;
 using ::testing::AllOf;
 using ::testing::Contains;
 using ::testing::Field;
@@ -103,6 +109,31 @@ enum MaybeU32 {
 const X = MaybeU32::Some();
 )",
       TypecheckFails(HasSubstr("Expected 1 argument(s) but got 0.")));
+}
+
+TEST(TypecheckV2Test, SemanticSumPatternPayloadInfersGenericCallArgument) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E { V(s12), U }
+fn main(x: s12) -> s12 {
+  assert_eq(match E::V(x) { E::V(y) => y, _ => s12:0 }, x);
+  assert_eq(match (x,) { (y,) => y }, x);
+  x
+}
+)"));
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumPatternPayloadInfersCallArgumentWidth) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+#![feature(generics)]
+enum Option<T: type> { None, Some(T) }
+fn identity<N: u32>(value: uN[N]) -> uN[N] { value }
+fn main(value: Option<u8>) -> u8 {
+  identity(match value {
+    Option::None => u8:0,
+    Option::Some(payload) => payload,
+  })
+}
+)"));
 }
 
 TEST(TypecheckV2Test, SemanticSumTupleConstructorRejectsTooManyArguments) {
@@ -177,10 +208,11 @@ enum E<N: u32 = {u32:8}> { None, Some(uN[N]) }
 const D = E::None;
 fn f() -> E<u32:16> { E::None }
 )"));
-  EXPECT_THAT(TypeInfoToString(result.tm),
-              IsOkAndHolds(AllOf(
-                  HasNodeWithType("D", "E { None | Some(uN[8]) }"),
-                  HasNodeWithType("f", "() -> E { None | Some(uN[16]) }"))));
+  EXPECT_THAT(
+      TypeInfoToString(result.tm),
+      IsOkAndHolds(AllOf(
+          HasNodeWithType("D", "E<u32:8> { None | Some(uN[8]) }"),
+          HasNodeWithType("f", "() -> E<u32:16> { None | Some(uN[16]) }"))));
 
   XLS_ASSERT_OK_AND_ASSIGN(ConstantDef * d,
                            result.tm.module->GetConstantDef("D"));
@@ -197,6 +229,103 @@ fn f() -> E<u32:16> { E::None }
   ASSERT_NE(contextual, nullptr);
   EXPECT_TRUE(contextual->is_unit());
   EXPECT_EQ(contextual->constructor_ref()->attr(), "None");
+}
+
+TEST(TypecheckV2Test, SemanticSumConstructorPreservesShadowingLocalEnumAlias) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u8 { A = 1 }
+enum F: u8 { A = 2 }
+enum S { K(u8) }
+fn f() -> u8 {
+  type E = F;
+  let wrapped = S::K(E::A as u8);
+  match wrapped { S::K(x) => x }
+}
+const_assert!(f() == u8:2);
+)"));
+}
+
+TEST(TypecheckV2Test,
+     SemanticSumConstructorPreservesNonShadowingLocalEnumAlias) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u8 { A = 1 }
+enum F: u8 { A = 2 }
+enum S { K(u8) }
+fn f() -> u8 {
+  type G = F;
+  let wrapped = S::K(G::A as u8);
+  match wrapped { S::K(x) => x }
+}
+const_assert!(f() == u8:2);
+)"));
+}
+
+TEST(TypecheckV2Test, ShadowingLocalEnumAliasWithoutSumConstructor) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u8 { A = 1 }
+enum F: u8 { A = 2 }
+fn f() -> u8 {
+  type E = F;
+  E::A as u8
+}
+const_assert!(f() == u8:2);
+)"));
+}
+
+TEST(TypecheckV2Test, SemanticSumConstructorsPreserveShadowingLocalSumAlias) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum A { Unit, K(u8), Record { value: u8 } }
+enum B { Unit, K(u16), Record { value: u16 } }
+fn f() -> (B, B, B) {
+  type A = B;
+  (A::Unit, A::K(u16:7), A::Record { value: u16:8 })
+}
+)"));
+}
+
+TEST(TypecheckV2Test, SemanticSumPayloadPreservesShadowingLocalTypeAlias) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+type Word = u8;
+enum S { K(u16) }
+fn f() -> S {
+  type Word = u16;
+  S::K(Word:7)
+}
+)"));
+}
+
+TEST(TypecheckV2Test, SemanticSumPayloadPreservesExpressionLocalAlias) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u8 { A = 1 }
+enum F: u8 { A = 2 }
+enum S { K(u8) }
+fn f() -> u8 {
+  let wrapped = S::K({
+    type E = F;
+    let value: E = E::A;
+    value as u8
+  });
+  match wrapped { S::K(x) => x }
+}
+const_assert!(f() == u8:2);
+)"));
+}
+
+TEST(TypecheckV2Test, SemanticSumConstructorPreservesImportedLocalAlias) {
+  constexpr std::string_view kImported = R"(
+pub enum S { K(u16) }
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+enum S { K(u8) }
+fn f() -> imported::S {
+  type S = imported::S;
+  S::K(u16:7)
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(TypecheckV2(kImported, "imported", &import_data));
+  XLS_EXPECT_OK(TypecheckV2(kProgram, "main", &import_data));
 }
 
 TEST(TypecheckV2Test, SemanticSumProcChannelCanonicalizesInProcContext) {
@@ -224,17 +353,20 @@ proc Passthrough {
 }
 
 proc Main {
+  data_out: chan<Option> out;
+  data_in: chan<Option> in;
+
   init { () }
 
   config() {
     let (input_p, input_c) = chan<Option>("input");
     let (output_p, output_c) = chan<Option>("output");
     spawn Passthrough(input_c, output_p);
-    ()
+    (input_p, output_c)
   }
 
   next(_: ()) {
-    let value = Option::Some(u32:42);
+    let _ = send(join(), data_out, Option::Some(u32:42));
     ()
   }
 }
@@ -516,6 +648,163 @@ fn identity(x: imported::Option) -> imported::Option {
                   HasNodeWithType("x", "Option { None | Some(uN[32]) }"))));
 }
 
+// Negative test: checks error handling for cross-module sum assignments.
+TEST(TypecheckV2Test, ClonedModuleKeepsDistinctSemanticSumIdentity) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule original,
+                           ParseAndTypecheck("pub enum S { A(u8), B }",
+                                             "same.x", "a", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> clone,
+                           CloneModuleRemovingMembers(*original.module, {}));
+  clone->SetName("b");
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule installed_clone,
+      TypecheckModule(std::move(clone), "same.x", &import_data));
+  EXPECT_NE(original.module, installed_clone.module);
+
+  // Every owner is still alive. Matching source locations do not make these
+  // independently installed declarations interchangeable.
+  EXPECT_THAT(
+      ParseAndTypecheck("import a; import b; fn f(x: a::S) -> b::S { x }",
+                        "main.x", "main", &import_data),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("type mismatch")));
+}
+
+// Verifies: normalized imports and aliases retain their owning sum definition.
+// Catches: rebinding imported sums by shared source spans.
+TEST(TypecheckV2Test, ImportedNormalizedSumKeepsOwningModule) {
+  constexpr std::string_view kImported = R"(
+pub enum S { A(u8), B }
+pub const VALUE: S = S::A(u8:7);
+)";
+  constexpr std::string_view kConsumer = R"(
+import a;
+import b;
+type Alias = a::S;
+fn from_original(x: Alias) -> a::S { x }
+fn original_value() -> Alias { a::VALUE }
+fn from_clone(x: b::S) -> b::S { x }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule original,
+      ParseAndTypecheck(kImported, "same.x", "a", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> clone,
+                           CloneModuleRemovingMembers(*original.module, {}));
+  clone->SetName("b");
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule installed_clone,
+      TypecheckModule(std::move(clone), "same.x", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule consumer,
+      ParseAndTypecheck(kConsumer, "consumer.x", "consumer", &import_data));
+
+  Function* from_original =
+      consumer.module->GetFunction("from_original").value();
+  Function* from_clone = consumer.module->GetFunction("from_clone").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * original_type,
+      consumer.type_info->GetItemAs<FunctionType>(from_original));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * clone_type,
+      consumer.type_info->GetItemAs<FunctionType>(from_clone));
+  EXPECT_EQ(&original_type->params().front()->AsSum().nominal_type(),
+            original.module->GetMember<SumDef>("S").value());
+  EXPECT_EQ(&clone_type->params().front()->AsSum().nominal_type(),
+            installed_clone.module->GetMember<SumDef>("S").value());
+  EXPECT_EQ(*original_type->params().front(), original_type->return_type());
+  EXPECT_NE(original_type->return_type(), clone_type->return_type());
+}
+
+// Exercises normalization before ownership transfers to ImportData.
+absl::StatusOr<std::unique_ptr<ModuleInfo>> TypecheckUninstalledNormalizedSum(
+    ImportData& import_data) {
+  constexpr std::string_view kProgram = R"(
+pub enum S { A(u8), B }
+pub const VALUE: S = S::A(u8:7);
+fn identity(x: S) -> S { x }
+)";
+  XLS_ASSIGN_OR_RETURN(
+      std::unique_ptr<Module> module,
+      ParseModule(kProgram, "pending.x", "pending", import_data.file_table()));
+  WarningCollector warnings(import_data.enabled_warnings());
+  XLS_ASSIGN_OR_RETURN(
+      std::unique_ptr<ModuleInfo> module_info,
+      TypecheckModuleV2(
+          std::move(module), "pending.x", &import_data, &warnings,
+          std::make_unique<SemanticsAnalysis>(), /*error_handler=*/nullptr,
+          std::make_optional(import_data.GetBuiltinTraitDeriver())));
+  return module_info;
+}
+
+// The canonical declaration is established before typechecking and survives
+// installation without a first-pass declaration or remapping.
+TEST(TypecheckV2Test, NormalizedSumIdentitySurvivesInstallation) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<ModuleInfo> pending,
+                           TypecheckUninstalledNormalizedSum(import_data));
+  const SumDef* normalized = pending->module().GetMember<SumDef>("S").value();
+  Function* identity = pending->module().GetFunction("identity").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      pending->type_info()->GetItemAs<FunctionType>(identity));
+  EXPECT_EQ(&function_type->params().front()->AsSum().nominal_type(),
+            normalized);
+  XLS_ASSERT_OK_AND_ASSIGN(ImportTokens subject,
+                           ImportTokens::FromString("pending"));
+  XLS_ASSERT_OK(import_data.Put(subject, std::move(pending)));
+  EXPECT_EQ(&function_type->return_type().AsSum().nominal_type(), normalized);
+}
+
+// Negative test: checks error handling for duplicate module installation.
+TEST(TypecheckV2Test, RejectedInstallationPreservesInstalledSumDefinition) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule existing,
+      ParseAndTypecheck("pub enum S { A(u8), B }", "existing.x", "pending",
+                        &import_data));
+  const SumDef* existing_sum = existing.module->GetMember<SumDef>("S").value();
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<ModuleInfo> pending,
+                           TypecheckUninstalledNormalizedSum(import_data));
+  ASSERT_NE(existing_sum, pending->module().GetMember<SumDef>("S").value());
+  XLS_ASSERT_OK_AND_ASSIGN(ImportTokens subject,
+                           ImportTokens::FromString("pending"));
+  EXPECT_THAT(import_data.Put(subject, std::move(pending)),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Module is already loaded")));
+
+  // Rejection retains the installed module and sum definition.
+  XLS_ASSERT_OK_AND_ASSIGN(ModuleInfo * installed, import_data.Get(subject));
+  EXPECT_EQ(&installed->module(), existing.module);
+  EXPECT_EQ(installed->module().GetMember<SumDef>("S").value(), existing_sum);
+}
+
+// An uninstalled sum module stays absent from the import map after disposal.
+TEST(TypecheckV2Test, DiscardedModuleDoesNotInstallSum) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(ParseAndTypecheck("pub enum S { A(u8), B }", "existing.x",
+                                  "existing", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<ModuleInfo> pending,
+                           TypecheckUninstalledNormalizedSum(import_data));
+  const SumDef* normalized = pending->module().GetMember<SumDef>("S").value();
+  {
+    Function* identity = pending->module().GetFunction("identity").value();
+    XLS_ASSERT_OK_AND_ASSIGN(
+        FunctionType * function_type,
+        pending->type_info()->GetItemAs<FunctionType>(identity));
+    EXPECT_EQ(&function_type->params().front()->AsSum().nominal_type(),
+              normalized);
+    EXPECT_EQ(*function_type->params().front(), function_type->return_type());
+    std::unique_ptr<Type> clone = function_type->CloneToUnique();
+    EXPECT_EQ(*clone, *function_type);
+  }
+  XLS_ASSERT_OK_AND_ASSIGN(ImportTokens subject,
+                           ImportTokens::FromString("pending"));
+  EXPECT_FALSE(import_data.Contains(subject));
+  pending.reset();
+  EXPECT_FALSE(import_data.Contains(subject));
+}
+
 TEST(TypecheckV2Test, SemanticSumExplicitDiscriminantsMustBeDistinct) {
   EXPECT_THAT(
       R"(
@@ -527,6 +816,72 @@ enum Message : u3 {
 )",
       TypecheckFails(AllOf(HasSubstr("Semantic sum `Message`"),
                            HasSubstr("duplicate discriminant"))));
+}
+
+TEST(TypecheckV2Test, UntaggedSemanticSumInfersMinimumDiscriminantWidth) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+enum Message {
+  Idle() = u32:0,
+  Ready() = u32:1,
+}
+
+fn f(value: Message) -> Message {
+  value
+}
+)"));
+  Function* function = result.tm.module->GetFunction("f").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  const auto* sum_type =
+      dynamic_cast<const SumType*>(function_type->params().at(0).get());
+  ASSERT_NE(sum_type, nullptr);
+  EXPECT_THAT(sum_type->tag_bit_count().GetAsInt64(), IsOkAndHolds(1));
+  EXPECT_THAT(sum_type->GetDiscriminant(0).GetBitCount(), IsOkAndHolds(1));
+  EXPECT_THAT(sum_type->GetDiscriminant(1).GetBitCount(), IsOkAndHolds(1));
+}
+
+TEST(TypecheckV2Test, UntaggedSemanticSumUsesUnsignedTagForNonnegativeValues) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+enum Message {
+  Idle() = s32:0,
+  Ready() = s32:1,
+}
+fn f(value: Message) -> Message { value }
+)"));
+  Function* function = result.tm.module->GetFunction("f").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  const auto* sum_type =
+      dynamic_cast<const SumType*>(function_type->params().at(0).get());
+  ASSERT_NE(sum_type, nullptr);
+  EXPECT_THAT(sum_type->tag_bit_count().GetAsInt64(), IsOkAndHolds(1));
+  EXPECT_FALSE(sum_type->GetDiscriminant(1).IsSigned());
+  EXPECT_THAT(sum_type->GetDiscriminant(1).GetBitCount(), IsOkAndHolds(1));
+}
+
+TEST(TypecheckV2Test, UntaggedSemanticSumInfersMinimumSignedDiscriminantWidth) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+enum Message {
+  Before() = s32:-1,
+  At() = s32:0,
+}
+
+fn f(value: Message) -> Message {
+  value
+}
+)"));
+  Function* function = result.tm.module->GetFunction("f").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  const auto* sum_type =
+      dynamic_cast<const SumType*>(function_type->params().at(0).get());
+  ASSERT_NE(sum_type, nullptr);
+  EXPECT_THAT(sum_type->tag_bit_count().GetAsInt64(), IsOkAndHolds(1));
+  EXPECT_TRUE(sum_type->GetDiscriminant(0).IsSigned());
+  EXPECT_THAT(sum_type->GetDiscriminant(0).GetBitCount(), IsOkAndHolds(1));
 }
 
 TEST(TypecheckV2Test, LocalSemanticSumConstructorExplicitParametricsRejected) {
@@ -600,14 +955,15 @@ enum E<N: u32 = {u32:8}> { V { x: uN[N] } }
 const X = E<u32:16>::V { x: u8:0 };
 )",
               TypecheckFails(HasSubstr("size mismatch")));
-  EXPECT_THAT(R"(#![feature(generics)]
+  EXPECT_THAT(
+      R"(#![feature(generics)]
 enum E<N: u32 = {u32:8}> { V { x: uN[N] } }
 const DEFAULT = E::V { x: u8:0 };
 const EXPLICIT = E<u32:16>::V { x: u16:0 };
 )",
-              TypecheckSucceeds(
-                  AllOf(HasNodeWithType("DEFAULT", "E { V { x: uN[8] } }"),
-                        HasNodeWithType("EXPLICIT", "E { V { x: uN[16] } }"))));
+      TypecheckSucceeds(
+          AllOf(HasNodeWithType("DEFAULT", "E<u32:8> { V { x: uN[8] } }"),
+                HasNodeWithType("EXPLICIT", "E<u32:16> { V { x: uN[16] } }"))));
 }
 
 TEST(TypecheckV2Test, MissingSemanticSumConstructorReturnsUserError) {
@@ -651,7 +1007,7 @@ const X = MaybePoint::Point { x: u32:1, y: u32:2, z: u32:3 };
       TypecheckFails(HasSubstr("Constructor `Point` has no member `z`")));
 }
 
-TEST(TypecheckV2Test, SemanticSumTuplePayloadAggregateRejectedInPhase1) {
+TEST(TypecheckV2Test, SemanticSumTuplePayloadAggregate) {
   EXPECT_THAT(
       R"(
 struct Point {
@@ -666,13 +1022,10 @@ enum MaybePoint {
 
 const X = MaybePoint::None;
 )",
-      TypecheckFails(AllOf(
-          HasSubstr("Semantic sum payload members must be bits-like, enum "
-                    "typed, or empty semantic sums"),
-          HasSubstr("constructor `Some`"), HasSubstr("Point"))));
+      TypecheckSucceeds(::testing::_));
 }
 
-TEST(TypecheckV2Test, SemanticSumStructPayloadAggregateRejectedInPhase1) {
+TEST(TypecheckV2Test, SemanticSumStructPayloadAggregate) {
   EXPECT_THAT(
       R"(
 enum PairBox {
@@ -681,13 +1034,63 @@ enum PairBox {
 
 const X = PairBox::Pair { xy: (u32:1, u32:2) };
 )",
-      TypecheckFails(AllOf(
-          HasSubstr("Semantic sum payload members must be bits-like, enum "
-                    "typed, or empty semantic sums"),
-          HasSubstr("constructor `Pair`"), HasSubstr("(uN[32], uN[32])"))));
+      TypecheckSucceeds(::testing::_));
 }
 
-TEST(TypecheckV2Test, ImplicitSemanticSumRejectsTagTypeAnnotationInPhase1) {
+TEST(TypecheckV2Test, SemanticSumRejectsTokenPayload) {
+  EXPECT_THAT(
+      R"(
+enum InvalidPayload {
+  None,
+  Token(token),
+}
+)",
+      TypecheckFails(HasSubstr(
+          "Semantic sum constructor `Token` cannot contain a token payload.")));
+}
+
+TEST(TypecheckV2Test, SemanticSumRejectsNestedTokenPayload) {
+  EXPECT_THAT(
+      R"(
+struct TokenHolder {
+  item: token,
+}
+
+enum InvalidPayload {
+  None,
+  Nested(TokenHolder),
+}
+)",
+      TypecheckFails(HasSubstr("Semantic sum constructor `Nested` cannot "
+                               "contain a token payload.")));
+}
+
+TEST(TypecheckV2Test, SemanticSumRejectsChannelHandlePayloadBeforeMatching) {
+  EXPECT_THAT(R"(
+enum E { Carry(chan<u8> in) }
+fn f(x: E) -> bool {
+  match x { E::Carry(_) => true }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Semantic sum constructor `Carry` cannot contain a channel "
+                  "handle payload.")));
+}
+
+TEST(TypecheckV2Test, SemanticSumRejectsNestedChannelHandlePayload) {
+  EXPECT_THAT(R"(
+struct Handles { outputs: chan<u8>[2] out }
+enum E { Carry((u8, Handles)) }
+fn f(x: E) -> bool {
+  match x { E::Carry(_) => true }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Semantic sum constructor `Carry` cannot contain a channel "
+                  "handle payload.")));
+}
+
+TEST(TypecheckV2Test, ImplicitSemanticSumAcceptsTagTypeAnnotationInPhase2) {
   EXPECT_THAT(
       R"(
 enum MaybeU32 : u3 {
@@ -695,9 +1098,48 @@ enum MaybeU32 : u3 {
   Some(u32),
 }
 )",
+      TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test,
+     ImplicitSemanticSumRejectsTooNarrowTagTypeAnnotationInPhase2) {
+  EXPECT_THAT(
+      R"(
+enum TrafficLight : u1 {
+  Red(),
+  Yellow(),
+  Green(),
+}
+)",
       TypecheckFails(HasSubstr(
-          "Semantic sum `MaybeU32` with a tag type annotation requires "
-          "explicit discriminants on every variant.")));
+          "Semantic sum `TrafficLight` needs at least 2 tag bits for 3 "
+          "implicit constructors, but tag type `u1` has only 1 bits.")));
+}
+
+TEST(TypecheckV2Test,
+     ImplicitSemanticSumAcceptsSufficientSignedTagTypeAnnotationInPhase2) {
+  EXPECT_THAT(
+      R"(
+enum Flag : s2 {
+  Off,
+  On(),
+}
+)",
+      TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test,
+     ImplicitSemanticSumRejectsSignedTagThatCannotRepresentItsOrdinals) {
+  EXPECT_THAT(
+      R"(
+enum Flag : s1 {
+  Off,
+  On(),
+}
+)",
+      TypecheckFails(HasSubstr(
+          "Semantic sum `Flag` needs at least 2 tag bits for 2 implicit "
+          "constructors, but tag type `s1` has only 1 bits.")));
 }
 
 TEST(TypecheckV2Test, SemanticSumEmptyPayloadLeafAllowedInPhase1) {
@@ -719,6 +1161,310 @@ fn f(x: S) -> u32 {
       TypecheckSucceeds(::testing::_));
 }
 
+TEST(TypecheckV2Test, InvalidPatternBindsRawRepresentationBits) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u9 {
+  match x {
+    Option::Some(_) => u9:0,
+    _ => u9:0,
+    invalid!(raw) => raw,
+  }
+}
+)",
+              TypecheckSucceeds(::testing::A<std::string>()));
+}
+
+TEST(TypecheckV2Test, InvalidPatternRequiresSumScrutinee) {
+  EXPECT_THAT(R"(
+fn f(x: u8) -> u8 {
+  match x {
+    _ => x,
+    invalid! => u8:0,
+  }
+}
+)",
+              TypecheckFails(
+                  HasSubstr("`invalid!` is only valid when matching on a sum "
+                            "type.")));
+}
+
+TEST(TypecheckV2Test, InvalidPatternMustBeFinalArm) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    invalid! => u8:0,
+    _ => u8:1,
+  }
+}
+)",
+              TypecheckFails(
+                  HasSubstr("`invalid!` must be the final arm in a match.")));
+}
+
+TEST(TypecheckV2Test, WildcardMayOnlyBeFollowedByInvalidPattern) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    _ => u8:0,
+    Option::Some(v) => v,
+    invalid! => u8:1,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "A wildcard arm may only be followed by a final `invalid!` "
+                  "arm.")));
+}
+
+TEST(TypecheckV2Test, WildcardMayBeFollowedByFinalInvalidPattern) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    _ => u8:0,
+    invalid! => u8:1,
+  }
+}
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test, WildcardWithoutInvalidPatternCannotPrecedeSumArm) {
+  for (const std::string pattern : {"_", "_ | Option::None"}) {
+    SCOPED_TRACE(pattern);
+    EXPECT_THAT(
+        R"(
+enum Option { None, Some(u8) }
+fn f(x: Option) -> u8 {
+  match x {
+    )" + pattern +
+            R"( => u8:0,
+    Option::Some(v) => v,
+  }
+}
+)",
+        TypecheckFails(HasSubstr(
+            "A wildcard arm may only be followed by a final `invalid!` arm.")));
+  }
+}
+
+TEST(TypecheckV2Test, WildcardAlternativeMayBeFollowedByFinalInvalidPattern) {
+  EXPECT_THAT(R"(
+enum Option { None, Some(u8) }
+fn f(x: Option) -> u8 {
+  match x {
+    _ | Option::None => u8:0,
+    invalid! => u8:1,
+  }
+}
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test, DeeplyNestedSumCatchAll) {
+  // Each level shares its inner type between two alternatives. A catch-all
+  // needs no payload coverage dimensions, with or without a final invalid!.
+  std::string program = "enum S0 { Leaf(u1) }\n";
+  for (int depth = 1; depth <= 12; ++depth) {
+    const std::string inner = "S" + std::to_string(depth - 1);
+    program += "enum S" + std::to_string(depth) + " { L(" + inner + "), R(" +
+               inner + ") }\n";
+  }
+  program += R"(
+fn wildcard(x: S12) -> bool { match x { _ => true } }
+fn explicit_invalid(x: S12) -> bool {
+  match x { _ => true, invalid! => false }
+}
+fn binding(x: S12) -> bool {
+  match x { _whole => true, invalid! => false }
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(program));
+  EXPECT_TRUE(result.tm.warnings.warnings().empty());
+}
+
+TEST(TypecheckV2Test, EmptySumCatchAllPreservesExhaustiveWarning) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+enum Never {}
+enum Empty { Left(Never), Right(Never) }
+fn wildcard(x: Empty) -> bool { match x { _ => true } }
+fn explicit_invalid(x: Empty) -> bool {
+  match x { _ => true, invalid! => false }
+}
+)"));
+  ASSERT_EQ(result.tm.warnings.warnings().size(), 2);
+  for (const auto& warning : result.tm.warnings.warnings()) {
+    EXPECT_EQ(warning.message,
+              "Match is already exhaustive before this pattern");
+  }
+}
+
+TEST(TypecheckV2Test, SumCatchAllPreservesFallbackAndCoverageRejections) {
+  const std::string declaration = "enum Choice { Left(u1), Right(u1) }\n";
+  EXPECT_THAT(declaration + R"(
+fn f(x: Choice) -> bool { match x { _whole => true } }
+)",
+              TypecheckFails(HasSubstr("A sum match without `invalid!`")));
+  EXPECT_THAT(declaration + R"(
+fn f(x: Choice) -> bool { match x { invalid! => false } }
+)",
+              TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+  EXPECT_THAT(declaration + R"(
+fn f(x: Choice) -> bool { match x { Choice::Left(_) => true } }
+)",
+              TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+}
+
+TEST(TypecheckV2Test,
+     SumMatchWithoutInvalidPatternRejectsRefutableFinalConstructorPayload) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    Option::None => u8:0,
+    Option::Some(u8:7) => u8:7,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "A sum match without `invalid!` must end with `_` or one "
+                  "constructor pattern whose payload subpatterns are "
+                  "irrefutable.")));
+}
+
+TEST(TypecheckV2Test,
+     SumMatchWithoutInvalidPatternAcceptsIrrefutableFinalConstructorPayload) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    Option::None => u8:0,
+    Option::Some(v) => v,
+  }
+}
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test,
+     SumMatchWithoutInvalidPatternAcceptsPayloadlessFinalConstructor) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    Option::Some(v) => v,
+    Option::None => u8:0,
+  }
+}
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test, SumMatchRejectsQualifiedValueConstantAsFinalFallback) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(TypecheckV2(R"(
+pub enum E: u2 { A, B(bool) }
+pub const A = E::B(false);
+)",
+                            "other", &import_data));
+  EXPECT_THAT(TypecheckV2(R"(
+import other;
+fn f(x: other::E) -> u8 {
+  match x {
+    other::E::A => u8:0,
+    other::E::B(true) => u8:1,
+    other::A => u8:2,
+  }
+}
+)",
+                          "main", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("A sum match without `invalid!` must end "
+                                 "with `_` or one constructor pattern")));
+}
+
+TEST(TypecheckV2Test, SumMatchQualifiedValueConstantWithInvalidArm) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(TypecheckV2(R"(
+pub enum E: u2 { A(), B(bool) }
+pub const LAST = E::B(false);
+)",
+                            "other", &import_data));
+  XLS_EXPECT_OK(TypecheckV2(R"(
+import other;
+fn f(x: other::E) -> u8 {
+  match x {
+    other::E::A() => u8:0,
+    other::E::B(true) => u8:1,
+    other::LAST => u8:2,
+    invalid! => u8:3,
+  }
+}
+)",
+                            "main", &import_data));
+}
+
+TEST(TypecheckV2Test, SumMatchQualifiedUnitConstructorAsFinalFallback) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(TypecheckV2(R"(
+pub enum E: u2 { A, B(bool) }
+pub type Alias = E;
+)",
+                            "other", &import_data));
+  XLS_EXPECT_OK(TypecheckV2(R"(
+import other;
+fn f(x: other::E) -> u8 {
+  match x {
+    other::E::B(_) => u8:1,
+    other::Alias::A => u8:0,
+  }
+}
+)",
+                            "main", &import_data));
+}
+
+TEST(TypecheckV2Test, InvalidPatternMustBeTopLevel) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    Option::Some(invalid!) => u8:0,
+    _ => u8:1,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "`invalid!` is only allowed as a top-level match arm "
+                  "pattern.")));
+}
+
 TEST(TypecheckV2Test, MatchWithSemanticSumConstructors) {
   EXPECT_THAT(
       R"(
@@ -738,6 +1484,31 @@ const X = unwrap_or_zero(MaybeU32::Some(u32:7));
 )",
       TypecheckSucceeds(AllOf(HasNodeWithType("v", "uN[32]"),
                               HasNodeWithType("X", "uN[32]"))));
+}
+
+TEST(TypecheckV2Test, SemanticSumOperationsPreserveImplicitTokenRequirements) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+enum E { A(u8), B(u8) }
+fn fallback(x: E) -> u8 {
+  match x { E::A(v) => v, E::B(v) => v }
+}
+fn explicit_invalid(x: E) -> u8 {
+  match x { E::A(v) => v, E::B(v) => v, invalid! => u8:0 }
+}
+fn compare(x: E, y: E) -> bool { x == y || x != y }
+fn failing(x: E) -> u8 {
+  match x { E::A(v) => v, E::B(v) => fail!("B", v) }
+}
+)"));
+  for (std::string_view name : {"fallback", "explicit_invalid", "compare"}) {
+    SCOPED_TRACE(name);
+    std::optional<Function*> function = result.tm.module->GetFunction(name);
+    ASSERT_TRUE(function.has_value());
+    EXPECT_EQ(result.tm.type_info->GetRequiresImplicitToken(**function), false);
+  }
+  std::optional<Function*> failing = result.tm.module->GetFunction("failing");
+  ASSERT_TRUE(failing.has_value());
+  EXPECT_EQ(result.tm.type_info->GetRequiresImplicitToken(**failing), true);
 }
 
 TEST(TypecheckV2Test, SemanticSumStructPatternsRejectInvalidMemberNames) {
@@ -808,6 +1579,659 @@ fn make(x: u16) -> OptionN<u32:8> {
 )",
       TypecheckFails(AllOf(HasSubstr("size mismatch"), HasSubstr("u16"),
                            HasSubstr("uN[8]"))));
+}
+
+TEST(TypecheckV2Test, ParametricSemanticSumIdentityIncludesUnusedBinding) {
+  EXPECT_THAT(
+      R"(#![feature(generics)]
+enum Phantom<N: u32> {
+  Only(),
+}
+
+fn convert(value: Phantom<u32:1>) -> Phantom<u32:2> {
+  value
+}
+)",
+      TypecheckFails(
+          HasSubstr("Value mismatch for parametric `N` of sum `Phantom`")));
+}
+
+TEST(TypecheckV2Test, ConcreteSemanticSumIdentityIncludesUnusedBinding) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(generics)]
+enum Phantom<N: u32> {
+  Only(),
+}
+
+fn first(value: Phantom<u32:1>) -> Phantom<u32:1> {
+  value
+}
+
+fn second(value: Phantom<u32:2>) -> Phantom<u32:2> {
+  value
+}
+)"));
+  Function* first = result.tm.module->GetFunction("first").value();
+  Function* second = result.tm.module->GetFunction("second").value();
+  ASSERT_NE(first, nullptr);
+  ASSERT_NE(second, nullptr);
+  XLS_ASSERT_OK_AND_ASSIGN(FunctionType * first_type,
+                           result.tm.type_info->GetItemAs<FunctionType>(first));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * second_type,
+      result.tm.type_info->GetItemAs<FunctionType>(second));
+
+  ASSERT_EQ(first_type->params().size(), 1);
+  ASSERT_EQ(second_type->params().size(), 1);
+  EXPECT_NE(*first_type->params()[0], *second_type->params()[0]);
+  EXPECT_EQ(first_type->params()[0]->ToString(), "Phantom<u32:1> { Only() }");
+  EXPECT_EQ(second_type->params()[0]->ToString(), "Phantom<u32:2> { Only() }");
+  EXPECT_EQ(*first_type->params()[0],
+            *first_type->params()[0]->CloneToUnique());
+  EXPECT_NE(*first_type->params()[0]->CloneToUnique(),
+            *second_type->params()[0]->CloneToUnique());
+}
+
+TEST(TypecheckV2Test, ConcreteSemanticSumIdentityIncludesUnusedTypeBinding) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(generics)]
+enum Phantom<T: type> {
+  Only(),
+}
+
+type ByteAlias = u8;
+
+fn first(value: Phantom<u8>) -> Phantom<u8> {
+  value
+}
+
+fn second(value: Phantom<u16>) -> Phantom<u16> {
+  value
+}
+
+fn alias(value: Phantom<ByteAlias>) -> Phantom<ByteAlias> {
+  value
+}
+)"));
+  Function* first = result.tm.module->GetFunction("first").value();
+  Function* second = result.tm.module->GetFunction("second").value();
+  Function* alias = result.tm.module->GetFunction("alias").value();
+  ASSERT_NE(first, nullptr);
+  ASSERT_NE(second, nullptr);
+  ASSERT_NE(alias, nullptr);
+  XLS_ASSERT_OK_AND_ASSIGN(FunctionType * first_type,
+                           result.tm.type_info->GetItemAs<FunctionType>(first));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * second_type,
+      result.tm.type_info->GetItemAs<FunctionType>(second));
+  XLS_ASSERT_OK_AND_ASSIGN(FunctionType * alias_type,
+                           result.tm.type_info->GetItemAs<FunctionType>(alias));
+
+  EXPECT_NE(*first_type->params()[0], *second_type->params()[0]);
+  EXPECT_EQ(*first_type->params()[0], *alias_type->params()[0]);
+  EXPECT_EQ(first_type->params()[0]->ToString(), "Phantom<uN[8]> { Only() }");
+  EXPECT_EQ(second_type->params()[0]->ToString(), "Phantom<uN[16]> { Only() }");
+  EXPECT_EQ(first_type->params()[0]->ToString(),
+            alias_type->params()[0]->ToString());
+  EXPECT_EQ(*first_type->params()[0],
+            *first_type->params()[0]->CloneToUnique());
+}
+
+TEST(TypecheckV2Test, TaggedSemanticSumWithUnusedTypeBinding) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(generics)]
+enum Phantom<T: type>: u2 { Only() }
+fn identity(value: Phantom<u8>) -> Phantom<u8> { value }
+)"));
+  Function* function = result.tm.module->GetFunction("identity").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  EXPECT_THAT(function_type->params()[0]->GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(2)));
+}
+
+TEST(TypecheckV2Test, TaggedSemanticSumWithArrayTypeBinding) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(generics)]
+enum Wrap<T: type, N: u32>: u2 { Item(T[N]) }
+fn identity(value: Wrap<u8, u32:2>) -> Wrap<u8, u32:2> { value }
+)"));
+  Function* function = result.tm.module->GetFunction("identity").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  EXPECT_THAT(function_type->params()[0]->GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(18)));
+}
+
+// Each concrete instance owns its tag layout, including its discriminants.
+TEST(TypecheckV2Test, TaggedSemanticSumResolvesParametricTagWidths) {
+  for (const std::string_view program : {
+           R"(
+#![feature(generics)]
+enum E<N: u32>: uN[N] { A(), B }
+fn identity(narrow: E<u32:2>, wide: E<u32:4>) -> (E<u32:2>, E<u32:4>) {
+  (narrow, wide)
+}
+)",
+           R"(
+#![feature(generics)]
+enum E<N: u32>: uN[N] { A() = 0, B = 1 }
+fn identity(narrow: E<u32:2>, wide: E<u32:4>) -> (E<u32:2>, E<u32:4>) {
+  (narrow, wide)
+}
+)",
+           R"(
+#![feature(generics)]
+enum E<T: type>: T { A() = 0, B = 1 }
+fn identity(narrow: E<u2>, wide: E<u4>) -> (E<u2>, E<u4>) {
+  (narrow, wide)
+}
+)"}) {
+    SCOPED_TRACE(program);
+    XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(program));
+    Function* function = result.tm.module->GetFunction("identity").value();
+    XLS_ASSERT_OK_AND_ASSIGN(
+        FunctionType * function_type,
+        result.tm.type_info->GetItemAs<FunctionType>(function));
+    const int widths[] = {2, 4};
+    for (int i = 0; i < 2; ++i) {
+      const SumType& sum = function_type->params()[i]->AsSum();
+      EXPECT_THAT(sum.GetTotalBitCount(),
+                  IsOkAndHolds(TypeDim::CreateU32(widths[i])));
+      EXPECT_THAT(sum.tag_bit_count().GetAsInt64(), IsOkAndHolds(widths[i]));
+      EXPECT_EQ(sum.GetDiscriminant(0), InterpValue::MakeUBits(widths[i], 0));
+      EXPECT_EQ(sum.GetDiscriminant(1), InterpValue::MakeUBits(widths[i], 1));
+    }
+  }
+}
+
+TEST(TypecheckV2Test, TaggedSemanticSumResolvesSignedParametricDiscriminants) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(generics)]
+enum E<N: u32>: sN[N] { Before() = -1, At = 0 }
+fn identity(narrow: E<u32:1>, wide: E<u32:3>) -> (E<u32:1>, E<u32:3>) {
+  (narrow, wide)
+}
+)"));
+  Function* function = result.tm.module->GetFunction("identity").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  const int widths[] = {1, 3};
+  for (int i = 0; i < 2; ++i) {
+    const SumType& sum = function_type->params()[i]->AsSum();
+    EXPECT_THAT(sum.GetTotalBitCount(),
+                IsOkAndHolds(TypeDim::CreateU32(widths[i])));
+    EXPECT_EQ(sum.GetDiscriminant(0), InterpValue::MakeSBits(widths[i], -1));
+    EXPECT_EQ(sum.GetDiscriminant(1), InterpValue::MakeSBits(widths[i], 0));
+  }
+}
+
+TEST(TypecheckV2Test, TaggedSemanticSumTypesCompoundParametricDiscriminants) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(generics)]
+enum E<N: u32>: uN[N] { A() = 1 + 1, B = 3 }
+fn make() -> E<u32:2> { E<u32:2>::A() }
+fn wide() -> E<u32:4> { E<u32:4>::B }
+)"));
+  Function* function = result.tm.module->GetFunction("make").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  const SumType& sum = function_type->return_type().AsSum();
+  EXPECT_EQ(sum.GetDiscriminant(0), InterpValue::MakeUBits(2, 2));
+  EXPECT_EQ(sum.GetDiscriminant(1), InterpValue::MakeUBits(2, 3));
+}
+
+// Negative test: concrete tag widths must be checked before constructing a sum.
+TEST(TypecheckV2Test, TaggedSemanticSumRejectsInsufficientParametricTagWidth) {
+  EXPECT_THAT(R"(
+#![feature(generics)]
+enum E<N: u32>: uN[N] { A(), B, C }
+fn identity(value: E<u32:1>) -> E<u32:1> { value }
+)",
+              TypecheckFails(HasSubstr("needs at least 2 tag bits")));
+  EXPECT_THAT(R"(
+#![feature(generics)]
+enum E<N: u32>: sN[N] { A(), B }
+fn identity(value: E<u32:1>) -> E<u32:1> { value }
+)",
+              TypecheckFails(HasSubstr("needs at least 2 tag bits")));
+}
+
+// Negative test: overflow and duplicate tags remain invalid after
+// instantiation.
+TEST(TypecheckV2Test, TaggedSemanticSumRejectsInvalidParametricDiscriminants) {
+  EXPECT_THAT(TypecheckV2(R"(
+#![feature(generics)]
+enum E<N: u32>: uN[N] { A() = 0, B = 4 }
+fn identity(value: E<u32:2>) -> E<u32:2> { value }
+)")
+                  .status(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("size mismatch: u3 vs. uN[2]")));
+  EXPECT_THAT(R"(
+#![feature(generics)]
+enum E<N: u32>: uN[N] { A() = 1 + 1, B = 2 }
+fn identity(value: E<u32:2>) -> E<u32:2> { value }
+)",
+              TypecheckFails(HasSubstr("duplicate discriminant")));
+}
+
+TEST(TypecheckV2Test, ImportedTaggedSemanticSumUsesCallerParametrics) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(TypecheckV2(R"(
+#![feature(generics)]
+pub enum E<N: u32>: uN[N] { A(), B }
+)",
+                            "imported", &import_data));
+  XLS_EXPECT_OK(TypecheckV2(R"(
+#![feature(generics)]
+import imported;
+fn make<N: u32>() -> imported::E<N> { imported::E<N>::A() }
+const NARROW = make<u32:2>();
+const WIDE = make<u32:4>();
+)",
+                            "main", &import_data)
+                    .status());
+}
+
+TEST(TypecheckV2Test, TaggedSemanticSumTypesParametricDiscriminantCalls) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+#![feature(generics)]
+fn one<M: u32>() -> uN[M] { uN[M]:1 }
+enum E<N: u32>: uN[N] { A() = 0, B = one<N>() }
+fn narrow() -> E<u32:2> { E<u32:2>::A() }
+fn wide() -> E<u32:4> { E<u32:4>::B }
+)")
+                    .status());
+}
+
+TEST(TypecheckV2Test, ImportedSemanticSumTypesParametricMapDiscriminant) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult imported,
+                           TypecheckV2(R"(
+#![feature(generics)]
+fn id(x: u32) -> u32 { x }
+pub enum E<N: u32>: u32 { A() = map([N], id)[0] }
+)",
+                                       "defs", &import_data));
+  ASSERT_TRUE(imported.tm.module->fs_path().has_value());
+  EXPECT_EQ(imported.tm.module->fs_path()->generic_string(), "defs.x");
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result,
+                           TypecheckV2(R"(
+#![feature(generics)]
+import defs;
+fn identity(low: defs::E<u32:1>, high: defs::E<u32:7>)
+    -> (defs::E<u32:1>, defs::E<u32:7>) {
+  (low, high)
+}
+)",
+                                       "main", &import_data));
+  Function* function = result.tm.module->GetFunction("identity").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  EXPECT_EQ(function_type->params()[0]->AsSum().GetDiscriminant(0),
+            InterpValue::MakeU32(1));
+  EXPECT_EQ(function_type->params()[1]->AsSum().GetDiscriminant(0),
+            InterpValue::MakeU32(7));
+}
+
+TEST(TypecheckV2Test, TaggedSemanticSumResolvesParametricTagWidthCalls) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(generics)]
+fn width<M: u32>() -> u32 { M }
+enum E<N: u32>: uN[width<N>()] { A(), B }
+fn identity(narrow: E<u32:2>, wide: E<u32:4>) -> (E<u32:2>, E<u32:4>) {
+  (narrow, wide)
+}
+)"));
+  Function* function = result.tm.module->GetFunction("identity").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  EXPECT_THAT(function_type->params()[0]->AsSum().tag_bit_count().GetAsInt64(),
+              IsOkAndHolds(2));
+  EXPECT_THAT(function_type->params()[1]->AsSum().tag_bit_count().GetAsInt64(),
+              IsOkAndHolds(4));
+}
+
+TEST(TypecheckV2Test, TaggedSemanticSumKeepsInstanceDiscriminantsDistinct) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(generics)]
+enum E<K: u32>: u32 { A() = K, B = K + u32:1 }
+fn identity(low: E<u32:2>, high: E<u32:7>) -> (E<u32:2>, E<u32:7>) {
+  (low, high)
+}
+)"));
+  Function* function = result.tm.module->GetFunction("identity").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  const int values[] = {2, 7};
+  for (int i = 0; i < 2; ++i) {
+    const SumType& sum = function_type->params()[i]->AsSum();
+    EXPECT_EQ(sum.GetDiscriminant(0), InterpValue::MakeUBits(32, values[i]));
+    EXPECT_EQ(sum.GetDiscriminant(1),
+              InterpValue::MakeUBits(32, values[i] + 1));
+  }
+}
+
+TEST(TypecheckV2Test, TaggedSemanticSumResolvesCallerDependentTypeArguments) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+#![feature(generics)]
+enum E<T: type>: T { A() = 0, B = 1 }
+fn make<M: u32>() -> E<uN[M]> { E<uN[M]>::A() }
+const NARROW = make<u32:2>();
+const WIDE = make<u32:4>();
+)")
+                    .status());
+}
+
+TEST(TypecheckV2Test, SemanticSumInfersTagsFromParametricDiscriminants) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(generics)]
+enum E<K: u32> { A() = K, B = K + u32:1 }
+fn identity(low: E<u32:2>, high: E<u32:7>) -> (E<u32:2>, E<u32:7>) {
+  (low, high)
+}
+)"));
+  Function* function = result.tm.module->GetFunction("identity").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  const int widths[] = {2, 4};
+  const int values[] = {2, 7};
+  for (int i = 0; i < 2; ++i) {
+    const SumType& sum = function_type->params()[i]->AsSum();
+    EXPECT_THAT(sum.tag_bit_count().GetAsInt64(), IsOkAndHolds(widths[i]));
+    EXPECT_EQ(sum.GetDiscriminant(0),
+              InterpValue::MakeUBits(widths[i], values[i]));
+    EXPECT_EQ(sum.GetDiscriminant(1),
+              InterpValue::MakeUBits(widths[i], values[i] + 1));
+  }
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumWithBareTypePayload) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+#![feature(generics)]
+enum Option<T: type> { None, Some(T) }
+fn identity(value: Option<u8>) -> Option<u8> { value }
+)"));
+}
+
+TEST(TypecheckV2Test, TaggedGenericSemanticSumWithBareTypePayload) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+#![feature(generics)]
+enum Option<T: type>: u2 { None, Some(T) }
+fn identity(value: Option<u8>) -> Option<u8> { value }
+)"));
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumBarePayloadConstructorsAndPatterns) {
+  EXPECT_THAT(R"(
+#![feature(generics)]
+enum Option<T: type> { None, Some(T) }
+fn make(value: u8) -> Option<u8> { Option::Some(value) }
+fn unwrap(value: Option<u8>) -> u8 {
+  match value {
+    Option::None => u8:0,
+    Option::Some(v) => v,
+  }
+}
+const_assert!(unwrap(make(u8:7)) == u8:7);
+)",
+              TypecheckSucceeds(HasNodeWithType("v", "uN[8]")));
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumInferredTupleConstructor) {
+  EXPECT_THAT(
+      R"(
+#![feature(generics)]
+enum Option<T: type> { None, Some(T) }
+fn make(value: u8) -> Option<u8> { Option::Some(value) }
+)",
+      TypecheckSucceeds(HasNodeWithType(
+          "Option::Some(value)", "Option<uN[8]> { None | Some(uN[8]) }")));
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumInferredConstructorPatterns) {
+  EXPECT_THAT(R"(
+#![feature(generics)]
+enum Option<T: type> { None, Some(T) }
+fn unwrap(value: Option<u8>) -> u8 {
+  match value {
+    Option::None => u8:0,
+    Option::Some(v) => v,
+  }
+}
+const_assert!(unwrap(Option<u8>::Some(u8:7)) == u8:7);
+)",
+              TypecheckSucceeds(HasNodeWithType("v", "uN[8]")));
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumInferredUnitConstructor) {
+  EXPECT_THAT(R"(
+#![feature(generics)]
+enum Option<T: type> { None, Some(T) }
+fn empty() -> Option<u8> { Option::None }
+)",
+              TypecheckSucceeds(HasNodeWithType(
+                  "Option::None", "Option<uN[8]> { None | Some(uN[8]) }")));
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumExplicitConstructorPatternsAndUnit) {
+  EXPECT_THAT(R"(
+#![feature(generics)]
+enum Option<T: type> { None, Some(T) }
+fn empty() -> Option<u8> { Option<u8>::None }
+fn unwrap(value: Option<u8>) -> u8 {
+  match value {
+    Option<u8>::None => u8:0,
+    Option<u8>::Some(v) => v,
+  }
+}
+const_assert!(unwrap(empty()) == u8:0);
+const_assert!(unwrap(Option<u8>::Some(u8:7)) == u8:7);
+)",
+              TypecheckSucceeds(HasNodeWithType("v", "uN[8]")));
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumPatternRejectsWrongExplicitType) {
+  EXPECT_THAT(R"(
+#![feature(generics)]
+enum Option<T: type> { None, Some(T) }
+fn has_value(value: Option<u8>) -> bool {
+  match value {
+    Option<u16>::Some(_) => true,
+    _ => false,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Value mismatch for parametric `T` of sum `Option`")));
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumUnitRejectsMissingContext) {
+  EXPECT_THAT(R"(
+#![feature(generics)]
+enum Option<T: type> { None, Some(T) }
+const X = Option::None;
+)",
+              TypecheckFails(HasSubstr("must have all parametrics specified")));
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumWithBareStructPayload) {
+  EXPECT_THAT(R"(
+#![feature(generics)]
+enum Box<T: type> { Value { value: T } }
+fn identity(value: Box<u8>) -> Box<u8> { value }
+)",
+              TypecheckSucceeds(HasNodeWithType(
+                  "value", "Box<uN[8]> { Value { value: uN[8] } }")));
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumWithTypeOnlyAggregatePayload) {
+  EXPECT_THAT(R"(
+#![feature(generics)]
+enum Box<T: type> { Value((T, T[2])) }
+fn identity(value: Box<u8>) -> Box<u8> { value }
+)",
+              TypecheckSucceeds(HasNodeWithType(
+                  "value", "Box<uN[8]> { Value((uN[8], uN[8][2])) }")));
+}
+
+TEST(TypecheckV2Test,
+     GenericSemanticSumBarePayloadPreservesAliasAndImportIdentity) {
+  constexpr std::string_view kImported = R"(
+#![feature(generics)]
+pub enum Option<T: type> { None, Some(T) }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(TypecheckV2(kImported, "left", &import_data));
+  XLS_ASSERT_OK(TypecheckV2(kImported, "right", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result,
+                           TypecheckV2(R"(
+#![feature(generics)]
+import left;
+import right;
+type Byte = u8;
+fn f(a: left::Option<u8>, alias: left::Option<Byte>,
+     wider: left::Option<u16>, other: right::Option<u8>) -> left::Option<Byte> { a }
+)",
+                                       "main", &import_data));
+  Function* function = result.tm.module->GetFunction("f").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  const auto& params = function_type->params();
+  EXPECT_EQ(*params[0], *params[1]);
+  EXPECT_EQ(*params[0], function_type->return_type());
+  EXPECT_NE(*params[0], *params[2]);
+  EXPECT_NE(*params[0], *params[3]);
+  EXPECT_EQ(params[0]->AsSum().variants()[1].GetMemberType(0),
+            *BitsType::MakeU8());
+}
+
+// Verifies: nested and repeated sums share completed immutable type data.
+// Catches: recursive duplication of a type argument and its payload use.
+TEST(TypecheckV2Test, NestedSemanticSumReusesCompletedTypes) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(generics)]
+enum Wrap<T: type, N: u32> {
+  Item(T[N]),
+}
+
+type W1 = Wrap<u1, u32:1>;
+type W2 = Wrap<W1, u32:1>;
+
+fn identity(value: W2) -> Wrap<Wrap<u1, u32:1>, u32:1> { value }
+)"));
+  Function* function = result.tm.module->GetFunction("identity").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  const auto* sum =
+      dynamic_cast<const SumType*>(function_type->params().at(0).get());
+  const auto* result_sum =
+      dynamic_cast<const SumType*>(&function_type->return_type());
+  ASSERT_NE(sum, nullptr);
+  ASSERT_NE(result_sum, nullptr);
+
+  const auto* type_argument = dynamic_cast<const SumType*>(
+      std::get<std::unique_ptr<const Type>>(sum->parametric_arguments().at(0))
+          .get());
+  const auto* payload_array =
+      dynamic_cast<const ArrayType*>(&sum->variants().at(0).GetMemberType(0));
+  ASSERT_NE(type_argument, nullptr);
+  ASSERT_NE(payload_array, nullptr);
+  const auto* payload_sum =
+      dynamic_cast<const SumType*>(&payload_array->element_type());
+  ASSERT_NE(payload_sum, nullptr);
+
+  // W2 is one bit, but recursively copying both W1 descriptions makes the
+  // compiler's retained type tree grow exponentially with this nesting.
+  EXPECT_THAT(sum->GetTotalBitCount(), IsOkAndHolds(TypeDim::CreateU32(1)));
+  EXPECT_NE(type_argument, payload_sum);
+  EXPECT_EQ(&type_argument->variants(), &payload_sum->variants());
+
+  // The alias and explicit instantiation resolve to the same completed data,
+  // even though each use still owns its outer Type wrapper.
+  EXPECT_NE(sum, result_sum);
+  EXPECT_EQ(&sum->variants(), &result_sum->variants());
+  EXPECT_EQ(*sum, *result_sum);
+  EXPECT_EQ(sum->parametric_arguments_hash(),
+            SumType::HashParametricArguments(sum->parametric_arguments()));
+  EXPECT_EQ(type_argument->parametric_arguments_hash(),
+            payload_sum->parametric_arguments_hash());
+}
+
+// Verifies: nested arguments and unused values distinguish sums; aliases reuse.
+// Catches: treating equal total width as type identity in the sum cache.
+TEST(TypecheckV2Test, SemanticSumCachePreservesNestedArgumentIdentity) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(generics)]
+enum Phantom<T: type, N: u32> { Only(), }
+type PairAlias = (u1, u7);
+type First = Phantom<PairAlias, u32:1>;
+type Second = Phantom<(u2, u6), u32:1>;
+type Third = Phantom<PairAlias, u32:2>;
+
+fn f(a: First, b: Second, c: Third,
+     alias: Phantom<(u1, u7), u32:1>) -> First { alias }
+)"));
+  Function* function = result.tm.module->GetFunction("f").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  const auto& first = function_type->params()[0]->AsSum();
+  const auto& second = function_type->params()[1]->AsSum();
+  const auto& third = function_type->params()[2]->AsSum();
+  const auto& alias = function_type->params()[3]->AsSum();
+  EXPECT_NE(first, second);
+  EXPECT_NE(first, third);
+  EXPECT_EQ(first, alias);
+  EXPECT_EQ(&first.variants(), &alias.variants());
+  EXPECT_EQ(first.parametric_arguments_hash(),
+            alias.parametric_arguments_hash());
+}
+
+// Verifies: same-spelling imported sums retain distinct nominal identities.
+// Catches: reuse keyed by a sum name instead of its actual declaration.
+TEST(TypecheckV2Test, SemanticSumReusePreservesImportedDefinitionIdentity) {
+  constexpr std::string_view kImported = R"(
+pub enum Wrap {
+  Item(u1),
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(TypecheckV2(kImported, "left", &import_data));
+  XLS_ASSERT_OK(TypecheckV2(kImported, "right", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result,
+                           TypecheckV2(R"(
+import left;
+import right;
+
+fn pair(a: left::Wrap, b: right::Wrap) -> (left::Wrap, right::Wrap) { (a, b) }
+)",
+                                       "main", &import_data));
+  Function* function = result.tm.module->GetFunction("pair").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  const auto* left =
+      dynamic_cast<const SumType*>(function_type->params().at(0).get());
+  const auto* right =
+      dynamic_cast<const SumType*>(function_type->params().at(1).get());
+  ASSERT_NE(left, nullptr);
+  ASSERT_NE(right, nullptr);
+  EXPECT_EQ(left->ToString(), right->ToString());
+  EXPECT_NE(&left->nominal_type(), &right->nominal_type());
+  EXPECT_NE(*left, *right);
+  EXPECT_NE(&left->variants(), &right->variants());
 }
 
 TEST(TypecheckV2Test,
@@ -1146,8 +2570,8 @@ fn f(x: Option) -> u32 {
                            HasSubstr("bound: v"))));
 }
 
-TEST(TypecheckV2Test, MatchWithSemanticSumConstructorsAlreadyExhaustive) {
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+TEST(TypecheckV2Test, WildcardAfterSumConstructorCannotPrecedeAnotherArm) {
+  EXPECT_THAT(R"(
 enum Option {
   None,
   Some(u32),
@@ -1161,10 +2585,10 @@ fn unwrap_or_zero(x: Option) -> u32 {
     Option::None => u32:1,
   }
 }
-)"));
-  ASSERT_THAT(result.tm.warnings.warnings().size(), 1);
-  EXPECT_EQ(result.tm.warnings.warnings()[0].message,
-            "Match is already exhaustive before this pattern");
+)",
+              TypecheckFails(HasSubstr(
+                  "A wildcard arm may only be followed by a final `invalid!` "
+                  "arm.")));
 }
 
 TEST(TypecheckV2Test, ZeroMacroImplicitSemanticSumUsesFirstVariant) {
@@ -1194,9 +2618,8 @@ const Y = zero!<Message>();
                            result.tm.module->GetConstantDef("Y"));
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
                            result.tm.type_info->GetConstExpr(constant));
-  EXPECT_EQ(value, InterpValue::MakeTuple(
-                       {InterpValue::MakeUBits(1, 1),
-                        InterpValue::MakeTuple({InterpValue::MakeU8(0)})}));
+  EXPECT_EQ(value, internal::CreateEncodedSumTuple(InterpValue::MakeUBits(3, 0),
+                                                   InterpValue::MakeU8(0)));
 }
 
 TEST(TypecheckV2Test, AllOnesMacroSemanticSumReportsUnsupportedType) {
@@ -1221,9 +2644,8 @@ const Y = zero!<(Option,)>();
                            result.tm.module->GetConstantDef("Y"));
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
                            result.tm.type_info->GetConstExpr(constant));
-  const InterpValue none = InterpValue::MakeTuple(
-      {InterpValue::MakeUBits(1, 0),
-       InterpValue::MakeTuple({InterpValue::MakeU32(0)})});
+  const InterpValue none = internal::CreateEncodedSumTuple(
+      InterpValue::MakeUBits(1, 0), InterpValue::MakeU32(0));
   EXPECT_EQ(value, InterpValue::MakeTuple({none}));
 }
 
@@ -1239,9 +2661,8 @@ const Y = zero!<Option[1]>();
                            result.tm.module->GetConstantDef("Y"));
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
                            result.tm.type_info->GetConstExpr(constant));
-  const InterpValue none = InterpValue::MakeTuple(
-      {InterpValue::MakeUBits(1, 0),
-       InterpValue::MakeTuple({InterpValue::MakeU32(0)})});
+  const InterpValue none = internal::CreateEncodedSumTuple(
+      InterpValue::MakeUBits(1, 0), InterpValue::MakeU32(0));
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue expected,
                            InterpValue::MakeArray({none}));
   EXPECT_EQ(value, expected);
@@ -1262,9 +2683,8 @@ const Y = zero!<Wrapper>();
                            result.tm.module->GetConstantDef("Y"));
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
                            result.tm.type_info->GetConstExpr(constant));
-  const InterpValue none = InterpValue::MakeTuple(
-      {InterpValue::MakeUBits(1, 0),
-       InterpValue::MakeTuple({InterpValue::MakeU32(0)})});
+  const InterpValue none = internal::CreateEncodedSumTuple(
+      InterpValue::MakeUBits(1, 0), InterpValue::MakeU32(0));
   EXPECT_EQ(value, InterpValue::MakeTuple({none}));
 }
 
@@ -1300,16 +2720,19 @@ const Y = zero!<(E<u32:1>, E<u32:0>)>();
                              result.tm.module->GetConstantDef("Y"));
     XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
                              result.tm.type_info->GetConstExpr(constant));
-    // The concrete payload shapes are identical. Only the instantiated
-    // discriminants determine which variant has the zero value.
-    const InterpValue payloads = InterpValue::MakeTuple(
-        {InterpValue::MakeU8(0), InterpValue::MakeU8(0)});
-    EXPECT_EQ(value,
-              InterpValue::MakeTuple(
-                  {InterpValue::MakeTuple(
-                       {InterpValue::MakeUBits(1, first_tag), payloads}),
-                   InterpValue::MakeTuple(
-                       {InterpValue::MakeUBits(1, 1 - first_tag), payloads})}));
+    // Instantiations choose different constructors, but their semantic wire
+    // tags and packed payload slots must both be zero in either order.
+    const InterpValue zero = internal::CreateEncodedSumTuple(
+        InterpValue::MakeU32(0), InterpValue::MakeU8(0));
+    EXPECT_EQ(value, InterpValue::MakeTuple({zero, zero}));
+    XLS_ASSERT_OK_AND_ASSIGN(
+        Type * type, result.tm.type_info->GetItemOrError(constant->name_def()));
+    ASSERT_TRUE(type->IsTuple());
+    const TupleType& tuple_type = type->AsTuple();
+    EXPECT_EQ(tuple_type.GetMemberType(0).AsSum().GetDiscriminant(0),
+              InterpValue::MakeU32(first_tag));
+    EXPECT_EQ(tuple_type.GetMemberType(1).AsSum().GetDiscriminant(0),
+              InterpValue::MakeU32(1 - first_tag));
   }
 }
 
@@ -1326,13 +2749,9 @@ const Y = make();
                            result.tm.module->GetConstantDef("Y"));
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
                            result.tm.type_info->GetConstExpr(constant));
-  const InterpValue payloads =
-      InterpValue::MakeTuple({InterpValue::MakeU8(0), InterpValue::MakeU8(0)});
-  EXPECT_EQ(
-      value,
-      InterpValue::MakeTuple(
-          {InterpValue::MakeTuple({InterpValue::MakeUBits(1, 0), payloads}),
-           InterpValue::MakeTuple({InterpValue::MakeUBits(1, 1), payloads})}));
+  const InterpValue zero = internal::CreateEncodedSumTuple(
+      InterpValue::MakeU32(0), InterpValue::MakeU8(0));
+  EXPECT_EQ(value, InterpValue::MakeTuple({zero, zero}));
 }
 
 TEST(TypecheckV2Test, ZeroMacroImportedGenericSumInStructAndArray) {
@@ -1353,14 +2772,11 @@ const Y = zero!<Wrapper>();
                            result.tm.module->GetConstantDef("Y"));
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
                            result.tm.type_info->GetConstExpr(constant));
-  const InterpValue payloads =
-      InterpValue::MakeTuple({InterpValue::MakeU8(0), InterpValue::MakeU8(0)});
-  const InterpValue a =
-      InterpValue::MakeTuple({InterpValue::MakeUBits(1, 0), payloads});
-  const InterpValue b =
-      InterpValue::MakeTuple({InterpValue::MakeUBits(1, 1), payloads});
-  XLS_ASSERT_OK_AND_ASSIGN(InterpValue array, InterpValue::MakeArray({b, b}));
-  EXPECT_EQ(value, InterpValue::MakeTuple({a, array}));
+  const InterpValue zero = internal::CreateEncodedSumTuple(
+      InterpValue::MakeU32(0), InterpValue::MakeU8(0));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue array,
+                           InterpValue::MakeArray({zero, zero}));
+  EXPECT_EQ(value, InterpValue::MakeTuple({zero, array}));
 }
 
 TEST(TypecheckV2Test, ZeroMacroGenericSemanticSumWithoutZeroFails) {
@@ -1402,7 +2818,7 @@ enum Never : u3 {}
 const Y = zero!<Never>();
 )",
       TypecheckFails(
-          HasSubstr("Enum type 'Never' does not have a known zero value.")));
+          HasSubstr("Sum type 'Never' does not have a known zero value.")));
 }
 
 TEST(TypecheckV2Test, ZeroMacroImportedSemanticSumUsesFirstVariant) {
@@ -1503,8 +2919,8 @@ const EXPLICIT = Box<u8>::Value(u8:1);
 const INFERRED = Box::Value(u8:2);
 )",
       TypecheckSucceeds(
-          AllOf(HasNodeWithType("EXPLICIT", "Box { Value(uN[8]) }"),
-                HasNodeWithType("INFERRED", "Box { Value(uN[8]) }"))));
+          AllOf(HasNodeWithType("EXPLICIT", "Box<uN[8]> { Value(uN[8]) }"),
+                HasNodeWithType("INFERRED", "Box<uN[8]> { Value(uN[8]) }"))));
 }
 
 TEST(TypecheckV2Test, GenericSemanticSumRejectsMismatchedPayload) {
@@ -1522,7 +2938,15 @@ TEST(TypecheckV2Test, GenericSemanticSumValidatesInstantiatedPayloadType) {
 enum Box<T: type> { Value(T) }
 fn f(x: Box<u8[1]>) -> Box<u8[1]> { x }
 )",
-      TypecheckFails(HasSubstr("Semantic sum payload members must be")));
+      TypecheckSucceeds(
+          HasNodeWithType("x", "Box<uN[8][1]> { Value(uN[8][1]) }")));
+  EXPECT_THAT(
+      R"(#![feature(generics)]
+enum Box<T: type> { Value(T) }
+fn f(x: Box<token>) -> Box<token> { x }
+)",
+      TypecheckFails(HasSubstr(
+          "Semantic sum constructor `Value` cannot contain a token payload.")));
 }
 
 TEST(TypecheckV2Test, SemanticSumReferenceResolvesValueDefault) {
@@ -1532,7 +2956,7 @@ enum E<N: u32 = {u32:8}> { V(uN[N]) }
 fn f(x: E) -> E { x }
 const X = E::V(u8:1);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { V(uN[8]) }")));
+      TypecheckSucceeds(HasNodeWithType("X", "E<u32:8> { V(uN[8]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumReferenceResolvesTypeDefaultAndOverride) {
@@ -1544,8 +2968,8 @@ const DEFAULT = Box::Value(u8:1);
 const OVERRIDE = Box<u16>::Value(u16:2);
 )",
       TypecheckSucceeds(
-          AllOf(HasNodeWithType("DEFAULT", "Box { Value(uN[8]) }"),
-                HasNodeWithType("OVERRIDE", "Box { Value(uN[16]) }"))));
+          AllOf(HasNodeWithType("DEFAULT", "Box<uN[8]> { Value(uN[8]) }"),
+                HasNodeWithType("OVERRIDE", "Box<uN[16]> { Value(uN[16]) }"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumValueDefaultSubstitutesLiteralType) {
@@ -1698,8 +3122,9 @@ enum E<N: u32 = {8}, V: uN[N] = {0}> { A(uN[N]) }
 const NARROW = E::A(u8:0);
 const WIDE = E<u32:16>::A(u16:0);
 )",
-      TypecheckSucceeds(AllOf(HasNodeWithType("NARROW", "E { A(uN[8]) }"),
-                              HasNodeWithType("WIDE", "E { A(uN[16]) }"))));
+      TypecheckSucceeds(
+          AllOf(HasNodeWithType("NARROW", "E<u32:8, u8:0> { A(uN[8]) }"),
+                HasNodeWithType("WIDE", "E<u32:16, u16:0> { A(uN[16]) }"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumDefaultPreservesConstexprRolloverWarning) {
@@ -1731,7 +3156,8 @@ TEST(TypecheckV2Test, SemanticSumInfersBeforeDependentValueDefault) {
 enum E<N: u32, M: u32 = {N + u32:1}> { V(uN[N], uN[M]) }
 const X = E::V(u8:1, u9:2);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { V(uN[8], uN[9]) }")));
+      TypecheckSucceeds(
+          HasNodeWithType("X", "E<u32:8, u32:9> { V(uN[8], uN[9]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumInfersBeforeValueDependentTypeDefault) {
@@ -1740,7 +3166,8 @@ TEST(TypecheckV2Test, SemanticSumInfersBeforeValueDependentTypeDefault) {
 enum E<N: u32, T: type = uN[N]> { V(uN[N], T) }
 const X = E::V(u8:1, u8:2);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { V(uN[8], uN[8]) }")));
+      TypecheckSucceeds(
+          HasNodeWithType("X", "E<u32:8, uN[8]> { V(uN[8], uN[8]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumInfersBeforeTypeDependentTypeDefault) {
@@ -1749,7 +3176,8 @@ TEST(TypecheckV2Test, SemanticSumInfersBeforeTypeDependentTypeDefault) {
 enum E<T: type, U: type = T> { V(T, U) }
 const X = E::V(u8:1, u8:2);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { V(uN[8], uN[8]) }")));
+      TypecheckSucceeds(
+          HasNodeWithType("X", "E<uN[8], uN[8]> { V(uN[8], uN[8]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumSubstitutesNestedTypeArgumentsInDefault) {
@@ -1759,7 +3187,8 @@ struct W<T: type> { x: T }
 enum E<T: type, U: type = W<T>> { V(T) }
 const X = E::V(u8:1);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { V(uN[8]) }")));
+      TypecheckSucceeds(
+          HasNodeWithType("X", "E<uN[8], W { x: uN[8] }> { V(uN[8]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumKeepsConcreteValueBindingTypeInExpression) {
@@ -1768,7 +3197,8 @@ TEST(TypecheckV2Test, SemanticSumKeepsConcreteValueBindingTypeInExpression) {
 enum E<T: type, V: T> { Value(uN[V + u32:1]) }
 const X = E<u32, u32:7>::Value(u8:1);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { Value(uN[8]) }")));
+      TypecheckSucceeds(
+          HasNodeWithType("X", "E<uN[32], u32:7> { Value(uN[8]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumPartiallyExplicitTupleParametrics) {
@@ -1777,8 +3207,8 @@ TEST(TypecheckV2Test, SemanticSumPartiallyExplicitTupleParametrics) {
 enum TuplePair<N: u32, M: u32> { V(uN[N], uN[M]) }
 const TUPLE = TuplePair<u32:8>::V(u8:1, u16:2);
 )",
-      TypecheckSucceeds(
-          HasNodeWithType("TUPLE", "TuplePair { V(uN[8], uN[16]) }")));
+      TypecheckSucceeds(HasNodeWithType(
+          "TUPLE", "TuplePair<u32:8, u32:16> { V(uN[8], uN[16]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumPartiallyExplicitNamedParametrics) {
@@ -1787,8 +3217,8 @@ TEST(TypecheckV2Test, SemanticSumPartiallyExplicitNamedParametrics) {
 enum NamedPair<N: u32, M: u32> { V { x: uN[N], y: uN[M] } }
 const NAMED = NamedPair<u32:8>::V { y: u16:2, x: u8:1 };
 )",
-      TypecheckSucceeds(
-          HasNodeWithType("NAMED", "NamedPair { V { x: uN[8], y: uN[16] } }")));
+      TypecheckSucceeds(HasNodeWithType(
+          "NAMED", "NamedPair<u32:8, u32:16> { V { x: uN[8], y: uN[16] } }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumAliasArgumentKeepsPayloadInference) {
@@ -1798,7 +3228,8 @@ type U = u32;
 enum E<A: u32, B: u32> { V(uN[A], uN[B]) }
 const X = E<U:8>::V(u8:1, u16:2);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { V(uN[8], uN[16]) }")));
+      TypecheckSucceeds(
+          HasNodeWithType("X", "E<u32:8, u32:16> { V(uN[8], uN[16]) }")));
 }
 
 TEST(TypecheckV2Test, ImportedSemanticSumPartiallyExplicitNamedParametrics) {
@@ -1812,8 +3243,8 @@ const X = imported::E<u32:8>::V { x: u8:1, y: u16:2 };
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK(TypecheckV2(kImported, "imported", &import_data));
   EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
-              IsOkAndHolds(HasTypeInfo(
-                  HasNodeWithType("X", "E { V { x: uN[8], y: uN[16] } }"))));
+              IsOkAndHolds(HasTypeInfo(HasNodeWithType(
+                  "X", "E<u32:8, u32:16> { V { x: uN[8], y: uN[16] } }"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumConstructorInGenericFunction) {
@@ -1827,8 +3258,9 @@ fn f() -> (E<u32:8>, E<u32:16>) {
   (a, b)
 }
 )",
-      TypecheckSucceeds(AllOf(HasNodeWithType("a", "E { V(uN[8]) }"),
-                              HasNodeWithType("b", "E { V(uN[16]) }"))));
+      TypecheckSucceeds(
+          AllOf(HasNodeWithType("a", "E<u32:8> { V(uN[8]) }"),
+                HasNodeWithType("b", "E<u32:16> { V(uN[16]) }"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumConstructorWithImportedTypeArgument) {
@@ -1871,7 +3303,7 @@ TEST(TypecheckV2Test, SemanticSumValueArgumentUsesEarlierExplicitBinding) {
 enum E<N: u32, V: uN[N]> { A(u8) }
 const X = E<u32:8, u8:1>::A(u8:0);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { A(uN[8]) }")));
+      TypecheckSucceeds(HasNodeWithType("X", "E<u32:8, u8:1> { A(uN[8]) }")));
 }
 
 TEST(TypecheckV2Test,
@@ -1881,7 +3313,8 @@ TEST(TypecheckV2Test,
 enum E<N: u32, V: uN[N], M: u32> { A(uN[M]) }
 const X = E<u32:8, u8:1>::A(u16:0);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { A(uN[16]) }")));
+      TypecheckSucceeds(
+          HasNodeWithType("X", "E<u32:8, u8:1, u32:16> { A(uN[16]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumValueArgumentRejectsWrongWidth) {
@@ -1970,10 +3403,11 @@ const WIDE = imported::E<u16>::B(u8:1);
 )";
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK(TypecheckV2(kImported, "imported", &import_data));
-  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
-              IsOkAndHolds(HasTypeInfo(AllOf(
-                  HasNodeWithType("NARROW", "E { A(uN[8]) | B(uN[8]) }"),
-                  HasNodeWithType("WIDE", "E { A(uN[8]) | B(uN[8]) }")))));
+  EXPECT_THAT(
+      TypecheckV2(kProgram, "main", &import_data),
+      IsOkAndHolds(HasTypeInfo(AllOf(
+          HasNodeWithType("NARROW", "E<uN[8]> { A(uN[8]) | B(uN[8]) }"),
+          HasNodeWithType("WIDE", "E<uN[16]> { A(uN[8]) | B(uN[8]) }")))));
 }
 
 TEST(TypecheckV2Test, ImportedSemanticSumTypesParametricMapDiscriminantValues) {
@@ -2155,7 +3589,7 @@ fn f(x: Box<bits[8]>) -> Box<u8> { x }
 
 TEST(TypecheckV2Test,
      SemanticSumSharedPayloadInferenceIgnoresConstructorOrder) {
-  constexpr std::string_view kType = "E { None | Some(uN[8]) }";
+  constexpr std::string_view kType = "E<u32:8> { None | Some(uN[8]) }";
   EXPECT_THAT(
       R"(#![feature(generics)]
 enum E<N: u32> { None, Some(uN[N]) }
@@ -2166,15 +3600,16 @@ fn f(b: bool) {
   let array_last = [E::None, E::Some(u8:0)];
 }
 )",
-      TypecheckSucceeds(
-          AllOf(HasNodeWithType("first", kType), HasNodeWithType("last", kType),
-                HasNodeWithType("array_first", "E { None | Some(uN[8]) }[2]"),
-                HasNodeWithType("array_last", "E { None | Some(uN[8]) }[2]"))));
+      TypecheckSucceeds(AllOf(
+          HasNodeWithType("first", kType), HasNodeWithType("last", kType),
+          HasNodeWithType("array_first", "E<u32:8> { None | Some(uN[8]) }[2]"),
+          HasNodeWithType("array_last",
+                          "E<u32:8> { None | Some(uN[8]) }[2]"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumSharedPayloadsJointlyInferParameters) {
   constexpr std::string_view kType =
-      "E { Tuple(uN[8]) | Named { value: uN[16] } }";
+      "E<u32:8, u32:16> { Tuple(uN[8]) | Named { value: uN[16] } }";
   EXPECT_THAT(R"(#![feature(generics)]
 enum E<N: u32, M: u32> { Tuple(uN[N]), Named { value: uN[M] } }
 fn f(b: bool) {
@@ -2333,10 +3768,13 @@ const OVERRIDE = imported::Box<u32:16>::Value(u16:2);
 )";
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK(TypecheckV2(kImported, "imported", &import_data));
-  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
-              IsOkAndHolds(HasTypeInfo(AllOf(
-                  HasNodeWithType("DEFAULT", "Box { Value(uN[8]) }"),
-                  HasNodeWithType("OVERRIDE", "Box { Value(uN[16]) }")))));
+  EXPECT_THAT(
+      TypecheckV2(kProgram, "main", &import_data),
+      IsOkAndHolds(HasTypeInfo(AllOf(
+          HasNodeWithType("DEFAULT",
+                          "Box<u32:8, uN[8], u8:0> { Value(uN[8]) }"),
+          HasNodeWithType("OVERRIDE",
+                          "Box<u32:16, uN[16], u16:0> { Value(uN[16]) }")))));
 }
 
 TEST(TypecheckV2Test, SemanticSumConstructorPreservesShadowedTypeAlias) {
@@ -2454,16 +3892,18 @@ enum E<T: type> { V($0) }
 fn f(x: E<u32>) -> E<u32> { x }
 )",
                                  payload),
-                TypecheckSucceeds(HasNodeWithType(
-                    "f", "(E { V(uN[8]) }) -> E { V(uN[8]) }")));
+                TypecheckSucceeds(
+                    HasNodeWithType("f", "(@1=E<uN[32]> { V(uN[8]) }) -> @1")));
   }
 }
 
 TEST(TypecheckV2Test, SemanticSumPrimitiveMemberConstructorPayloads) {
   constexpr std::string_view k8 =
-      "E { Tuple(uN[8], uN[8]) | Named { width: uN[8], value: uN[8] } }";
+      "E<uN[32], u32:8> { Tuple(uN[8], uN[8]) | Named { width: uN[8], value: "
+      "uN[8] } }";
   constexpr std::string_view k16 =
-      "E { Tuple(uN[16], uN[16]) | Named { width: uN[16], value: uN[16] } }";
+      "E<uN[32], u32:16> { Tuple(uN[16], uN[16]) | Named { width: uN[16], "
+      "value: uN[16] } }";
   // The first payload supplies N in the partial cases. T is always explicit
   // or supplied by context, rather than inferred from its member's value.
   EXPECT_THAT(
@@ -2511,7 +3951,7 @@ const EQUIVALENT: OtherAlias = Alias::Tuple(u8:3);
   ImportData import_data = CreateImportDataForTest(
       std::make_unique<FakeFilesystem>(std::move(files), "/"));
   constexpr std::string_view kType =
-      "E { Tuple(uN[8]) | Named { value: uN[8] } }";
+      "E<uN[32]> { Tuple(uN[8]) | Named { value: uN[8] } }";
   EXPECT_THAT(
       TypecheckV2(kProgram, "main", &import_data),
       IsOkAndHolds(HasTypeInfo(AllOf(HasNodeWithType("TUPLE", kType),
@@ -2529,21 +3969,22 @@ const EXPLICIT = E<uN[3]>::V(u8:0);
 const CONTEXTUAL: E<uN[4]> = E::V(u16:0);
 )",
               TypecheckSucceeds(AllOf(
-                  HasNodeWithType("f", "(E { V(uN[8]) }) -> E { V(uN[8]) }"),
-                  HasNodeWithType("EXPLICIT", "E { V(uN[8]) }"),
-                  HasNodeWithType("CONTEXTUAL", "E { V(uN[16]) }"))));
+                  HasNodeWithType("f", "(@1=E<uN[3]> { V(uN[8]) }) -> @1"),
+                  HasNodeWithType("EXPLICIT", "E<uN[3]> { V(uN[8]) }"),
+                  HasNodeWithType("CONTEXTUAL", "E<uN[4]> { V(uN[16]) }"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumPrimitiveMemberKeepsCallerWidth) {
-  EXPECT_THAT(R"(#![feature(generics)]
+  EXPECT_THAT(
+      R"(#![feature(generics)]
 enum E<T: type> { V(uN[(T::MAX as u32) + u32:1]) }
 fn make<N: u32>(x: uN[u32:1 << N]) -> E<uN[N]> { E<uN[N]>::V(x) }
 fn narrow(x: u8) -> E<uN[3]> { make<u32:3>(x) }
 fn wide(x: u16) -> E<uN[4]> { make<u32:4>(x) }
 )",
-              TypecheckSucceeds(AllOf(
-                  HasNodeWithType("narrow", "(uN[8]) -> E { V(uN[8]) }"),
-                  HasNodeWithType("wide", "(uN[16]) -> E { V(uN[16]) }"))));
+      TypecheckSucceeds(AllOf(
+          HasNodeWithType("narrow", "(uN[8]) -> E<uN[3]> { V(uN[8]) }"),
+          HasNodeWithType("wide", "(uN[16]) -> E<uN[4]> { V(uN[16]) }"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumPrimitiveMemberRejectsUnknownMember) {

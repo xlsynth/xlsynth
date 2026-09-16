@@ -498,6 +498,116 @@ invalid casting can only be found at runtime, e.g., in the DSL interpreter or
 flagging a fatal error from hardware. Because of that, it is recommended to
 avoid such casts as much as possible.
 
+### Semantic Sum Types
+
+An `enum` declaration with a tuple-shaped or struct-shaped constructor defines a
+semantic sum rather than a numeric enumeration. A sum value contains exactly
+one declared constructor and that constructor's active payload:
+
+```dslx
+enum Message : u3 {
+    Idle = 0,
+    Request(u8) = 3,
+    Response { value: u16 } = 7,
+}
+
+fn unwrap(message: Message) -> u16 {
+    match message {
+        Message::Idle => u16:0,
+        Message::Request(value) => value as u16,
+        Message::Response { value: value } => value,
+    }
+}
+```
+
+Constructor expressions use the same qualified names: `Message::Idle`,
+`Message::Request(u8:42)`, and `Message::Response { value: u16:42 }`.
+Zero-argument tuple constructors, such as `Empty()`, and zero-field struct
+constructors, such as `Empty {}`, preserve their distinct source forms. A sum
+containing only unit-like constructors needs at least one `()` or `{}` shape
+to distinguish it from an ordinary numeric enum. An empty declaration, such as
+`enum Never {}` or `enum Never : u3 {}`, is an uninhabited sum type.
+
+When no explicit discriminants are provided, constructor tags are assigned in
+declaration order starting at zero. An optional signed or unsigned tag type
+controls the tag width; both implicit constructor ordinals and explicit
+discriminants must be representable by that type. For example, two implicit
+constructors need at least `s2` if the tag type is signed: `s1` cannot represent
+the second constructor's ordinal, `1`. Explicit discriminants may be
+sparse but must be unique. Every constructor in a declaration must use the same
+rule: discriminants are either all implicit or all explicit. Without a tag
+annotation, the compiler infers the smallest width that represents every
+discriminant, using an unsigned tag unless a discriminant is negative. An
+unannotated singleton with an implicit discriminant has a zero-bit tag; one
+with explicit discriminant `7` needs three tag bits. An explicitly annotated
+singleton keeps the annotated width: `enum Single : u16 { Only(u1) = 7 }` has
+a 16-bit tag.
+
+The hardware representation is `tag_bits ++ payload_slot`, where the shared
+payload slot is wide enough for the widest constructor. Active payload bits
+occupy the low end of the slot. A constructor zero-fills only the unused high
+bits it creates; an existing nested sum retains all of its inherited bits.
+For a fresh `Message::Request(u8:42)`, the 16-bit payload slot contains
+`0x002a`. An incoming slot of `0xff2a` represents the same semantic value, but
+a function that returns that value unchanged also returns `0xff2a` unchanged.
+
+Arguments, returns, assignments, selected conditionals, tuples, structs,
+arrays and array updates, proc state, channels, and hardware boundaries preserve
+an existing sum representation bit-for-bit. This is backward incompatible with
+the former boundary behavior that cleared inactive padding in forwarded values.
+Wire layout and constructor encodings are unchanged. Interfaces requiring
+recursively canonical output must explicitly reconstruct their active nested
+sums and define how they handle malformed tags.
+
+Channels may carry sum messages, such as `chan<Message> out`. Channel handles
+and tokens cannot be stored inside sum payloads, including through nested
+tuples, arrays, or structs; those payloads must have a finite packed value
+representation.
+
+Sum equality compares the selected constructor and active payload, not unused
+slot bits. Both operands must have the same nominal sum definition and the same
+instantiated value/type arguments.
+Interpreted equality rejects an undeclared constructor tag. In lowered
+hardware, equal undeclared tags are compared using the final constructor's
+payload shape; different tags remain unequal.
+
+Matching and equality do not rewrite the observed value.
+An outer constructor can wrap an existing malformed inner sum without inspecting
+its tag. Matching `Wrapped(_)`, or binding and returning the inner sum, likewise
+does not inspect the inner constructor; explicitly observing that constructor
+retains the existing malformed-value failure or hardware fallback. Typed
+source-domain validation remains strict about malformed active nested tags,
+while nonzero inactive padding under a declared tag is valid. Ordinary numeric
+enum validation and raw-value equality and hashing are unchanged.
+
+This shallow rule applies to **constructor patterns**, not to patterns that
+compare against a value. A named constant, module-qualified value constant, or
+previously bound value uses full semantic equality, even if it holds a unit
+constructor. Source/bytecode equality validates both complete active values before
+returning true or false, including when their outer tags differ. See the
+constructor-versus-constant example under [`match`](#match-expression).
+
+`zero!<Message>()` selects the constructor whose discriminant is zero, whether
+or not that constructor appears first, and recursively initializes its payload
+to zero. An empty sum, a sum with no discriminant-zero constructor, or a
+zero-discriminant constructor with a payload that has no zero value has no zero
+value.
+
+Sum types support value and type parametrics using the same nominal-type syntax
+as structs; type parametrics require `#![feature(generics)]`. Explicit arguments
+attach to the type name, and may otherwise be inferred from payloads or the
+surrounding expected type. A declaration using a type parametric enables the
+feature at module scope:
+
+```dslx
+#![feature(generics)]
+
+enum Option<T: type> {
+    None,
+    Some(T),
+}
+```
+
 ### Tuple Type
 
 A tuple is a fixed-size ordered set, containing elements of heterogeneous types.
@@ -1399,7 +1509,52 @@ fn f(t: (u8, u32)) -> u32 {
 }
 ```
 
-This also works with nested tuples; for example:
+For sums, a constructor pattern and a constant holding that constructor have
+different observation depths:
+
+```dslx
+enum Inner : u2 {
+    Small(u4) = 0,
+    Big(u8) = 1,
+}
+
+enum Outer : u1 {
+    Empty = 0,
+    Wrapped(Inner) = 1,
+}
+
+const EMPTY = Outer::Empty;
+
+fn constructor_pattern(x: Outer) -> bool {
+    match x {
+        Outer::Empty => false,
+        Outer::Wrapped(_) => true,
+    }
+}
+
+fn constant_pattern(x: Outer) -> bool {
+    match x {
+        EMPTY => false,
+        _ => true,
+    }
+}
+```
+
+`Outer::Empty` is constructor syntax: it checks the outer constructor, and
+`Outer::Wrapped(_)` does not inspect the inner constructor. `EMPTY` is a value
+constant: its comparison validates the complete active value of `x`, even
+when `x` has a different outer tag.
+
+For example, an externally supplied raw `Outer` with tag 1 and ten-bit payload
+slot `0x3e5` contains an undeclared inner tag 3. In source/bytecode
+interpretation, `constructor_pattern` returns true, while `constant_pattern`
+fails when equality observes that inner tag. Both functions return true for
+well-formed `Wrapped` inputs. Nonzero inactive padding alone is valid and is
+not rewritten. This example concerns interpreter observation, not a DSLX
+source constructor for malformed data or a change to generated-hardware
+malformed-value fallback.
+
+Named constant matching also works with nested tuples; for example:
 
 ```dslx
 const MY_FAVORITE_NUMBER = u8:42;
@@ -1416,12 +1571,30 @@ fn f(t: (u8, (u16, u32))) -> u32 {
 Here we use a "catch all" wildcard pattern in the last `match` arm to ensure the
 `match` expression always matches the input somehow.
 
-!!! WARNING
-    This "catch all" (i.e. an
-    [irrefutable pattern](https://doc.rust-lang.org/book/ch18-02-refutability.html))
-    is [currently required](https://github.com/google/xls/issues/204) in **all**
-    `match` expressions, even if the other `match` arms form an exhaustive set of
-    refutable patterns (e.g., matching against fully specified enumerators).
+A wildcard is required only when the preceding patterns do not cover every
+possible value. A match over a semantic sum may omit `_` once every declared
+constructor is covered, as in the `Message` example above. Numeric enums may
+likewise omit `_` when their declared values are covered; aliases for the same
+numeric value count as one case.
+
+In a semantic-sum match, an arm containing a top-level `_` must be the last
+ordinary arm. Only a final `invalid!` or `invalid!(raw)` arm may follow it.
+This rule also applies when `_` is one of the arm's `|` alternatives, whether
+or not the match has an `invalid!` arm. For example,
+`match message { _ => u8:0, Message::Idle => u8:1 }` is a type error, not a
+redundant-pattern warning.
+
+Sum matches may additionally end with `invalid!` or `invalid!(raw)` to describe
+an undeclared tag received from an external hardware boundary. The latter binds
+the complete raw tag/payload image as unsigned
+`bits[TAG_W + MAX_PAYLOAD_W]`. This pattern must appear only once, as the
+final top-level arm, and only when matching a sum. DSLX source interpretation
+fails immediately on a malformed scrutinee even when an `invalid!` arm exists;
+generated hardware and RTL simulation select that arm for malformed inputs.
+Without an `invalid!` arm, generated hardware selects the final ordinary arm.
+That final ordinary arm must be either `_` or exactly one constructor pattern
+whose payload subpatterns are all irrefutable; a refutable payload or `|`
+alternatives cannot serve as the malformed-input fallback.
 
 We can also `match` on ranges of values using the "range" syntax:
 
@@ -1469,10 +1642,11 @@ fn test_f() {
 
 `match` rejects exact duplicate patterns, including duplicates appearing after
 the match has already become exhaustive. It also rejects other fully covered
-patterns encountered before exhaustiveness. A nonduplicate pattern appearing
-after an already-exhaustive match instead produces an
-`already_exhaustive_match` warning when that warning is enabled; it is disabled
-by default. `const match` performs the same overlap checks but does not emit
+patterns encountered before exhaustiveness. Except for the stricter wildcard-order
+rule for semantic sums above, a nonduplicate pattern appearing after earlier
+arms have already made the match exhaustive produces an
+`already_exhaustive_match` warning when enabled. This warning is disabled by
+default. `const match` performs the same overlap checks but does not emit
 trailing-pattern warnings or require its patterns to be exhaustive. For example:
 
 ```dslx-bad
@@ -2132,6 +2306,16 @@ stimulus over randomized stimulus. Note that as the space becomes large,
 exhaustive concrete-stimulus-based testing becomes implausible, and users should
 consider attempting to prove the QuickCheck formally via the
 `prove_quickcheck_main` tool.
+
+For semantic sum parameters, QuickCheck generates only declared constructors and
+recursively valid, canonically encoded payloads. Malformed external wire images
+are not DSLX source values and belong in dedicated raw-boundary or RTL tests.
+In exhaustive mode, candidates with undeclared active tags are skipped, and
+valid candidates are reconstructed before execution so constructor padding is
+zero. Different raw candidates can therefore execute the same source value;
+exhaustive input preparation does not deduplicate them. This construction step
+is specific to source input generation. Ordinary conversion and transport of
+an existing sum value preserve its padding bits.
 
 ### Fuzz tests
 

@@ -57,6 +57,7 @@
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/interp_value_utils.h"
+#include "xls/dslx/sum_type_encoding.h"
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
@@ -465,6 +466,20 @@ absl::Status BytecodeInterpreter::EvalNextInstruction() {
       XLS_RETURN_IF_ERROR(EvalAnd(bytecode));
       break;
     }
+    case Bytecode::Op::kAssertWellFormed: {
+      XLS_RETURN_IF_ERROR(EvalAssertWellFormed(bytecode));
+      break;
+    }
+    case Bytecode::Op::kBeginMatch: {
+      XLS_RET_CHECK(!frame->match_observation().has_value());
+      frame->match_observation().emplace();
+      break;
+    }
+    case Bytecode::Op::kEndMatch: {
+      XLS_RET_CHECK(frame->match_observation().has_value());
+      frame->match_observation().reset();
+      break;
+    }
     case Bytecode::Op::kCall: {
       XLS_RETURN_IF_ERROR(EvalCall(bytecode));
       return absl::OkStatus();
@@ -487,6 +502,20 @@ absl::Status BytecodeInterpreter::EvalNextInstruction() {
     }
     case Bytecode::Op::kCreateTuple: {
       XLS_RETURN_IF_ERROR(EvalCreateTuple(bytecode));
+      break;
+    }
+    case Bytecode::Op::kCreateSum: {
+      XLS_ASSIGN_OR_RETURN(const Bytecode::SumConstructionData* sum_data,
+                           bytecode.sum_construction_data());
+      const SumType& sum_type = sum_data->sum_type();
+      XLS_ASSIGN_OR_RETURN(
+          std::vector<InterpValue> payload_values,
+          PopArgsRightToLeft(
+              sum_type.variants().at(sum_data->variant_index()).size()));
+      XLS_ASSIGN_OR_RETURN(
+          InterpValue sum_value,
+          CreateSumValue(sum_type, sum_data->variant_index(), payload_values));
+      stack_.Push(std::move(sum_value));
       break;
     }
     case Bytecode::Op::kDecode: {
@@ -722,6 +751,30 @@ absl::Status BytecodeInterpreter::EvalAnd(const Bytecode& bytecode) {
   return EvalBinop([](const InterpValue& lhs, const InterpValue& rhs) {
     return lhs.BitwiseAnd(rhs);
   });
+}
+
+absl::Status BytecodeInterpreter::CheckSemanticObserverStatus(
+    const Bytecode& bytecode, const absl::Status& status,
+    std::string_view observer) {
+  if (status.ok()) {
+    return absl::OkStatus();
+  } else {
+    return FailureErrorStatus(
+        bytecode.source_span(),
+        absl::StrCat("Semantic sum ", observer,
+                     " received a malformed value: ", status.message()),
+        file_table());
+  }
+}
+
+absl::Status BytecodeInterpreter::EvalAssertWellFormed(
+    const Bytecode& bytecode) {
+  XLS_ASSIGN_OR_RETURN(const Type* type, bytecode.type_data());
+  const auto* sum_type = dynamic_cast<const SumType*>(type);
+  XLS_RET_CHECK(sum_type != nullptr);
+  return GetMatchSumPayloadValues(bytecode, &frames_.back(), *sum_type,
+                                  stack_.PeekOrDie(), {})
+      .status();
 }
 
 absl::StatusOr<BytecodeFunction*> BytecodeInterpreter::GetBytecodeFn(
@@ -1020,8 +1073,17 @@ absl::Status BytecodeInterpreter::EvalDup(const Bytecode& bytecode) {
 }
 
 absl::Status BytecodeInterpreter::EvalEq(const Bytecode& bytecode) {
-  return EvalBinop([](const InterpValue& lhs, const InterpValue& rhs) {
-    return InterpValue::MakeBool(lhs.Eq(rhs));
+  return EvalBinop([&](const InterpValue& lhs,
+                       const InterpValue& rhs) -> absl::StatusOr<InterpValue> {
+    if (bytecode.has_data()) {
+      XLS_ASSIGN_OR_RETURN(const Type* type, bytecode.type_data());
+      absl::StatusOr<bool> equal = SemanticValuesEqual(lhs, rhs, *type);
+      XLS_RETURN_IF_ERROR(
+          CheckSemanticObserverStatus(bytecode, equal.status(), "equality"));
+      return InterpValue::MakeBool(*equal);
+    } else {
+      return InterpValue::MakeBool(lhs.Eq(rhs));
+    }
   });
 }
 
@@ -1184,14 +1246,39 @@ absl::Status BytecodeInterpreter::EvalLt(const Bytecode& bytecode) {
   });
 }
 
+absl::StatusOr<const std::vector<InterpValue>*>
+BytecodeInterpreter::GetMatchSumPayloadValues(
+    const Bytecode& bytecode, Frame* frame, const SumType& sum_type,
+    const InterpValue& value, const std::vector<int64_t>& path) {
+  XLS_RET_CHECK(frame->match_observation().has_value());
+  absl::StatusOr<const std::vector<InterpValue>*> payload_values =
+      frame->match_observation()->GetSumPayloadValues(sum_type, value, path);
+  XLS_RETURN_IF_ERROR(CheckSemanticObserverStatus(
+      bytecode, payload_values.status(), "observer"));
+  return *payload_values;
+}
+
 absl::StatusOr<bool> BytecodeInterpreter::MatchArmEqualsInterpValue(
-    Frame* frame, const Bytecode::MatchArmItem& item,
-    const InterpValue& value) {
+    const Bytecode& bytecode, Frame* frame, const Bytecode::MatchArmItem& item,
+    const InterpValue& value, std::vector<int64_t>& path) {
   using Kind = Bytecode::MatchArmItem::Kind;
+  auto matches_value =
+      [&](const InterpValue& arm_value) -> absl::StatusOr<bool> {
+    if (item.value_type() != nullptr) {
+      XLS_RET_CHECK(frame->match_observation().has_value());
+      absl::StatusOr<bool> equal = frame->match_observation()->EqualsConstant(
+          arm_value, value, *item.value_type(), path);
+      XLS_RETURN_IF_ERROR(
+          CheckSemanticObserverStatus(bytecode, equal.status(), "observer"));
+      return *equal;
+    } else {
+      return arm_value.Eq(value);
+    }
+  };
   switch (item.kind()) {
     case Kind::kInterpValue: {
       XLS_ASSIGN_OR_RETURN(InterpValue arm_value, item.interp_value());
-      return arm_value.Eq(value);
+      return matches_value(arm_value);
     }
     case Kind::kRange: {
       XLS_ASSIGN_OR_RETURN(Bytecode::MatchArmItem::RangeData range,
@@ -1208,6 +1295,40 @@ absl::StatusOr<bool> BytecodeInterpreter::MatchArmEqualsInterpValue(
                << " conjunction: " << conjunction.ToString();
       return conjunction.IsTrue();
     }
+    case Kind::kSum: {
+      XLS_ASSIGN_OR_RETURN(
+          const Bytecode::MatchArmItem::SumMatchData* sum_match,
+          item.sum_match_data());
+      XLS_ASSIGN_OR_RETURN(internal::EncodedSumView sum_view,
+                           internal::GetEncodedSumView(value));
+      // Observe before rejecting a tag: an actually scrutinized nested sum must
+      // retain its malformed-tag and ordinary-payload failures even if a later
+      // arm is a wildcard. Other arms reuse this same successful observation.
+      XLS_ASSIGN_OR_RETURN(
+          const std::vector<InterpValue>* payload_values,
+          GetMatchSumPayloadValues(bytecode, frame, *sum_match->sum_type, value,
+                                   path));
+      if (sum_match->discriminant.Ne(sum_view.tag)) {
+        return false;
+      }
+      XLS_RET_CHECK_EQ(sum_match->payload_items.size(), payload_values->size());
+      for (int64_t i = 0; i < sum_match->payload_items.size(); ++i) {
+        path.push_back(i);
+        XLS_ASSIGN_OR_RETURN(
+            bool equal, MatchArmEqualsInterpValue(
+                            bytecode, frame, sum_match->payload_items.at(i),
+                            payload_values->at(i), path));
+        path.pop_back();
+        if (!equal) {
+          return false;
+        }
+      }
+      return true;
+    }
+    case Kind::kInvalidSum:
+      // Direct sum matches reject undeclared tags before arm dispatch, so
+      // invalid! never matches in the source interpreter.
+      return false;
     case Kind::kLoad: {
       XLS_ASSIGN_OR_RETURN(Bytecode::SlotIndex slot_index, item.slot_index());
       if (frame->slots().size() <= slot_index.value()) {
@@ -1216,7 +1337,7 @@ absl::StatusOr<bool> BytecodeInterpreter::MatchArmEqualsInterpValue(
             frame->slots().size(), "."));
       }
       InterpValue arm_value = frame->slots().at(slot_index.value());
-      return arm_value.Eq(value);
+      return matches_value(arm_value);
     }
 
     case Kind::kStore: {
@@ -1245,9 +1366,11 @@ absl::StatusOr<bool> BytecodeInterpreter::MatchArmEqualsInterpValue(
       // We don't have to deal with rest-of-tuple processing because
       // the matcher will have already handled that.
       for (int i = 0; i < item_elements.size(); i++) {
+        path.push_back(i);
         XLS_ASSIGN_OR_RETURN(bool equal, MatchArmEqualsInterpValue(
-                                             &frames_.back(), item_elements[i],
-                                             value_elements->at(i)));
+                                             bytecode, frame, item_elements[i],
+                                             value_elements->at(i), path));
+        path.pop_back();
         if (!equal) {
           return false;
         }
@@ -1275,8 +1398,10 @@ absl::Status BytecodeInterpreter::EvalMatchArm(const Bytecode& bytecode) {
   XLS_ASSIGN_OR_RETURN(const Bytecode::MatchArmItem* item,
                        bytecode.match_arm_item());
   XLS_ASSIGN_OR_RETURN(InterpValue matchee, Pop());
+  std::vector<int64_t> path;
   XLS_ASSIGN_OR_RETURN(
-      bool equal, MatchArmEqualsInterpValue(&frames_.back(), *item, matchee));
+      bool equal, MatchArmEqualsInterpValue(bytecode, &frames_.back(), *item,
+                                            matchee, path));
   stack_.Push(InterpValue::MakeBool(equal));
   return absl::OkStatus();
 }
@@ -1306,8 +1431,17 @@ absl::Status BytecodeInterpreter::EvalMul(const Bytecode& bytecode,
 }
 
 absl::Status BytecodeInterpreter::EvalNe(const Bytecode& bytecode) {
-  return EvalBinop([](const InterpValue& lhs, const InterpValue& rhs) {
-    return InterpValue::MakeBool(lhs.Ne(rhs));
+  return EvalBinop([&](const InterpValue& lhs,
+                       const InterpValue& rhs) -> absl::StatusOr<InterpValue> {
+    if (bytecode.has_data()) {
+      XLS_ASSIGN_OR_RETURN(const Type* type, bytecode.type_data());
+      absl::StatusOr<bool> equal = SemanticValuesEqual(lhs, rhs, *type);
+      XLS_RETURN_IF_ERROR(
+          CheckSemanticObserverStatus(bytecode, equal.status(), "inequality"));
+      return InterpValue::MakeBool(!*equal);
+    } else {
+      return InterpValue::MakeBool(lhs.Ne(rhs));
+    }
   });
 }
 

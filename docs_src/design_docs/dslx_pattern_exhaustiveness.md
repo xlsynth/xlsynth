@@ -159,12 +159,12 @@ likewise uninhabited.
 zero-bit-like, but I imagine we don't want to re-bind tokens through a pattern
 match so we can observe its linear dataflow in a given function.
 
-**Arrays**: We don't currently support any interesting pattern syntax for
-arrays, and they can conceptually create large spaces of values in the
-flattening process, so this initial change for exhaustiveness makes them
-disallowed in matched expressions until support can be added more
-comprehensively. It's not for very serious reasons, however, they could be
-flattened in a similar fashion to tuples.
+**Arrays**: Array-valued matched expressions are supported, including arrays
+containing semantic sums. Wildcard and name-binding patterns can cover an
+array, and named constant-value patterns can select a particular array value.
+This does not provide array-destructuring pattern syntax. Array elements are
+flattened similarly to tuple members, so large or deeply nested arrays can
+still produce large intermediate coverage spaces.
 
 **Zero-Element Ranges** are possible to write in DSLX, and so in building up
 intervals we have to keep a maybe-interval concept until we have resolved fully

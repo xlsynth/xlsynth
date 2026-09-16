@@ -161,6 +161,10 @@ class SyntheticSpanAllocator {
       const_cast<Span&>(tuple_pattern->span()) = span;
       return absl::OkStatus();
     }
+    if (auto* invalid_pattern = dynamic_cast<InvalidPattern*>(node)) {
+      const_cast<Span&>(invalid_pattern->span()) = span;
+      return absl::OkStatus();
+    }
     if (auto* wildcard = dynamic_cast<WildcardPattern*>(node)) {
       const_cast<Span&>(wildcard->span()) = span;
       return absl::OkStatus();
@@ -183,6 +187,14 @@ class SyntheticSpanAllocator {
     }
     if (auto* param_binding = dynamic_cast<ParametricBinding*>(node)) {
       const_cast<Span&>(param_binding->name_def()->span()) = span;
+      return absl::OkStatus();
+    }
+    if (auto* sum_pattern = dynamic_cast<SumVariantPayloadPattern*>(node)) {
+      const_cast<Span&>(sum_pattern->span()) = span;
+      return absl::OkStatus();
+    }
+    if (auto* struct_pattern = dynamic_cast<StructPattern*>(node)) {
+      const_cast<Span&>(struct_pattern->span()) = span;
       return absl::OkStatus();
     }
     // Other nodes are not expected to be encountered in ApplySpan as they

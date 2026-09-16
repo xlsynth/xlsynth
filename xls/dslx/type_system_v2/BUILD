@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 
@@ -246,6 +247,7 @@ cc_library(
         "//xls/dslx/type_system:parametric_env",
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info",
+        "//xls/dslx/type_system:unwrap_meta_type",
         "@abseil-cpp//absl/algorithm:container",
         "@abseil-cpp//absl/base",
         "@abseil-cpp//absl/base:no_destructor",
@@ -336,7 +338,6 @@ cc_test(
         "//xls/dslx:warning_collector",
         "//xls/dslx:warning_kind",
         "//xls/dslx/frontend:ast",
-        "//xls/dslx/frontend:ast_cloner",
         "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:parser",
         "//xls/dslx/frontend:pos",
@@ -452,6 +453,7 @@ cc_library(
         ":type_inference_error_handler",
         ":type_system_tracer",
         "//xls/common/file:filesystem",
+        "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
         "//xls/dslx:errors",
         "//xls/dslx:import_data",
@@ -466,6 +468,7 @@ cc_library(
         "//xls/dslx/type_system:type_info",
         "//xls/tools:typecheck_flags",
         "//xls/tools:typecheck_flags_cc_proto",
+        "@abseil-cpp//absl/cleanup",
         "@abseil-cpp//absl/log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -898,6 +901,7 @@ cc_library(
         "//xls/dslx:errors",
         "//xls/dslx:interp_value",
         "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:ast_cloner",
         "//xls/dslx/frontend:ast_node",
         "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:pos",
@@ -1127,8 +1131,10 @@ cc_test(
     deps = [
         ":matchers",
         ":type_system_test_utils",
+        ":typecheck_module_v2",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
+        "//xls/common/status:status_macros",
         "//xls/dslx:create_import_data",
         "//xls/dslx:import_data",
         "//xls/dslx:interp_value",
@@ -1137,8 +1143,10 @@ cc_test(
         "//xls/dslx:warning_collector",
         "//xls/dslx:warning_kind",
         "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:ast_cloner",
         "//xls/dslx/frontend:ast_utils",
         "//xls/dslx/frontend:module",
+        "//xls/dslx/frontend:semantics_analysis",
         "//xls/dslx/ir_convert:convert_options",
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info",
@@ -1147,6 +1155,7 @@ cc_test(
         "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:status_matchers",
+        "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",
         "@googletest//:gtest",
     ],
@@ -1327,5 +1336,33 @@ cc_library(
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:ast_node",
         "@abseil-cpp//absl/container:flat_hash_map",
+    ],
+)
+
+cc_binary(
+    name = "sum_type_typecheck_benchmark_main",
+    srcs = ["sum_type_typecheck_benchmark_main.cc"],
+    tags = ["manual"],
+    deps = [
+        "//xls/common:exit_status",
+        "//xls/common:init_xls",
+        "//xls/common/file:filesystem",
+        "//xls/common/status:status_macros",
+        "//xls/dslx:command_line_utils",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:default_dslx_stdlib_path",
+        "//xls/dslx:import_data",
+        "//xls/dslx:interp_value",
+        "//xls/dslx:parse_and_typecheck",
+        "//xls/dslx:virtualizable_file_system",
+        "//xls/dslx:warning_kind",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
+        "//xls/dslx/type_system:type",
+        "//xls/dslx/type_system:type_info",
+        "@abseil-cpp//absl/container:flat_hash_set",
+        "@abseil-cpp//absl/flags:flag",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
     ],
 )

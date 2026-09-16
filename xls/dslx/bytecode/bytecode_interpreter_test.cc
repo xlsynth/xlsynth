@@ -22,12 +22,12 @@
 #include <utility>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
@@ -242,6 +242,26 @@ fn main() -> u32 {
 )";
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue value, Interpret(kProgram, "main"));
   EXPECT_EQ(value, InterpValue::MakeU32(42 >> 1));
+}
+
+TEST_F(BytecodeInterpreterTest, NegativeSumDiscriminantMatches) {
+  constexpr std::string_view kProgram = R"(
+enum SignedOption: s3 {
+  Empty = 0,
+  Negative(u8) = -1,
+}
+
+fn main() -> u8 {
+  let option = SignedOption::Negative(u8:42);
+  match option {
+    SignedOption::Negative(value) => value,
+    SignedOption::Empty => u8:0,
+    invalid! => u8:255,
+  }
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue value, Interpret(kProgram, "main"));
+  EXPECT_EQ(value, InterpValue::MakeU8(42));
 }
 
 TEST_F(BytecodeInterpreterTest, TraceFmtBitsValueDefaultFormat) {
@@ -3030,10 +3050,559 @@ fn main() -> (u32, u32, bool, bool) {
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
   XLS_ASSERT_OK_AND_ASSIGN(const std::vector<InterpValue>* values,
                            result.GetValues());
-  EXPECT_THAT(*values,
-              ElementsAre(InterpValue::MakeU32(7), InterpValue::MakeU32(7),
-                          InterpValue::MakeBool(true),
-                          InterpValue::MakeBool(true)));
+  EXPECT_THAT(
+      *values,
+      ElementsAre(InterpValue::MakeU32(7), InterpValue::MakeU32(7),
+                  InterpValue::MakeBool(true), InterpValue::MakeBool(true)));
+}
+
+TEST_F(BytecodeInterpreterTest,
+       SemanticSumConstructorsPreserveRawPayloadsAndFieldOrder) {
+  constexpr std::string_view kProgram = R"(
+enum Inner: u2 { Small(u3) = 0, Large(u8) = 1 }
+enum Outer: s3 {
+  Empty() = -3,
+  Tuple(Inner, u4[2]) = -1,
+  Struct { prefix: u2, nested: Inner, items: u4[2] } = 2,
+}
+fn make_tuple(x: Inner, items: u4[2]) -> Outer { Outer::Tuple(x, items) }
+fn make_struct(x: Inner, items: u4[2]) -> Outer {
+  Outer::Struct { items, nested: x, prefix: u2:2 }
+}
+fn make_empty() -> Outer { Outer::Empty() }
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue items,
+      InterpValue::MakeArray(
+          {InterpValue::MakeUBits(4, 3), InterpValue::MakeUBits(4, 12)}));
+  for (int64_t tag : {0, 3}) {
+    SCOPED_TRACE(tag);
+    const InterpValue incoming = InterpValue::MakeTuple(
+        {InterpValue::MakeUBits(2, tag),
+         InterpValue::MakeTuple({InterpValue::MakeUBits(8, 0xfa)})});
+    // Keep the dirty Small padding, or the undeclared tag 3, inside the newly
+    // constructed outer value. Array index zero occupies the low nibble.
+    const int64_t tuple_payload = (tag << 16) | 0xfac3;
+    EXPECT_THAT(Interpret(kProgram, "make_tuple", {incoming, items}),
+                IsOkAndHolds(InterpValue::MakeTuple(
+                    {InterpValue::MakeUBits(3, 7),
+                     InterpValue::MakeTuple(
+                         {InterpValue::MakeUBits(20, tuple_payload)})})));
+    EXPECT_THAT(Interpret(kProgram, "make_struct", {incoming, items}),
+                IsOkAndHolds(InterpValue::MakeTuple(
+                    {InterpValue::MakeUBits(3, 2),
+                     InterpValue::MakeTuple({InterpValue::MakeUBits(
+                         20, (2 << 18) | tuple_payload)})})));
+  }
+  EXPECT_THAT(Interpret(kProgram, "make_empty", {}),
+              IsOkAndHolds(InterpValue::MakeTuple(
+                  {InterpValue::MakeUBits(3, 5),
+                   InterpValue::MakeTuple({InterpValue::MakeUBits(20, 0)})})));
+}
+
+// Shared source entry points accept raw sum images supplied by the host tests.
+constexpr std::string_view kTransparentSumProgram = R"(
+enum Message: u2 { Small(u4) = 0, Big(u8) = 1 }
+enum Outer: u1 { Wrapped(Message) = 0, Wide(u16) = 1 }
+struct Container { value: Message, pair: (Message, Message), items: Message[2] }
+
+fn identity(x: Message) -> Message { x }
+fn transport(x: Message, choose: bool) -> Message {
+  let c = Container { value: x, pair: (x, x), items: [x, x] };
+  let items = update(c.items, u32:1, identity(c.pair.0));
+  if choose { items[u32:1] } else { c.value }
+}
+fn wrap(x: Message) -> Outer { Outer::Wrapped(x) }
+fn unwrap(x: Outer) -> Message {
+  match x { Outer::Wrapped(v) => v, Outer::Wide(_) => Message::Small(u4:0) }
+}
+fn ignore(x: Outer) -> bool {
+  match x { Outer::Wrapped(_) => true, Outer::Wide(_) => false }
+}
+fn tuple_bind(x: Outer) -> Message {
+  match (x, u1:0) {
+    (Outer::Wrapped(v), _) => v,
+    _ => Message::Small(u4:0),
+  }
+}
+fn observe(x: Outer) -> u4 {
+  match x { Outer::Wrapped(Message::Small(v)) => v, _ => u4:0 }
+}
+fn equal(x: Message, y: Message) -> (bool, bool) { (x == y, x != y) }
+fn outer_equal(x: Outer, y: Outer) -> bool { x == y }
+fn outer_compare(x: Outer, y: Outer) -> (bool, bool, Outer, Outer) {
+  (x == y, x != y, x, y)
+}
+fn assert_outer_equal(x: Outer[2], y: Outer[2]) -> (Outer[2], Outer[2]) {
+  assert_eq(x, y);
+  (x, y)
+}
+fn tuple_equal(x: (u1, Message), y: (u1, Message)) -> bool { x == y }
+fn aggregate_equal(x: Message, y: Message) -> bool {
+  let a = Container { value: x, pair: (x, x), items: [x, x] };
+  let b = Container { value: y, pair: (y, y), items: [y, y] };
+  a == b
+}
+fn assert_equal(x: Message[2], y: Message[2]) { assert_eq(x, y); }
+const SMALL = Message::Small(u4:10);
+fn constant_pattern(x: Message) -> bool { match x { SMALL => true, _ => false } }
+fn local_constant_pattern(x: Message) -> bool {
+  let y = Message::Small(u4:10);
+  match x { y => true, _ => false }
+}
+)";
+
+// Verifies: Transport and outer construction preserve inherited sum bits.
+// Catches: Padding rewrites and premature observation of nested constructors.
+TEST_F(BytecodeInterpreterTest, SemanticSumTransportPreservesInheritedBits) {
+  for (int64_t tag : {0, 3}) {
+    SCOPED_TRACE(tag);
+    const InterpValue incoming = InterpValue::MakeTuple(
+        {InterpValue::MakeUBits(2, tag),
+         InterpValue::MakeTuple({InterpValue::MakeUBits(8, 0xfa)})});
+    for (bool choose : {false, true}) {
+      EXPECT_THAT(Interpret(kTransparentSumProgram, "transport",
+                            {incoming, InterpValue::MakeBool(choose)}),
+                  IsOkAndHolds(incoming));
+    }
+    const InterpValue wrapped =
+        InterpValue::MakeTuple({InterpValue::MakeUBits(1, 0),
+                                InterpValue::MakeTuple({InterpValue::MakeUBits(
+                                    16, (tag << 8) | 0xfa)})});
+    // The outer constructor creates six zero padding bits; the inherited
+    // ten-bit inner representation, including an unobserved tag, stays intact.
+    EXPECT_THAT(Interpret(kTransparentSumProgram, "wrap", {incoming}),
+                IsOkAndHolds(wrapped));
+    for (std::string_view function : {"unwrap", "tuple_bind"}) {
+      SCOPED_TRACE(function);
+      EXPECT_THAT(Interpret(kTransparentSumProgram, function, {wrapped}),
+                  IsOkAndHolds(incoming));
+    }
+    EXPECT_THAT(Interpret(kTransparentSumProgram, "ignore", {wrapped}),
+                IsOkAndHolds(InterpValue::MakeBool(true)));
+    if (tag == 0) {
+      EXPECT_THAT(Interpret(kTransparentSumProgram, "observe", {wrapped}),
+                  IsOkAndHolds(InterpValue::MakeUBits(4, 10)));
+    } else {
+      EXPECT_THAT(
+          Interpret(kTransparentSumProgram, "observe", {wrapped}),
+          StatusIs(
+              absl::StatusCode::kInternal,
+              HasSubstr("Semantic sum observer received a malformed value")));
+    }
+  }
+}
+
+// Verifies: Typed comparisons ignore padding and locate meaningful differences.
+// Catches: Raw equality in operators, constant patterns, or assert_eq.
+TEST_F(BytecodeInterpreterTest, SemanticSumEqualityIgnoresPaddingRecursively) {
+  const InterpValue dirty = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(2, 0),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(8, 0xfa)})});
+  const InterpValue canonical = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(2, 0),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(8, 0x0a)})});
+  EXPECT_FALSE(dirty.Eq(canonical));
+  EXPECT_THAT(Interpret(kTransparentSumProgram, "constant_pattern", {dirty}),
+              IsOkAndHolds(InterpValue::MakeBool(true)));
+  EXPECT_THAT(
+      Interpret(kTransparentSumProgram, "local_constant_pattern", {dirty}),
+      IsOkAndHolds(InterpValue::MakeBool(true)));
+  EXPECT_THAT(
+      Interpret(kTransparentSumProgram, "equal", {dirty, canonical}),
+      IsOkAndHolds(InterpValue::MakeTuple(
+          {InterpValue::MakeBool(true), InterpValue::MakeBool(false)})));
+  EXPECT_THAT(
+      Interpret(kTransparentSumProgram, "aggregate_equal", {dirty, canonical}),
+      IsOkAndHolds(InterpValue::MakeBool(true)));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue lhs,
+                           InterpValue::MakeArray({dirty, canonical}));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue rhs,
+                           InterpValue::MakeArray({canonical, dirty}));
+  EXPECT_THAT(Interpret(kTransparentSumProgram, "assert_equal", {lhs, rhs}),
+              IsOkAndHolds(InterpValue::MakeUnit()));
+
+  const InterpValue different = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(2, 0),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(8, 0x0b)})});
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue unequal_rhs,
+                           InterpValue::MakeArray({canonical, different}));
+  EXPECT_THAT(
+      Interpret(kTransparentSumProgram, "assert_equal", {lhs, unequal_rhs}),
+      StatusIs(absl::StatusCode::kInternal,
+               HasSubstr("lhs and rhs were not equal")));
+}
+
+// Verifies: Active inner padding is ignored independently of outer padding.
+// Catches: Recursive equality comparing packed slots.
+TEST_F(BytecodeInterpreterTest, SemanticSumEqualityIgnoresNestedPadding) {
+  const InterpValue dirty = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(1, 0),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(16, 0xfcfa)})});
+  const InterpValue canonical = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(1, 0),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(16, 0x000a)})});
+  const InterpValue different = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(1, 0),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(16, 0x000b)})});
+  EXPECT_FALSE(dirty.Eq(canonical));
+  for (const InterpValue& rhs : {canonical, different}) {
+    const bool equal = rhs.Eq(canonical);
+    EXPECT_THAT(
+        Interpret(kTransparentSumProgram, "outer_compare", {dirty, rhs}),
+        IsOkAndHolds(InterpValue::MakeTuple({InterpValue::MakeBool(equal),
+                                             InterpValue::MakeBool(!equal),
+                                             dirty, rhs})));
+  }
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue lhs,
+                           InterpValue::MakeArray({dirty, dirty}));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue rhs,
+                           InterpValue::MakeArray({canonical, canonical}));
+  EXPECT_THAT(
+      Interpret(kTransparentSumProgram, "assert_outer_equal", {lhs, rhs}),
+      IsOkAndHolds(InterpValue::MakeTuple({lhs, rhs})));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue unequal_rhs,
+                           InterpValue::MakeArray({canonical, different}));
+  EXPECT_THAT(Interpret(kTransparentSumProgram, "assert_outer_equal",
+                        {lhs, unequal_rhs}),
+              StatusIs(absl::StatusCode::kInternal,
+                       HasSubstr("lhs and rhs were not equal")));
+}
+
+// Verifies: Unit-constructor syntax only observes its own constructor.
+// Catches: An earlier unit arm rejecting an unobserved malformed inner tag.
+TEST_F(BytecodeInterpreterTest, SemanticSumUnitPatternsAreShallow) {
+  constexpr std::string_view kProgram = R"(
+enum Inner: u2 { Small(u4) = 0, Big(u8) = 1 }
+enum Outer: u1 { Empty = 0, Wrapped(Inner) = 1 }
+enum Shell: u1 { Empty = 0, Wrap(Outer) = 1 }
+fn matched(x: Outer) -> bool {
+  match x { Outer::Empty => false, Outer::Wrapped(_) => true }
+}
+fn tuple_pattern(x: Outer) -> bool {
+  match (x, u1:0) { (Outer::Empty, _) => false, _ => true }
+}
+fn nested_pattern(x: Outer) -> bool {
+  match Shell::Wrap(x) { Shell::Wrap(Outer::Empty) => false, _ => true }
+}
+)";
+  const InterpValue wrapped = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(1, 1),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(10, 0x3e5)})});
+  for (std::string_view function :
+       {"matched", "tuple_pattern", "nested_pattern"}) {
+    SCOPED_TRACE(function);
+    EXPECT_THAT(Interpret(kProgram, function, {wrapped}),
+                IsOkAndHolds(InterpValue::MakeBool(true)));
+  }
+}
+
+// Verifies: Actual constants retain complete typed value comparison.
+// Catches: Treating a unit-valued constant as shallow constructor syntax.
+TEST_F(BytecodeInterpreterTest,
+       SemanticSumConstantPatternsRemainValueComparisons) {
+  constexpr std::string_view kImported = R"(
+pub enum Inner: u2 { Small(u4) = 0, Big(u8) = 1 }
+pub enum Outer: u1 { Empty = 0, Wrapped(Inner) = 1 }
+pub const EMPTY = Outer::Empty;
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+type Outer = imported::Outer;
+const EMPTY = Outer::Empty;
+fn named(x: Outer) -> bool { match x { EMPTY => true, _ => false } }
+fn loaded(x: Outer) -> bool {
+  let wrapped = Outer::Wrapped(imported::Inner::Small(u4:0));
+  match x { wrapped => true, _ => false }
+}
+fn module_constant(x: Outer) -> bool {
+  match x { imported::EMPTY => true, _ => false }
+}
+)";
+  for (std::string_view function : {"named", "loaded", "module_constant"}) {
+    for (int64_t tag : {0, 1}) {
+      SCOPED_TRACE(absl::StrCat(function, " tag=", tag));
+      ImportData import_data = CreateImportDataForTest();
+      XLS_ASSERT_OK(
+          ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+      const InterpValue incoming = InterpValue::MakeTuple(
+          {InterpValue::MakeUBits(1, tag),
+           InterpValue::MakeTuple({InterpValue::MakeUBits(10, 0x3e5)})});
+      const auto result = Interpret(kProgram, function, {incoming},
+                                    BytecodeInterpreterOptions(), &import_data);
+      if (tag == 0) {
+        EXPECT_THAT(result,
+                    IsOkAndHolds(InterpValue::MakeBool(function != "loaded")));
+      } else {
+        EXPECT_THAT(result, StatusIs(absl::StatusCode::kInternal,
+                                     HasSubstr("malformed value")));
+      }
+    }
+  }
+}
+
+// Verifies: Constants reuse observations at overlapping structural paths.
+// Catches: Type-pointer keys, distinct-path aliasing, or stale dispatch state.
+TEST_F(BytecodeInterpreterTest,
+       SemanticSumConstantObservationPathsAndLifetime) {
+  constexpr std::string_view kProgram = R"(
+enum Inner: u1 { Small(u4) = 0, Big(u8) = 1 }
+enum Outer: u1 { Empty = 0, Wrap(Inner) = 1 }
+const ONE = Inner::Small(u4:1);
+const TWO = Inner::Small(u4:2);
+const WRAPPED = Outer::Wrap(ONE);
+const PAIR = (Outer::Wrap(TWO), WRAPPED);
+fn select(x: Outer) -> u32 {
+  match (x, WRAPPED) {
+    (Outer::Wrap(ONE), Outer::Empty) => u32:90,
+    PAIR => u32:2,
+    (Outer::Wrap(TWO), _) => u32:91,
+    (WRAPPED, WRAPPED) => u32:1,
+    (Outer::Wrap(Inner::Small(v)), Outer::Wrap(ONE)) => v as u32,
+    _ => u32:0,
+  }
+}
+fn main(x: Outer) -> (u32, Outer) {
+  let total = for (item, total) in [x, Outer::Wrap(TWO), x] {
+    let n = select(item);
+    let next = match item {
+      WRAPPED => match Outer::Wrap(Inner::Small(u4:3)) {
+        WRAPPED => u32:90,
+        Outer::Wrap(Inner::Small(v)) => v as u32,
+        _ => u32:0,
+      },
+      _ => select(item),
+    };
+    total + n + next
+  }(u32:0);
+  (total, x)
+}
+)";
+  // Inactive inner padding is dirty. Descendant-first, ancestor-first, and
+  // distinct tuple paths must agree without changing the returned raw image.
+  const InterpValue dirty = internal::CreateEncodedSumTuple(
+      InterpValue::MakeUBits(1, 1), InterpValue::MakeUBits(9, 0xf1));
+  EXPECT_THAT(
+      Interpret(kProgram, "main", {dirty}),
+      IsOkAndHolds(InterpValue::MakeTuple({InterpValue::MakeU32(12), dirty})));
+}
+
+// Negative test: Full observation reports errors despite earlier differences.
+TEST_F(BytecodeInterpreterTest, SemanticSumConstantObservationErrorOrder) {
+  constexpr std::string_view kProgram = R"(
+enum Code: u2 { Valid = 0 }
+enum Inner: u2 { Small(u4) = 0, Big(u8) = 1 }
+enum Outer: u1 { Other(u1) = 0, Wrap(Inner, Code) = 1 }
+const OTHER = Outer::Other(u1:0);
+const EXPECTED = (true, OTHER);
+fn ordered(x: Outer) -> bool {
+  // Tuple wrapping avoids the match-entry shallow check on Outer itself.
+  match (false, x) { EXPECTED => true, _ => false }
+}
+fn first_constructor(x: Outer) -> bool {
+  match x { Outer::Wrap(_, _) => true, OTHER => false, _ => false }
+}
+fn alternatives(x: Outer) -> bool {
+  match (x, false) {
+    (Outer::Wrap(_, _), false) | (OTHER, true) => true,
+    _ => false,
+  }
+}
+)";
+  const auto raw = [](int64_t inner_tag, int64_t code) {
+    return internal::CreateEncodedSumTuple(
+        InterpValue::MakeUBits(1, 1),
+        InterpValue::MakeUBits(12, (inner_tag << 10) | code));
+  };
+  const InterpValue invalid_scrutinee = raw(3, 0);
+  // Both a bad inner sum and a later bad enum exist. The full validator must
+  // report the inner tag first, including after an unequal outer tag.
+  EXPECT_THAT(
+      Interpret(kProgram, "ordered", {raw(3, 3)}),
+      StatusIs(absl::StatusCode::kInternal, HasSubstr("in sum `Inner`")));
+  EXPECT_THAT(Interpret(kProgram, "first_constructor", {invalid_scrutinee}),
+              IsOkAndHolds(InterpValue::MakeBool(true)));
+  EXPECT_THAT(
+      Interpret(kProgram, "alternatives", {invalid_scrutinee}),
+      StatusIs(absl::StatusCode::kInternal, HasSubstr("in sum `Inner`")));
+  EXPECT_THAT(Interpret(kProgram, "ordered", {invalid_scrutinee}),
+              StatusIs(absl::StatusCode::kInternal,
+                       HasSubstr("in sum `Inner`")));
+}
+
+// Verifies: First observation validates nested values before tag rejection.
+// Catches: Skipped validation after a successful earlier OR alternative.
+TEST_F(BytecodeInterpreterTest,
+       SemanticSumMatchKeepsNestedObservationFailures) {
+  constexpr std::string_view kProgram = R"(
+enum Code: u2 { Valid = 0 }
+enum Inner: u2 { Empty = 0, Carry(Code) = 1, Big(u8) = 2 }
+enum Outer: u1 { Wrap(Inner) = 0, Wide(u16) = 1 }
+fn observe(x: Outer) -> bool {
+  match x { Outer::Wrap(Inner::Empty) => false, _ => true }
+}
+fn alternatives(x: Outer) -> bool {
+  match (x, false) {
+    (Outer::Wrap(_), false) | (Outer::Wrap(Inner::Empty), true) => true,
+    _ => false,
+  }
+}
+fn ignore(x: Outer) -> bool {
+  match x { Outer::Wrap(_) => true, _ => false }
+}
+)";
+  for (int64_t inner : {0x100, 0x103, 0x300}) {
+    SCOPED_TRACE(inner);
+    const InterpValue incoming = InterpValue::MakeTuple(
+        {InterpValue::MakeUBits(1, 0),
+         InterpValue::MakeTuple({InterpValue::MakeUBits(16, inner)})});
+    EXPECT_THAT(Interpret(kProgram, "ignore", {incoming}),
+                IsOkAndHolds(InterpValue::MakeBool(true)));
+    for (std::string_view function : {"observe", "alternatives"}) {
+      SCOPED_TRACE(function);
+      const auto result = Interpret(kProgram, function, {incoming});
+      if (inner == 0x100) {
+        EXPECT_THAT(result, IsOkAndHolds(InterpValue::MakeBool(true)));
+      } else {
+        EXPECT_THAT(result, StatusIs(absl::StatusCode::kInternal,
+                                     HasSubstr("malformed value")));
+      }
+    }
+  }
+}
+
+// Verifies: Reuse is confined to dispatch, not the body, loop, or next match.
+// Catches: Stale payloads across matches and collisions between tuple paths.
+TEST_F(BytecodeInterpreterTest, SemanticSumMatchObservationLifetime) {
+  constexpr std::string_view kProgram = R"(
+enum Message: u1 { Small(u4) = 0, Big(u8) = 1 }
+fn main() -> u32 {
+  for (x, total) in [Message::Small(u4:1), Message::Big(u8:8),
+                     Message::Small(u4:3)] {
+    let first = match (x, Message::Small(u4:7)) {
+      (Message::Small(u4:0), _) | (Message::Small(u4:1), _) => u32:1,
+      (Message::Small(v), Message::Small(w)) => (v + w) as u32,
+      (Message::Big(v), _) => match Message::Small((v as u4) + u4:1) {
+        Message::Small(w) => w as u32,
+        _ => u32:0,
+      },
+      _ => u32:0,
+    };
+    let second = match x {
+      Message::Small(v) => v as u32,
+      Message::Big(v) => v as u32,
+    };
+    total + first + second
+  }(u32:0)
+}
+)";
+  // (1 + 1) + (9 + 8) + (10 + 3).
+  EXPECT_THAT(Interpret(kProgram, "main"),
+              IsOkAndHolds(InterpValue::MakeU32(32)));
+}
+
+// Negative test: Equality rejects malformed nested tags after unequal members.
+TEST_F(BytecodeInterpreterTest,
+       SemanticSumEqualityRejectsNestedMalformedInput) {
+  const InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(2, 3),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(8, 0xe5)})});
+  const InterpValue wrapped = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(1, 0),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(16, 0x3e5)})});
+  const InterpValue wide = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(1, 1),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(16, 0)})});
+  for (bool reverse : {false, true}) {
+    EXPECT_THAT(
+        Interpret(kTransparentSumProgram, "outer_equal",
+                  {reverse ? wide : wrapped, reverse ? wrapped : wide}),
+        StatusIs(
+            absl::StatusCode::kInternal,
+            HasSubstr("Semantic sum equality received a malformed value")));
+  }
+  const InterpValue lhs =
+      InterpValue::MakeTuple({InterpValue::MakeUBits(1, 0), malformed});
+  const InterpValue rhs =
+      InterpValue::MakeTuple({InterpValue::MakeUBits(1, 1), malformed});
+  EXPECT_THAT(
+      Interpret(kTransparentSumProgram, "tuple_equal", {lhs, rhs}),
+      StatusIs(absl::StatusCode::kInternal,
+               HasSubstr("Semantic sum equality received a malformed value")));
+}
+
+TEST_F(BytecodeInterpreterTest, SemanticSumEqualityRejectsMalformedInput) {
+  constexpr std::string_view kProgram = R"(
+enum Option: u2 {
+  None = 0,
+  Some(u32) = 1,
+}
+
+fn main(x: Option) -> bool {
+  x == x
+}
+)";
+  InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeUBits(/*bit_count=*/32, /*value=*/7)})});
+  EXPECT_THAT(
+      Interpret(kProgram, "main", {malformed}),
+      StatusIs(absl::StatusCode::kInternal,
+               HasSubstr("Semantic sum equality received a malformed value")));
+}
+
+TEST_F(BytecodeInterpreterTest, SemanticSumAssertEqRejectsMalformedInput) {
+  constexpr std::string_view kProgram = R"(
+enum Option: u2 {
+  None = 0,
+  Some(u32) = 1,
+}
+
+fn main(x: Option) {
+  assert_eq(x, x);
+}
+)";
+  InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeUBits(/*bit_count=*/32, /*value=*/7)})});
+  EXPECT_THAT(
+      Interpret(kProgram, "main", {malformed}),
+      StatusIs(absl::StatusCode::kInternal,
+               HasSubstr("Semantic sum assert_eq received a malformed value")));
+}
+
+// Negative test: Malformed tags report errors before normal or invalid raw arms.
+TEST_F(BytecodeInterpreterTest, SemanticSumMatchRejectsMalformedInput) {
+  constexpr std::string_view kProgram = R"(
+enum Option: u2 {
+  None = 0,
+  Some(u32) = 1,
+}
+
+fn main(x: Option) -> u32 {
+  match x {
+    Option::None => u32:0,
+    Option::Some(v) => v,
+    invalid!(raw) => raw as u32,
+  }
+}
+fn named(x: Option) -> u32 {
+  match x { _bound => u32:0, invalid! => u32:1 }
+}
+)";
+  InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeUBits(/*bit_count=*/32, /*value=*/7)})});
+  for (std::string_view function : {"main", "named"}) {
+    EXPECT_THAT(
+        Interpret(kProgram, function, {malformed}),
+        StatusIs(
+            absl::StatusCode::kInternal,
+            HasSubstr("Semantic sum observer received a malformed value")));
+  }
 }
 
 TEST_F(BytecodeInterpreterTest, FailSemanticSumValueIsOpaqueInPhase1) {
@@ -3073,8 +3642,7 @@ fn main() -> (bool, u8, bool) {
   XLS_ASSERT_OK_AND_ASSIGN(const std::vector<InterpValue>* values,
                            result.GetValues());
   EXPECT_THAT(*values,
-              ElementsAre(InterpValue::MakeBool(true),
-                          InterpValue::MakeU8(0),
+              ElementsAre(InterpValue::MakeBool(true), InterpValue::MakeU8(0),
                           InterpValue::MakeBool(false)));
 }
 
@@ -3144,20 +3712,16 @@ fn main() -> (bool, bool, bool, bool, bool, bool, bool, bool, bool) {
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
   XLS_ASSERT_OK_AND_ASSIGN(const std::vector<InterpValue>* values,
                            result.GetValues());
-  EXPECT_THAT(*values,
-              ElementsAre(InterpValue::MakeBool(true),
-                          InterpValue::MakeBool(true),
-                          InterpValue::MakeBool(true),
-                          InterpValue::MakeBool(true),
-                          InterpValue::MakeBool(true),
-                          InterpValue::MakeBool(true),
-                          InterpValue::MakeBool(true),
-                          InterpValue::MakeBool(true),
-                          InterpValue::MakeBool(true)));
+  EXPECT_THAT(
+      *values,
+      ElementsAre(InterpValue::MakeBool(true), InterpValue::MakeBool(true),
+                  InterpValue::MakeBool(true), InterpValue::MakeBool(true),
+                  InterpValue::MakeBool(true), InterpValue::MakeBool(true),
+                  InterpValue::MakeBool(true), InterpValue::MakeBool(true),
+                  InterpValue::MakeBool(true)));
 }
 
-TEST_F(BytecodeInterpreterTest,
-       SemanticSumConstructorsRejectNestedSumPayloadsInPhase1) {
+TEST_F(BytecodeInterpreterTest, SemanticSumConstructorsAllowNestedSumPayloads) {
   constexpr std::string_view kProgram = R"(
 enum Inner {
   None,
@@ -3178,14 +3742,8 @@ fn main() -> bool {
   }
 }
 )";
-  EXPECT_THAT(
-      Interpret(kProgram, "main", {}),
-      StatusIs(absl::StatusCode::kInvalidArgument,
-               testing::AllOf(
-                   HasSubstr("Semantic sum payload members must be bits-like, "
-                             "enum typed, or empty semantic sums"),
-                   HasSubstr("constructor `Wrapped`"),
-                   HasSubstr("Inner"))));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
+  EXPECT_TRUE(result.Eq(InterpValue::MakeBool(true)));
 }
 
 TEST_F(BytecodeInterpreterTest, ImportedSumReturningFunctionCall) {
@@ -3206,6 +3764,7 @@ fn main(x: u32) -> u32 {
   match imported::make_some(x) {
     imported::Option::Some(v) => v,
     imported::Option::None => u32:0,
+    invalid! => u32:0,
   }
 }
 )";

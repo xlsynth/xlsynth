@@ -302,6 +302,160 @@ fn call() -> bits[32] { id(bits[32]:0x0) }
   EXPECT_STREQ(name_call, "call");
 }
 
+TEST(XlsCApiTest, FunctionInsertSpecializationWithConstantSumPayloadPatterns) {
+  // The constants keep nominal types out of the specialized signature while
+  // both payload-pattern forms still require synthetic spans in its body.
+  const char kProgram[] = R"(enum Payload {
+    Tuple(u8, u8),
+    Struct { left: u8, right: u8 },
+}
+
+const TUPLE: Payload = Payload::Tuple(u8:1, u8:2);
+const RECORD: Payload = Payload::Struct { left: u8:3, right: u8:4 };
+
+pub fn add_payload<N: u32>(bias: bits[N]) -> bits[N] {
+    let tuple_sum = match TUPLE {
+        Payload::Tuple(left, right) => (left as bits[N]) + (right as bits[N]),
+        _ => bits[N]:0,
+    };
+    let struct_sum = match RECORD {
+        Payload::Struct { left, right } => (left as bits[N]) + (right as bits[N]),
+        _ => bits[N]:0,
+    };
+    tuple_sum + struct_sum + bias
+}
+)";
+  const std::string dslx_stdlib_path(xls::kDefaultDslxStdlibPath);
+  xls_dslx_import_data* import_data = xls_dslx_import_data_create(
+      dslx_stdlib_path.c_str(),
+      /*additional_search_paths=*/nullptr, /*additional_search_paths_count=*/0);
+  ASSERT_NE(import_data, nullptr);
+  absl::Cleanup free_import_data(
+      [=] { xls_dslx_import_data_free(import_data); });
+
+  char* error = nullptr;
+  absl::Cleanup free_error([&] { xls_c_str_free(error); });
+  xls_dslx_typechecked_module* tm = nullptr;
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(
+      kProgram, "sum_specialize.x", "sum_specialize", import_data, &error, &tm))
+      << (error == nullptr ? "" : error);
+  absl::Cleanup free_tm([&] { xls_dslx_typechecked_module_free(tm); });
+  ASSERT_NE(tm, nullptr);
+
+  xls_dslx_module* module = xls_dslx_typechecked_module_get_module(tm);
+  ASSERT_NE(module, nullptr);
+  ASSERT_EQ(xls_dslx_module_get_member_count(module), 4);
+  xls_dslx_function* source_function = xls_dslx_module_member_get_function(
+      xls_dslx_module_get_member(module, 3));
+  ASSERT_NE(source_function, nullptr);
+  ASSERT_TRUE(xls_dslx_function_is_parametric(source_function));
+  char* original_text = xls_dslx_module_to_string(module);
+  absl::Cleanup free_original_text([&] { xls_c_str_free(original_text); });
+
+  xls_dslx_interp_value* width =
+      xls_dslx_interp_value_make_ubits(/*bit_count=*/32, /*value=*/16);
+  absl::Cleanup free_width([&] { xls_dslx_interp_value_free(width); });
+  xls_dslx_parametric_env_item items[] = {{"N", width}};
+  xls_dslx_parametric_env* env = nullptr;
+  ASSERT_TRUE(
+      xls_dslx_parametric_env_create(items, /*items_count=*/1, &error, &env))
+      << (error == nullptr ? "" : error);
+  absl::Cleanup free_env([&] { xls_dslx_parametric_env_free(env); });
+  xls_dslx_function_specialization_request requests[] = {
+      {.function_name = "add_payload",
+       .specialized_name = "add_payload_N16",
+       .env = env},
+  };
+
+  xls_dslx_typechecked_module* specialized_tm = nullptr;
+  ASSERT_TRUE(xls_dslx_typechecked_module_insert_function_specializations(
+      tm, requests, /*request_count=*/1, import_data,
+      "sum_specialize.specializations", &error, &specialized_tm))
+      << (error == nullptr ? "" : error);
+  absl::Cleanup free_specialized_tm(
+      [&] { xls_dslx_typechecked_module_free(specialized_tm); });
+  ASSERT_NE(specialized_tm, nullptr);
+
+  xls_dslx_module* specialized_module =
+      xls_dslx_typechecked_module_get_module(specialized_tm);
+  ASSERT_NE(specialized_module, nullptr);
+  EXPECT_NE(specialized_module, module);
+  ASSERT_EQ(xls_dslx_module_get_member_count(specialized_module), 5);
+  xls_dslx_function* specialized_function = xls_dslx_module_member_get_function(
+      xls_dslx_module_get_member(specialized_module, 4));
+  ASSERT_NE(specialized_function, nullptr);
+  EXPECT_FALSE(xls_dslx_function_is_parametric(specialized_function));
+  char* specialized_name =
+      xls_dslx_function_get_identifier(specialized_function);
+  absl::Cleanup free_specialized_name(
+      [&] { xls_c_str_free(specialized_name); });
+  EXPECT_STREQ(specialized_name, "add_payload_N16");
+
+  // Query the actual re-typechecked AST before round-tripping its source to IR.
+  xls_dslx_type_info* type_info =
+      xls_dslx_typechecked_module_get_type_info(specialized_tm);
+  ASSERT_NE(type_info, nullptr);
+  ASSERT_EQ(xls_dslx_function_get_param_count(specialized_function), 1);
+  for (xls_dslx_type_annotation* annotation :
+       {xls_dslx_param_get_type_annotation(
+            xls_dslx_function_get_param(specialized_function, 0)),
+        xls_dslx_function_get_return_type(specialized_function)}) {
+    ASSERT_NE(annotation, nullptr);
+    const xls_dslx_type* type =
+        xls_dslx_type_info_get_type_type_annotation(type_info, annotation);
+    ASSERT_NE(type, nullptr);
+    int64_t bit_count = 0;
+    ASSERT_TRUE(xls_dslx_type_get_total_bit_count(type, &error, &bit_count))
+        << (error == nullptr ? "" : error);
+    EXPECT_EQ(bit_count, 16);
+  }
+
+  char* original_text_after = xls_dslx_module_to_string(module);
+  absl::Cleanup free_original_text_after(
+      [&] { xls_c_str_free(original_text_after); });
+  EXPECT_STREQ(original_text_after, original_text);
+  EXPECT_EQ(xls_dslx_module_get_member_count(module), 4);
+  EXPECT_TRUE(xls_dslx_function_is_parametric(source_function));
+
+  char* specialized_text = xls_dslx_module_to_string(specialized_module);
+  absl::Cleanup free_specialized_text(
+      [&] { xls_c_str_free(specialized_text); });
+  char* ir = nullptr;
+  absl::Cleanup free_ir([&] { xls_c_str_free(ir); });
+  ASSERT_TRUE(xls_convert_dslx_to_ir(
+      specialized_text, "sum_specialized.x", "sum_specialized",
+      dslx_stdlib_path.c_str(), /*additional_search_paths=*/nullptr,
+      /*additional_search_paths_count=*/0, &error, &ir))
+      << (error == nullptr ? "" : error);
+  xls_package* package = nullptr;
+  absl::Cleanup free_package([&] { xls_package_free(package); });
+  ASSERT_TRUE(xls_parse_ir_package(ir, "sum_specialized.ir", &error, &package))
+      << (error == nullptr ? "" : error);
+  char* ir_name = nullptr;
+  absl::Cleanup free_ir_name([&] { xls_c_str_free(ir_name); });
+  ASSERT_TRUE(xls_mangle_dslx_name("sum_specialized", specialized_name, &error,
+                                   &ir_name))
+      << (error == nullptr ? "" : error);
+  xls_function* function = nullptr;
+  ASSERT_TRUE(xls_package_get_function(package, ir_name, &error, &function))
+      << (error == nullptr ? "" : error);
+  xls_value* bias = nullptr;
+  absl::Cleanup free_bias([&] { xls_value_free(bias); });
+  ASSERT_TRUE(
+      xls_value_make_ubits(/*bit_count=*/16, /*value=*/5, &error, &bias))
+      << (error == nullptr ? "" : error);
+  const xls_value* args[] = {bias};
+  xls_value* result = nullptr;
+  absl::Cleanup free_result([&] { xls_value_free(result); });
+  ASSERT_TRUE(
+      xls_interpret_function(function, /*argc=*/1, args, &error, &result))
+      << (error == nullptr ? "" : error);
+  char* result_text = nullptr;
+  absl::Cleanup free_result_text([&] { xls_c_str_free(result_text); });
+  ASSERT_TRUE(xls_value_to_string(result, &result_text));
+  EXPECT_STREQ(result_text, "bits[16]:15");  // 1 + 2 + 3 + 4 + bias.
+}
+
 // -- Bits comparisons
 
 TEST(XlsCApiTest, BitsUnsignedComparisonsMixedWidths) {
@@ -1617,15 +1771,11 @@ struct MySumHolder {
     const xls_dslx_type* sum_def_type =
         xls_dslx_type_info_get_type_sum_def(type_info, sum_def);
     int64_t total_bit_count = 0;
-    ASSERT_FALSE(xls_dslx_type_get_total_bit_count(sum_def_type, &error,
-                                                   &total_bit_count));
-    ASSERT_NE(error, nullptr);
-    EXPECT_THAT(std::string_view{error},
-                HasSubstr("Cannot query total bit count for a type containing "
-                          "semantic sums in Phase 1"));
-    EXPECT_EQ(total_bit_count, 0);
-    xls_c_str_free(error);
-    error = nullptr;
+    ASSERT_TRUE(xls_dslx_type_get_total_bit_count(sum_def_type, &error,
+                                                  &total_bit_count))
+        << "got not-ok result from get-total-bit-count; error: " << error;
+    ASSERT_EQ(error, nullptr);
+    EXPECT_EQ(total_bit_count, 1 + 8);
 
     xls_dslx_module_member* sum_member =
         xls_dslx_module_member_from_sum_def(sum_def);
@@ -1641,15 +1791,11 @@ struct MySumHolder {
     const xls_dslx_type* struct_def_type =
         xls_dslx_type_info_get_type_struct_def(type_info, struct_def);
     int64_t total_bit_count = -1;
-    ASSERT_FALSE(xls_dslx_type_get_total_bit_count(struct_def_type, &error,
-                                                   &total_bit_count));
-    ASSERT_NE(error, nullptr);
-    EXPECT_THAT(std::string_view{error},
-                HasSubstr("Cannot query total bit count for a type containing "
-                          "semantic sums in Phase 1"));
-    EXPECT_EQ(total_bit_count, 0);
-    xls_c_str_free(error);
-    error = nullptr;
+    ASSERT_TRUE(xls_dslx_type_get_total_bit_count(struct_def_type, &error,
+                                                  &total_bit_count))
+        << "got not-ok result from get-total-bit-count; error: " << error;
+    ASSERT_EQ(error, nullptr);
+    EXPECT_EQ(total_bit_count, 1 + 8);
   }
 
   {
