@@ -1215,6 +1215,7 @@ fn f(value: Option) -> u32 {
     Option::None => u32:0,
     Option::Some(E::A) => u32:1,
     Option::Some(E::C) => u32:2,
+    invalid! => u32:3,
   }
 }
 )",
@@ -1236,6 +1237,7 @@ fn f(value: Message) -> u32 {
     Message::Empty => u32:0,
     Message::Data { flag: _, state: E::A } => u32:1,
     Message::Data { flag: _, state: E::C } => u32:2,
+    invalid! => u32:3,
   }
 }
 )",
@@ -1694,13 +1696,22 @@ fn f(x: u16) -> Box<u8> { Box::Value(x) }
       TypecheckFails(HasSubstr("size mismatch")));
 }
 
-TEST(TypecheckV2Test, GenericSemanticSumValidatesInstantiatedPayloadType) {
+TEST(TypecheckV2Test, GenericSemanticSumAcceptsInstantiatedAggregatePayloadType) {
   EXPECT_THAT(
       R"(#![feature(generics)]
 enum Box<T: type> { Value(T) }
 fn f(x: Box<u8[1]>) -> Box<u8[1]> { x }
 )",
-      TypecheckFails(HasSubstr("Semantic sum payload members must be")));
+      TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumRejectsMismatchedAggregatePayload) {
+  EXPECT_THAT(
+      R"(#![feature(generics)]
+enum Box<T: type> { Value(T) }
+fn f(x: u16[1]) -> Box<u8[1]> { Box::Value(x) }
+)",
+      TypecheckFails(HasSubstr("size mismatch")));
 }
 
 TEST(TypecheckV2Test, SemanticSumReferenceResolvesValueDefault) {
