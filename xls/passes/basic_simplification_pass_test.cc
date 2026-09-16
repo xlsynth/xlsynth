@@ -17,10 +17,10 @@
 #include <memory>
 #include <utility>
 
+#include "absl/status/statusor.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "xls/common/fuzzing/fuzztest.h"
-#include "absl/status/statusor.h"
 #include "xls/common/status/matchers.h"
 #include "xls/fuzzer/ir_fuzzer/ir_fuzz_domain.h"
 #include "xls/fuzzer/ir_fuzzer/ir_fuzz_test_library.h"
@@ -292,6 +292,124 @@ TEST_F(BasicSimplificationPassTest, CollapseOneSideToNaryOr) {
   ASSERT_THAT(Run(p.get()), IsOkAndHolds(true));
   EXPECT_THAT(f->return_value(),
               m::Or(m::Param("x"), m::Param("y"), m::Param("z")));
+}
+
+TEST_F(BasicSimplificationPassTest,
+       MergeContiguousEffectiveOrReductionsToWholeVector) {
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, ParseFunction(R"(
+    fn f(x: bits[32]) -> bits[1] {
+      upper: bits[31] = bit_slice(x, start=1, width=31)
+      upper_or: bits[1] = or_reduce(upper)
+      bit0: bits[1] = bit_slice(x, start=0, width=1)
+      ret result: bits[1] = or(upper_or, bit0)
+    }
+  )",
+                                                       p.get()));
+
+  ScopedVerifyEquivalence sve(f);
+  ASSERT_THAT(Run(p.get()), IsOkAndHolds(true));
+  EXPECT_THAT(f->return_value(), m::OrReduce(m::Param("x")));
+}
+
+TEST_F(BasicSimplificationPassTest,
+       MergeContiguousEffectiveOrReductionsToSlice) {
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, ParseFunction(R"(
+    fn f(x: bits[32]) -> bits[1] {
+      upper: bits[3] = bit_slice(x, start=5, width=3)
+      upper_or: bits[1] = or_reduce(upper)
+      lower: bits[2] = bit_slice(x, start=3, width=2)
+      lower_or: bits[1] = or_reduce(lower)
+      ret result: bits[1] = or(upper_or, lower_or)
+    }
+  )",
+                                                       p.get()));
+
+  ScopedVerifyEquivalence sve(f);
+  ASSERT_THAT(Run(p.get()), IsOkAndHolds(true));
+  EXPECT_THAT(f->return_value(), m::OrReduce(m::BitSlice(m::Param("x"), 3, 5)));
+}
+
+TEST_F(BasicSimplificationPassTest,
+       MergeContiguousEffectiveOrReductionsWithinNaryOr) {
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, ParseFunction(R"(
+    fn f(x: bits[8], p: bits[1]) -> bits[1] {
+      upper: bits[2] = bit_slice(x, start=6, width=2)
+      upper_or: bits[1] = or_reduce(upper)
+      lower: bits[2] = bit_slice(x, start=0, width=2)
+      lower_or: bits[1] = or_reduce(lower)
+      middle: bits[4] = bit_slice(x, start=2, width=4)
+      middle_or: bits[1] = or_reduce(middle)
+      ret result: bits[1] = or(p, upper_or, lower_or, middle_or)
+    }
+  )",
+                                                       p.get()));
+
+  ScopedVerifyEquivalence sve(f);
+  ASSERT_THAT(Run(p.get()), IsOkAndHolds(true));
+  EXPECT_THAT(f->return_value(),
+              m::Or(m::Param("p"), m::OrReduce(m::Param("x"))));
+}
+
+TEST_F(BasicSimplificationPassTest, SharedOrReductionDoesNotGrowReductionCone) {
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, ParseFunction(R"(
+    fn f(x: bits[32]) -> (bits[1], bits[1]) {
+      upper: bits[31] = bit_slice(x, start=1, width=31)
+      upper_or: bits[1] = or_reduce(upper)
+      bit0: bits[1] = bit_slice(x, start=0, width=1)
+      merged: bits[1] = or(upper_or, bit0)
+      ret result: (bits[1], bits[1]) = tuple(merged, upper_or)
+    }
+  )",
+                                                       p.get()));
+
+  ScopedVerifyEquivalence sve(f);
+  ASSERT_THAT(Run(p.get()), IsOkAndHolds(false));
+  EXPECT_THAT(f->return_value(),
+              m::Tuple(m::Or(m::OrReduce(m::BitSlice(m::Param("x"), 1, 31)),
+                             m::BitSlice(m::Param("x"), 0, 1)),
+                       m::OrReduce(m::BitSlice(m::Param("x"), 1, 31))));
+}
+
+TEST_F(BasicSimplificationPassTest,
+       ContainedEffectiveOrReductionReusesCoveringReduction) {
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, ParseFunction(R"(
+    fn f(x: bits[32]) -> bits[1] {
+      whole: bits[1] = or_reduce(x)
+      middle: bits[2] = bit_slice(x, start=5, width=2)
+      middle_or: bits[1] = or_reduce(middle)
+      ret result: bits[1] = or(whole, middle_or)
+    }
+  )",
+                                                       p.get()));
+
+  ScopedVerifyEquivalence sve(f);
+  ASSERT_THAT(Run(p.get()), IsOkAndHolds(true));
+  EXPECT_THAT(f->return_value(), m::OrReduce(m::Param("x")));
+}
+
+TEST_F(BasicSimplificationPassTest,
+       NoncontiguousEffectiveOrReductionsDoNotMerge) {
+  auto p = CreatePackage();
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, ParseFunction(R"(
+    fn f(x: bits[32]) -> bits[1] {
+      upper: bits[3] = bit_slice(x, start=5, width=3)
+      upper_or: bits[1] = or_reduce(upper)
+      lower: bits[2] = bit_slice(x, start=0, width=2)
+      lower_or: bits[1] = or_reduce(lower)
+      ret result: bits[1] = or(upper_or, lower_or)
+    }
+  )",
+                                                       p.get()));
+
+  ASSERT_THAT(Run(p.get()), IsOkAndHolds(false));
+  EXPECT_THAT(f->return_value(),
+              m::Or(m::OrReduce(m::BitSlice(m::Param("x"), 5, 3)),
+                    m::OrReduce(m::BitSlice(m::Param("x"), 0, 2))));
 }
 
 TEST_F(BasicSimplificationPassTest, NorWithLiteralZeroOperands) {

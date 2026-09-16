@@ -71,6 +71,173 @@ bool IsBinaryIrreflexiveRelation(Node* node) {
   }
 }
 
+// A contiguous range of bits whose OR reduction is represented by a node.
+//
+// A one-bit bit slice is an effective OR reduction because or_reduce(bits[1])
+// is the identity and is removed by this pass.
+struct EffectiveOrReductionRange {
+  Node* source;
+  int64_t start;
+  int64_t width;
+};
+
+std::optional<EffectiveOrReductionRange> MatchEffectiveOrReduction(Node* node) {
+  Node* bits = nullptr;
+  if (node->op() == Op::kOrReduce) {
+    bits = node->operand(0);
+  } else if (node->Is<BitSlice>() && node->BitCountOrDie() == 1) {
+    bits = node;
+  } else {
+    return std::nullopt;
+  }
+
+  const int64_t width = bits->BitCountOrDie();
+  int64_t start = 0;
+  while (bits->Is<BitSlice>()) {
+    BitSlice* slice = bits->As<BitSlice>();
+    start += slice->start();
+    bits = slice->operand(0);
+  }
+  return EffectiveOrReductionRange{
+      .source = bits, .start = start, .width = width};
+}
+
+// Merges a connected set of OR terms that reduce adjacent or overlapping
+// ranges from one vector:
+//
+//   or(or_reduce(x[31:1]), x[0]) => or_reduce(x)
+//
+// A merged range can also be a proper slice of the source vector. Unrelated
+// OR terms are left in place.
+absl::StatusOr<bool> TryMergeContiguousOrReductions(Node* n) {
+  if (n->op() != Op::kOr || !n->Is<NaryOp>() || n->operand_count() < 2) {
+    return false;
+  }
+
+  struct IndexedRange {
+    EffectiveOrReductionRange range;
+    int64_t operand_index;
+  };
+  std::vector<IndexedRange> ranges;
+  ranges.reserve(n->operand_count());
+  for (int64_t i = 0; i < n->operand_count(); ++i) {
+    std::optional<EffectiveOrReductionRange> range =
+        MatchEffectiveOrReduction(n->operand(i));
+    if (range.has_value() && range->width != 0) {
+      ranges.push_back(IndexedRange{.range = *range, .operand_index = i});
+    }
+  }
+
+  auto make_reduction = [n](Node* source, int64_t start,
+                            int64_t end) -> absl::StatusOr<Node*> {
+    Node* contiguous_bits = source;
+    if (start != 0 || end != source->BitCountOrDie()) {
+      XLS_ASSIGN_OR_RETURN(
+          contiguous_bits,
+          n->function_base()->MakeNode<BitSlice>(
+              n->loc(), source, /*start=*/start, /*width=*/end - start));
+    }
+    if (end - start == 1) {
+      return contiguous_bits;
+    }
+    return n->function_base()->MakeNode<BitwiseReductionOp>(
+        n->loc(), contiguous_bits, Op::kOrReduce);
+  };
+
+  for (int64_t seed = 0; seed < ranges.size(); ++seed) {
+    std::vector<int64_t> component = {seed};
+    std::vector<bool> included(ranges.size(), false);
+    included[seed] = true;
+    Node* source = ranges[seed].range.source;
+    int64_t start = ranges[seed].range.start;
+    int64_t end = start + ranges[seed].range.width;
+
+    // Grow the interval until it contains every same-source range connected
+    // by adjacency or overlap, regardless of operand order.
+    bool extended = false;
+    do {
+      extended = false;
+      for (int64_t i = 0; i < ranges.size(); ++i) {
+        if (included[i] || ranges[i].range.source != source) {
+          continue;
+        }
+        const int64_t range_end = ranges[i].range.start + ranges[i].range.width;
+        if (end < ranges[i].range.start || range_end < start) {
+          continue;
+        }
+        included[i] = true;
+        component.push_back(i);
+        start = std::min(start, ranges[i].range.start);
+        end = std::max(end, range_end);
+        extended = true;
+      }
+    } while (extended);
+    if (component.size() < 2) {
+      continue;
+    }
+
+    const IndexedRange* covering_range = nullptr;
+    for (int64_t index : component) {
+      const IndexedRange& range = ranges[index];
+      if (range.range.start == start &&
+          range.range.start + range.range.width == end) {
+        covering_range = &range;
+        break;
+      }
+    }
+
+    Node* replacement = nullptr;
+    if (covering_range != nullptr) {
+      replacement = n->operand(covering_range->operand_index);
+    } else {
+      bool has_shared_reduction = false;
+      for (int64_t index : component) {
+        const IndexedRange& range = ranges[index];
+        Node* operand = n->operand(range.operand_index);
+        // Preserving a shared reduction while adding a wider one can grow the
+        // reduction cone. One-bit reductions are wiring after simplification.
+        if (operand->op() == Op::kOrReduce && range.range.width > 1 &&
+            !HasSingleUse(operand)) {
+          has_shared_reduction = true;
+          break;
+        }
+      }
+      if (has_shared_reduction) {
+        continue;
+      }
+      XLS_ASSIGN_OR_RETURN(replacement, make_reduction(source, start, end));
+    }
+
+    int64_t insertion_index = n->operand_count();
+    std::vector<bool> consumed(n->operand_count(), false);
+    for (int64_t index : component) {
+      int64_t operand_index = ranges[index].operand_index;
+      insertion_index = std::min(insertion_index, operand_index);
+      consumed[operand_index] = true;
+    }
+
+    std::vector<Node*> new_operands;
+    new_operands.reserve(n->operand_count() - component.size() + 1);
+    for (int64_t i = 0; i < n->operand_count(); ++i) {
+      if (i == insertion_index) {
+        new_operands.push_back(replacement);
+      }
+      if (!consumed[i]) {
+        new_operands.push_back(n->operand(i));
+      }
+    }
+    VLOG(2) << "FOUND: merge OR of contiguous effective OR reductions";
+    if (new_operands.size() == 1) {
+      XLS_RETURN_IF_ERROR(n->ReplaceUsesWith(new_operands.front()));
+    } else {
+      XLS_RETURN_IF_ERROR(
+          n->ReplaceUsesWithNew<NaryOp>(new_operands, Op::kOr).status());
+    }
+    return true;
+  }
+  return false;
+}
+
 struct EqNeSelectNotOrIncMatch {
   Node* x;
   Op cmp;
@@ -205,6 +372,12 @@ absl::StatusOr<bool> MatchPatterns(Node* n) {
           n->ReplaceUsesWithNew<NaryOp>(unique_operands, n->op()).status());
       return true;
     }
+  }
+
+  XLS_ASSIGN_OR_RETURN(bool merged_contiguous_or_reductions,
+                       TryMergeContiguousOrReductions(n));
+  if (merged_contiguous_or_reductions) {
+    return true;
   }
 
   // Single operand forms of non-inverting logical ops (AND, OR) can be
