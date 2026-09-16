@@ -404,6 +404,45 @@ fn main(x: SparseMaybe) -> u32 {
   CheckExhaustiveOnlyAfterLastPattern(kMatch);
 }
 
+TEST(ExhaustivenessMatchTest, MatchOnSparseSumAggregateConstants) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Packet : u3 {
+  Empty = 5,
+  Data((bool, bool)) = 2,
+}
+const FF = Packet::Data((false, false));
+const FT = Packet::Data((false, true));
+const TF = Packet::Data((true, false));
+const TT = Packet::Data((true, true));
+
+fn main(x: (Packet, bool)) -> u32 {
+  match x {
+    (Packet::Empty, _) => u32:0,
+    (FF, _) => u32:1,
+    (FT, _) => u32:2,
+    (TF, _) => u32:3,
+    (TT, _) => u32:4,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, RuntimeSumPayloadNamesDoNotCompleteCoverage) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Packet : u3 { Empty = 5, Data { bits: (u1, u1) } = 2 }
+
+fn main(x: Packet, y: u1, z: u1) -> u32 {
+  match x {
+    Packet::Data { bits: (y, _) } => u32:0,
+    Packet::Data { bits: (z, _) } => u32:1,
+    Packet::Empty => u32:2,
+  }
+})";
+  CheckNonExhaustive(kMatch);
+}
+
 TEST(ExhaustivenessMatchTest,
      InvalidPatternDoesNotCompleteSemanticSumConstructors) {
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
