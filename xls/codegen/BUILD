@@ -137,6 +137,7 @@ cc_test(
         "//xls/scheduling:scheduling_options",
         "//xls/simulation:module_testbench",
         "//xls/simulation:module_testbench_thread",
+        "//xls/simulation:verilog_simulator",
         "//xls/simulation:verilog_test_base",
         "@abseil-cpp//absl/status",
         "@googletest//:gtest",
