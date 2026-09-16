@@ -159,8 +159,7 @@ TEST(Phase1SumTypeEncodingTest, RejectsSumVariantsOutsideDeclarationOrder) {
         invalid_variants.push_back(valid_type.variants().at(0).Clone());
         invalid_variants.push_back(valid_type.variants().at(2).Clone());
         SumType invalid_type(valid_type.nominal_type(),
-                             std::move(invalid_variants),
-                             valid_type.zero_selection());
+                             std::move(invalid_variants));
       },
       "Check failed");
 }
