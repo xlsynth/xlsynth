@@ -14,6 +14,7 @@
 
 #include "xls/dslx/import_data.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
@@ -32,6 +33,7 @@
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/substitute.h"
+#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
@@ -91,23 +93,36 @@ void ImportData::KeepAlive(std::unique_ptr<ModuleInfo> module_info) {
   discarded_modules_.push_back(std::move(module_info));
 }
 
+bool ImportData::OwnsModule(const Module* module) const {
+  absl::MutexLock lock(module_ownership_mutex_.get());
+  return std::any_of(modules_.begin(), modules_.end(),
+                     [module](const auto& entry) {
+                       return &entry.second->module() == module;
+                     });
+}
+
 absl::StatusOr<ModuleInfo*> ImportData::Put(
     const ImportTokens& subject, std::unique_ptr<ModuleInfo> module_info) {
   auto* pmodule_info = module_info.get();
-  auto [it, inserted] = modules_.emplace(subject, std::move(module_info));
+  bool inserted;
+  {
+    absl::MutexLock lock(module_ownership_mutex_.get());
+    inserted = modules_.try_emplace(subject, std::move(module_info)).second;
+  }
   if (!inserted) {
     return absl::InvalidArgumentError(
         "Module is already loaded for import of " + subject.ToString());
+  } else {
+    if (pmodule_info->inference_table_converter() != nullptr) {
+      SetInferenceTableConverter(&pmodule_info->module(),
+                                 pmodule_info->inference_table_converter());
+    }
+    path_to_module_info_[std::string{pmodule_info->path()}] = pmodule_info;
+    if (pmodule_info->builtin_stubs()) {
+      builtin_stubs_module_ = &pmodule_info->module();
+    }
+    return pmodule_info;
   }
-  if (pmodule_info->inference_table_converter() != nullptr) {
-    SetInferenceTableConverter(&pmodule_info->module(),
-                               pmodule_info->inference_table_converter());
-  }
-  path_to_module_info_[std::string{pmodule_info->path()}] = pmodule_info;
-  if (pmodule_info->builtin_stubs()) {
-    builtin_stubs_module_ = &pmodule_info->module();
-  }
-  return pmodule_info;
 }
 
 absl::StatusOr<TypeInfo*> ImportData::GetRootTypeInfoForNode(
