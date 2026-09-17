@@ -555,9 +555,10 @@ Arguments, returns, assignments, selected conditionals, tuples, structs,
 arrays and array updates, proc state, channels, and hardware boundaries preserve
 an existing sum representation bit-for-bit. This is backward incompatible with
 the former boundary behavior that cleared inactive padding in forwarded values.
-Wire layout and constructor encodings are unchanged. Interfaces requiring
-recursively canonical output must explicitly reconstruct their active nested
-sums and define how they handle malformed tags.
+Within Phase Two, the change from clearing inactive padding to preserving it
+leaves the shared-slot wire layout and constructor encodings unchanged.
+Interfaces requiring recursively canonical output must explicitly reconstruct
+their active nested sums and define how they handle malformed tags.
 
 Channels may carry sum messages, such as `chan<Message> out`. Channel handles
 and tokens cannot be stored inside sum payloads, including through nested

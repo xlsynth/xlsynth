@@ -110,9 +110,11 @@ absl::StatusOr<InterpValue> ConstructCanonicalQuickCheckInput(
   } else if (type.IsSum()) {
     const SumType& sum = type.AsSum();
     const SumTypeEncoding encoding(sum);
-    XLS_ASSIGN_OR_RETURN(SumTypeEncoding::VariantInfo variant,
-                         encoding.GetVariantByTagBits(
-                             value.GetValuesOrDie().at(0).GetBitsOrDie()));
+    XLS_ASSIGN_OR_RETURN(internal::EncodedSumView sum_view,
+                         internal::GetEncodedSumView(value));
+    XLS_ASSIGN_OR_RETURN(
+        SumTypeEncoding::VariantInfo variant,
+        encoding.GetVariantByTagBits(sum_view.tag.GetBitsOrDie()));
     XLS_ASSIGN_OR_RETURN(std::vector<InterpValue> members,
                          GetSumPayloadValues(sum, value));
     for (int64_t i = 0; i < members.size(); ++i) {
