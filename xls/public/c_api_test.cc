@@ -4303,6 +4303,94 @@ TEST(XlsCApiTest, DslxEnumMetadataUsesNominalDeclarationIdentity) {
             xls::GetDslxValueMetadataForTesting(values[4]).lock());
 }
 
+TEST(XlsCApiTest, DslxRawEnumFromRetainedTransformedModule) {
+  constexpr const char* kImported = "pub fn f<N: u32>() -> u32 { N }";
+  constexpr const char* kProgram = R"(
+import imported;
+enum E: u2 { A = 0 }
+const VALUE: E = E::A;
+fn caller() -> u32 { imported::f<u32:1>() }
+proc P {}
+impl P {
+  fn new() -> Self { P {} }
+}
+#[test]
+fn test_spawn() {
+  let p = P::new();
+  p.spawn();
+}
+)";
+  auto* owner = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  xls_dslx_typechecked_module* imported_tm = nullptr;
+  xls_dslx_typechecked_module* tm = nullptr;
+  xls_dslx_invocation_callee_data_array* invocations = nullptr;
+  xls_bits* bits = nullptr;
+  xls_dslx_interp_value* value = nullptr;
+  char* error = nullptr;
+  absl::Cleanup cleanup([&] {
+    xls_c_str_free(error);
+    xls_dslx_interp_value_free(value);
+    xls_bits_free(bits);
+    xls_dslx_invocation_callee_data_array_free(invocations);
+    xls_dslx_typechecked_module_free(tm);
+    xls_dslx_typechecked_module_free(imported_tm);
+    xls_dslx_import_data_free(owner);
+  });
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kImported, "imported.x", "imported",
+                                           owner, &error, &imported_tm))
+      << error;
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kProgram, "retained_enum.x",
+                                           "retained_enum", owner, &error, &tm))
+      << error;
+  auto* module = xls_dslx_typechecked_module_get_module(tm);
+  auto* type_info = xls_dslx_typechecked_module_get_type_info(tm);
+  auto* imported = xls_dslx_typechecked_module_get_module(imported_tm);
+  auto* function = xls_dslx_module_member_get_function(
+      xls_dslx_module_get_member(imported, 0));
+  ASSERT_NE(function, nullptr);
+
+  // Transforming the spawning test reparses the module, but imported calls
+  // still expose callers from the retained original through public accessors.
+  invocations =
+      xls_dslx_type_info_get_all_invocation_callee_data(type_info, function);
+  ASSERT_NE(invocations, nullptr);
+  xls_dslx_module* retained_module = nullptr;
+  for (int64_t i = 0;
+       i < xls_dslx_invocation_callee_data_array_get_count(invocations); ++i) {
+    auto* data = xls_dslx_invocation_callee_data_array_get(invocations, i);
+    auto* invocation = xls_dslx_invocation_callee_data_get_invocation(data);
+    auto* root_data =
+        xls_dslx_type_info_get_root_invocation_data(type_info, invocation);
+    ASSERT_NE(root_data, nullptr);
+    auto* caller = xls_dslx_invocation_data_get_caller(root_data);
+    ASSERT_NE(caller, nullptr);
+    auto* caller_module =
+        xls_dslx_expr_get_owner_module(xls_dslx_function_get_body(caller));
+    if (caller_module != module) {
+      retained_module = caller_module;
+      break;
+    }
+  }
+  ASSERT_NE(retained_module, nullptr);
+  ASSERT_NE(retained_module, module);
+  for (int64_t i = 0; i < xls_dslx_module_get_member_count(module); ++i) {
+    EXPECT_NE(
+        xls_dslx_module_member_get_kind(xls_dslx_module_get_member(module, i)),
+        xls_dslx_module_member_kind_test_function);
+  }
+  auto* enum_def = xls_dslx_module_member_get_enum_def(
+      xls_dslx_module_get_member(retained_module, 1));
+  ASSERT_NE(enum_def, nullptr);
+  ASSERT_TRUE(xls_bits_make_ubits(2, 0, &error, &bits));
+  ASSERT_TRUE(
+      xls_dslx_interp_value_make_enum(enum_def, false, bits, &error, &value))
+      << error;
+  char* text = xls_dslx_interp_value_to_string(value);
+  EXPECT_STREQ(text, "E:0");
+  xls_c_str_free(text);
+}
+
 enum class MetadataWaiter { kNone, kEnum, kConstExpr };
 enum class MetadataTemperature { kCold, kWarm };
 
