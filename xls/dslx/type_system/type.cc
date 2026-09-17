@@ -701,7 +701,9 @@ bool SumTypeVariant::HasToken() const {
 
 bool SumType::operator==(const Type& other) const {
   if (auto* t = dynamic_cast<const SumType*>(&other)) {
-    if (&sum_def_ != &t->sum_def_ || variants_.size() != t->variants_.size()) {
+    if (&sum_def_ != &t->sum_def_ || variants_.size() != t->variants_.size() ||
+        tag_bit_count_ != t->tag_bit_count_ ||
+        discriminants_ != t->discriminants_) {
       return false;
     }
     for (int64_t i = 0; i < variants_.size(); ++i) {
@@ -782,7 +784,7 @@ bool SumType::HasToken() const {
 }
 
 std::vector<TypeDim> SumType::GetAllDims() const {
-  std::vector<TypeDim> results = {storage_tag_bit_count()};
+  std::vector<TypeDim> results = {tag_bit_count()};
   for (const SumTypeVariant& variant : variants_) {
     std::vector<TypeDim> variant_dims = variant.GetAllDims();
     for (TypeDim& dim : variant_dims) {
@@ -792,13 +794,22 @@ std::vector<TypeDim> SumType::GetAllDims() const {
   return results;
 }
 
-absl::StatusOr<TypeDim> SumType::GetTotalBitCount() const {
-  TypeDim sum = storage_tag_bit_count();
+absl::StatusOr<TypeDim> SumType::GetMaxPayloadBitCount() const {
+  TypeDim payload_bit_count = TypeDim::CreateU32(0);
   for (const SumTypeVariant& variant : variants_) {
     XLS_ASSIGN_OR_RETURN(TypeDim variant_bits, variant.GetTotalBitCount());
-    XLS_ASSIGN_OR_RETURN(sum, sum.Add(variant_bits));
+    XLS_ASSIGN_OR_RETURN(InterpValue variant_is_wider,
+                         variant_bits.value().Gt(payload_bit_count.value()));
+    if (variant_is_wider.IsTrue()) {
+      payload_bit_count = std::move(variant_bits);
+    }
   }
-  return sum;
+  return payload_bit_count;
+}
+
+absl::StatusOr<TypeDim> SumType::GetTotalBitCount() const {
+  XLS_ASSIGN_OR_RETURN(TypeDim payload_bit_count, GetMaxPayloadBitCount());
+  return tag_bit_count().Add(payload_bit_count);
 }
 
 std::unique_ptr<Type> SumType::CloneToUnique() const {
@@ -808,12 +819,12 @@ std::unique_ptr<Type> SumType::CloneToUnique() const {
     variants.push_back(variant.Clone());
   }
   return std::make_unique<SumType>(sum_def_, std::move(variants),
-                                   zero_selection_);
+                                   tag_bit_count_, discriminants_);
 }
 
-TypeDim SumType::storage_tag_bit_count() const {
+TypeDim SumType::InferImplicitTagBitCount() const {
   int64_t bit_count =
-      variant_count() <= 1 ? 1 : Bits::MinBitCountUnsigned(variant_count() - 1);
+      variant_count() <= 1 ? 0 : Bits::MinBitCountUnsigned(variant_count() - 1);
   return TypeDim::CreateU32(bit_count);
 }
 
@@ -1231,6 +1242,66 @@ bool TypeContainsSemanticSum(const Type& type) {
     return TypeContainsSemanticSum(channel_type->payload_type());
   } else {
     return false;
+  }
+}
+
+namespace {
+
+absl::StatusOr<bool> SumVariantIsInhabited(const SumTypeVariant& variant) {
+  for (int64_t i = 0; i < variant.size(); ++i) {
+    XLS_ASSIGN_OR_RETURN(bool member_is_inhabited,
+                         TypeIsInhabited(variant.GetMemberType(i)));
+    if (!member_is_inhabited) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+absl::StatusOr<bool> TypeIsInhabited(const Type& type) {
+  if (auto* channel_type = dynamic_cast<const ChannelType*>(&type)) {
+    return TypeIsInhabited(channel_type->payload_type());
+  } else if (GetBitsLike(type).has_value()) {
+    return true;
+  } else if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
+    for (const std::unique_ptr<Type>& member_type : tuple_type->members()) {
+      XLS_ASSIGN_OR_RETURN(bool member_is_inhabited,
+                           TypeIsInhabited(*member_type));
+      if (!member_is_inhabited) {
+        return false;
+      }
+    }
+    return true;
+  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type)) {
+    for (int64_t i = 0; i < struct_type->size(); ++i) {
+      XLS_ASSIGN_OR_RETURN(bool member_is_inhabited,
+                           TypeIsInhabited(struct_type->GetMemberType(i)));
+      if (!member_is_inhabited) {
+        return false;
+      }
+    }
+    return true;
+  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(int64_t size, array_type->size().GetAsInt64());
+    if (size == 0) {
+      return true;
+    }
+    return TypeIsInhabited(array_type->element_type());
+  } else if (auto* sum_type = dynamic_cast<const SumType*>(&type)) {
+    for (const SumTypeVariant& variant : sum_type->variants()) {
+      XLS_ASSIGN_OR_RETURN(bool variant_is_inhabited,
+                           SumVariantIsInhabited(variant));
+      if (variant_is_inhabited) {
+        return true;
+      }
+    }
+    return false;
+  } else if (auto* enum_type = dynamic_cast<const EnumType*>(&type)) {
+    return !enum_type->members().empty();
+  } else {
+    return true;
   }
 }
 

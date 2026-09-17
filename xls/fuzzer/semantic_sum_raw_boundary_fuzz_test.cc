@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Covers the Phase 1 raw-value boundary for one reviewed sum declaration with
-// an enum-typed payload. The generated domain varies only that payload across
-// declared members {0, 1} and undeclared encodings {2, 3}; each invocation
-// checks one semantic/raw conversion outcome for the fixed declaration.
+// Covers raw-value boundaries for one reviewed sum declaration with an
+// enum-typed payload. Phase 1 domains vary declared {0, 1} and undeclared
+// {2, 3} enum encodings; Phase 2 also varies arbitrary payload bits under
+// one malformed tag. Each invocation checks one conversion outcome for the
+// fixed declaration.
 //
-// This test does not generate sum declarations, payload layouts, tag values,
-// or arbitrary raw tuples. Source syntax and pattern failures stay in SOURCE
-// replay, while malformed-tag preservation and final layout-width checks
-// belong to later semantic owners.
+// This test does not generate sum declarations, payload layouts, or arbitrary
+// raw tuple shapes. Source syntax and pattern failures stay in SOURCE replay,
+// while layout-width checks belong to the type-info owner.
 
 #include <cstdint>
 #include <filesystem>
@@ -148,13 +148,9 @@ absl::StatusOr<RawBoundaryContext> LoadRawBoundaryContext(
 // Reads the enum payload bits from the active slot of a raw sum tuple.
 absl::StatusOr<Bits> ExtractEnumPayloadBitsFromRawValue(
     const RawBoundaryContext& context, const Value& raw_value) {
-  const dslx::Phase1SumTypeEncoding encoding(*context.sum_type);
-  XLS_ASSIGN_OR_RETURN(dslx::Phase1SumTypeEncoding::VariantInfo variant,
-                       encoding.GetVariant(context.enum_variant_name));
   const Value& payload_tuple = raw_value.elements().at(1);
-  const Value& payload_value = payload_tuple.elements().at(
-      variant.payload_start + context.enum_payload_index);
-  return payload_value.bits();
+  const Value& payload_slot = payload_tuple.elements().at(0);
+  return payload_slot.bits().Slice(0, context.enum_bit_count);
 }
 
 // Interprets payload bits as a declared member of the seed's enum type.
@@ -182,34 +178,24 @@ absl::StatusOr<Value> MakeInvalidEnumRawValue(const RawBoundaryContext& context,
   XLS_ASSIGN_OR_RETURN(dslx::Phase1SumTypeEncoding::VariantInfo variant,
                        encoding.GetVariant(context.enum_variant_name));
   XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
-  std::vector<Value> payload_slots;
-  payload_slots.reserve(encoding.payload_slot_count());
-  XLS_RETURN_IF_ERROR(encoding.VisitPayloadAssemblyOrder(
-      variant,
-      [&](int64_t active_index) -> absl::Status {
-        if (active_index == context.enum_payload_index) {
-          payload_slots.push_back(
-              Value(UBits(invalid_member_value, context.enum_bit_count)));
-        } else {
-          XLS_ASSIGN_OR_RETURN(
-              dslx::InterpValue zero,
-              dslx::CreateZeroValueFromType(
-                  variant.variant->GetMemberType(active_index)));
-          XLS_ASSIGN_OR_RETURN(Value zero_value, zero.ConvertToIr());
-          payload_slots.push_back(std::move(zero_value));
-        }
-        return absl::OkStatus();
-      },
-      [&](const dslx::Type& inactive_type) -> absl::Status {
-        XLS_ASSIGN_OR_RETURN(dslx::InterpValue zero,
-                             dslx::CreateZeroValueFromType(inactive_type));
-        XLS_ASSIGN_OR_RETURN(Value zero_value, zero.ConvertToIr());
-        payload_slots.push_back(std::move(zero_value));
-        return absl::OkStatus();
-      }));
-  return Value::TupleOwned(
-      std::vector<Value>{Value(UBits(variant.variant_index, tag_bit_count)),
-                         Value::TupleOwned(std::move(payload_slots))});
+  XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                       encoding.payload_slot_bit_count());
+  return Value::TupleOwned(std::vector<Value>{
+      Value(UBits(variant.variant_index, tag_bit_count)),
+      Value::TupleOwned(
+          {Value(UBits(invalid_member_value, payload_slot_bit_count))})});
+}
+
+// Builds one raw sum with an out-of-range tag and arbitrary payload bits.
+absl::StatusOr<Value> MakeMalformedTagRawValue(
+    const RawBoundaryContext& context, uint16_t payload_bits) {
+  const dslx::Phase1SumTypeEncoding encoding(*context.sum_type);
+  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
+  XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                       encoding.payload_slot_bit_count());
+  return Value::TupleOwned(std::vector<Value>{
+      Value(UBits(context.sum_type->variant_count(), tag_bit_count)),
+      Value::TupleOwned({Value(UBits(payload_bits, payload_slot_bit_count))})});
 }
 
 // Applies the manifest outcome contract to one reviewed raw IR value.
@@ -223,6 +209,19 @@ absl::Status VerifyManifestRawSeed(const RawBoundaryContext& context,
     if (!actual.ok()) {
       return actual.status();
     }
+    const dslx::Phase1SumTypeEncoding encoding(*context.sum_type);
+    absl::StatusOr<dslx::Phase1SumTypeEncoding::VariantInfo> variant =
+        encoding.GetVariantByTagBits(raw_value.elements().at(0).bits());
+    if (variant.status().code() == absl::StatusCode::kNotFound) {
+      XLS_ASSIGN_OR_RETURN(Value roundtrip, actual->ConvertToIr());
+      if (roundtrip != raw_value) {
+        return absl::FailedPreconditionError(absl::StrCat(
+            "Raw-boundary seed '", seed.seed_id(),
+            "' did not preserve malformed raw bits through roundtrip."));
+      }
+      return absl::OkStatus();
+    }
+    XLS_RETURN_IF_ERROR(variant.status());
     XLS_ASSIGN_OR_RETURN(
         Bits enum_payload_bits,
         ExtractEnumPayloadBitsFromRawValue(context, raw_value));
@@ -297,6 +296,21 @@ absl::Status VerifyUndeclaredEnumPayloadRejected(
   return absl::OkStatus();
 }
 
+// Checks that one malformed tag round-trips without losing raw bits.
+absl::Status VerifyMalformedTagPreservesRawImage(
+    const RawBoundaryContext& context, uint16_t payload_bits) {
+  XLS_ASSIGN_OR_RETURN(Value raw_value,
+                       MakeMalformedTagRawValue(context, payload_bits));
+  XLS_ASSIGN_OR_RETURN(dslx::InterpValue semantic_value,
+                       dslx::ValueToInterpValue(raw_value, context.sum_type));
+  XLS_ASSIGN_OR_RETURN(Value roundtrip, semantic_value.ConvertToIr());
+  if (roundtrip != raw_value) {
+    return absl::FailedPreconditionError(
+        "Malformed raw boundary tag did not preserve its raw image.");
+  }
+  return absl::OkStatus();
+}
+
 // Verifies: reviewed raw-boundary seeds convert or reject as declared.
 // Catches: changed conversion or diagnostic behavior for named raw fixtures.
 TEST(SemanticSumRawBoundaryFuzzTest, ReplaysManifestCases) {
@@ -311,7 +325,7 @@ TEST(SemanticSumRawBoundaryFuzzTest, ReplaysManifestCases) {
         ++verified;
         return VerifyManifestRawSeed(context, seed);
       }));
-  EXPECT_EQ(verified, 2);
+  EXPECT_EQ(verified, 3);
 }
 
 // Generates one declared member index from {0, 1} for the fixed seed sum.
@@ -336,6 +350,17 @@ void UndeclaredEnumPayloadIsRejected(uint64_t invalid_member_value) {
 
 FUZZ_TEST(SemanticSumRawBoundaryFuzzTest, UndeclaredEnumPayloadIsRejected)
     .WithDomains(fuzztest::ElementOf<uint64_t>({2, 3}));
+
+// Generates arbitrary payload bits under the fixed malformed tag.
+// It validates raw-image preservation and does not vary declarations.
+void MalformedSumTagPreservesRawImage(uint16_t payload_bits) {
+  XLS_ASSERT_OK_AND_ASSIGN(RawBoundaryContext context,
+                           LoadRawBoundaryContext(GetManifestPath()));
+  XLS_ASSERT_OK(VerifyMalformedTagPreservesRawImage(context, payload_bits));
+}
+
+FUZZ_TEST(SemanticSumRawBoundaryFuzzTest, MalformedSumTagPreservesRawImage)
+    .WithDomains(fuzztest::Arbitrary<uint16_t>());
 
 }  // namespace
 }  // namespace xls

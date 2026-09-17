@@ -141,6 +141,7 @@ cc_test(
     srcs = ["semantics_analysis_test.cc"],
     deps = [
         ":ast",
+        ":ast_cloner",
         ":module",
         ":semantics_analysis",
         "//xls/common:xls_gunit_main",
@@ -854,6 +855,7 @@ cc_library(
         "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/container:flat_hash_set",
         "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",
         "@abseil-cpp//absl/strings:str_format",
     ],

@@ -13,17 +13,16 @@
 // limitations under the License.
 #include "xls/fuzzer/value_generator.h"
 
-#include <functional>
 #include <memory>
 #include <optional>
 #include <random>
 #include <utility>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/module.h"
@@ -90,9 +89,7 @@ dslx::SumType MakeTestSumType(dslx::Module& module) {
   pair_members.push_back(dslx::BitsType::MakeU1());
   variants.push_back(
       dslx::SumTypeVariant::MakeTuple(*pair_variant, std::move(pair_members)));
-  return dslx::SumType(
-      *sum_def, std::move(variants),
-      dslx::SumType::SelectedZeroVariant{std::cref(*none_variant)});
+  return dslx::SumType(*sum_def, std::move(variants));
 }
 
 dslx::SumType MakeEmptySumType(dslx::Module& module) {
@@ -103,15 +100,15 @@ dslx::SumType MakeEmptySumType(dslx::Module& module) {
       kFakeSpan, sum_name, std::vector<dslx::ParametricBinding*>{},
       std::vector<dslx::SumVariant*>{}, /*is_public=*/false);
   sum_name->set_definer(sum_def);
-  return dslx::SumType(*sum_def, std::vector<dslx::SumTypeVariant>{},
-                       dslx::SumType::NoZeroVariant{});
+  return dslx::SumType(*sum_def, std::vector<dslx::SumTypeVariant>{});
 }
 
 absl::StatusOr<dslx::TypeRefTypeAnnotation*> MakeTypeAnnotation(
     dslx::Module* module, std::string_view name) {
   XLS_ASSIGN_OR_RETURN(dslx::TypeDefinition type_definition,
                        module->GetTypeDefinition(name));
-  auto* type_ref = module->Make<dslx::TypeRef>(dslx::FakeSpan(), type_definition);
+  auto* type_ref =
+      module->Make<dslx::TypeRef>(dslx::FakeSpan(), type_definition);
   return module->Make<dslx::TypeRefTypeAnnotation>(
       dslx::FakeSpan(), type_ref, std::vector<dslx::ExprOrType>{});
 }
@@ -126,23 +123,21 @@ absl::StatusOr<dslx::SumType> MakeEnumPayloadSumType(dslx::Module& module) {
 
   auto* vanilla_name =
       module.Make<dslx::NameDef>(kFakeSpan, "Vanilla", nullptr);
-  auto* vanilla_value =
-      module.Make<dslx::Number>(kFakeSpan, "0", dslx::NumberKind::kOther,
-                                u2_type);
+  auto* vanilla_value = module.Make<dslx::Number>(
+      kFakeSpan, "0", dslx::NumberKind::kOther, u2_type);
   vanilla_name->set_definer(vanilla_value);
 
   auto* mint_name = module.Make<dslx::NameDef>(kFakeSpan, "Mint", nullptr);
-  auto* mint_value =
-      module.Make<dslx::Number>(kFakeSpan, "1", dslx::NumberKind::kOther,
-                                u2_type);
+  auto* mint_value = module.Make<dslx::Number>(
+      kFakeSpan, "1", dslx::NumberKind::kOther, u2_type);
   mint_name->set_definer(mint_value);
 
   std::vector<dslx::EnumMember> enum_members = {
       dslx::EnumMember{.name_def = vanilla_name, .value = vanilla_value},
       dslx::EnumMember{.name_def = mint_name, .value = mint_value},
   };
-  auto* enum_def = module.Make<dslx::EnumDef>(kFakeSpan, enum_name, u2_type,
-                                              enum_members, /*is_public=*/false);
+  auto* enum_def = module.Make<dslx::EnumDef>(
+      kFakeSpan, enum_name, u2_type, enum_members, /*is_public=*/false);
   enum_name->set_definer(enum_def);
   XLS_RETURN_IF_ERROR(
       module.AddTop(enum_def, /*make_collision_error=*/nullptr));
@@ -167,16 +162,14 @@ absl::StatusOr<dslx::SumType> MakeEnumPayloadSumType(dslx::Module& module) {
   XLS_RETURN_IF_ERROR(module.AddTop(sum_def, /*make_collision_error=*/nullptr));
 
   std::vector<std::unique_ptr<dslx::Type>> payload_members;
-  payload_members.push_back(std::make_unique<dslx::EnumType>(
-      *enum_def, dslx::TypeDim::CreateU32(2), /*is_signed=*/false,
-      enum_values));
+  payload_members.push_back(
+      std::make_unique<dslx::EnumType>(*enum_def, dslx::TypeDim::CreateU32(2),
+                                       /*is_signed=*/false, enum_values));
 
   std::vector<dslx::SumTypeVariant> variants;
   variants.push_back(dslx::SumTypeVariant::MakeTuple(
       *enum_variant, std::move(payload_members)));
-  return dslx::SumType(
-      *sum_def, std::move(variants),
-      dslx::SumType::SelectedZeroVariant{std::cref(*enum_variant)});
+  return dslx::SumType(*sum_def, std::move(variants));
 }
 
 absl::StatusOr<dslx::SumType> MakeSumWithEmptyEnumPayload(
@@ -187,9 +180,9 @@ absl::StatusOr<dslx::SumType> MakeSumWithEmptyEnumPayload(
   auto* u2_type = module.Make<dslx::BuiltinTypeAnnotation>(
       kFakeSpan, dslx::BuiltinType::kU2,
       module.GetOrCreateBuiltinNameDef(dslx::BuiltinType::kU2));
-  auto* enum_def = module.Make<dslx::EnumDef>(
-      kFakeSpan, enum_name, u2_type, std::vector<dslx::EnumMember>{},
-      /*is_public=*/false);
+  auto* enum_def = module.Make<dslx::EnumDef>(kFakeSpan, enum_name, u2_type,
+                                              std::vector<dslx::EnumMember>{},
+                                              /*is_public=*/false);
   enum_name->set_definer(enum_def);
   XLS_RETURN_IF_ERROR(
       module.AddTop(enum_def, /*make_collision_error=*/nullptr));
@@ -231,9 +224,7 @@ absl::StatusOr<dslx::SumType> MakeSumWithEmptyEnumPayload(
       std::vector<dslx::InterpValue>{}));
   variants.push_back(dslx::SumTypeVariant::MakeTuple(
       *impossible_variant, std::move(payload_members)));
-  return dslx::SumType(*sum_def, std::move(variants),
-                       dslx::SumType::SelectedZeroVariant{
-                           std::cref(*sum_def->variants().front())});
+  return dslx::SumType(*sum_def, std::move(variants));
 }
 
 void ExpectValueMatchesType(const dslx::Type& type,
@@ -245,36 +236,24 @@ void ExpectCanonicalSumValue(const dslx::SumType& sum_type,
   ASSERT_EQ(value.GetValuesOrDie().size(), 2);
 
   const dslx::InterpValue& tag = value.GetValuesOrDie().at(0);
-  const dslx::InterpValue& payload_tuple = value.GetValuesOrDie().at(1);
   ASSERT_TRUE(tag.IsUBits());
-  ASSERT_TRUE(payload_tuple.IsTuple());
 
   XLS_ASSERT_OK_AND_ASSIGN(uint64_t variant_index, tag.GetBitValueUnsigned());
   ASSERT_LT(variant_index, sum_type.variant_count());
 
-  const std::vector<dslx::InterpValue>& payload_slots =
-      payload_tuple.GetValuesOrDie();
-  int64_t slot_index = 0;
-  for (int64_t i = 0; i < sum_type.variant_count(); ++i) {
-    const dslx::SumTypeVariant& variant = sum_type.variants().at(i);
-    for (int64_t j = 0; j < variant.size(); ++j, ++slot_index) {
-      const dslx::InterpValue& slot_value = payload_slots.at(slot_index);
-      if (i == variant_index) {
-        ExpectValueMatchesType(variant.GetMemberType(j), slot_value);
-      } else {
-        XLS_ASSERT_OK_AND_ASSIGN(dslx::InterpValue zero,
-                                 dslx::CreateZeroValueFromType(
-                                     variant.GetMemberType(j)));
-        EXPECT_TRUE(slot_value.Eq(zero));
-      }
-    }
+  XLS_ASSERT_OK_AND_ASSIGN(std::vector<dslx::InterpValue> payload_values,
+                           dslx::GetSumPayloadValues(sum_type, value));
+  const dslx::SumTypeVariant& variant = sum_type.variants().at(variant_index);
+  ASSERT_EQ(payload_values.size(), variant.size());
+  for (int64_t i = 0; i < variant.size(); ++i) {
+    ExpectValueMatchesType(variant.GetMemberType(i), payload_values.at(i));
   }
-  ASSERT_EQ(payload_slots.size(), slot_index);
 }
 
 void ExpectValueMatchesType(const dslx::Type& type,
                             const dslx::InterpValue& value) {
-  if (std::optional<dslx::BitsLikeProperties> bits_like = dslx::GetBitsLike(type);
+  if (std::optional<dslx::BitsLikeProperties> bits_like =
+          dslx::GetBitsLike(type);
       bits_like.has_value()) {
     ASSERT_TRUE(value.IsBits());
     XLS_ASSERT_OK_AND_ASSIGN(int64_t bit_count, bits_like->size.GetAsInt64());
@@ -324,8 +303,7 @@ void ExpectValueMatchesType(const dslx::Type& type,
     dslx::InterpValue::EnumData enum_data = value.GetEnumData().value();
     EXPECT_EQ(enum_data.def, &enum_type->nominal_type());
     EXPECT_EQ(enum_data.is_signed, enum_type->is_signed());
-    XLS_ASSERT_OK_AND_ASSIGN(int64_t bit_count,
-                             enum_type->size().GetAsInt64());
+    XLS_ASSERT_OK_AND_ASSIGN(int64_t bit_count, enum_type->size().GetAsInt64());
     EXPECT_EQ(enum_data.value.bit_count(), bit_count);
     bool matches_member = false;
     for (const dslx::InterpValue& member : enum_type->members()) {
@@ -460,8 +438,10 @@ TEST(ValueGeneratorTest, GenerateSemanticSumArgumentWithEnumPayload) {
   XLS_ASSERT_OK_AND_ASSIGN(dslx::InterpValue value,
                            GenerateInterpValue(rng, sum_type, {}));
   ExpectCanonicalSumValue(sum_type, value);
-  ASSERT_EQ(value.GetValuesOrDie().at(1).GetValuesOrDie().size(), 1);
-  EXPECT_TRUE(value.GetValuesOrDie().at(1).GetValuesOrDie().at(0).IsEnum());
+  XLS_ASSERT_OK_AND_ASSIGN(std::vector<dslx::InterpValue> payload_values,
+                           dslx::GetSumPayloadValues(sum_type, value));
+  ASSERT_EQ(payload_values.size(), 1);
+  EXPECT_TRUE(payload_values.at(0).IsEnum());
 }
 
 TEST(ValueGeneratorTest,
@@ -480,8 +460,9 @@ TEST(ValueGeneratorTest,
     XLS_ASSERT_OK_AND_ASSIGN(dslx::InterpValue expected,
                              dslx::CreateSumValue(sum_type, "Unit", {}));
     EXPECT_TRUE(value.Eq(expected));
-    XLS_ASSERT_OK_AND_ASSIGN(uint64_t variant_index,
-                             value.GetValuesOrDie().at(0).GetBitValueUnsigned());
+    XLS_ASSERT_OK_AND_ASSIGN(
+        uint64_t variant_index,
+        value.GetValuesOrDie().at(0).GetBitValueUnsigned());
     EXPECT_EQ(variant_index, 0);
   }
 }
@@ -494,10 +475,9 @@ TEST(ValueGeneratorTest, GenerateUninhabitedSemanticSumValueFails) {
       MakeSumWithEmptyEnumPayload(module, /*include_unit_variant=*/false));
 
   std::mt19937_64 rng{0};
-  EXPECT_THAT(
-      GenerateInterpValue(rng, sum_type, {}),
-      StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("uninhabited sum type")));
+  EXPECT_THAT(GenerateInterpValue(rng, sum_type, {}),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("uninhabited sum type")));
 }
 
 TEST(ValueGeneratorTest, GenerateInterpValuesWithSemanticSumTypes) {
@@ -532,10 +512,9 @@ TEST(ValueGeneratorTest, GenerateEmptySemanticSumValueFails) {
   dslx::SumType empty_sum_type = MakeEmptySumType(module);
 
   std::mt19937_64 rng{2};
-  EXPECT_THAT(
-      GenerateInterpValue(rng, empty_sum_type, {}),
-      StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("empty sum type")));
+  EXPECT_THAT(GenerateInterpValue(rng, empty_sum_type, {}),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("empty sum type")));
 }
 
 TEST(ValueGeneratorTest, GenerateDslxConstantBits) {
@@ -647,9 +626,8 @@ TEST(ValueGeneratorTest, GenerateDslxConstantTuple) {
 
 TEST(ValueGeneratorTest, GenerateDslxConstantSemanticSums) {
   dslx::FileTable file_table;
-  XLS_ASSERT_OK_AND_ASSIGN(
-      std::unique_ptr<dslx::Module> module,
-      dslx::ParseModule(R"(
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<dslx::Module> module,
+                           dslx::ParseModule(R"(
 enum UnitOnly {
   Only(),
 }
@@ -673,7 +651,7 @@ enum ImpossibleOnly {
   Impossible(Empty),
 }
 )",
-                        "test.x", "test", file_table));
+                                             "test.x", "test", file_table));
 
   XLS_ASSERT_OK_AND_ASSIGN(dslx::TypeRefTypeAnnotation * unit_type,
                            MakeTypeAnnotation(module.get(), "UnitOnly"));
@@ -689,24 +667,24 @@ enum ImpossibleOnly {
                            MakeTypeAnnotation(module.get(), "ImpossibleOnly"));
 
   std::mt19937_64 unit_rng{0};
-  XLS_ASSERT_OK_AND_ASSIGN(dslx::Expr * unit_expr,
-                           GenerateDslxConstant(unit_rng, module.get(),
-                                                unit_type));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      dslx::Expr * unit_expr,
+      GenerateDslxConstant(unit_rng, module.get(), unit_type));
   EXPECT_NE(dynamic_cast<dslx::Invocation*>(unit_expr), nullptr);
   EXPECT_EQ(unit_expr->ToString(), "UnitOnly::Only()");
 
   std::mt19937_64 tuple_rng{1};
-  XLS_ASSERT_OK_AND_ASSIGN(dslx::Expr * tuple_expr,
-                           GenerateDslxConstant(tuple_rng, module.get(),
-                                                tuple_type));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      dslx::Expr * tuple_expr,
+      GenerateDslxConstant(tuple_rng, module.get(), tuple_type));
   EXPECT_NE(dynamic_cast<dslx::Invocation*>(tuple_expr), nullptr);
   EXPECT_THAT(tuple_expr->ToString(), HasSubstr("TupleOnly::Only("));
   EXPECT_THAT(tuple_expr->ToString(), HasSubstr("u32:"));
 
   std::mt19937_64 struct_rng{2};
-  XLS_ASSERT_OK_AND_ASSIGN(dslx::Expr * struct_expr,
-                           GenerateDslxConstant(struct_rng, module.get(),
-                                                struct_type));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      dslx::Expr * struct_expr,
+      GenerateDslxConstant(struct_rng, module.get(), struct_type));
   EXPECT_NE(dynamic_cast<dslx::StructInstance*>(struct_expr), nullptr);
   EXPECT_THAT(struct_expr->ToString(), HasSubstr("StructOnly::Only {"));
   EXPECT_THAT(struct_expr->ToString(), HasSubstr("x: u32:"));

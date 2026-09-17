@@ -224,17 +224,20 @@ proc Passthrough {
 }
 
 proc Main {
+  data_out: chan<Option> out;
+  data_in: chan<Option> in;
+
   init { () }
 
   config() {
     let (input_p, input_c) = chan<Option>("input");
     let (output_p, output_c) = chan<Option>("output");
     spawn Passthrough(input_c, output_p);
-    ()
+    (input_p, output_c)
   }
 
   next(_: ()) {
-    let value = Option::Some(u32:42);
+    let _ = send(join(), data_out, Option::Some(u32:42));
     ()
   }
 }
@@ -651,7 +654,7 @@ const X = MaybePoint::Point { x: u32:1, y: u32:2, z: u32:3 };
       TypecheckFails(HasSubstr("Constructor `Point` has no member `z`")));
 }
 
-TEST(TypecheckV2Test, SemanticSumTuplePayloadAggregateRejectedInPhase1) {
+TEST(TypecheckV2Test, SemanticSumTuplePayloadAggregate) {
   EXPECT_THAT(
       R"(
 struct Point {
@@ -666,13 +669,10 @@ enum MaybePoint {
 
 const X = MaybePoint::None;
 )",
-      TypecheckFails(AllOf(
-          HasSubstr("Semantic sum payload members must be bits-like, enum "
-                    "typed, or empty semantic sums"),
-          HasSubstr("constructor `Some`"), HasSubstr("Point"))));
+      TypecheckSucceeds(::testing::_));
 }
 
-TEST(TypecheckV2Test, SemanticSumStructPayloadAggregateRejectedInPhase1) {
+TEST(TypecheckV2Test, SemanticSumStructPayloadAggregate) {
   EXPECT_THAT(
       R"(
 enum PairBox {
@@ -681,13 +681,10 @@ enum PairBox {
 
 const X = PairBox::Pair { xy: (u32:1, u32:2) };
 )",
-      TypecheckFails(AllOf(
-          HasSubstr("Semantic sum payload members must be bits-like, enum "
-                    "typed, or empty semantic sums"),
-          HasSubstr("constructor `Pair`"), HasSubstr("(uN[32], uN[32])"))));
+      TypecheckSucceeds(::testing::_));
 }
 
-TEST(TypecheckV2Test, ImplicitSemanticSumRejectsTagTypeAnnotationInPhase1) {
+TEST(TypecheckV2Test, ImplicitSemanticSumAcceptsTagTypeAnnotationInPhase2) {
   EXPECT_THAT(
       R"(
 enum MaybeU32 : u3 {
@@ -695,9 +692,22 @@ enum MaybeU32 : u3 {
   Some(u32),
 }
 )",
+      TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test,
+     ImplicitSemanticSumRejectsTooNarrowTagTypeAnnotationInPhase2) {
+  EXPECT_THAT(
+      R"(
+enum TrafficLight : u1 {
+  Red(),
+  Yellow(),
+  Green(),
+}
+)",
       TypecheckFails(HasSubstr(
-          "Semantic sum `MaybeU32` with a tag type annotation requires "
-          "explicit discriminants on every variant.")));
+          "Semantic sum `TrafficLight` needs at least 2 tag bits for 3 "
+          "implicit constructors, but tag type `u1` has only 1 bits.")));
 }
 
 TEST(TypecheckV2Test, SemanticSumEmptyPayloadLeafAllowedInPhase1) {
@@ -717,6 +727,178 @@ fn f(x: S) -> u32 {
 }
 )",
       TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test, IfLetOnSemanticSum) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  if let Option::Some(v) = x {
+    v
+  } else {
+    u8:0
+  }
+}
+)",
+              TypecheckSucceeds(::testing::A<std::string>()));
+}
+
+TEST(TypecheckV2Test, InvalidPatternBindsRawRepresentationBits) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u9 {
+  match x {
+    Option::Some(_) => u9:0,
+    _ => u9:0,
+    invalid!(raw) => raw,
+  }
+}
+)",
+              TypecheckSucceeds(::testing::A<std::string>()));
+}
+
+TEST(TypecheckV2Test, InvalidPatternRequiresSumScrutinee) {
+  EXPECT_THAT(R"(
+fn f(x: u8) -> u8 {
+  match x {
+    _ => x,
+    invalid! => u8:0,
+  }
+}
+)",
+              TypecheckFails(
+                  HasSubstr("`invalid!` is only valid when matching on a sum "
+                            "type.")));
+}
+
+TEST(TypecheckV2Test, InvalidPatternMustBeFinalArm) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    invalid! => u8:0,
+    _ => u8:1,
+  }
+}
+)",
+              TypecheckFails(
+                  HasSubstr("`invalid!` must be the final arm in a match.")));
+}
+
+TEST(TypecheckV2Test, WildcardMayOnlyBeFollowedByInvalidPattern) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    _ => u8:0,
+    Option::Some(v) => v,
+    invalid! => u8:1,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "A wildcard arm may only be followed by a final `invalid!` "
+                  "arm.")));
+}
+
+TEST(TypecheckV2Test, WildcardMayBeFollowedByFinalInvalidPattern) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    _ => u8:0,
+    invalid! => u8:1,
+  }
+}
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test,
+     SumMatchWithoutInvalidPatternRejectsRefutableFinalConstructorPayload) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    Option::None => u8:0,
+    Option::Some(u8:7) => u8:7,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "A sum match without `invalid!` must end with `_` or one "
+                  "constructor pattern whose payload subpatterns are "
+                  "irrefutable.")));
+}
+
+TEST(TypecheckV2Test,
+     SumMatchWithoutInvalidPatternAcceptsIrrefutableFinalConstructorPayload) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    Option::None => u8:0,
+    Option::Some(v) => v,
+  }
+}
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test,
+     SumMatchWithoutInvalidPatternAcceptsPayloadlessFinalConstructor) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    Option::Some(v) => v,
+    Option::None => u8:0,
+  }
+}
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test, InvalidPatternMustBeTopLevel) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    Option::Some(invalid!) => u8:0,
+    _ => u8:1,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "`invalid!` is only allowed as a top-level match arm "
+                  "pattern.")));
 }
 
 TEST(TypecheckV2Test, MatchWithSemanticSumConstructors) {
@@ -1033,6 +1215,7 @@ fn f(value: Option) -> u32 {
     Option::None => u32:0,
     Option::Some(E::A) => u32:1,
     Option::Some(E::C) => u32:2,
+    invalid! => u32:3,
   }
 }
 )",
@@ -1054,6 +1237,7 @@ fn f(value: Message) -> u32 {
     Message::Empty => u32:0,
     Message::Data { flag: _, state: E::A } => u32:1,
     Message::Data { flag: _, state: E::C } => u32:2,
+    invalid! => u32:3,
   }
 }
 )",
@@ -1195,7 +1379,7 @@ const Y = zero!<Message>();
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
                            result.tm.type_info->GetConstExpr(constant));
   EXPECT_EQ(value, InterpValue::MakeTuple(
-                       {InterpValue::MakeUBits(1, 1),
+                       {InterpValue::MakeUBits(3, 0),
                         InterpValue::MakeTuple({InterpValue::MakeU8(0)})}));
 }
 
@@ -1302,14 +1486,13 @@ const Y = zero!<(E<u32:1>, E<u32:0>)>();
                              result.tm.type_info->GetConstExpr(constant));
     // The concrete payload shapes are identical. Only the instantiated
     // discriminants determine which variant has the zero value.
-    const InterpValue payloads = InterpValue::MakeTuple(
-        {InterpValue::MakeU8(0), InterpValue::MakeU8(0)});
-    EXPECT_EQ(value,
-              InterpValue::MakeTuple(
-                  {InterpValue::MakeTuple(
-                       {InterpValue::MakeUBits(1, first_tag), payloads}),
-                   InterpValue::MakeTuple(
-                       {InterpValue::MakeUBits(1, 1 - first_tag), payloads})}));
+    const InterpValue payloads =
+        InterpValue::MakeTuple({InterpValue::MakeU8(0)});
+    EXPECT_EQ(
+        value,
+        InterpValue::MakeTuple(
+            {InterpValue::MakeTuple({InterpValue::MakeU32(0), payloads}),
+             InterpValue::MakeTuple({InterpValue::MakeU32(0), payloads})}));
   }
 }
 
@@ -1326,13 +1509,11 @@ const Y = make();
                            result.tm.module->GetConstantDef("Y"));
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
                            result.tm.type_info->GetConstExpr(constant));
-  const InterpValue payloads =
-      InterpValue::MakeTuple({InterpValue::MakeU8(0), InterpValue::MakeU8(0)});
-  EXPECT_EQ(
-      value,
-      InterpValue::MakeTuple(
-          {InterpValue::MakeTuple({InterpValue::MakeUBits(1, 0), payloads}),
-           InterpValue::MakeTuple({InterpValue::MakeUBits(1, 1), payloads})}));
+  const InterpValue payloads = InterpValue::MakeTuple({InterpValue::MakeU8(0)});
+  EXPECT_EQ(value,
+            InterpValue::MakeTuple(
+                {InterpValue::MakeTuple({InterpValue::MakeU32(0), payloads}),
+                 InterpValue::MakeTuple({InterpValue::MakeU32(0), payloads})}));
 }
 
 TEST(TypecheckV2Test, ZeroMacroImportedGenericSumInStructAndArray) {
@@ -1353,12 +1534,11 @@ const Y = zero!<Wrapper>();
                            result.tm.module->GetConstantDef("Y"));
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
                            result.tm.type_info->GetConstExpr(constant));
-  const InterpValue payloads =
-      InterpValue::MakeTuple({InterpValue::MakeU8(0), InterpValue::MakeU8(0)});
+  const InterpValue payloads = InterpValue::MakeTuple({InterpValue::MakeU8(0)});
   const InterpValue a =
-      InterpValue::MakeTuple({InterpValue::MakeUBits(1, 0), payloads});
+      InterpValue::MakeTuple({InterpValue::MakeU32(0), payloads});
   const InterpValue b =
-      InterpValue::MakeTuple({InterpValue::MakeUBits(1, 1), payloads});
+      InterpValue::MakeTuple({InterpValue::MakeU32(0), payloads});
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue array, InterpValue::MakeArray({b, b}));
   EXPECT_EQ(value, InterpValue::MakeTuple({a, array}));
 }
@@ -1516,13 +1696,22 @@ fn f(x: u16) -> Box<u8> { Box::Value(x) }
       TypecheckFails(HasSubstr("size mismatch")));
 }
 
-TEST(TypecheckV2Test, GenericSemanticSumValidatesInstantiatedPayloadType) {
+TEST(TypecheckV2Test, GenericSemanticSumAcceptsInstantiatedAggregatePayloadType) {
   EXPECT_THAT(
       R"(#![feature(generics)]
 enum Box<T: type> { Value(T) }
 fn f(x: Box<u8[1]>) -> Box<u8[1]> { x }
 )",
-      TypecheckFails(HasSubstr("Semantic sum payload members must be")));
+      TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumRejectsMismatchedAggregatePayload) {
+  EXPECT_THAT(
+      R"(#![feature(generics)]
+enum Box<T: type> { Value(T) }
+fn f(x: u16[1]) -> Box<u8[1]> { Box::Value(x) }
+)",
+      TypecheckFails(HasSubstr("size mismatch")));
 }
 
 TEST(TypecheckV2Test, SemanticSumReferenceResolvesValueDefault) {

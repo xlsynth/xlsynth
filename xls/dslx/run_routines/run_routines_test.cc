@@ -249,13 +249,75 @@ fn qc(x: MyEnum) -> bool {
   EXPECT_EQ(jit_comparator.jit_cache_.begin()->first, "__test__qc");
 }
 
-TEST_P(RunRoutinesTest, EmptyEnum) {
+TEST_P(RunRoutinesTest, EmptySemanticSum) {
   constexpr const char* kProgram = R"(
 enum EmptyEnum: u2 {
 }
 
 #[quickcheck(exhaustive)]
 fn qc(x: EmptyEnum) -> bool {
+    true
+}
+)";
+  constexpr const char* kModuleName = "test";
+  constexpr const char* kFilename = "test.x";
+  RunComparator jit_comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  options.quickcheck_runner = &jit_comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TestResultData result,
+      ParseAndTest(kProgram, kModuleName, kFilename, options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kSomeFailed, 1, 0, 1));
+  ASSERT_EQ(result.GetFailureMessages().size(), 1);
+  std::string failure_message = result.GetFailureMessages()[0];
+  EXPECT_THAT(failure_message,
+              HasSubstr("quickcheck of `qc` rejected all input samples"));
+}
+
+TEST_P(RunRoutinesTest, AggregateContainingEmptySemanticSum) {
+  constexpr const char* kProgram = R"(
+enum Empty {}
+
+struct Wrapper {
+  empty: Empty,
+}
+
+#[quickcheck(exhaustive)]
+fn qc(x: Wrapper) -> bool {
+    true
+}
+)";
+  constexpr const char* kModuleName = "test";
+  constexpr const char* kFilename = "test.x";
+  RunComparator jit_comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  options.quickcheck_runner = &jit_comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TestResultData result,
+      ParseAndTest(kProgram, kModuleName, kFilename, options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kSomeFailed, 1, 0, 1));
+  ASSERT_EQ(result.GetFailureMessages().size(), 1);
+  std::string failure_message = result.GetFailureMessages()[0];
+  EXPECT_THAT(failure_message,
+              HasSubstr("quickcheck of `qc` rejected all input samples"));
+}
+
+TEST_P(RunRoutinesTest, SemanticSumWithOnlyUninhabitedPayloadVariant) {
+  constexpr const char* kProgram = R"(
+enum Empty {}
+
+enum Only {
+  V(Empty),
+}
+
+#[quickcheck(exhaustive)]
+fn qc(x: Only) -> bool {
     true
 }
 )";

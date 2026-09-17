@@ -1297,6 +1297,52 @@ fn f(value: imported::E) -> u32 {
                                  "`imported::SECOND`")));
 }
 
+TEST(TypecheckV2Test, MatchSparseSumAggregateConstantAliasesAreRejected) {
+  EXPECT_THAT(R"(
+enum Packet: u3 { Empty = 5, Data((u1, u1)) = 2 }
+const FIRST = Packet::Data((u1:0, u1:1));
+const SECOND = FIRST;
+
+fn f(value: Packet) -> u32 {
+  match value {
+    FIRST => u32:0,
+    SECOND => u32:1,
+    _ => u32:2,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Exact-duplicate pattern match detected `SECOND`")));
+}
+
+TEST(TypecheckV2Test, MatchSparseSumRuntimeTuplePayloadNamesRemainValid) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum Packet: u3 { Empty = 5, Data((u1, u1)) = 2 }
+
+fn f(value: Packet, y: u1, z: u1) -> u32 {
+  match value {
+    Packet::Data((y, _)) => u32:0,
+    Packet::Data((z, _)) => u32:1,
+    _ => u32:2,
+  }
+}
+)"));
+}
+
+TEST(TypecheckV2Test, MatchSparseSumRuntimeNamedPayloadNamesRemainValid) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum Packet: u3 { Empty = 5, Data { pair: (u1, u1) } = 2 }
+
+fn f(value: Packet, y: u1, z: u1) -> u32 {
+  match value {
+    Packet::Data { pair: (y, _) } => u32:0,
+    Packet::Data { pair: (z, _) } => u32:1,
+    _ => u32:2,
+  }
+}
+)"));
+}
+
 TEST(TypecheckV2Test, MatchDistinctEnumVariantsThroughTypeAliasRemainValid) {
   XLS_EXPECT_OK(TypecheckV2(R"(
 enum E: u2 { A = 0, B = 1, C = 2 }
@@ -1846,6 +1892,7 @@ fn f(value: Either) -> u32 {
     Either::Right(u1:0) => u32:1,
     Either::Left(u1:1) => u32:2,
     Either::Right(u1:1) => u32:3,
+    invalid! => u32:4,
   }
 }
 )"));

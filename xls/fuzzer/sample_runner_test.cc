@@ -16,7 +16,6 @@
 
 #include <cstdlib>
 #include <filesystem>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -24,8 +23,6 @@
 #include <utility>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
@@ -35,6 +32,8 @@
 #include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_split.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/file/filesystem.h"
 #include "xls/common/file/temp_directory.h"
 #include "xls/common/status/matchers.h"
@@ -150,16 +149,14 @@ dslx::SumType MakeSampleRunnerChoiceType(dslx::Module& module) {
       kFakeSpan, dslx::BuiltinType::kU16,
       module.GetOrCreateBuiltinNameDef(dslx::BuiltinType::kU16));
 
-  auto* none =
-      module.Make<dslx::SumVariant>(kFakeSpan, none_name,
-                                    dslx::SumVariant::PayloadShape::kUnit,
-                                    std::vector<dslx::TypeAnnotation*>{},
-                                    std::vector<dslx::StructMemberNode*>{});
-  auto* byte =
-      module.Make<dslx::SumVariant>(kFakeSpan, byte_name,
-                                    dslx::SumVariant::PayloadShape::kTuple,
-                                    std::vector<dslx::TypeAnnotation*>{u8_type},
-                                    std::vector<dslx::StructMemberNode*>{});
+  auto* none = module.Make<dslx::SumVariant>(
+      kFakeSpan, none_name, dslx::SumVariant::PayloadShape::kUnit,
+      std::vector<dslx::TypeAnnotation*>{},
+      std::vector<dslx::StructMemberNode*>{});
+  auto* byte = module.Make<dslx::SumVariant>(
+      kFakeSpan, byte_name, dslx::SumVariant::PayloadShape::kTuple,
+      std::vector<dslx::TypeAnnotation*>{u8_type},
+      std::vector<dslx::StructMemberNode*>{});
   auto* wide = module.Make<dslx::SumVariant>(
       kFakeSpan, wide_name, dslx::SumVariant::PayloadShape::kTuple,
       std::vector<dslx::TypeAnnotation*>{u16_type},
@@ -184,8 +181,7 @@ dslx::SumType MakeSampleRunnerChoiceType(dslx::Module& module) {
   variants.push_back(
       dslx::SumTypeVariant::MakeTuple(*wide, std::move(wide_members)));
 
-  return dslx::SumType(*choice_def, std::move(variants),
-                       dslx::SumType::SelectedZeroVariant{std::cref(*none)});
+  return dslx::SumType(*choice_def, std::move(variants));
 }
 
 absl::StatusOr<dslx::InterpValue> SignedInterpValueFromIrString(
@@ -411,15 +407,13 @@ fn main(x: Choice) -> u16 {
                            GetFileContents(GetTempPath() / "sample.x.results"));
   EXPECT_THAT(absl::StrSplit(absl::StripAsciiWhitespace(dslx_results), "\n",
                              absl::SkipEmpty()),
-              ElementsAre("bits[16]:0x0", "bits[16]:0x2b",
-                          "bits[16]:0x1236"));
+              ElementsAre("bits[16]:0x0", "bits[16]:0x2b", "bits[16]:0x1236"));
   XLS_ASSERT_OK_AND_ASSIGN(
       std::string ir_results,
       GetFileContents(GetTempPath() / "sample.ir.results"));
   EXPECT_THAT(absl::StrSplit(absl::StripAsciiWhitespace(ir_results), "\n",
                              absl::SkipEmpty()),
-              ElementsAre("bits[16]:0x0", "bits[16]:0x2b",
-                          "bits[16]:0x1236"));
+              ElementsAre("bits[16]:0x0", "bits[16]:0x2b", "bits[16]:0x1236"));
 }
 
 TEST_F(SampleRunnerTest, EvaluateIRWide) {

@@ -14,17 +14,16 @@
 
 #include "xls/dslx/type_system/deduce_utils.h"
 
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/base/casts.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/bindings.h"
@@ -61,7 +60,7 @@ TEST(DeduceUtilsTest, ValidateNumber) {
                       "Value '256' does not fit in the bitwidth of a uN[8]")));
 }
 
-TEST(DeduceUtilsTest, RejectsSemanticSumNestedInFormattedTuple) {
+TEST(DeduceUtilsTest, AcceptsSemanticSumNestedInFormattedTuple) {
   const Span kFakeSpan = Span::Fake();
   FileTable file_table;
   Module module("test_module", /*fs_path=*/std::nullopt, file_table);
@@ -78,16 +77,11 @@ TEST(DeduceUtilsTest, RejectsSemanticSumNestedInFormattedTuple) {
   std::vector<SumTypeVariant> variants;
   variants.push_back(SumTypeVariant::MakeUnit(*none));
   std::vector<std::unique_ptr<Type>> tuple_members;
-  tuple_members.push_back(std::make_unique<SumType>(
-      *sum_def, std::move(variants),
-      SumType::SelectedZeroVariant{std::cref(*none)}));
+  tuple_members.push_back(
+      std::make_unique<SumType>(*sum_def, std::move(variants)));
   TupleType nested_sum(std::move(tuple_members));
 
-  EXPECT_THAT(ValidateFormatMacroArgument(nested_sum, kFakeSpan, file_table),
-              absl_testing::StatusIs(
-                  absl::StatusCode::kInvalidArgument,
-                  testing::HasSubstr(
-                      "Formatting semantic sum values is not supported")));
+  XLS_EXPECT_OK(ValidateFormatMacroArgument(nested_sum, kFakeSpan, file_table));
 }
 
 TEST(ProcConfigIrConverterTest, ResolveProcNameRef) {

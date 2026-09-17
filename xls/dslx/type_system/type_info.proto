@@ -105,6 +105,7 @@ enum AstNodeKindProto {
   AST_NODE_KIND_SUM_VARIANT = 79;
   AST_NODE_KIND_SUM_INSTANCE = 80;
   AST_NODE_KIND_STRUCT_PATTERN = 81;
+  AST_NODE_KIND_INVALID_PATTERN = 82;
 }
 
 message BitsValueProto {
@@ -245,6 +246,8 @@ message EnumTypeProto {
 // the variant's identifier, shape, and member names.
 message SumTypeVariantProto {
   repeated TypeProto payload_members = 1;
+  // The concrete semantic discriminant of this source-declaration variant.
+  optional InterpValueProto discriminant = 2;
 }
 
 // A nominal sum and its concrete payload types. The required source span
@@ -254,6 +257,8 @@ message SumTypeVariantProto {
 message SumTypeProto {
   optional SpanProto sum_def_span = 1;
   repeated SumTypeVariantProto variants = 2;
+  // Concrete tag width shared by the per-variant semantic discriminants.
+  optional TypeDimProto tag_bit_count = 3;
 }
 
 message MetaTypeProto {

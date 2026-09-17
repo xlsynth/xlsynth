@@ -15,7 +15,6 @@
 #include "xls/dslx/type_system_v2/inference_table_converter_impl.h"
 
 #include <cstdint>
-#include <functional>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -63,6 +62,7 @@
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
+#include "xls/dslx/type_system/unwrap_meta_type.h"
 #include "xls/dslx/type_system_v2/constant_collector.h"
 #include "xls/dslx/type_system_v2/evaluator.h"
 #include "xls/dslx/type_system_v2/fast_concretizer.h"
@@ -104,24 +104,6 @@ bool NeedsMetaType(const InferenceTable& table, const AstNode* node) {
                                    absl::down_cast<const ColonRef*>(node))) ||
          (node->kind() == AstNodeKind::kNameDef && node->parent() &&
           node->parent()->kind() == AstNodeKind::kTypeAlias);
-}
-
-// Phase One sum comparison lowering asserts that both operands are well-formed.
-// These assertions require an implicit token, including for sums in aggregates.
-bool IsComparisonRequiringImplicitToken(const AstNode* node,
-                                        const TypeInfo& type_info) {
-  if (node->kind() == AstNodeKind::kBinop) {
-    const auto* binop = absl::down_cast<const Binop*>(node);
-    if (binop->binop_kind() == BinopKind::kEq ||
-        binop->binop_kind() == BinopKind::kNe) {
-      std::optional<Type*> lhs_type = type_info.GetItem(binop->lhs());
-      return lhs_type.has_value() && TypeContainsSemanticSum(**lhs_type);
-    } else {
-      return false;
-    }
-  } else {
-    return false;
-  }
 }
 
 // RAII guard for a frame on the proc type info stack.
@@ -1344,22 +1326,6 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       ti->SetItem(node, **type);
     }
 
-    if (node->kind() == AstNodeKind::kMatch) {
-      const auto* match = absl::down_cast<const Match*>(node);
-      std::optional<Type*> matched_type = ti->GetItem(match->matched());
-      std::optional<const Function*> caller = GetContainingFunction(node);
-      if (matched_type.has_value() && TypeContainsSemanticSum(**matched_type) &&
-          caller.has_value()) {
-        ti->NoteRequiresImplicitToken(**caller, true);
-      }
-    }
-    if (IsComparisonRequiringImplicitToken(node, *ti)) {
-      if (std::optional<const Function*> caller = GetContainingFunction(node);
-          caller.has_value()) {
-        ti->NoteRequiresImplicitToken(**caller, true);
-      }
-    }
-
     trace.SetResult(**type);
     XLS_RETURN_IF_ERROR(constant_collector_->CollectConstants(
         parametric_context, node, **type, ti));
@@ -1885,10 +1851,9 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
             sum_def->parametric_bindings()[i]->name_def(),
             sum_ref->parametrics[i]);
       }
-      XLS_ASSIGN_OR_RETURN(
-          SumType::ZeroSelection zero_selection,
-          ValidateSemanticSumDiscriminants(*sum_def, parametric_context,
-                                           resolved_parametrics));
+      XLS_ASSIGN_OR_RETURN(auto tag_layout,
+                           GetSemanticSumTagLayout(*sum_def, parametric_context,
+                                                   resolved_parametrics));
       if (!sum_def->IsParametric()) {
         std::unique_ptr<Type> cached_type =
             GetCachedType(sum_def, std::nullopt);
@@ -1914,9 +1879,6 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
             }
             XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> concrete_member_type,
                                  Concretize(member_type, parametric_context));
-            XLS_RETURN_IF_ERROR(ValidatePhase1SumPayloadMemberType(
-                *sum_def, *variant, member_type, *concrete_member_type,
-                file_table_));
             payload_members.push_back(std::move(concrete_member_type));
           }
         } else if (variant->is_struct()) {
@@ -1932,9 +1894,6 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
             }
             XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> concrete_member_type,
                                  Concretize(member_type, parametric_context));
-            XLS_RETURN_IF_ERROR(ValidatePhase1SumPayloadMemberType(
-                *sum_def, *variant, member_type, *concrete_member_type,
-                file_table_));
             payload_members.push_back(std::move(concrete_member_type));
           }
         }
@@ -1948,10 +1907,12 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
               SumTypeVariant::MakeStruct(*variant, std::move(payload_members)));
         }
       }
-      // Preserve `sum_def->variants()` declaration order: `SumType` derives
-      // tag numbering and payload-slot layout from this vector order.
+      // Preserve declaration order for deterministic traversal and for the
+      // implicit-discriminant rule. The chosen tag width and concrete
+      // discriminants are carried separately from the variant vector.
       std::unique_ptr<Type> type = std::make_unique<SumType>(
-          *sum_def, std::move(variants), zero_selection);
+          *sum_def, std::move(variants), std::move(tag_layout.first),
+          std::move(tag_layout.second));
       if (!sum_def->IsParametric()) {
         XLS_RETURN_IF_ERROR(AddCachedType(sum_def, std::nullopt, *type));
       }
@@ -2340,7 +2301,8 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
     return discriminants;
   }
 
-  absl::StatusOr<SumType::ZeroSelection> ValidateSemanticSumDiscriminants(
+  absl::StatusOr<std::pair<TypeDim, std::vector<InterpValue>>>
+  GetSemanticSumTagLayout(
       const SumDef& sum_def,
       std::optional<const ParametricContext*> parametric_context,
       const absl::flat_hash_map<const NameDef*, ExprOrType>&
@@ -2351,20 +2313,48 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
         discriminants.push_back(*variant->discriminant());
       }
     }
-    if (discriminants.empty() && sum_def.tag_type_annotation() != nullptr &&
-        !sum_def.variants().empty()) {
-      return TypeInferenceErrorStatusForAnnotation(
-          sum_def.tag_type_annotation()->span(), sum_def.tag_type_annotation(),
-          absl::Substitute(
-              "Semantic sum `$0` may specify a tag type only when every "
-              "variant has an explicit discriminant.",
-              sum_def.identifier()),
-          file_table_);
-    } else if (sum_def.variants().empty()) {
-      return SumType::NoZeroVariant{};
-    } else if (discriminants.empty()) {
-      return SumType::SelectedZeroVariant{
-          std::cref(*sum_def.variants().front())};
+    if (discriminants.empty()) {
+      const int64_t minimum_bit_count =
+          sum_def.variants().size() <= 1
+              ? 0
+              : Bits::MinBitCountUnsigned(sum_def.variants().size() - 1);
+      int64_t tag_bit_count = minimum_bit_count;
+      bool is_signed = false;
+      if (sum_def.tag_type_annotation() != nullptr) {
+        const TypeAnnotation* tag_annotation = sum_def.tag_type_annotation();
+        if (sum_def.IsParametric()) {
+          XLS_ASSIGN_OR_RETURN(
+              tag_annotation,
+              GetParametricFreeType(tag_annotation, resolved_parametrics));
+        }
+        XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> tag_type,
+                             Concretize(tag_annotation, parametric_context));
+        std::optional<BitsLikeProperties> bits_like = GetBitsLike(*tag_type);
+        XLS_RET_CHECK(bits_like.has_value());
+        XLS_ASSIGN_OR_RETURN(tag_bit_count, bits_like->size.GetAsInt64());
+        XLS_ASSIGN_OR_RETURN(is_signed, bits_like->is_signed.GetAsBool());
+        if (minimum_bit_count > tag_bit_count) {
+          return TypeInferenceErrorStatusForAnnotation(
+              sum_def.tag_type_annotation()->span(),
+              sum_def.tag_type_annotation(),
+              absl::Substitute(
+                  "Semantic sum `$0` needs at least $1 tag bits for $2 "
+                  "implicit "
+                  "constructors, but tag type `$3` has only $4 bits.",
+                  sum_def.identifier(), minimum_bit_count,
+                  sum_def.variants().size(),
+                  sum_def.tag_type_annotation()->ToString(), tag_bit_count),
+              file_table_);
+        }
+      }
+      std::vector<InterpValue> values;
+      values.reserve(sum_def.variants().size());
+      for (int64_t i = 0; i < sum_def.variants().size(); ++i) {
+        values.push_back(
+            InterpValue::MakeBits(is_signed, UBits(i, tag_bit_count)));
+      }
+      return std::make_pair(TypeDim::CreateU32(tag_bit_count),
+                            std::move(values));
     }
     XLS_RET_CHECK_EQ(discriminants.size(), sum_def.variants().size());
     if (sum_def.IsParametric()) {
@@ -2379,7 +2369,8 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
 
     XLS_ASSIGN_OR_RETURN(TypeInfo * type_info, GetTypeInfo(parametric_context));
     absl::flat_hash_set<std::string> seen_values;
-    SumType::ZeroSelection zero_selection = SumType::NoZeroVariant{};
+    std::vector<InterpValue> values;
+    values.reserve(discriminants.size());
     for (int i = 0; i < discriminants.size(); ++i) {
       Expr* discriminant = discriminants[i];
       absl::StatusOr<InterpValue> evaluated_value =
@@ -2407,12 +2398,10 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
                 sum_def.identifier(), discriminant->ToString()),
             file_table_);
       }
-      if (bits.IsZero()) {
-        zero_selection =
-            SumType::SelectedZeroVariant{std::cref(*sum_def.variants()[i])};
-      }
+      values.push_back(std::move(*evaluated_value));
     }
-    return zero_selection;
+    XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, values.front().GetBitCount());
+    return std::make_pair(TypeDim::CreateU32(tag_bit_count), std::move(values));
   }
 
   // Given an invocation of the `map` builtin, creates a FunctionTypeAnnotation

@@ -834,48 +834,35 @@ class SumTypeVariant {
 
 // Represents a semantic sum after typechecking.
 //
-// `variants()` is stored in the same order as the defining `SumDef`. That order
-// determines the dense storage tag, flattened payload-slot layout, and the
-// behavior of positional consumers such as equality, formatting, and
-// serialization. Source-level discriminants are separate from storage tags.
-//
-// Storage contains one tag followed by the payload slots for every variant,
-// including inactive variants. Consequently, `A(u8) | B(u16)` uses 25 bits:
-// one tag bit plus both the eight-bit and sixteen-bit payload slots. The tag
-// always occupies at least one bit, including for sums with zero or one
-// variant.
+// `variants()` is stored in the same order as the defining `SumDef`. Variant
+// order remains useful for deterministic traversal and the implicit
+// discriminant rule, but Phase 2 carries the chosen tag width and concrete
+// semantic discriminants explicitly so lowering does not conflate source order
+// with wire tags.
 class SumType : public Type {
  public:
-  struct SelectedZeroVariant {
-    std::reference_wrapper<const SumVariant> variant;
-  };
-  struct NoZeroVariant {};
-
-  // The variant selected for zero for this concrete type: the first variant
-  // with implicit discriminants, or the one with explicit discriminant zero.
-  // NoZeroVariant means validation proved that none exists. A selected variant
-  // still requires a zero-constructible payload. Its original declaration must
-  // outlive this type.
-  using ZeroSelection = std::variant<SelectedZeroVariant, NoZeroVariant>;
-
   // `variants` must be in the same declaration order as `sum_def.variants()`.
-  // `SumType` uses the vector order exactly as supplied when deriving tag
-  // numbering and payload-slot layout. A selected zero variant must refer to
-  // one of the original variants of `sum_def`.
+  // When `discriminants` is omitted, the type uses the implicit declaration
+  // order rule `0..n-1` at the supplied or inferred tag width.
   SumType(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
-          ZeroSelection zero_selection)
+          std::optional<TypeDim> tag_bit_count = std::nullopt,
+          std::vector<InterpValue> discriminants = {})
       : sum_def_(sum_def),
         variants_(std::move(variants)),
-        zero_selection_(zero_selection) {
+        tag_bit_count_(tag_bit_count.value_or(InferImplicitTagBitCount())),
+        discriminants_(std::move(discriminants)) {
     CHECK_EQ(variants_.size(), sum_def_.variants().size());
     for (int64_t i = 0; i < variants_.size(); ++i) {
       CHECK_EQ(&variants_[i].variant(), sum_def_.variants()[i]);
     }
-    if (const auto* selected =
-            std::get_if<SelectedZeroVariant>(&zero_selection_)) {
-      CHECK(
-          absl::c_linear_search(sum_def_.variants(), &selected->variant.get()));
+    if (discriminants_.empty()) {
+      const int64_t bit_count = tag_bit_count_.GetAsInt64().value();
+      discriminants_.reserve(variants_.size());
+      for (int64_t i = 0; i < variants_.size(); ++i) {
+        discriminants_.push_back(InterpValue::MakeUBits(bit_count, i));
+      }
     }
+    CHECK_EQ(discriminants_.size(), variants_.size());
   }
 
   absl::Status Accept(TypeVisitor& v) const override {
@@ -895,22 +882,27 @@ class SumType : public Type {
   bool IsAggregate() const override { return true; }
 
   std::vector<TypeDim> GetAllDims() const override;
+  absl::StatusOr<TypeDim> GetMaxPayloadBitCount() const;
   absl::StatusOr<TypeDim> GetTotalBitCount() const override;
   std::string GetDebugTypeName() const override { return "sum"; }
   std::unique_ptr<Type> CloneToUnique() const override;
 
   const SumDef& nominal_type() const { return sum_def_; }
   const std::vector<SumTypeVariant>& variants() const { return variants_; }
-  const ZeroSelection& zero_selection() const { return zero_selection_; }
 
   int64_t variant_count() const { return variants_.size(); }
-  // Returns the dense storage-tag width, not the source discriminant width.
-  TypeDim storage_tag_bit_count() const;
+  TypeDim tag_bit_count() const { return tag_bit_count_; }
+  const InterpValue& GetDiscriminant(int64_t variant_index) const {
+    return discriminants_.at(variant_index);
+  }
 
  private:
+  TypeDim InferImplicitTagBitCount() const;
+
   const SumDef& sum_def_;
   std::vector<SumTypeVariant> variants_;
-  const ZeroSelection zero_selection_;
+  TypeDim tag_bit_count_;
+  std::vector<InterpValue> discriminants_;
 };
 
 // This represents the type of annotations like:
@@ -1308,6 +1300,9 @@ absl::StatusOr<bool> IsSigned(const Type& c);
 // Returns whether a type is, or recursively contains, a semantic sum type.
 // Formatting validation uses this to reject unsupported nested sum values.
 bool TypeContainsSemanticSum(const Type& type);
+
+// Returns whether values exist for the given fully-concrete type.
+absl::StatusOr<bool> TypeIsInhabited(const Type& type);
 
 }  // namespace xls::dslx
 
