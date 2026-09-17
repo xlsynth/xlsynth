@@ -211,10 +211,10 @@ class ImportData {
 
   absl::StatusOr<Module*> GetBuiltinStubsModule() const;
 
-  // Returns whether this ImportData owns the module as an installed import.
+  // Includes all retained modules, not just active imports.
   // Unlike TypeInfo membership, this tests ownership rather than cached typing.
-  // This query may run concurrently with Put;
-  // other ImportData operations still require external synchronization.
+  // This query may run concurrently with Put and KeepAlive. Other operations
+  // still require external synchronization.
   bool OwnsModule(const Module* module) const;
 
   TypeInfoOwner& type_info_owner() { return type_info_owner_; }
@@ -324,8 +324,8 @@ class ImportData {
   // module is not available.
   absl::StatusOr<const Module*> FindModule(const Span& span) const;
 
-  // Protects ownership queries against publication into modules_. Keep the mutex
-  // indirect so ImportData remains movable.
+  // Protects ownership queries against publication into the owning
+  // containers. Keep the mutex indirect so ImportData remains movable.
   std::unique_ptr<absl::Mutex> module_ownership_mutex_ =
       std::make_unique<absl::Mutex>();
   FileTable file_table_;

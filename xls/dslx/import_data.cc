@@ -90,6 +90,7 @@ absl::StatusOr<InferenceTableConverter*> ImportData::GetInferenceTableConverter(
 }
 
 void ImportData::KeepAlive(std::unique_ptr<ModuleInfo> module_info) {
+  absl::MutexLock lock(module_ownership_mutex_.get());
   discarded_modules_.push_back(std::move(module_info));
 }
 
@@ -98,6 +99,10 @@ bool ImportData::OwnsModule(const Module* module) const {
   return std::any_of(modules_.begin(), modules_.end(),
                      [module](const auto& entry) {
                        return &entry.second->module() == module;
+                     }) ||
+         std::any_of(discarded_modules_.begin(), discarded_modules_.end(),
+                     [module](const auto& module_info) {
+                       return &module_info->module() == module;
                      });
 }
 
