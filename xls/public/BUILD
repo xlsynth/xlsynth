@@ -479,6 +479,7 @@ cc_test(
         "//xls/common/status:matchers",
         "//xls/dslx:default_dslx_stdlib_path",
         "//xls/jit:aot_entrypoint_cc_proto",
+        "//xls/jit:jit_buffer",
         "@abseil-cpp//absl/base:core_headers",
         "@abseil-cpp//absl/cleanup",
         "@abseil-cpp//absl/log",
