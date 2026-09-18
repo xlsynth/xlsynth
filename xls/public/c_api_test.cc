@@ -45,6 +45,7 @@
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/default_dslx_stdlib_path.h"
 #include "xls/jit/aot_entrypoint.pb.h"
+#include "xls/jit/jit_buffer.h"
 #include "xls/public/c_api_dslx.h"
 #include "xls/public/c_api_format_preference.h"
 #include "xls/public/c_api_ir_analysis.h"
@@ -2755,9 +2756,7 @@ top fn add_one(x: bits[8]) -> bits[8] {
   if (size < 1) {
     size = 1;
   }
-  int64_t alloc_size = ((size + alignment - 1) / alignment) * alignment;
-  void* temp_buffer = std::aligned_alloc(static_cast<size_t>(alignment),
-                                         static_cast<size_t>(alloc_size));
+  void* temp_buffer = xls::AllocateAligned(alignment, size);
   ASSERT_NE(temp_buffer, nullptr);
   absl::Cleanup free_temp_buffer([=] { std::free(temp_buffer); });
 
