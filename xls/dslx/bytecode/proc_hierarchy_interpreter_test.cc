@@ -20,12 +20,12 @@
 #include <string_view>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/file/temp_file.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/ret_check.h"
@@ -135,6 +135,62 @@ class ProcHierarchyInterpreterTest : public ::testing::Test {
   std::optional<ImportData> import_data_;
   std::optional<TypecheckedModule> tm_;
 };
+
+// Verifies: Channel inputs survive a stateful proc tick with every bit intact.
+// Catches: Canonicalization or malformed-tag rejection in unobserved transport.
+TEST_F(ProcHierarchyInterpreterTest, SumChannelsAndStatePreserveRawImages) {
+  constexpr std::string_view kProgram = R"(
+enum Message: u2 { Small(u4) = 0, Big(u8) = 1 }
+proc Transport {
+  input: chan<Message> in;
+  output: chan<Message> out;
+  config(input: chan<Message> in, output: chan<Message> out) { (input, output) }
+  init { Message::Small(u4:0) }
+  next(state: Message) {
+    let tok = send(join(), output, state);
+    let (_, incoming) = recv(tok, input);
+    incoming
+  }
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheckOrPrintError(kProgram, &import_data_.value()));
+  XLS_ASSERT_OK_AND_ASSIGN(Proc * proc,
+                           tm.module->GetMemberOrError<Proc>("Transport"));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfo * type_info,
+                           tm.type_info->GetTopLevelProcTypeInfo(proc));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto interpreter,
+      ProcHierarchyInterpreter::Create(&import_data_.value(), type_info, proc,
+                                       BytecodeInterpreterOptions()));
+  const InterpValue dirty = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(2, 0),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(8, 0xfa)})});
+  const InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(2, 3),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(8, 0xe5)})});
+  const InterpValue canonical = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(2, 0),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(8, 0x0a)})});
+  for (const InterpValue& value : {dirty, malformed, canonical}) {
+    interpreter->GetInterfaceChannel(0).Write(value);
+  }
+  ASSERT_EQ(interpreter->proc_instances().size(), 1);
+  for (int64_t tick = 0; tick < 3; ++tick) {
+    XLS_ASSERT_OK_AND_ASSIGN(ProcRunResult result,
+                             interpreter->proc_instances().front().Run());
+    EXPECT_EQ(result.execution_state, ProcExecutionState::kCompleted);
+  }
+  EXPECT_EQ(interpreter->GetInterfaceChannel(1).Read(),
+            InterpValue::MakeTuple(
+                {InterpValue::MakeUBits(2, 0),
+                 InterpValue::MakeTuple({InterpValue::MakeUBits(8, 0)})}));
+  // Each output is the previous tick's state, so these checks cannot pass
+  // through a same-tick input/output bypass that omits state transport.
+  EXPECT_EQ(interpreter->GetInterfaceChannel(1).Read(), dirty);
+  EXPECT_EQ(interpreter->GetInterfaceChannel(1).Read(), malformed);
+}
 
 // https://github.com/google/xls/issues/981
 TEST_F(ProcHierarchyInterpreterTest, AssertEqFailProcIterations) {

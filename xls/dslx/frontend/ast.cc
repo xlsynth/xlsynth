@@ -319,6 +319,8 @@ std::string_view AstNodeKindToString(AstNodeKind kind) {
       return "width slice";
     case AstNodeKind::kWildcardPattern:
       return "wildcard pattern";
+    case AstNodeKind::kInvalidPattern:
+      return "invalid pattern";
     case AstNodeKind::kMatchArm:
       return "match arm";
     case AstNodeKind::kMatch:
@@ -1336,10 +1338,11 @@ std::string ReturnTypeAnnotation::ToString() const {
 
 ParamTypeAnnotation::ParamTypeAnnotation(Module* owner,
                                          TypeAnnotation* function_type,
-                                         int param_index)
+                                         int param_index, InferenceRole role)
     : TypeAnnotation(owner, function_type->span(), kAnnotationKind),
       function_type_(function_type),
-      param_index_(param_index) {}
+      param_index_(param_index),
+      inference_role_(role) {}
 
 std::string ParamTypeAnnotation::ToString() const {
   return absl::Substitute("Param type $0 of: $1", param_index_,
@@ -1693,11 +1696,12 @@ SumDef::~SumDef() = default;
 
 std::vector<AstNode*> SumDef::GetChildren(bool want_types) const {
   std::vector<AstNode*> results = {name_def_};
-  if (want_types && tag_type_annotation_ != nullptr) {
-    results.push_back(tag_type_annotation_);
-  }
+  // Bindings must precede the tag so cloning can remap its parameter refs.
   for (ParametricBinding* binding : parametric_bindings_) {
     results.push_back(binding);
+  }
+  if (want_types && tag_type_annotation_ != nullptr) {
+    results.push_back(tag_type_annotation_);
   }
   for (SumVariant* variant : variants_) {
     results.push_back(variant);
@@ -3036,6 +3040,24 @@ std::optional<Span> Statement::GetSpan() const {
 
 WildcardPattern::~WildcardPattern() = default;
 
+// -- class InvalidPattern
+
+InvalidPattern::~InvalidPattern() = default;
+
+std::string InvalidPattern::ToString() const {
+  if (raw_name_def_ == nullptr) {
+    return "invalid!";
+  }
+  return absl::StrFormat("invalid!(%s)", raw_name_def_->ToString());
+}
+
+std::vector<AstNode*> InvalidPattern::GetChildren(bool want_types) const {
+  if (raw_name_def_ == nullptr) {
+    return {};
+  }
+  return {raw_name_def_};
+}
+
 // -- class RestOfTuple
 
 RestOfTuple::~RestOfTuple() = default;
@@ -3209,6 +3231,7 @@ PatternLeaf PatternTreeToLeaf(const PatternTree& pattern) {
       Visitor{[](NameDef* node) -> PatternLeaf { return node; },
               [](NameRef* node) -> PatternLeaf { return node; },
               [](WildcardPattern* node) -> PatternLeaf { return node; },
+              [](InvalidPattern* node) -> PatternLeaf { return node; },
               [](Number* node) -> PatternLeaf { return node; },
               [](ColonRef* node) -> PatternLeaf { return node; },
               [](Range* node) -> PatternLeaf { return node; },
@@ -3234,6 +3257,7 @@ ConstPatternLeaf PatternTreeToLeaf(const ConstPatternTree& pattern) {
           [](const NameDef* node) -> ConstPatternLeaf { return node; },
           [](const NameRef* node) -> ConstPatternLeaf { return node; },
           [](const WildcardPattern* node) -> ConstPatternLeaf { return node; },
+          [](const InvalidPattern* node) -> ConstPatternLeaf { return node; },
           [](const Number* node) -> ConstPatternLeaf { return node; },
           [](const ColonRef* node) -> ConstPatternLeaf { return node; },
           [](const Range* node) -> ConstPatternLeaf { return node; },

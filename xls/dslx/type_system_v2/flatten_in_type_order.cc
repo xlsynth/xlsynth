@@ -213,16 +213,18 @@ class Flattener : public AstNodeVisitorWithDefault {
     return HandleStructDefBaseInternal(node);
   }
 
-  absl::Status HandleProcDef(const ProcDef* node) override {
-    return HandleStructDefBaseInternal(node);
-  }
-
   absl::Status HandleSumDef(const SumDef* node) override {
     if (node->IsParametric() && node != root_) {
+      // Tag expressions, like payload types, need the concrete instance's
+      // parametrics. The sum concretizer converts them in that context.
       return absl::OkStatus();
     } else {
-      return DefaultHandler(node);
+      return DefaultHandlerInternal(node);
     }
+  }
+
+  absl::Status HandleProcDef(const ProcDef* node) override {
+    return HandleStructDefBaseInternal(node);
   }
 
   absl::Status HandleTypeRef(const TypeRef* node) override {

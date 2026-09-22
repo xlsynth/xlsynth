@@ -119,7 +119,9 @@ CloneAstAndGetAllPairs(const AstNode* root,
                        std::optional<Module*> target_module,
                        CloneReplacer replacer = &NoopCloneReplacer);
 
-// Clones the module with one shared node mapping. When supplied,
+// Returns a fresh clone of `module`, preserving module metadata and references
+// to type definitions owned by other modules, with one shared node mapping.
+// When supplied,
 // `post_replacer` runs after each ordinary node clone, before its parent
 // consumes the result. Already-mapped nodes and wholesale `replacer`
 // replacements do not invoke it. Cloned attributes are applied to the final

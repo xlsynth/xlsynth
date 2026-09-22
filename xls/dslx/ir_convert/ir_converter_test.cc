@@ -20,18 +20,23 @@
 
 #include "xls/dslx/ir_convert/ir_converter.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/base/casts.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+#include "xls/codegen/codegen_options.h"
+#include "xls/codegen/codegen_result.h"
+#include "xls/codegen/pipeline_generator.h"
 #include "xls/common/file/temp_file.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/create_import_data.h"
@@ -43,9 +48,19 @@
 #include "xls/dslx/run_routines/run_comparator.h"
 #include "xls/dslx/run_routines/run_routines.h"
 #include "xls/dslx/type_system/typecheck_test_utils.h"
+#include "xls/interpreter/channel_queue.h"
+#include "xls/interpreter/interpreter_proc_runtime.h"
+#include "xls/interpreter/serial_proc_runtime.h"
+#include "xls/ir/bits.h"
 #include "xls/ir/channel.h"
 #include "xls/ir/ir_matcher.h"
 #include "xls/ir/proc.h"
+#include "xls/ir/value.h"
+#include "xls/jit/jit_proc_runtime.h"
+#include "xls/passes/optimization_pass_pipeline.h"
+#include "xls/scheduling/pipeline_schedule.h"
+#include "xls/simulation/default_verilog_simulator.h"
+#include "xls/simulation/module_simulator.h"
 
 namespace xls::dslx {
 namespace {
@@ -778,7 +793,7 @@ fn f(x: u32[1]) -> u32[1] {
 TEST_F(IrConverterTest, SingleElementEnumArrayParam) {
   constexpr std::string_view program =
       R"(
-enum Foo : u2 {}
+enum Foo : u2 { Zero = 0 }
 fn f(x: Foo[1]) -> Foo[1] {
   x
 }
@@ -7936,6 +7951,98 @@ proc passthrough {
   EXPECT_FALSE(proc->is_new_style_proc());
 }
 
+TEST_F(IrConverterTest, SumChannelsAndStatePreserveRawImages) {
+  constexpr std::string_view kProgram = R"(
+enum Message: u2 { Small(u4) = 0, Big(u8) = 1 }
+proc Transport {
+  input: chan<Message> in;
+  output: chan<Message> out;
+  config(input: chan<Message> in, output: chan<Message> out) { (input, output) }
+  init { Message::Small(u4:0) }
+  next(state: Message) {
+    let tok = send(join(), output, state);
+    let (_, incoming) = recv(tok, input);
+    incoming
+  }
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+  PackageConversionData conv{.package =
+                                 std::make_unique<Package>(tm.module->name())};
+  XLS_ASSERT_OK(ConvertOneFunctionIntoPackage(
+      tm.module, "Transport", &import_data, /*parametric_env=*/nullptr,
+      ConvertOptions{.lower_to_proc_scoped_channels = true}, &conv));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Proc * proc, conv.package->GetTopAsProc());
+
+  const Value initial =
+      Value::Tuple({Value(UBits(0, 2)), Value::Tuple({Value(UBits(0, 8))})});
+  const Value canonical =
+      Value::Tuple({Value(UBits(0, 2)), Value::Tuple({Value(UBits(0x0a, 8))})});
+  const Value dirty =
+      Value::Tuple({Value(UBits(0, 2)), Value::Tuple({Value(UBits(0xfa, 8))})});
+  const Value malformed =
+      Value::Tuple({Value(UBits(3, 2)), Value::Tuple({Value(UBits(0xe5, 8))})});
+  // The fourth input flushes the malformed third input out of stored state.
+  // No match, equality, or trace observes any received sum constructor.
+  const std::vector<Value> inputs = {canonical, dirty, malformed, initial};
+  const std::vector<Value> expected_outputs = {initial, canonical, dirty,
+                                               malformed};
+  {
+    XLS_ASSERT_OK_AND_ASSIGN(auto interpreter,
+                             CreateInterpreterSerialProcRuntime(proc));
+    XLS_ASSERT_OK_AND_ASSIGN(auto jit, CreateJitSerialProcRuntime(proc));
+    for (SerialProcRuntime* runtime : {interpreter.get(), jit.get()}) {
+      SCOPED_TRACE(runtime == interpreter.get() ? "IR interpreter"
+                                                : "LLVM JIT");
+      XLS_ASSERT_OK_AND_ASSIGN(
+          ChannelQueue * input_queue,
+          runtime->queue_manager().GetBoundaryQueueByName("_input"));
+      XLS_ASSERT_OK_AND_ASSIGN(
+          ChannelQueue * output_queue,
+          runtime->queue_manager().GetBoundaryQueueByName("_output"));
+      EXPECT_THAT(runtime->ResolveState(proc), testing::ElementsAre(initial));
+      for (int64_t tick = 0; tick < inputs.size(); ++tick) {
+        SCOPED_TRACE(tick);
+        XLS_ASSERT_OK(input_queue->Write(inputs.at(tick)));
+        XLS_ASSERT_OK(runtime->Tick());
+        EXPECT_TRUE(input_queue->IsEmpty());
+        EXPECT_THAT(output_queue->Read(),
+                    testing::Optional(expected_outputs.at(tick)));
+        EXPECT_TRUE(output_queue->IsEmpty());
+        EXPECT_THAT(runtime->ResolveState(proc),
+                    testing::ElementsAre(inputs.at(tick)));
+      }
+    }
+  }
+
+  XLS_ASSERT_OK(RunOptimizationPassPipeline(conv.package.get()));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Proc * rtl_proc, conv.package->GetTopAsProc());
+  XLS_ASSERT_OK_AND_ASSIGN(PipelineSchedule schedule,
+                           PipelineSchedule::SingleStage(rtl_proc));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      verilog::CodegenResult generated,
+      verilog::ToPipelineModuleText(
+          schedule, rtl_proc,
+          verilog::BuildPipelineOptions()
+              .reset("rst", /*asynchronous=*/false, /*active_low=*/false,
+                     /*reset_data_path=*/true)
+              .use_system_verilog(false)));
+  std::unique_ptr<verilog::VerilogSimulator> verilog_simulator =
+      verilog::GetDefaultVerilogSimulator();
+  verilog::ModuleSimulator simulator(
+      generated.signature, generated.verilog_text, verilog::FileType::kVerilog,
+      verilog_simulator.get());
+  const absl::flat_hash_map<std::string, std::vector<Value>> channel_inputs = {
+      {"_input", inputs}};
+  const absl::flat_hash_map<std::string, std::vector<Value>> channel_outputs = {
+      {"_output", expected_outputs}};
+  EXPECT_THAT(simulator.RunInputSeriesProc(channel_inputs, {{"_output", 4}}),
+              IsOkAndHolds(channel_outputs));
+}
+
 TEST_F(IrConverterTest, ChannelFlowControlAttributeProcScoped) {
   constexpr std::string_view kProgram = R"(
 #![feature(channel_attributes)]
@@ -8320,6 +8427,7 @@ fn f(x: u32) -> u32 {
   match imported::make_some(x) {
     imported::Option::Some(v) => v,
     imported::Option::None => u32:0,
+    invalid! => u32:0,
   }
 }
 )";

@@ -2304,6 +2304,24 @@ absl::StatusOr<PatternTree> Parser::ParsePattern(Bindings& bindings,
   XLS_ASSIGN_OR_RETURN(const Token* peek, PeekToken());
   if (peek->kind() == TokenKind::kIdentifier) {
     XLS_ASSIGN_OR_RETURN(Token tok, PopTokenOrError(TokenKind::kIdentifier));
+    if (*tok.GetValue() == "invalid!") {
+      XLS_ASSIGN_OR_RETURN(bool peek_is_oparen,
+                           PeekTokenIs(TokenKind::kOParen));
+      if (!peek_is_oparen) {
+        auto* pattern = module_->Make<InvalidPattern>(tok.span(), nullptr);
+        return pattern;
+      }
+      XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kOParen));
+      XLS_ASSIGN_OR_RETURN(Token raw_tok,
+                           PopTokenOrError(TokenKind::kIdentifier));
+      XLS_ASSIGN_OR_RETURN(NameDef * raw_name_def, TokenToNameDef(raw_tok));
+      bindings.Add(raw_name_def->identifier(), raw_name_def);
+      XLS_ASSIGN_OR_RETURN(Token cparen, PopTokenOrError(TokenKind::kCParen));
+      Span span(tok.span().start(), cparen.span().limit());
+      auto* pattern = module_->Make<InvalidPattern>(span, raw_name_def);
+      raw_name_def->set_definer(pattern);
+      return pattern;
+    }
     if (*tok.GetValue() == "_") {
       return module_->Make<WildcardPattern>(tok.span());
     }
@@ -4592,8 +4610,7 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
       absl::c_any_of(entries, [](const ParsedEntry& entry) {
         return entry.payload_shape != SumVariant::PayloadShape::kUnit;
       });
-  const bool is_semantic_sum =
-      has_payload_syntax || (entries.empty() && type_annotation == nullptr);
+  const bool is_semantic_sum = has_payload_syntax || entries.empty();
   const bool has_discriminants = absl::c_any_of(
       entries,
       [](const ParsedEntry& entry) { return entry.discriminant != nullptr; });
@@ -4636,14 +4653,6 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
         absl::StrFormat(
             "Semantic sum `%s` must use either all implicit or all explicit "
             "discriminants.",
-            name_def->identifier()));
-  } else if (type_annotation != nullptr && !entries.empty() &&
-             !all_have_discriminants) {
-    return ParseErrorStatus(
-        name_def->span(),
-        absl::StrFormat(
-            "Semantic sum `%s` with a tag type annotation requires explicit "
-            "discriminants on every variant.",
             name_def->identifier()));
   }
 

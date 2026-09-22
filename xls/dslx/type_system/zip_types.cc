@@ -15,10 +15,13 @@
 #include "xls/dslx/type_system/zip_types.h"
 
 #include <cstdint>
+#include <memory>
 #include <utility>
+#include <variant>
 
 #include "absl/status/status.h"
 #include "xls/common/status/status_macros.h"
+#include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/type.h"
 
 namespace xls::dslx {
@@ -72,31 +75,37 @@ class ZipTypeVisitor : public TypeVisitor {
   }
   absl::Status HandleSum(const SumType& lhs) override {
     auto* rhs = dynamic_cast<const SumType*>(&rhs_);
-    if (rhs == nullptr || &lhs.nominal_type() != &rhs->nominal_type()) {
+    if (rhs == nullptr || &lhs.nominal_type() != &rhs->nominal_type() ||
+        lhs.tag_bit_count() != rhs->tag_bit_count() ||
+        !lhs.HasSameParametricArguments(rhs->parametric_arguments())) {
       return callbacks_.NoteTypeMismatch(lhs, lhs_parent_, rhs_, rhs_parent_);
-    }
-    AggregatePair aggregates = std::make_pair(&lhs, rhs);
-    XLS_RETURN_IF_ERROR(callbacks_.NoteAggregateStart(aggregates));
-    bool emitted_child = false;
-    for (int64_t variant_i = 0; variant_i < lhs.variant_count(); ++variant_i) {
-      const SumTypeVariant& lhs_variant = lhs.variants().at(variant_i);
-      const SumTypeVariant& rhs_variant = rhs->variants().at(variant_i);
-      if (&lhs_variant.variant() != &rhs_variant.variant() ||
-          lhs_variant.size() != rhs_variant.size()) {
-        return callbacks_.NoteTypeMismatch(lhs, lhs_parent_, rhs_, rhs_parent_);
-      }
-      for (int64_t member_i = 0; member_i < lhs_variant.size(); ++member_i) {
-        if (emitted_child) {
-          XLS_RETURN_IF_ERROR(callbacks_.NoteAggregateNext(aggregates));
+    } else {
+      AggregatePair aggregates = std::make_pair(&lhs, rhs);
+      XLS_RETURN_IF_ERROR(callbacks_.NoteAggregateStart(aggregates));
+      bool emitted_child = false;
+      for (int64_t variant_i = 0; variant_i < lhs.variant_count();
+           ++variant_i) {
+        const SumTypeVariant& lhs_variant = lhs.variants().at(variant_i);
+        const SumTypeVariant& rhs_variant = rhs->variants().at(variant_i);
+        if (&lhs_variant.variant() != &rhs_variant.variant() ||
+            lhs_variant.size() != rhs_variant.size() ||
+            lhs.GetDiscriminant(variant_i) != rhs->GetDiscriminant(variant_i)) {
+          return callbacks_.NoteTypeMismatch(lhs, lhs_parent_, rhs_,
+                                             rhs_parent_);
         }
-        emitted_child = true;
-        XLS_RETURN_IF_ERROR(ZipTypesWithParents(
-            lhs_variant.GetMemberType(member_i),
-            rhs_variant.GetMemberType(member_i), &lhs, rhs, callbacks_));
+        for (int64_t member_i = 0; member_i < lhs_variant.size(); ++member_i) {
+          if (emitted_child) {
+            XLS_RETURN_IF_ERROR(callbacks_.NoteAggregateNext(aggregates));
+          }
+          emitted_child = true;
+          XLS_RETURN_IF_ERROR(ZipTypesWithParents(
+              lhs_variant.GetMemberType(member_i),
+              rhs_variant.GetMemberType(member_i), &lhs, rhs, callbacks_));
+        }
       }
+      XLS_RETURN_IF_ERROR(callbacks_.NoteAggregateEnd(aggregates));
+      return absl::OkStatus();
     }
-    XLS_RETURN_IF_ERROR(callbacks_.NoteAggregateEnd(aggregates));
-    return absl::OkStatus();
   }
   absl::Status HandleProc(const ProcType& lhs) override {
     return HandleStructTypeBase<ProcType>(lhs);

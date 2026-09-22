@@ -25,7 +25,6 @@
 #include <utility>
 #include <vector>
 
-#include "gtest/gtest_prod.h"
 #include "absl/container/btree_map.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
@@ -36,6 +35,7 @@
 #include "absl/strings/match.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
+#include "gtest/gtest_prod.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
@@ -48,6 +48,7 @@ namespace xls::dslx {
 
 class Type;
 class TypeInfo;
+class MatchExhaustivenessChecker;
 
 // While building our AST, our choices can affect the legal scheduling options;
 // in particular, some ASTs cannot be scheduled in anything under N cycles (for
@@ -188,6 +189,8 @@ class AstGenerator {
 
   FRIEND_TEST(AstGeneratorTest, GeneratesParametricBindings);
   FRIEND_TEST(AstGeneratorTest, BitsTypeGetMetadata);
+  FRIEND_TEST(AstGeneratorTest, MatchPatternsRequireNewCoverage);
+  FRIEND_TEST(AstGeneratorTest, MatchPatternsTrackNestedTupleWildcards);
 
   // Note: we use a btree for a stable iteration order; i.e. so we can stably
   // select a random value from the environment across something like different
@@ -577,6 +580,11 @@ class AstGenerator {
   // Makes the concrete bits/tuple type required by match coverage checking.
   std::unique_ptr<Type> MakeMatchType(const TypeAnnotation* type);
 
+  // Rejects empty or already-covered patterns and reserves catch-all coverage
+  // for the final wildcard arm.
+  bool AddMatchPatternIfUseful(const PatternTree& pattern,
+                               MatchExhaustivenessChecker& coverage_checker);
+
   // Generate a Match expression.
   absl::StatusOr<TypedExpr> GenerateMatch(Context* ctx);
 
@@ -611,10 +619,10 @@ class AstGenerator {
       NameDef* imported_float32_value, std::vector<Statement*>* statements);
 
   TypeRefTypeAnnotation* MakeTypeRefTypeAnnotation(
-      TypeDefinition type_definition,
-      std::vector<ExprOrType> parametrics = {},
+      TypeDefinition type_definition, std::vector<ExprOrType> parametrics = {},
       std::optional<const StructInstanceBase*> instantiator = std::nullopt) {
-    auto* type_ref = module_->Make<TypeRef>(fake_span_, std::move(type_definition));
+    auto* type_ref =
+        module_->Make<TypeRef>(fake_span_, std::move(type_definition));
     return module_->Make<TypeRefTypeAnnotation>(
         fake_span_, type_ref, std::move(parametrics), instantiator);
   }

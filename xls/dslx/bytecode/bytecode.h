@@ -23,6 +23,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/log/check.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xls/common/strong_int.h"
@@ -49,6 +50,18 @@ class Bytecode {
     kSAdd,
     // Performs a bitwise AND of the top two values on the stack.
     kAnd,
+    // Shallowly observes TOS0 as the SumType in the data argument, checking its
+    // constructor and ordinary payload validity without changing its bits.
+    // Dirty padding and unobserved nested sum tags are allowed. Runs within
+    // kBeginMatch/kEndMatch so subsequent constructor patterns reuse the
+    // result.
+    kAssertWellFormed,
+    // Starts observation reuse for one fixed sum-containing match scrutinee.
+    // Neither this instruction nor kEndMatch changes the value stack.
+    kBeginMatch,
+    // Discards the current match's observations before its selected arm body
+    // or unmatched-value failure. Match dispatches do not nest within a frame.
+    kEndMatch,
     // Invokes the function given in the Bytecode's data argument. Arguments are
     // given on the stack with deeper elements being earlier in the arg list
     // (rightmost arg is TOS1 because we evaluate args left-to-right, TOS0 is
@@ -69,6 +82,9 @@ class Bytecode {
     // Creates an N-tuple (N given in the data argument) from the values on the
     // stack.
     kCreateTuple,
+    // Creates a semantic sum value from its active payload members using the
+    // sum constructor carried in the data argument.
+    kCreateSum,
     // Decodes the element on top of the stack to a one-hot of the type given as
     // the parametric arg.
     kDecode,
@@ -237,10 +253,20 @@ class Bytecode {
   // anything" flag.
   class MatchArmItem {
    public:
-    static MatchArmItem MakeInterpValue(const InterpValue& interp_value);
-    static MatchArmItem MakeLoad(SlotIndex slot_index);
+    // Sum-containing constants require their semantic type for equality. The
+    // borrowed type must outlive the bytecode; omit it for raw comparisons.
+    static MatchArmItem MakeInterpValue(const InterpValue& interp_value,
+                                        const Type* value_type = nullptr);
+    // Loads a constant from a frame slot, with the same type lifetime contract.
+    static MatchArmItem MakeLoad(SlotIndex slot_index,
+                                 const Type* value_type = nullptr);
     static MatchArmItem MakeStore(SlotIndex slot_index);
     static MatchArmItem MakeRange(InterpValue start, InterpValue limit);
+    static MatchArmItem MakeSum(const SumType* sum_type,
+                                std::string variant_name,
+                                InterpValue discriminant,
+                                std::vector<MatchArmItem> payload_items);
+    static MatchArmItem MakeInvalidSum();
     static MatchArmItem MakeTuple(std::vector<MatchArmItem> elements);
     static MatchArmItem MakeWildcard();
     static MatchArmItem MakeRestOfTuple();
@@ -249,6 +275,8 @@ class Bytecode {
       kInterpValue,
       kLoad,
       kRange,
+      kSum,
+      kInvalidSum,
       kStore,
       kTuple,
       kWildcard,
@@ -260,22 +288,35 @@ class Bytecode {
       InterpValue limit;
     };
 
+    struct SumMatchData {
+      const SumType* sum_type;
+      std::string variant_name;
+      InterpValue discriminant;
+      std::vector<MatchArmItem> payload_items;
+    };
+
     absl::StatusOr<InterpValue> interp_value() const;
     absl::StatusOr<SlotIndex> slot_index() const;
     absl::StatusOr<RangeData> range() const;
+    absl::StatusOr<const SumMatchData*> sum_match_data() const;
     absl::StatusOr<std::vector<MatchArmItem>> tuple_elements() const;
     Kind kind() const { return kind_; }
+    const Type* value_type() const { return value_type_; }
 
     std::string ToString() const;
 
    private:
     explicit MatchArmItem(Kind kind);
-    MatchArmItem(Kind kind, std::variant<InterpValue, SlotIndex, RangeData,
-                                         std::vector<MatchArmItem>>
-                                data);
+    MatchArmItem(Kind kind,
+                 std::variant<InterpValue, SlotIndex, RangeData, SumMatchData,
+                              std::vector<MatchArmItem>>
+                     data);
 
     Kind kind_;
-    std::optional<std::variant<InterpValue, SlotIndex, RangeData,
+    // Literal/load patterns containing sums need semantic equality. Borrowed
+    // from the emitter's TypeInfo, just like SumMatchData::sum_type.
+    const Type* value_type_ = nullptr;
+    std::optional<std::variant<InterpValue, SlotIndex, RangeData, SumMatchData,
                                std::vector<MatchArmItem>>>
         data_;
   };
@@ -391,10 +432,34 @@ class Bytecode {
     bool redact_value_;
   };
 
-  using Data = std::variant<InterpValue, JumpTarget, NumElements, SlotIndex,
-                            std::unique_ptr<Type>, InvocationData, MatchArmItem,
-                            SpawnData, TraceData, ChannelData>;
+  class SumConstructionData {
+   public:
+    SumConstructionData(std::unique_ptr<Type> sum_type, int64_t variant_index)
+        : sum_type_(std::move(sum_type)), variant_index_(variant_index) {
+      CHECK(sum_type_ != nullptr);
+      CHECK(sum_type_->IsSum());
+      CHECK_GE(variant_index_, 0);
+      CHECK_LT(variant_index_, this->sum_type().variant_count());
+    }
 
+    const SumType& sum_type() const { return sum_type_->AsSum(); }
+    int64_t variant_index() const { return variant_index_; }
+    std::string_view variant_name() const {
+      return sum_type().variants().at(variant_index_).variant().identifier();
+    }
+
+   private:
+    std::unique_ptr<Type> sum_type_;
+    int64_t variant_index_;
+  };
+
+  using Data =
+      std::variant<InterpValue, JumpTarget, NumElements, SlotIndex,
+                   std::unique_ptr<Type>, InvocationData, MatchArmItem,
+                   SpawnData, TraceData, ChannelData, SumConstructionData>;
+
+  static Bytecode MakeAssertWellFormed(Span span, std::unique_ptr<Type> type);
+  static Bytecode MakeCreateSum(Span span, SumConstructionData sum_data);
   static Bytecode MakeDup(Span span);
   static Bytecode MakeIndex(Span span);
   static Bytecode MakeTupleIndex(Span span);
@@ -452,6 +517,7 @@ class Bytecode {
   absl::StatusOr<const SpawnData*> spawn_data() const;
   absl::StatusOr<const TraceData*> trace_data() const;
   absl::StatusOr<const ChannelData*> channel_data() const;
+  absl::StatusOr<const SumConstructionData*> sum_construction_data() const;
   absl::StatusOr<const Type*> type_data() const;
   absl::StatusOr<InterpValue> value_data() const;
 

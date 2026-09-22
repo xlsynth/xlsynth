@@ -36,17 +36,32 @@
 namespace xls::dslx {
 
 // Bridges semantic layout ownership to formatting without exposing raw
-// payload offsets in the public descriptor-construction API.
-class SumValueFormatBuilder {
+// payload offsets in the public descriptor-construction API. One construction
+// context preserves shared sums even when reached through other aggregates.
+class ValueFormatDescriptorBuilder {
  public:
-  static absl::StatusOr<ValueFormatDescriptor> Build(
-      const SumType& type, FormatPreference field_preference);
+  explicit ValueFormatDescriptorBuilder(FormatPreference field_preference)
+      : field_preference_(field_preference) {}
+
+  absl::StatusOr<ValueFormatDescriptor> Build(const Type& type);
+
+ private:
+  absl::StatusOr<ValueFormatDescriptor> BuildStruct(
+      const StructTypeBase& struct_type);
+  absl::StatusOr<ValueFormatDescriptor> BuildTuple(const TupleType& tuple_type);
+  absl::StatusOr<ValueFormatDescriptor> BuildArray(const ArrayType& type);
+  absl::StatusOr<ValueFormatDescriptor> BuildSum(const SumType& type);
+
+  const FormatPreference field_preference_;
+  // The vector object's address identifies the complete immutable sum data,
+  // including for empty sums. Keys are borrowed only for this synchronous
+  // construction; completed descriptors own their strings and packed metadata.
+  absl::flat_hash_map<const std::vector<SumTypeVariant>*, ValueFormatDescriptor>
+      sum_descriptors_;
 };
 
-namespace {
-
-absl::StatusOr<ValueFormatDescriptor> MakeStructFormatDescriptor(
-    const StructTypeBase& struct_type, FormatPreference field_preference) {
+absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::BuildStruct(
+    const StructTypeBase& struct_type) {
   std::vector<std::string> field_names;
   std::vector<ValueFormatDescriptor> field_formats;
   field_names.reserve(struct_type.size());
@@ -54,34 +69,33 @@ absl::StatusOr<ValueFormatDescriptor> MakeStructFormatDescriptor(
   for (size_t i = 0; i < struct_type.size(); ++i) {
     const Type& member_type = struct_type.GetMemberType(i);
     field_names.push_back(std::string{struct_type.GetMemberName(i)});
-    XLS_ASSIGN_OR_RETURN(
-        auto desc, MakeValueFormatDescriptor(member_type, field_preference));
+    XLS_ASSIGN_OR_RETURN(auto desc, Build(member_type));
     field_formats.push_back(std::move(desc));
   }
   return ValueFormatDescriptor::MakeStruct(
       struct_type.struct_def_base().identifier(), field_names, field_formats);
 }
 
-absl::StatusOr<ValueFormatDescriptor> MakeTupleFormatDescriptor(
-    const TupleType& tuple_type, FormatPreference field_preference) {
+absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::BuildTuple(
+    const TupleType& tuple_type) {
   std::vector<ValueFormatDescriptor> elements;
   for (size_t i = 0; i < tuple_type.size(); ++i) {
     const Type& member_type = tuple_type.GetMemberType(i);
-    XLS_ASSIGN_OR_RETURN(
-        auto vfd, MakeValueFormatDescriptor(member_type, field_preference));
+    XLS_ASSIGN_OR_RETURN(auto vfd, Build(member_type));
     elements.push_back(std::move(vfd));
   }
   return ValueFormatDescriptor::MakeTuple(elements);
 }
 
-absl::StatusOr<ValueFormatDescriptor> MakeArrayFormatDescriptor(
-    const ArrayType& type, FormatPreference field_preference) {
+absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::BuildArray(
+    const ArrayType& type) {
   XLS_ASSIGN_OR_RETURN(int64_t size, type.size().GetAsInt64());
-  XLS_ASSIGN_OR_RETURN(
-      ValueFormatDescriptor element_type_descriptor,
-      MakeValueFormatDescriptor(type.element_type(), field_preference));
+  XLS_ASSIGN_OR_RETURN(ValueFormatDescriptor element_type_descriptor,
+                       Build(type.element_type()));
   return ValueFormatDescriptor::MakeArray(element_type_descriptor, size);
 }
+
+namespace {
 
 absl::StatusOr<ValueFormatDescriptor> MakeEnumFormatDescriptor(
     const EnumType& type, FormatPreference field_preference) {
@@ -93,29 +107,30 @@ absl::StatusOr<ValueFormatDescriptor> MakeEnumFormatDescriptor(
     XLS_RET_CHECK(v.IsEnum());
     value_to_name[v.GetBitsOrDie()] = s;
   }
+  XLS_ASSIGN_OR_RETURN(int64_t bit_count, type.size().GetAsInt64());
   return ValueFormatDescriptor::MakeEnum(enum_def.identifier(),
-                                         std::move(value_to_name));
+                                         std::move(value_to_name), bit_count,
+                                         type.is_signed());
 }
 
 }  // namespace
 
-absl::StatusOr<ValueFormatDescriptor> SumValueFormatBuilder::Build(
-    const SumType& type, FormatPreference field_preference) {
-  const Phase1SumTypeEncoding encoding(type);
+absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::BuildSum(
+    const SumType& type) {
+  const SumTypeEncoding encoding(type);
   std::vector<ValueFormatSumVariantDescriptor> variants;
-  std::vector<size_t> payload_starts;
+  std::vector<Bits> variant_tag_bits;
   variants.reserve(type.variant_count());
-  payload_starts.reserve(type.variant_count());
+  variant_tag_bits.reserve(type.variant_count());
   XLS_RETURN_IF_ERROR(encoding.ForEachVariant(
-      [&](const Phase1SumTypeEncoding::VariantInfo& info) -> absl::Status {
-        payload_starts.push_back(static_cast<size_t>(info.payload_start));
+      [&](const SumTypeEncoding::VariantInfo& info) -> absl::Status {
+        variant_tag_bits.push_back(info.discriminant->GetBitsOrDie());
         const SumTypeVariant& variant = *info.variant;
         std::vector<ValueFormatDescriptor> payload_formats;
         payload_formats.reserve(variant.size());
         for (int64_t i = 0; i < variant.size(); ++i) {
           XLS_ASSIGN_OR_RETURN(ValueFormatDescriptor payload_format,
-                               MakeValueFormatDescriptor(
-                                   variant.GetMemberType(i), field_preference));
+                               Build(variant.GetMemberType(i)));
           payload_formats.push_back(std::move(payload_format));
         }
         if (variant.is_unit()) {
@@ -137,54 +152,66 @@ absl::StatusOr<ValueFormatDescriptor> SumValueFormatBuilder::Build(
         }
         return absl::OkStatus();
       }));
-  return ValueFormatDescriptor::MakeSum(type.nominal_type().identifier(),
-                                        variants, payload_starts,
-                                        encoding.payload_slot_count());
+  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
+  XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                       encoding.payload_slot_bit_count());
+  return ValueFormatDescriptor::MakeSum(
+      type.nominal_type().identifier(), variants, tag_bit_count,
+      payload_slot_bit_count, variant_tag_bits);
 }
 
-absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
-    const Type& type, FormatPreference field_preference) {
+absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::Build(
+    const Type& type) {
   class Visitor : public TypeVisitor {
    public:
-    explicit Visitor(FormatPreference field_preference)
-        : field_preference_(field_preference) {}
+    explicit Visitor(ValueFormatDescriptorBuilder& builder)
+        : builder_(builder) {}
 
     absl::Status HandleArray(const ArrayType& t) override {
       if (IsBitsLike(t)) {
-        result_ = ValueFormatDescriptor::MakeLeafValue(field_preference_);
-        return absl::OkStatus();
+        std::optional<BitsLikeProperties> bits_like = GetBitsLike(t);
+        XLS_RET_CHECK(bits_like.has_value());
+        XLS_ASSIGN_OR_RETURN(int64_t bit_count, bits_like->size.GetAsInt64());
+        XLS_ASSIGN_OR_RETURN(bool is_signed, bits_like->is_signed.GetAsBool());
+        result_ = ValueFormatDescriptor::MakeLeafValue(
+            builder_.field_preference_, bit_count, is_signed);
+      } else {
+        XLS_ASSIGN_OR_RETURN(result_, builder_.BuildArray(t));
       }
-      XLS_ASSIGN_OR_RETURN(result_,
-                           MakeArrayFormatDescriptor(t, field_preference_));
       return absl::OkStatus();
     }
     absl::Status HandleStruct(const StructType& t) override {
-      XLS_ASSIGN_OR_RETURN(result_,
-                           MakeStructFormatDescriptor(t, field_preference_));
+      XLS_ASSIGN_OR_RETURN(result_, builder_.BuildStruct(t));
       return absl::OkStatus();
     }
     absl::Status HandleSum(const SumType& t) override {
-      XLS_ASSIGN_OR_RETURN(result_,
-                           SumValueFormatBuilder::Build(t, field_preference_));
+      const auto* identity = &t.variants();
+      if (auto it = builder_.sum_descriptors_.find(identity);
+          it != builder_.sum_descriptors_.end()) {
+        result_ = it->second;
+      } else {
+        XLS_ASSIGN_OR_RETURN(result_, builder_.BuildSum(t));
+        builder_.sum_descriptors_.emplace(identity, result_);
+      }
       return absl::OkStatus();
     }
     absl::Status HandleProc(const ProcType& t) override {
-      XLS_ASSIGN_OR_RETURN(result_,
-                           MakeStructFormatDescriptor(t, field_preference_));
+      XLS_ASSIGN_OR_RETURN(result_, builder_.BuildStruct(t));
       return absl::OkStatus();
     }
     absl::Status HandleTuple(const TupleType& t) override {
-      XLS_ASSIGN_OR_RETURN(result_,
-                           MakeTupleFormatDescriptor(t, field_preference_));
+      XLS_ASSIGN_OR_RETURN(result_, builder_.BuildTuple(t));
       return absl::OkStatus();
     }
     absl::Status HandleEnum(const EnumType& t) override {
-      XLS_ASSIGN_OR_RETURN(result_,
-                           MakeEnumFormatDescriptor(t, field_preference_));
+      XLS_ASSIGN_OR_RETURN(
+          result_, MakeEnumFormatDescriptor(t, builder_.field_preference_));
       return absl::OkStatus();
     }
     absl::Status HandleBits(const BitsType& t) override {
-      result_ = ValueFormatDescriptor::MakeLeafValue(field_preference_);
+      XLS_ASSIGN_OR_RETURN(int64_t bit_count, t.size().GetAsInt64());
+      result_ = ValueFormatDescriptor::MakeLeafValue(builder_.field_preference_,
+                                                     bit_count, t.is_signed());
       return absl::OkStatus();
     }
     absl::Status HandleFunction(const FunctionType& t) override {
@@ -215,13 +242,18 @@ absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
     ValueFormatDescriptor& result() { return result_; }
 
    private:
-    const FormatPreference field_preference_;
+    ValueFormatDescriptorBuilder& builder_;
     ValueFormatDescriptor result_;
   };
 
-  Visitor v(field_preference);
+  Visitor v(*this);
   XLS_RETURN_IF_ERROR(type.Accept(v));
   return std::move(v.result());
+}
+
+absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
+    const Type& type, FormatPreference field_preference) {
+  return ValueFormatDescriptorBuilder(field_preference).Build(type);
 }
 
 }  // namespace xls::dslx

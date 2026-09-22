@@ -649,6 +649,31 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
                                       file_table_);
     }
 
+    bool saw_invalid_arm = false;
+    for (int64_t arm_index = 0; arm_index < node->arms().size(); ++arm_index) {
+      const MatchArm* arm = node->arms()[arm_index];
+      bool has_invalid_pattern = ArmHasInvalidPattern(*arm);
+      if (has_invalid_pattern) {
+        if (saw_invalid_arm) {
+          return TypeInferenceErrorStatus(
+              arm->GetPatternSpan(), nullptr,
+              "Only one `invalid!` arm is allowed in a match.", file_table_);
+        }
+        if (arm->patterns().size() != 1) {
+          return TypeInferenceErrorStatus(
+              arm->GetPatternSpan(), nullptr,
+              "`invalid!` cannot participate in `|` alternatives.",
+              file_table_);
+        }
+        if (arm_index + 1 != node->arms().size()) {
+          return TypeInferenceErrorStatus(
+              arm->GetPatternSpan(), nullptr,
+              "`invalid!` must be the final arm in a match.", file_table_);
+        }
+        saw_invalid_arm = true;
+      }
+    }
+
     std::vector<TypeAnnotation*> type_annotation_members;
     absl::flat_hash_map<std::string, const MatchArm*> seen_arms;
     absl::flat_hash_map<std::string, Span> seen_patterns;
@@ -753,6 +778,11 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     const TypeAnnotation* constructor_type = module_.Make<MemberTypeAnnotation>(
         node->constructor_ref()->span(),
         const_cast<TypeAnnotation*>(sum_value_type), variant->identifier());
+    // The constructor reference is converted separately from the pattern. Use
+    // the matched value's type there too, so omitted parametrics are inferred
+    // from the scrutinee rather than concretized as an abstract sum.
+    XLS_RETURN_IF_ERROR(
+        table_.SetTypeAnnotation(node->constructor_ref(), constructor_type));
     const auto* tuple_payload = std::get_if<TuplePattern*>(&node->payload());
     const auto* struct_payload = std::get_if<StructPattern*>(&node->payload());
     if (variant->is_unit()) {
@@ -789,7 +819,8 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       }
       for (int64_t i = 0; i < members.size(); ++i) {
         const TypeAnnotation* payload_type = module_.Make<ParamTypeAnnotation>(
-            const_cast<TypeAnnotation*>(constructor_type), i);
+            const_cast<TypeAnnotation*>(constructor_type), i,
+            ParamTypeAnnotation::InferenceRole::kPatternBinding);
         XLS_RETURN_IF_ERROR(BindPatternToType(members[i], payload_type));
       }
       return absl::OkStatus();
@@ -818,6 +849,39 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       XLS_RETURN_IF_ERROR(BindPatternToType(pattern, payload_type));
     }
     return absl::OkStatus();
+  }
+
+  absl::Status HandleInvalidPattern(const InvalidPattern* node) override {
+    VLOG(5) << "HandleInvalidPattern: " << node->ToString();
+    if (!IsTopLevelMatchPattern(*node)) {
+      return TypeInferenceErrorStatus(
+          node->span(), nullptr,
+          "`invalid!` is only allowed as a top-level match arm pattern.",
+          file_table_);
+    }
+    if (node->raw_name_def() == nullptr) {
+      return absl::OkStatus();
+    }
+
+    const NameRef* matched_var = *table_.GetTypeVariable(node);
+    TypeAnnotation* matched_type =
+        module_.Make<TypeVariableTypeAnnotation>(matched_var);
+    NameRef* bit_count =
+        module_.Make<NameRef>(node->span(), "bit_count",
+                              module_.GetOrCreateBuiltinNameDef("bit_count"));
+    Expr* raw_width =
+        module_.Make<Invocation>(node->span(), bit_count, std::vector<Expr*>{},
+                                 std::vector<ExprOrType>{matched_type});
+    XLS_RETURN_IF_ERROR(
+        DefineAndSetTypeVariable(raw_width, "invalid_raw_width"));
+    XLS_RETURN_IF_ERROR(raw_width->Accept(this));
+    TypeAnnotation* raw_bits_type =
+        CreateUnOrSnAnnotation(module_, node->span(), false, raw_width);
+    XLS_RETURN_IF_ERROR(DefineAndSetTypeVariable(node->raw_name_def(),
+                                                 "invalid_raw", raw_bits_type));
+    XLS_RETURN_IF_ERROR(
+        table_.SetTypeAnnotation(node->raw_name_def(), raw_bits_type));
+    return DefaultHandler(node);
   }
 
   absl::Status HandleXlsTuple(const XlsTuple* node) override {
@@ -1254,7 +1318,12 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(node, sum_value_type));
 
     if (node->is_unit()) {
-      return absl::OkStatus();
+      // Canonicalization gives a unit value its own constructor child. Keep
+      // that child's type tied to the value's surrounding context, as it was
+      // before the original ColonRef became a SumInstance.
+      return table_.SetTypeAnnotation(node->constructor_ref(),
+                                      module_.Make<TypeVariableTypeAnnotation>(
+                                          *table_.GetTypeVariable(node)));
     } else if (node->is_tuple()) {
       const NameRef* type_variable = *table_.GetTypeVariable(node);
       const TypeAnnotation* constructor_type =
@@ -2562,6 +2631,15 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     return absl::OkStatus();
   }
 
+  bool IsTopLevelMatchPattern(const InvalidPattern& pattern) const {
+    return dynamic_cast<const MatchArm*>(pattern.parent()) != nullptr;
+  }
+
+  bool ArmHasInvalidPattern(const MatchArm& arm) const {
+    return absl::c_any_of(arm.patterns(), [](const PatternTree& pattern) {
+      return std::holds_alternative<InvalidPattern*>(pattern);
+    });
+  }
   // Helper that creates an internal type variable for a `ConstantDef`, `Param`,
   // or similar type of node that contains a `NameDef` and optional
   // `TypeAnnotation`.

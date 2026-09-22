@@ -18,30 +18,40 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/random/bit_gen_ref.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
+#include "absl/types/span.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "re2/re2.h"
 #include "xls/common/file/filesystem.h"
 #include "xls/common/file/temp_file.h"
 #include "xls/common/status/matchers.h"
+#include "xls/dslx/create_import_data.h"
 #include "xls/dslx/default_dslx_stdlib_path.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/import_data.h"
+#include "xls/dslx/interp_value.h"
+#include "xls/dslx/interp_value_generator.h"
+#include "xls/dslx/ir_convert/ir_converter.h"
+#include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/run_routines/ir_test_runner.h"
 #include "xls/dslx/run_routines/run_comparator.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/virtualizable_file_system.h"
 #include "xls/dslx/warning_kind.h"
 #include "xls/ir/bits.h"
+#include "xls/ir/events.h"
 #include "xls/ir/ir_parser.h"
 #include "xls/ir/package.h"
 #include "xls/ir/value.h"
@@ -80,6 +90,28 @@ MATCHER_P4(IsTestResult, result, ran_count, skipped_count, failed_count, "") {
 
 using ::absl_testing::StatusIs;
 using ::testing::HasSubstr;
+
+class CountingRunComparator : public RunComparator {
+ public:
+  explicit CountingRunComparator(CompareMode mode) : RunComparator(mode) {}
+
+  absl::StatusOr<InterpreterResult<xls::Value>> RunIrFunction(
+      std::string_view ir_name, xls::Function* ir_function,
+      absl::Span<const xls::Value> ir_args) override {
+    ++invocation_count_;
+    invocation_args_.emplace_back(ir_args.begin(), ir_args.end());
+    return RunComparator::RunIrFunction(ir_name, ir_function, ir_args);
+  }
+
+  int64_t invocation_count() const { return invocation_count_; }
+  const std::vector<std::vector<xls::Value>>& invocation_args() const {
+    return invocation_args_;
+  }
+
+ private:
+  int64_t invocation_count_ = 0;
+  std::vector<std::vector<xls::Value>> invocation_args_;
+};
 
 enum class RunnerType : int8_t {
   kDslxInterpreter,
@@ -217,6 +249,69 @@ fn trivial(x: u2) -> bool { id(true) }
   EXPECT_EQ(jit_comparator.jit_cache_.begin()->first, "__test__trivial");
 }
 
+TEST_P(RunRoutinesTest, QuickcheckExhaustiveIntegerAggregates) {
+  constexpr std::string_view kProgram = R"(
+struct Packet { data: (sN[2][2], uN[1]) }
+
+#[quickcheck(exhaustive)]
+fn qc(x: Packet, flag: bool) -> bool { x == x && flag == flag }
+)";
+  CountingRunComparator jit_comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.quickcheck_runner = &jit_comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+
+  // Every combination of the six input bits must reach the IR runner, including
+  // the signed array elements nested inside the tuple and struct.
+  std::vector<std::vector<Value>> expected;
+  for (int64_t a = 0; a < 4; ++a) {
+    for (int64_t b = 0; b < 4; ++b) {
+      for (bool bit : {false, true}) {
+        for (bool flag : {false, true}) {
+          XLS_ASSERT_OK_AND_ASSIGN(
+              Value array,
+              Value::Array({Value(UBits(a, 2)), Value(UBits(b, 2))}));
+          expected.push_back(
+              {Value::Tuple({Value::Tuple({array, Value::Bool(bit)})}),
+               Value::Bool(flag)});
+        }
+      }
+    }
+  }
+  EXPECT_THAT(jit_comparator.invocation_args(),
+              ::testing::UnorderedElementsAreArray(expected));
+}
+
+TEST_P(RunRoutinesTest, QuickcheckExhaustiveIntegerAggregateCounterexample) {
+  constexpr std::string_view kProgram = R"(
+struct Packet { data: (sN[2][2], uN[1]) }
+
+#[quickcheck(exhaustive)]
+fn qc(x: Packet, other: s2) -> bool {
+  !(x.data.0 == [s2:-1, s2:-1] && x.data.1 == u1:1 && other == s2:-1)
+}
+)";
+  CountingRunComparator jit_comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  options.quickcheck_runner = &jit_comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kSomeFailed, 1, 0, 1));
+  ASSERT_EQ(result.GetFailureMessages().size(), 1);
+  EXPECT_THAT(result.GetFailureMessages().front(),
+              HasSubstr("tests: [(([s2:-1, s2:-1], u1:1)), s2:-1]"));
+  ASSERT_FALSE(jit_comparator.invocation_args().empty());
+  const std::vector<Value>& failing_args =
+      jit_comparator.invocation_args().back();
+  ASSERT_EQ(failing_args.size(), 2);
+  EXPECT_EQ(failing_args.at(1), Value(UBits(3, 2)));
+}
+
 TEST_P(RunRoutinesTest, QuickcheckExhaustiveEnumWithFail) {
   constexpr const char* kProgram = R"(
 enum MyEnum: u2 {
@@ -249,13 +344,727 @@ fn qc(x: MyEnum) -> bool {
   EXPECT_EQ(jit_comparator.jit_cache_.begin()->first, "__test__qc");
 }
 
-TEST_P(RunRoutinesTest, EmptyEnum) {
+TEST_P(RunRoutinesTest, QuickcheckExhaustiveRejectsInvalidNestedSumInputs) {
+  constexpr const char* kProgram = R"(
+enum Inner: u2 {
+  A = 0,
+  B(u1) = 1,
+}
+
+enum Outer {
+  Wrap(Inner),
+}
+
+#[quickcheck(exhaustive)]
+fn qc(x: Outer) -> bool {
+  match x {
+    Outer::Wrap(inner) => match inner {
+      Inner::A => true,
+      Inner::B(_) => true,
+      invalid! => false,
+    },
+  }
+}
+)";
+  CountingRunComparator jit_comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  options.quickcheck_runner = &jit_comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+  EXPECT_EQ(jit_comparator.invocation_count(), 4);
+}
+
+TEST_P(RunRoutinesTest, QuickcheckExhaustiveRejectsInvalidNestedEnumInputs) {
+  constexpr std::string_view kProgram = R"(
+enum Sparse: u2 { A = 0, B = 2 }
+struct Packet { data: (Sparse[1], u1) }
+
+#[quickcheck(exhaustive)]
+fn qc(flag: bool, x: Packet) -> bool {
+  match x.data.0[u32:0] {
+    Sparse::A | Sparse::B => true,
+    _ => false,
+  }
+}
+)";
+  CountingRunComparator jit_comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  options.parse_and_typecheck_options.warnings =
+      DisableWarning(kAllWarningsSet, WarningKind::kAlreadyExhaustiveMatch);
+  options.quickcheck_runner = &jit_comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+  // Two declared enum values and two ordinary bits yield eight valid inputs,
+  // even though the enum is nested and a plain integer parameter comes first.
+  EXPECT_EQ(jit_comparator.invocation_count(), 8);
+}
+
+// Exhaustive enumeration may visit several raw images for one constructor.
+// Every executed image must nevertheless have freshly constructed padding.
+TEST_P(RunRoutinesTest, QuickcheckExhaustiveConstructsCanonicalNestedInputs) {
+  constexpr const char* kProgram = R"(
+enum Inner: u2 { Small(u1) = 0, Big(u2) = 1 }
+enum Outer: u1 { Wrapped(Inner) = 0, Wide(u5) = 1 }
+struct Inputs { values: (Outer[1],) }
+
+#[quickcheck(exhaustive)]
+fn qc(_x: Inputs) -> bool { true }
+)";
+  CountingRunComparator comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  options.quickcheck_runner = &comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+  // Of 64 raw candidates, 16 have an undeclared active Inner tag. Keep the
+  // remaining 48 executions; canonical construction is not deduplication.
+  EXPECT_EQ(comparator.invocation_count(), 48);
+  for (const std::vector<Value>& arguments : comparator.invocation_args()) {
+    ASSERT_EQ(arguments.size(), 1);
+    const Value& outer = arguments.front().element(0).element(0).element(0);
+    if (outer.element(0) == Value(UBits(0, 1))) {
+      XLS_ASSERT_OK_AND_ASSIGN(uint64_t payload,
+                               outer.element(1).element(0).bits().ToUint64());
+      EXPECT_EQ(payload & 0x10, 0);  // Outer::Wrapped's padding bit.
+      const uint64_t inner_tag = (payload >> 2) & 3;
+      EXPECT_LT(inner_tag, 2);
+      if (inner_tag == 0) {
+        EXPECT_EQ(payload & 2, 0);  // Inner::Small's padding bit.
+      }
+    }
+  }
+}
+
+TEST_P(RunRoutinesTest, QuickcheckExhaustiveWideSignedSum) {
+  constexpr std::string_view kProgram = R"(
+enum Sparse: s40 { Only() = -1 }
+
+#[quickcheck(exhaustive)]
+fn qc(_prefix: bool, value: Sparse) -> bool {
+  assert_eq(value, Sparse::Only());
+  true
+}
+)";
+  CountingRunComparator comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.quickcheck_runner = &comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+  // Only the last tag of each 40-bit range is declared. Skipping must carry
+  // into the preceding ordinary argument and stop past the complete domain.
+  // The public wrapper supplies the implicit token/activation itself.
+  const Value only = Value::Tuple({Value(UBits((uint64_t{1} << 40) - 1, 40)),
+                                   Value::Tuple({Value(UBits(0, 0))})});
+  const std::vector<std::vector<Value>> expected = {{Value::Bool(false), only},
+                                                    {Value::Bool(true), only}};
+  EXPECT_THAT(comparator.invocation_args(),
+              ::testing::ElementsAreArray(expected));
+}
+
+TEST_P(RunRoutinesTest, QuickcheckExhaustiveSignedTagsUseRawOrder) {
+  constexpr std::string_view kProgram = R"(
+enum Sparse: s3 { Last() = -1, First() = 1 }
+
+#[quickcheck(exhaustive)]
+fn qc(_prefix: bool, _value: Sparse) -> bool { true }
+)";
+  CountingRunComparator comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.quickcheck_runner = &comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+  const auto sum = [](uint64_t tag) {
+    return Value::Tuple(
+        {Value(UBits(tag, 3)), Value::Tuple({Value(UBits(0, 0))})});
+  };
+  // Declaration order is [7, 1], but the next raw tag after zero is 1.
+  // Preserve that order on both sides of the carry into the ordinary prefix.
+  const std::vector<std::vector<Value>> expected = {
+      {Value::Bool(false), sum(1)},
+      {Value::Bool(false), sum(7)},
+      {Value::Bool(true), sum(1)},
+      {Value::Bool(true), sum(7)}};
+  EXPECT_THAT(comparator.invocation_args(),
+              ::testing::ElementsAreArray(expected));
+}
+
+TEST_P(RunRoutinesTest, QuickcheckExhaustiveSumArrayPreservesRawOrder) {
+  constexpr std::string_view kProgram = R"(
+enum Leaf: u2 { Small(u1) = 0, Big(u2) = 2 }
+
+#[quickcheck(exhaustive)]
+fn qc(_values: Leaf[2]) -> bool { true }
+)";
+  CountingRunComparator comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.quickcheck_runner = &comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+
+  std::vector<std::vector<Value>> expected;
+  // Reference the old raw-index traversal explicitly. Top-level IR arrays
+  // put their first element in the more-significant bits. Small's two raw
+  // padding images must still produce two equal canonical executions.
+  for (uint64_t first = 0; first < 16; ++first) {
+    for (uint64_t second = 0; second < 16; ++second) {
+      const uint64_t first_tag = first >> 2;
+      const uint64_t second_tag = second >> 2;
+      if ((first_tag == 0 || first_tag == 2) &&
+          (second_tag == 0 || second_tag == 2)) {
+        const Value a = Value::Tuple(
+            {Value(UBits(first_tag, 2)),
+             Value::Tuple(
+                 {Value(UBits(first & (first_tag == 0 ? 1 : 3), 2))})});
+        const Value b = Value::Tuple(
+            {Value(UBits(second_tag, 2)),
+             Value::Tuple(
+                 {Value(UBits(second & (second_tag == 0 ? 1 : 3), 2))})});
+        XLS_ASSERT_OK_AND_ASSIGN(Value values, Value::Array({a, b}));
+        expected.push_back({std::move(values)});
+      }
+    }
+  }
+  ASSERT_EQ(expected.size(), 64);
+  EXPECT_THAT(comparator.invocation_args(),
+              ::testing::ElementsAreArray(expected));
+}
+
+TEST_P(RunRoutinesTest,
+       QuickcheckExhaustivePackedSumArraysPreserveMultiplicity) {
+  constexpr std::string_view kProgram = R"(
+enum Leaf: u2 { Small(u1) = 0, Big(u2) = 2 }
+struct Pair { flag: bool, value: Leaf }
+enum Outer: u2 { Wrapped(Pair[2]) = 1, Wide(u10) = 3 }
+
+#[quickcheck(exhaustive)]
+fn qc(_prefix: bool, _value: Outer) -> bool { true }
+)";
+  CountingRunComparator comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.quickcheck_runner = &comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+
+  std::vector<std::vector<Value>> expected;
+  // Exhaust all 13 raw bits as the old runner did, rejecting only undeclared
+  // active tags. Wrapped's array element zero occupies the low five bits;
+  // each Pair puts its flag above the Leaf. Wide never inspects those bits
+  // as nested tags. Preserve both ordinary prefixes and padding duplicates.
+  for (uint64_t raw = 0; raw < 8192; ++raw) {
+    const uint64_t outer_tag = (raw >> 10) & 3;
+    uint64_t payload = raw & 1023;
+    bool valid = false;
+    if (outer_tag == 1) {
+      const uint64_t low_tag = (payload >> 2) & 3;
+      const uint64_t high_tag = (payload >> 7) & 3;
+      valid =
+          (low_tag == 0 || low_tag == 2) && (high_tag == 0 || high_tag == 2);
+      if (low_tag == 0) {
+        payload &= ~(uint64_t{1} << 1);
+      }
+      if (high_tag == 0) {
+        payload &= ~(uint64_t{1} << 6);
+      }
+    } else if (outer_tag == 3) {
+      valid = true;
+    }
+    if (valid) {
+      const Value value =
+          Value::Tuple({Value(UBits(outer_tag, 2)),
+                        Value::Tuple({Value(UBits(payload, 10))})});
+      expected.push_back({Value::Bool((raw >> 12) != 0), value});
+    }
+  }
+  ASSERT_EQ(expected.size(), 2560);
+  EXPECT_THAT(comparator.invocation_args(),
+              ::testing::ElementsAreArray(expected));
+}
+
+TEST_P(RunRoutinesTest, SemanticSumRuntimeAggregatePatternsCompareValues) {
+  constexpr const char* kProgram = R"(
+struct Pair { first: u8, second: u8 }
+enum E { Array(u8[2]), Tuple((u8, u8)), Record(Pair), Scalar(u8) }
+const EXPECTED = u8[2]:[1, 2];
+
+fn array_pattern(x: E, a: u8[2]) -> u8 {
+  match x { E::Array(a) => u8:1, E::Array(_) => u8:2, _ => u8:0 }
+}
+fn tuple_pattern(x: E, a: (u8, u8)) -> u8 {
+  match x { E::Tuple(a) => u8:1, E::Tuple(_) => u8:2, _ => u8:0 }
+}
+fn record_pattern(x: E, a: Pair) -> u8 {
+  match x { E::Record(a) => u8:1, E::Record(_) => u8:2, _ => u8:0 }
+}
+fn scalar_pattern(x: E, a: u8) -> u8 {
+  match x { E::Scalar(a) => u8:1, E::Scalar(_) => u8:2, _ => u8:0 }
+}
+fn constant_pattern(x: E) -> u8 {
+  match x { E::Array(EXPECTED) => u8:1, E::Array(_) => u8:2, _ => u8:0 }
+}
+
+#[test]
+fn check_patterns() {
+  assert_eq(array_pattern(E::Array(EXPECTED), EXPECTED), u8:1);
+  assert_eq(array_pattern(E::Array(EXPECTED), u8[2]:[2, 1]), u8:2);
+  assert_eq(tuple_pattern(E::Tuple((u8:1, u8:2)), (u8:1, u8:2)), u8:1);
+  assert_eq(tuple_pattern(E::Tuple((u8:1, u8:2)), (u8:2, u8:1)), u8:2);
+  let pair = Pair { first: u8:1, second: u8:2 };
+  assert_eq(record_pattern(E::Record(pair), pair), u8:1);
+  assert_eq(record_pattern(E::Record(pair), Pair { first: u8:2, second: u8:1 }), u8:2);
+  assert_eq(scalar_pattern(E::Scalar(u8:1), u8:1), u8:1);
+  assert_eq(scalar_pattern(E::Scalar(u8:1), u8:2), u8:2);
+  assert_eq(constant_pattern(E::Array(EXPECTED)), u8:1);
+  assert_eq(constant_pattern(E::Array(u8[2]:[2, 1])), u8:2);
+}
+)";
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+}
+
+TEST_P(RunRoutinesTest, QuickcheckCountedGeneratesSparseSemanticSums) {
+  constexpr const char* kProgram = R"(
+enum Sparse: u16 {
+  Only(u1) = 7,
+}
+
+#[quickcheck(test_count=8)]
+fn qc(x: Sparse) -> bool {
+  match x {
+    Sparse::Only(_) => true,
+    invalid! => false,
+  }
+}
+)";
+  CountingRunComparator jit_comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  options.quickcheck_runner = &jit_comparator;
+  options.seed = int64_t{2};
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+  EXPECT_EQ(jit_comparator.invocation_count(), 8);
+}
+
+TEST_P(RunRoutinesTest, QuickcheckCountedGeneratesOnlyInhabitedArrayVariants) {
+  constexpr const char* kProgram = R"(
+enum Never {}
+
+enum Inner: u2 {
+  A = 2,
+  B(u1) = 0,
+}
+
+enum Choice: u2 {
+  Impossible(Never) = 0,
+  Byte(u8) = 2,
+  Nested(Inner) = 1,
+  Flag = 3,
+}
+
+#[quickcheck(test_count=16)]
+fn qc(values: Choice[4]) -> bool {
+  values[0] == values[0] && values[3] == values[3]
+}
+)";
+  const auto run_with_fixed_seed =
+      [this, kProgram](
+          CountingRunComparator& comparator) -> absl::StatusOr<TestResultData> {
+    ParseAndTestOptions options;
+    options.vfs_factory = [kProgram] {
+      return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+    };
+    options.quickcheck_runner = &comparator;
+    options.seed = int64_t{2};
+    return ParseAndTest(kProgram, "test", "test.x", options);
+  };
+
+  CountingRunComparator jit_comparator(CompareMode::kJit);
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           run_with_fixed_seed(jit_comparator));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+  EXPECT_EQ(jit_comparator.invocation_count(), 16);
+
+  // Keep the constructor sequence and payload generated before caching.
+  EXPECT_THAT(
+      jit_comparator.invocation_args().front(),
+      ::testing::ElementsAre(xls::Value::ArrayOrDie(
+          {xls::Value::Tuple({xls::Value(UBits(2, 2)),
+                              xls::Value::Tuple({xls::Value(UBits(69, 8))})}),
+           xls::Value::Tuple({xls::Value(UBits(3, 2)),
+                              xls::Value::Tuple({xls::Value(UBits(0, 8))})}),
+           xls::Value::Tuple({xls::Value(UBits(3, 2)),
+                              xls::Value::Tuple({xls::Value(UBits(0, 8))})}),
+           xls::Value::Tuple(
+               {xls::Value(UBits(1, 2)),
+                xls::Value::Tuple({xls::Value(UBits(4, 8))})})})));
+
+  bool saw_byte = false;
+  bool saw_nested = false;
+  bool saw_flag = false;
+  bool saw_inner_a = false;
+  bool saw_inner_b = false;
+  for (const std::vector<xls::Value>& args : jit_comparator.invocation_args()) {
+    ASSERT_EQ(args.size(), 1);
+    ASSERT_TRUE(args.front().IsArray());
+    for (const xls::Value& value : args.front().elements()) {
+      ASSERT_TRUE(value.IsTuple());
+      ASSERT_FALSE(value.elements().empty());
+      ASSERT_TRUE(value.element(0).IsBits());
+      XLS_ASSERT_OK_AND_ASSIGN(uint64_t discriminant,
+                               value.element(0).bits().ToUint64());
+      if (discriminant == 2) {
+        saw_byte = true;
+      } else if (discriminant == 1) {
+        saw_nested = true;
+        ASSERT_TRUE(value.element(1).IsTuple());
+        ASSERT_EQ(value.element(1).elements().size(), 1);
+        ASSERT_TRUE(value.element(1).element(0).IsBits());
+        XLS_ASSERT_OK_AND_ASSIGN(uint64_t payload,
+                                 value.element(1).element(0).bits().ToUint64());
+        const uint64_t inner_discriminant = payload >> 1;
+        if (inner_discriminant == 2) {
+          saw_inner_a = true;
+        } else if (inner_discriminant == 0) {
+          saw_inner_b = true;
+        } else {
+          ADD_FAILURE() << "Generated invalid inner discriminant "
+                        << inner_discriminant;
+        }
+      } else if (discriminant == 3) {
+        saw_flag = true;
+      } else {
+        ADD_FAILURE() << "Generated uninhabited constructor discriminant "
+                      << discriminant;
+      }
+    }
+  }
+  EXPECT_TRUE(saw_byte);
+  EXPECT_TRUE(saw_nested);
+  EXPECT_TRUE(saw_flag);
+  EXPECT_TRUE(saw_inner_a);
+  EXPECT_TRUE(saw_inner_b);
+
+  CountingRunComparator repeat_comparator(CompareMode::kJit);
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData repeated_result,
+                           run_with_fixed_seed(repeat_comparator));
+  EXPECT_THAT(repeated_result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+  EXPECT_EQ(jit_comparator.invocation_args(),
+            repeat_comparator.invocation_args());
+}
+
+TEST_P(RunRoutinesTest, QuickcheckCountedGeneratesSumsInStructArrayAndTuple) {
+  constexpr const char* kProgram = R"(
+enum Inner: u3 {
+  A = 1,
+  B(u1) = 6,
+}
+
+struct Wrapper {
+  values: Inner[2],
+  extra: (Inner,),
+}
+
+fn is_valid(x: Inner) -> bool {
+  match x {
+    Inner::A => true,
+    Inner::B(_) => true,
+    invalid! => false,
+  }
+}
+
+#[quickcheck(test_count=16)]
+fn qc(x: Wrapper) -> bool {
+  is_valid(x.values[0]) && is_valid(x.values[1]) && is_valid(x.extra.0)
+}
+)";
+  CountingRunComparator jit_comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  options.quickcheck_runner = &jit_comparator;
+  options.seed = int64_t{2};
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+  EXPECT_EQ(jit_comparator.invocation_count(), 16);
+}
+
+// Verifies: source tokens work in counted and exhaustive QuickCheck runs.
+// Catches: routing zero-bit tokens through the bits-only generator.
+TEST_P(RunRoutinesTest, QuickcheckSupportsSourceToken) {
+  constexpr std::pair<std::string_view, int64_t> kPrograms[] = {
+      {R"(
+#![feature(type_inference_v2)]
+#[quickcheck(test_count=3)]
+fn qc(_t: token) -> bool { true }
+)",
+       3},
+      {R"(
+#![feature(type_inference_v2)]
+#[quickcheck(exhaustive)]
+fn qc(_t: token) -> bool { true }
+)",
+       1},
+  };
+  for (const auto& [program, expected_count] : kPrograms) {
+    SCOPED_TRACE(program);
+    CountingRunComparator comparator(CompareMode::kJit);
+    ParseAndTestOptions options;
+    options.vfs_factory = [program] {
+      return std::make_unique<UniformContentFilesystem>(program, "test.x");
+    };
+    options.quickcheck_runner = &comparator;
+    XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                             ParseAndTest(program, "test", "test.x", options));
+    EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+    EXPECT_EQ(comparator.invocation_count(), expected_count);
+    for (const std::vector<Value>& arguments : comparator.invocation_args()) {
+      EXPECT_THAT(arguments, ::testing::ElementsAre(Value::Token()));
+    }
+  }
+}
+
+// Verifies: source token and sum arguments coexist with implicit IR controls.
+// Catches: confusing source tokens with the wrapper's synthetic token.
+TEST_P(RunRoutinesTest, QuickcheckCountedSupportsImplicitTokenSumInputs) {
+  constexpr const char* kProgram = R"(
+enum Sparse: u4 {
+  Only(u1) = 7,
+}
+
+#[quickcheck(test_count=8)]
+fn qc(_t: token, x: Sparse) -> bool {
+  trace_fmt!("{}", u1:0);
+  match x {
+    Sparse::Only(_) => true,
+    invalid! => false,
+  }
+}
+)";
+  CountingRunComparator jit_comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  options.quickcheck_runner = &jit_comparator;
+  options.seed = int64_t{2};
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+  EXPECT_EQ(jit_comparator.invocation_count(), 8);
+  for (const std::vector<Value>& arguments : jit_comparator.invocation_args()) {
+    // The public wrapper supplies the implicit token and activation itself.
+    // The token argument here is the actual source parameter.
+    ASSERT_EQ(arguments.size(), 2);
+    EXPECT_TRUE(arguments.at(0).IsToken());
+    EXPECT_EQ(arguments.at(1).element(0), Value(UBits(7, 4)));
+  }
+}
+
+TEST_P(RunRoutinesTest, QuickcheckExhaustiveSupportsImplicitTokenSumInputs) {
+  constexpr const char* kProgram = R"(
+enum Sparse: u4 {
+  Only(u1) = 7,
+}
+
+#[quickcheck(exhaustive)]
+fn qc(x: Sparse) -> bool {
+  trace_fmt!("{}", u1:0);
+  match x {
+    Sparse::Only(_) => true,
+    invalid! => false,
+  }
+}
+)";
+  CountingRunComparator jit_comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  options.quickcheck_runner = &jit_comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+  EXPECT_EQ(jit_comparator.invocation_count(), 2);
+  for (const std::vector<Value>& arguments : jit_comparator.invocation_args()) {
+    ASSERT_EQ(arguments.size(), 1);
+    EXPECT_EQ(arguments.front().element(0), Value(UBits(7, 4)));
+  }
+}
+
+TEST(QuickcheckTest, ExhaustiveSumInputsWithImplicitToken) {
+  constexpr std::string_view kProgram = R"(
+enum Sparse: u40 { Only(u1) = 1099511627775 }
+
+#[quickcheck(exhaustive)]
+fn qc(_x: Sparse) -> bool {
+  trace_fmt!("{}", u1:0);
+  true
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test.x", "test", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto package,
+      ConvertModuleToPackage(tm.module, &import_data, ConvertOptions{}));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
+                           package.package->GetFunction("__itok__test__qc"));
+  XLS_ASSERT_OK_AND_ASSIGN(FunctionType * fn_type,
+                           tm.type_info->GetItemAs<FunctionType>(
+                               tm.module->GetQuickChecks().front()->fn()));
+  CountingRunComparator comparator(CompareMode::kJit);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto result, DoQuickCheck(/*requires_implicit_token=*/true, fn_type,
+                                ir_function, "__itok__test__qc", &comparator,
+                                /*seed=*/0, QuickCheckTestCases::Exhaustive()));
+  EXPECT_EQ(result.results.size(), 2);
+  for (const std::vector<Value>& arguments : comparator.invocation_args()) {
+    ASSERT_EQ(arguments.size(), 3);
+    EXPECT_TRUE(arguments.at(0).IsToken());
+    EXPECT_EQ(arguments.at(1), Value::Bool(true));
+    EXPECT_EQ(arguments.at(2).element(0),
+              Value(UBits((uint64_t{1} << 40) - 1, 40)));
+  }
+}
+
+TEST_P(RunRoutinesTest, FilteredUninhabitedQuickcheckKeepsSharedPackage) {
+  constexpr const char* kProgram = R"(
+enum Never {}
+
+#[quickcheck(test_count=1)]
+fn excluded(value: Never) -> bool { true }
+
+#[quickcheck(test_count=1)]
+fn selected_first(value: u1) -> bool { value == value }
+
+#[quickcheck(test_count=1)]
+fn selected_second(value: u1) -> bool { value == value }
+)";
+  class SharedPackageComparator : public CountingRunComparator {
+   public:
+    SharedPackageComparator() : CountingRunComparator(CompareMode::kJit) {}
+
+    absl::StatusOr<InterpreterResult<Value>> RunIrFunction(
+        std::string_view ir_name, xls::Function* ir_function,
+        absl::Span<const Value> ir_args) override {
+      // A per-property conversion contains only that property's reachable
+      // functions; the shared conversion must contain both selected properties.
+      EXPECT_TRUE(
+          ir_function->package()->GetFunction("__test__selected_first").ok());
+      EXPECT_TRUE(
+          ir_function->package()->GetFunction("__test__selected_second").ok());
+      return CountingRunComparator::RunIrFunction(ir_name, ir_function,
+                                                  ir_args);
+    }
+  } comparator;
+  const RE2 test_filter("selected_.*");
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  options.test_filter = &test_filter;
+  options.quickcheck_runner = &comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 3, 1, 0));
+  EXPECT_EQ(comparator.invocation_count(), 2);
+}
+
+TEST_P(RunRoutinesTest, EmptySemanticSum) {
   constexpr const char* kProgram = R"(
 enum EmptyEnum: u2 {
 }
 
 #[quickcheck(exhaustive)]
 fn qc(x: EmptyEnum) -> bool {
+    true
+}
+)";
+  constexpr const char* kModuleName = "test";
+  constexpr const char* kFilename = "test.x";
+  RunComparator jit_comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  options.quickcheck_runner = &jit_comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TestResultData result,
+      ParseAndTest(kProgram, kModuleName, kFilename, options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kSomeFailed, 1, 0, 1));
+  ASSERT_EQ(result.GetFailureMessages().size(), 1);
+  std::string failure_message = result.GetFailureMessages()[0];
+  EXPECT_THAT(failure_message,
+              HasSubstr("quickcheck of `qc` rejected all input samples"));
+}
+
+TEST_P(RunRoutinesTest, AggregateContainingEmptySemanticSum) {
+  constexpr const char* kProgram = R"(
+enum Empty {}
+
+struct Wrapper {
+  empty: Empty,
+}
+
+#[quickcheck(exhaustive)]
+fn qc(x: Wrapper) -> bool {
+    true
+}
+)";
+  constexpr const char* kModuleName = "test";
+  constexpr const char* kFilename = "test.x";
+  RunComparator jit_comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  options.quickcheck_runner = &jit_comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TestResultData result,
+      ParseAndTest(kProgram, kModuleName, kFilename, options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kSomeFailed, 1, 0, 1));
+  ASSERT_EQ(result.GetFailureMessages().size(), 1);
+  std::string failure_message = result.GetFailureMessages()[0];
+  EXPECT_THAT(failure_message,
+              HasSubstr("quickcheck of `qc` rejected all input samples"));
+}
+
+TEST_P(RunRoutinesTest, SemanticSumWithOnlyUninhabitedPayloadVariant) {
+  constexpr const char* kProgram = R"(
+enum Empty {}
+
+enum Only {
+  V(Empty),
+}
+
+#[quickcheck(exhaustive)]
+fn qc(x: Only) -> bool {
     true
 }
 )";
@@ -695,6 +1504,57 @@ proc tester {
   EXPECT_THAT(result, IsTestResult(TestResult::kSomeFailed, 1, 0, 1));
 }
 
+// Verifies: recursive token leaves preserve complete prior argument values.
+// Catches: bit-generated tokens or callbacks seeing partial aggregates.
+TEST(QuickcheckTest, ValueGeneratorsPreservePriorValuesAcrossRecursiveLeaves) {
+  std::vector<std::unique_ptr<Type>> tuple_members;
+  tuple_members.push_back(BitsType::MakeU8());
+  tuple_members.push_back(std::make_unique<TokenType>());
+  tuple_members.push_back(BitsType::MakeU8());
+
+  std::vector<std::unique_ptr<Type>> owned_types;
+  owned_types.push_back(BitsType::MakeU8());
+  owned_types.push_back(std::make_unique<TupleType>(std::move(tuple_members)));
+  owned_types.push_back(std::make_unique<TokenType>());
+  owned_types.push_back(BitsType::MakeU8());
+  const std::vector<const Type*> types = {
+      owned_types[0].get(), owned_types[1].get(), owned_types[2].get(),
+      owned_types[3].get()};
+
+  for (bool use_compatibility_wrapper : {false, true}) {
+    SCOPED_TRACE(use_compatibility_wrapper ? "compatibility wrapper"
+                                           : "reusable generator");
+    std::mt19937_64 bit_gen{2};
+    std::vector<std::vector<InterpValue>> observed_prior;
+    auto generate_bits = [&observed_prior](absl::BitGenRef,
+                                           const BitsLikeProperties&,
+                                           absl::Span<const InterpValue> prior)
+        -> absl::StatusOr<InterpValue> {
+      observed_prior.emplace_back(prior.begin(), prior.end());
+      return InterpValue::MakeUBits(
+          8, static_cast<int64_t>(observed_prior.size()));
+    };
+
+    InterpValueGenerator generator;
+    absl::StatusOr<std::vector<InterpValue>> generated =
+        use_compatibility_wrapper
+            ? GenerateInterpValues(bit_gen, types, generate_bits)
+            : generator.GenerateValues(bit_gen, types, generate_bits);
+    XLS_ASSERT_OK_AND_ASSIGN(std::vector<InterpValue> values,
+                             std::move(generated));
+    ASSERT_EQ(values.size(), 4);
+    EXPECT_TRUE(values[2].IsToken());
+    ASSERT_EQ(values[1].GetValuesOrDie().size(), 3);
+    EXPECT_TRUE(values[1].GetValuesOrDie().at(1).IsToken());
+    EXPECT_THAT(
+        observed_prior,
+        ::testing::ElementsAre(
+            std::vector<InterpValue>{}, std::vector<InterpValue>{values[0]},
+            std::vector<InterpValue>{values[0]},
+            std::vector<InterpValue>{values[0], values[1], values[2]}));
+  }
+}
+
 // Verifies that the QuickCheck mechanism can find counter-examples for a simple
 // erroneous function.
 TEST(QuickcheckTest, QuickCheckBits) {
@@ -724,6 +1584,60 @@ TEST(QuickcheckTest, QuickCheckBits) {
   std::vector<Value> results = quickcheck_info.results;
   // If a counter-example was found, the last result will be 0.
   EXPECT_EQ(results.back(), Value(UBits(0, 1)));
+}
+
+TEST(QuickcheckTest, ExhaustiveCounterexampleWithImplicitToken) {
+  Package package("implicit_token");
+  constexpr std::string_view kIr = R"(
+fn qc(tkn: token, activated: bits[1], x: bits[2]) -> (token, bits[1]) {
+  all_ones: bits[2] = literal(value=3)
+  holds: bits[1] = ne(x, all_ones)
+  ret result: (token, bits[1]) = tuple(tkn, holds)
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * function,
+                           Parser::ParseFunction(kIr, &package));
+  CountingRunComparator jit_comparator(CompareMode::kJit);
+  std::vector<std::unique_ptr<dslx::Type>> params;
+  params.push_back(std::make_unique<dslx::BitsType>(true, 2));
+  dslx::FunctionType fn_type(std::move(params),
+                             std::make_unique<dslx::BitsType>(false, 1));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto quickcheck_info,
+      DoQuickCheck(/*requires_implicit_token=*/true, &fn_type, function,
+                   kFakeIrName, &jit_comparator, /*seed=*/0,
+                   QuickCheckTestCases::Exhaustive()));
+  ASSERT_TRUE(quickcheck_info.falsifying_dslx_arg_set.has_value());
+  EXPECT_THAT(*quickcheck_info.falsifying_dslx_arg_set,
+              ::testing::ElementsAre(InterpValue::MakeSBits(2, -1)));
+  EXPECT_EQ(jit_comparator.invocation_count(), 4);
+  for (const std::vector<Value>& arguments : jit_comparator.invocation_args()) {
+    ASSERT_EQ(arguments.size(), 3);
+    EXPECT_TRUE(arguments.at(0).IsToken());
+    EXPECT_EQ(arguments.at(1), Value::Bool(true));
+  }
+}
+
+TEST(QuickcheckTest, ExhaustiveNoArgumentCounterexample) {
+  Package package("no_arguments");
+  constexpr std::string_view kIr = R"(
+fn qc() -> bits[1] {
+  ret result: bits[1] = literal(value=0)
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * function,
+                           Parser::ParseFunction(kIr, &package));
+  RunComparator jit_comparator(CompareMode::kJit);
+  dslx::FunctionType fn_type({}, std::make_unique<dslx::BitsType>(false, 1));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto quickcheck_info,
+      DoQuickCheck(/*requires_implicit_token=*/false, &fn_type, function,
+                   kFakeIrName, &jit_comparator, /*seed=*/0,
+                   QuickCheckTestCases::Exhaustive()));
+  EXPECT_THAT(quickcheck_info.results,
+              ::testing::ElementsAre(Value::Bool(false)));
+  ASSERT_TRUE(quickcheck_info.falsifying_dslx_arg_set.has_value());
+  EXPECT_THAT(*quickcheck_info.falsifying_dslx_arg_set, ::testing::IsEmpty());
 }
 
 TEST(QuickcheckTest, QuickCheckArray) {
@@ -850,11 +1764,10 @@ TEST(QuickcheckTest, Seeding) {
       DoQuickCheck(/*requires_implicit_token=*/false, &fn_type, function,
                    kFakeIrName, &jit_comparator, seed, test_cases));
 
-  const auto& [argsets1, results1] = quickcheck_info1;
-  const auto& [argsets2, results2] = quickcheck_info2;
-
-  EXPECT_EQ(argsets1, argsets2);
-  EXPECT_EQ(results1, results2);
+  EXPECT_EQ(quickcheck_info1.arg_sets, quickcheck_info2.arg_sets);
+  EXPECT_EQ(quickcheck_info1.falsifying_dslx_arg_set,
+            quickcheck_info2.falsifying_dslx_arg_set);
+  EXPECT_EQ(quickcheck_info1.results, quickcheck_info2.results);
 }
 
 TEST(QuickcheckTest, ProofFailure) {
