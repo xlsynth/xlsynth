@@ -291,6 +291,20 @@ TEST(SemanticSumRawBoundaryFuzzTest, ReplaysManifestCases) {
   EXPECT_EQ(verified, 2);
 }
 
+// Sparse, out-of-order encodings distinguish member values from their indexes.
+TEST(SemanticSumRawBoundaryFuzzTest, PreparedContextUsesDeclaredEnumValues) {
+  XLS_ASSERT_OK_AND_ASSIGN(RawBoundaryContext context, PrepareContext(R"(
+    enum Flavor: u3 { High = 5, Low = 1 }
+    enum Choice { None, FlavorChoice(Flavor), Wide(u16) }
+    fn main(x: Choice) -> bool { x == x }
+  )"));
+  const std::vector<Bits> expected = {UBits(5, 3), UBits(1, 3)};
+  EXPECT_EQ(context.declared_enum_member_bits, expected);
+  XLS_EXPECT_OK(VerifyDeclaredEnumRoundtrip(context, 0));
+  XLS_EXPECT_OK(VerifyDeclaredEnumRoundtrip(context, 1));
+  XLS_EXPECT_OK(VerifyUndeclaredEnumPayloadRejected(context, 0));
+}
+
 // Generates one declared member index from {0, 1} for the fixed seed sum.
 // It validates round-trip identity and does not vary tags or payload layout.
 void DeclaredEnumPayloadRoundtrips(uint64_t member_index) {
