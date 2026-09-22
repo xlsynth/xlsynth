@@ -668,8 +668,7 @@ fn f(x: Message) -> Message {
                               convert_options, /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr,
                               /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
 
   EXPECT_THAT(package.interface, EqualsProto(R"pb(
                 functions {
@@ -730,8 +729,7 @@ fn f(x: Message) -> Message {
                               convert_options, /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr,
                               /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
 
   EXPECT_THAT(package.DumpIr(), testing::HasSubstr("literal(value=3"));
   EXPECT_THAT(package.DumpIr(), testing::HasSubstr("literal(value=7"));
@@ -769,8 +767,7 @@ fn f(x: Option) -> u34 {
                               convert_options, /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr,
                               /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
 
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
                            package.package->GetFunction("__test_module__f"));
@@ -1240,8 +1237,7 @@ fn f(x: Option) -> u32 {
                               convert_options, /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr,
                               /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(f, tm.type_info, /*parametric_env=*/nullptr));
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
 
   EXPECT_THAT(package.DumpIr(), testing::Not(testing::HasSubstr("assert(")));
   EXPECT_THAT(package.DumpIr(),
