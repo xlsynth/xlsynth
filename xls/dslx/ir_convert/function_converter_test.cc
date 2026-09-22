@@ -1310,8 +1310,8 @@ fn f(x: SignedValue) -> SignedValue {
   FunctionConverter converter(package_data, tm.module, &import_data,
                               ConvertOptions{}, /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr, /*is_top=*/true);
-  XLS_ASSERT_OK(converter.HandleFunction(function, tm.type_info,
-                                         ParametricEnv{}));
+  XLS_ASSERT_OK(
+      converter.HandleFunction(function, tm.type_info, ParametricEnv{}));
   XLS_ASSERT_OK_AND_ASSIGN(
       xls::Function * ir_function,
       package.package->GetFunction("__itok__test_module__f"));
@@ -1672,8 +1672,7 @@ fn f(x: Outer) -> Outer {
                               convert_options, /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr,
                               /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
   XLS_ASSERT_OK_AND_ASSIGN(
       xls::Function * ir_function,
       package.package->GetFunction("__itok__test_module__f"));
