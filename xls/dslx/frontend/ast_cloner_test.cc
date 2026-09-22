@@ -82,12 +82,54 @@ static std::optional<NameRef*> FindFirstNameRefWithId(AstNode* node,
   return std::nullopt;
 }
 
+static std::optional<NameDef*> FindFirstNameDefWithId(AstNode* node,
+                                                      std::string_view id) {
+  if (auto* name_def = dynamic_cast<NameDef*>(node);
+      name_def != nullptr && name_def->identifier() == id) {
+    return name_def;
+  }
+  for (AstNode* child : node->GetChildren(true)) {
+    std::optional<NameDef*> found = FindFirstNameDefWithId(child, id);
+    if (found.has_value()) {
+      return found;
+    }
+  }
+  return std::nullopt;
+}
+
+static bool ContainsIfLet(const AstNode* node) {
+  if (const auto* conditional = dynamic_cast<const Conditional*>(node);
+      conditional != nullptr && conditional->IsIfLet()) {
+    return true;
+  }
+  for (const AstNode* child : node->GetChildren(true)) {
+    if (ContainsIfLet(child)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static std::optional<Number*> FindFirstNumber(AstNode* node) {
   if (auto* number = dynamic_cast<Number*>(node); number) {
     return number;
   }
   for (AstNode* child : node->GetChildren(true)) {
     std::optional<Number*> found = FindFirstNumber(child);
+    if (found.has_value()) {
+      return found;
+    }
+  }
+  return std::nullopt;
+}
+
+static std::optional<StructInstance*> FindFirstStructInstance(AstNode* node) {
+  if (auto* instance = dynamic_cast<StructInstance*>(node);
+      instance != nullptr) {
+    return instance;
+  }
+  for (AstNode* child : node->GetChildren(true)) {
+    std::optional<StructInstance*> found = FindFirstStructInstance(child);
     if (found.has_value()) {
       return found;
     }
@@ -3298,6 +3340,73 @@ fn main(p: Point) -> u64 {
   EXPECT_TRUE(cloned_fn->IsCompilerDerived());
 }
 
+TEST(AstClonerTest, CloneModuleWithIfLetsLoweredWrapsElseIfMatch) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u8),
+}
+
+fn unwrap_if(c: bool, x: Option, y: u8) -> u8 {
+  if c {
+    y
+  } else if let Option::Some(v) = x {
+    v
+  } else {
+    y
+  }
+}
+)";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<Module> module,
+      ParseModule(kProgram, "if_let.x", "the_module", file_table));
+  XLS_ASSERT_OK(module->SetConfiguredValues({"N:2"}));
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> clone,
+                           CloneModuleWithIfLetsLowered(*module));
+  XLS_ASSERT_OK(VerifyClone(module.get(), clone.get(), file_table));
+  XLS_ASSERT_OK(VerifyParentage(clone.get()));
+  EXPECT_EQ(clone->GetSpan(), module->GetSpan());
+  EXPECT_EQ(clone->configured_values(), module->configured_values());
+
+  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                           clone->GetMemberOrError<Function>("unwrap_if"));
+  const Statement* body_statement = function->body()->statements().back();
+  ASSERT_TRUE(std::holds_alternative<Expr*>(body_statement->wrapped()));
+  const auto* conditional = dynamic_cast<const Conditional*>(
+      std::get<Expr*>(body_statement->wrapped()));
+  ASSERT_NE(conditional, nullptr);
+  ASSERT_TRUE(
+      std::holds_alternative<StatementBlock*>(conditional->alternate()));
+  const StatementBlock* alternate =
+      std::get<StatementBlock*>(conditional->alternate());
+  ASSERT_EQ(alternate->statements().size(), 1);
+  ASSERT_TRUE(
+      std::holds_alternative<Expr*>(alternate->statements()[0]->wrapped()));
+  const auto* match = dynamic_cast<const Match*>(
+      std::get<Expr*>(alternate->statements()[0]->wrapped()));
+  ASSERT_NE(match, nullptr);
+
+  std::optional<NameDef*> pattern_def =
+      FindFirstNameDefWithId(ToAstNode(match->arms()[0]->patterns()[0]), "v");
+  ASSERT_TRUE(pattern_def.has_value());
+  EXPECT_EQ((*pattern_def)->definer(), match->arms()[0]);
+  std::optional<NameRef*> value_ref =
+      FindFirstNameRefWithId(match->arms()[0]->expr(), "v");
+  ASSERT_TRUE(value_ref.has_value());
+  ASSERT_TRUE(std::holds_alternative<const NameDef*>((*value_ref)->name_def()));
+  EXPECT_EQ(std::get<const NameDef*>((*value_ref)->name_def()), *pattern_def);
+
+  std::optional<NameRef*> matched_ref =
+      FindFirstNameRefWithId(match->matched(), "x");
+  ASSERT_TRUE(matched_ref.has_value());
+  ASSERT_TRUE(
+      std::holds_alternative<const NameDef*>((*matched_ref)->name_def()));
+  EXPECT_EQ(std::get<const NameDef*>((*matched_ref)->name_def()),
+            function->params()[1]->name_def());
+}
+
 TEST(AstClonerTest, CloneModulePreservesInvalidPatternRawDefiner) {
   constexpr std::string_view kProgram = R"(
 enum Option {
@@ -3356,6 +3465,123 @@ fn main(x: u32) -> u32 {
       std::get<BuiltinNameDef*>((*assert_eq_ref)->name_def());
   EXPECT_EQ(builtin->owner(), clone.get());
   EXPECT_EQ(builtin->identifier(), "assert_eq");
+}
+
+TEST(AstClonerTest, CloneModuleWithIfLetsLoweredHandlesNestedConsequent) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn unwrap(x: Option, y: Option) -> u32 {
+  if let Option::Some(a) = x {
+    if let Option::Some(b) = y {
+      a + b
+    } else {
+      a
+    }
+  } else {
+    u32:0
+  }
+}
+)";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<Module> module,
+      ParseModule(kProgram, "nested_consequent.x", "the_module", file_table));
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> clone,
+                           CloneModuleWithIfLetsLowered(*module));
+  EXPECT_FALSE(ContainsIfLet(clone.get()));
+  XLS_ASSERT_OK(VerifyParentage(clone.get()));
+
+  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                           clone->GetMemberOrError<Function>("unwrap"));
+  for (std::string_view identifier : {"a", "b"}) {
+    std::optional<NameDef*> pattern_def =
+        FindFirstNameDefWithId(function, identifier);
+    ASSERT_TRUE(pattern_def.has_value());
+    std::optional<NameRef*> value_ref =
+        FindFirstNameRefWithId(function, identifier);
+    ASSERT_TRUE(value_ref.has_value());
+    ASSERT_TRUE(
+        std::holds_alternative<const NameDef*>((*value_ref)->name_def()));
+    EXPECT_EQ(std::get<const NameDef*>((*value_ref)->name_def()), *pattern_def);
+  }
+}
+
+TEST(AstClonerTest, CloneModuleWithIfLetsLoweredPreservesProcImplLinks) {
+  constexpr std::string_view kProgram = R"(
+#![feature(explicit_state_access)]
+
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn unwrap_or_zero(option: Option) -> u32 {
+  if let Option::Some(value) = option { value } else { u32:0 }
+}
+
+proc P {
+  state: u32,
+}
+
+impl P {
+  fn new() -> Self { P { state: u32:0 } }
+  fn next(self) {
+    let value = read(self.state);
+    write(self.state, value + u32:1);
+  }
+}
+)";
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<Module> module,
+      ParseModule(kProgram, "proc_clone.x", "the_module", file_table));
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> clone,
+                           CloneModuleWithIfLetsLowered(*module));
+  EXPECT_FALSE(ContainsIfLet(clone.get()));
+  XLS_ASSERT_OK_AND_ASSIGN(ProcDef * proc,
+                           clone->GetMemberOrError<ProcDef>("P"));
+  ASSERT_EQ(clone->GetImpls().size(), 1);
+  Impl* impl = clone->GetImpls()[0];
+  auto* impl_ref = dynamic_cast<TypeRefTypeAnnotation*>(impl->struct_ref());
+  ASSERT_NE(impl_ref, nullptr);
+  ASSERT_TRUE(std::holds_alternative<ProcDef*>(
+      impl_ref->type_ref()->type_definition()));
+  EXPECT_EQ(std::get<ProcDef*>(impl_ref->type_ref()->type_definition()), proc);
+
+  Function* new_function = nullptr;
+  for (const ImplMember& member : impl->members()) {
+    EXPECT_EQ(ToAstNode(member)->parent(), impl);
+    if (auto* function = std::get_if<Function*>(&member);
+        function != nullptr && (*function)->identifier() == "new") {
+      new_function = *function;
+    }
+  }
+  ASSERT_NE(new_function, nullptr);
+  auto* self_type =
+      dynamic_cast<SelfTypeAnnotation*>(new_function->return_type());
+  ASSERT_NE(self_type, nullptr);
+  auto* self_ref =
+      dynamic_cast<TypeRefTypeAnnotation*>(self_type->struct_ref());
+  ASSERT_NE(self_ref, nullptr);
+  ASSERT_TRUE(std::holds_alternative<ProcDef*>(
+      self_ref->type_ref()->type_definition()));
+  EXPECT_EQ(std::get<ProcDef*>(self_ref->type_ref()->type_definition()), proc);
+
+  std::optional<StructInstance*> instance =
+      FindFirstStructInstance(new_function);
+  ASSERT_TRUE(instance.has_value());
+  auto* instance_ref =
+      dynamic_cast<TypeRefTypeAnnotation*>((*instance)->struct_ref());
+  ASSERT_NE(instance_ref, nullptr);
+  ASSERT_TRUE(std::holds_alternative<ProcDef*>(
+      instance_ref->type_ref()->type_definition()));
+  EXPECT_EQ(std::get<ProcDef*>(instance_ref->type_ref()->type_definition()),
+            proc);
 }
 
 }  // namespace

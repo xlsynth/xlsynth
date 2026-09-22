@@ -474,6 +474,57 @@ const BAR: u32 = FOO + FOO;)"));
   EXPECT_EQ(edit->changes.at(kUri.GetStringView()).size(), 3);
 }
 
+TEST(LanguageServerAdapterTest, RenameForIfLetBindingInModuleScopedConstant) {
+  LanguageServerAdapter adapter(GetDslxStdlibUri(), /*dslx_paths=*/{});
+  const LspUri kUri("file:///fake/path/test.x");
+  // Keep the binding outside a function, and use zero! so constructor
+  // canonicalization cannot replace the normalized AST and repair its metadata.
+  XLS_ASSERT_OK(adapter.Update(kUri, R"(enum S { Some(u8), None }
+const RESULT: u8 = if let S::Some(x) = zero!<S>() {
+  x
+} else {
+  u8:0
+};)"));
+  ASSERT_TRUE(adapter.GenerateParseDiagnostics(kUri).empty());
+
+  const auto kDefinitionRange =
+      verible::lsp::Range{.start = verible::lsp::Position{1, 34},
+                          .end = verible::lsp::Position{1, 35}};
+  XLS_ASSERT_OK_AND_ASSIGN(std::optional<verible::lsp::Range> to_rename,
+                           adapter.PrepareRename(kUri, kDefinitionRange.start));
+  ASSERT_TRUE(to_rename.has_value());
+  EXPECT_THAT(*to_rename, RangeEq(kDefinitionRange));
+
+  const auto kUsePosition = verible::lsp::Position{2, 2};
+  XLS_ASSERT_OK_AND_ASSIGN(to_rename,
+                           adapter.PrepareRename(kUri, kUsePosition));
+  ASSERT_TRUE(to_rename.has_value());
+  EXPECT_THAT(*to_rename, RangeEq(kDefinitionRange));
+
+  XLS_ASSERT_OK_AND_ASSIGN(std::optional<verible::lsp::WorkspaceEdit> edit,
+                           adapter.Rename(kUri, kUsePosition, "payload"));
+  ASSERT_TRUE(edit.has_value());
+  ASSERT_EQ(edit->changes.size(), 1);
+  const auto& edits = edit->changes.at(kUri.GetStringView());
+  ASSERT_EQ(edits.size(), 2);
+
+  const auto& definition_edit = edits.at(0);
+  EXPECT_EQ(definition_edit.at("newText"), "payload");
+  const auto& definition_range = definition_edit.at("range");
+  EXPECT_EQ(definition_range.at("start").at("line"), 1);
+  EXPECT_EQ(definition_range.at("start").at("character"), 34);
+  EXPECT_EQ(definition_range.at("end").at("line"), 1);
+  EXPECT_EQ(definition_range.at("end").at("character"), 35);
+
+  const auto& use_edit = edits.at(1);
+  EXPECT_EQ(use_edit.at("newText"), "payload");
+  const auto& use_range = use_edit.at("range");
+  EXPECT_EQ(use_range.at("start").at("line"), 2);
+  EXPECT_EQ(use_range.at("start").at("character"), 2);
+  EXPECT_EQ(use_range.at("end").at("line"), 2);
+  EXPECT_EQ(use_range.at("end").at("character"), 3);
+}
+
 // Currently we cannot rename across files so we refuse to rename `pub`
 // visibility members.
 TEST(LanguageServerAdapterTest, RenameForPublicModuleScopedConstant) {
