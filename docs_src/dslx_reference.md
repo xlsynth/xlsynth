@@ -567,12 +567,13 @@ representation.
 
 Sum equality compares the selected constructor and active payload, not unused
 slot bits. Both operands must have the same nominal sum definition and the same
-instantiated value/type arguments.
+instantiated value/type arguments. Constructor formatting is semantic, for
+example `Message::Request(u8:42)`, instead of exposing its tag/payload tuple.
 Interpreted equality rejects an undeclared constructor tag. In lowered
 hardware, equal undeclared tags are compared using the final constructor's
 payload shape; different tags remain unequal.
 
-Matching and equality do not rewrite the observed value.
+Matching, equality, formatting, and tracing do not rewrite the observed value.
 An outer constructor can wrap an existing malformed inner sum without inspecting
 its tag. Matching `Wrapped(_)`, or binding and returning the inner sum, likewise
 does not inspect the inner constructor; explicitly observing that constructor
@@ -587,6 +588,20 @@ previously bound value uses full semantic equality, even if it holds a unit
 constructor. Source/bytecode equality validates both complete active values before
 returning true or false, including when their outer tags differ. See the
 constructor-versus-constant example under [`match`](#match-expression).
+
+In the DSLX bytecode interpreter, `trace!`, `trace_fmt!`, and `vtrace_fmt!`
+display constructor names as `Type::Constructor`, including those nested in
+tuples, structs, and arrays. Requested hexadecimal or binary formatting applies
+recursively to constructor payloads, except that numeric enums retain their
+default formatting. If a traced value contains an undeclared constructor tag,
+that trace operation fails without emitting its message.
+
+In IR, `trace!(x)` returns `x` without emitting a trace or checking constructor
+tags. With trace emission enabled, `trace_fmt!` and `vtrace_fmt!` preserve
+constructor names and recursive payload formatting; numeric enums use each
+backend's default formatting. This lowering also emits an assertion for an
+undeclared constructor tag when the trace operation is active. Reporting that
+failure depends on the backend executing the assertion.
 
 `zero!<Message>()` selects the constructor whose discriminant is zero, whether
 or not that constructor appears first, and recursively initializes its payload

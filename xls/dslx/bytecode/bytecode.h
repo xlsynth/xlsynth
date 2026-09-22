@@ -377,18 +377,13 @@ class Bytecode {
     TraceData& operator=(TraceData&& other) = default;
 
     TraceData(std::vector<FormatStep> steps,
-              std::vector<ValueFormatDescriptor> value_fmt_descs,
-              std::vector<bool> redact_values = {})
+              std::vector<ValueFormatDescriptor> value_fmt_descs)
         : steps_(std::move(steps)),
-          value_fmt_descs_(std::move(value_fmt_descs)),
-          redact_values_(std::move(redact_values)) {}
+          value_fmt_descs_(std::move(value_fmt_descs)) {}
 
     absl::Span<const FormatStep> steps() const { return steps_; }
     absl::Span<const ValueFormatDescriptor> value_fmt_descs() const {
       return value_fmt_descs_;
-    }
-    bool redact_value(size_t index) const {
-      return index < redact_values_.size() && redact_values_.at(index);
     }
 
    private:
@@ -397,10 +392,6 @@ class Bytecode {
     // For default formatting of struct operands we hold metadata that allows us
     // to format them in more detail (struct name, fields, etc).
     std::vector<ValueFormatDescriptor> value_fmt_descs_;
-
-    // Values whose runtime contents must be opaque at a public observer
-    // boundary, such as semantic sums during Phase 1.
-    std::vector<bool> redact_values_;
   };
 
   // Information necessary for channel operations.
@@ -412,24 +403,21 @@ class Bytecode {
 
     ChannelData(std::string_view channel_name,
                 std::unique_ptr<Type> payload_type,
-                ValueFormatDescriptor value_fmt_desc, bool redact_value)
+                ValueFormatDescriptor value_fmt_desc)
         : channel_name_(channel_name),
           payload_type_(std::move(payload_type)),
-          value_fmt_desc_(std::move(value_fmt_desc)),
-          redact_value_(redact_value) {}
+          value_fmt_desc_(std::move(value_fmt_desc)) {}
 
     std::string_view channel_name() const { return channel_name_; }
     const Type& payload_type() const { return *payload_type_; }
     const ValueFormatDescriptor& value_fmt_desc() const {
       return value_fmt_desc_;
     }
-    bool redact_value() const { return redact_value_; }
 
    private:
     std::string channel_name_;
     std::unique_ptr<Type> payload_type_;
     ValueFormatDescriptor value_fmt_desc_;
-    bool redact_value_;
   };
 
   class SumConstructionData {

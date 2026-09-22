@@ -40,8 +40,13 @@ namespace xls::dslx {
 // context preserves shared sums even when reached through other aggregates.
 class ValueFormatDescriptorBuilder {
  public:
-  explicit ValueFormatDescriptorBuilder(FormatPreference field_preference)
-      : field_preference_(field_preference) {}
+  enum class ChannelFormatPolicy { kReject, kOpaque };
+
+  explicit ValueFormatDescriptorBuilder(
+      FormatPreference field_preference,
+      ChannelFormatPolicy channel_format_policy = ChannelFormatPolicy::kReject)
+      : field_preference_(field_preference),
+        channel_format_policy_(channel_format_policy) {}
 
   absl::StatusOr<ValueFormatDescriptor> Build(const Type& type);
 
@@ -53,6 +58,7 @@ class ValueFormatDescriptorBuilder {
   absl::StatusOr<ValueFormatDescriptor> BuildSum(const SumType& type);
 
   const FormatPreference field_preference_;
+  const ChannelFormatPolicy channel_format_policy_;
   // The vector object's address identifies the complete immutable sum data,
   // including for empty sums. Keys are borrowed only for this synchronous
   // construction; completed descriptors own their strings and packed metadata.
@@ -219,8 +225,9 @@ absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::Build(
                                         t.ToString());
     }
     absl::Status HandleToken(const TokenType& t) override {
-      return absl::InvalidArgumentError("Cannot format a token type; got: " +
-                                        t.ToString());
+      result_ =
+          ValueFormatDescriptor::MakeLeafValue(builder_.field_preference_);
+      return absl::OkStatus();
     }
     absl::Status HandleChannel(const ChannelType& t) override {
       return absl::InvalidArgumentError("Cannot format a channel type; got: " +
@@ -246,14 +253,28 @@ absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::Build(
     ValueFormatDescriptor result_;
   };
 
-  Visitor v(*this);
-  XLS_RETURN_IF_ERROR(type.Accept(v));
-  return std::move(v.result());
+  if (channel_format_policy_ == ChannelFormatPolicy::kOpaque &&
+      type.GetDirectOrElementChannelType().has_value()) {
+    // Channel arrays carry handles and must not use an array value descriptor.
+    return ValueFormatDescriptor::MakeLeafValue(field_preference_);
+  } else {
+    Visitor v(*this);
+    XLS_RETURN_IF_ERROR(type.Accept(v));
+    return std::move(v.result());
+  }
 }
 
 absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
     const Type& type, FormatPreference field_preference) {
   return ValueFormatDescriptorBuilder(field_preference).Build(type);
+}
+
+absl::StatusOr<ValueFormatDescriptor> MakeTraceCallFormatDescriptor(
+    const Type& type, FormatPreference field_preference) {
+  return ValueFormatDescriptorBuilder(
+             field_preference,
+             ValueFormatDescriptorBuilder::ChannelFormatPolicy::kOpaque)
+      .Build(type);
 }
 
 }  // namespace xls::dslx
