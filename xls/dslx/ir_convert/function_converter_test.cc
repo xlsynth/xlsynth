@@ -707,8 +707,7 @@ fn f(x: Message) -> Message {
                               convert_options, /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr,
                               /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
 
   EXPECT_THAT(package.interface, EqualsProto(R"pb(
                 functions {
@@ -768,8 +767,7 @@ fn f(x: Message) -> Message {
                               convert_options, /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr,
                               /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
 
   EXPECT_THAT(package.DumpIr(), testing::HasSubstr("literal(value=3"));
   EXPECT_THAT(package.DumpIr(), testing::HasSubstr("literal(value=7"));
@@ -803,8 +801,8 @@ fn f(x: Message) -> u8 {
   FunctionConverter converter(package_data, tm.module, &import_data,
                               ConvertOptions(), /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr, /*is_top=*/true);
-  XLS_ASSERT_OK(converter.HandleFunction(function, tm.type_info,
-                                         ParametricEnv{}));
+  XLS_ASSERT_OK(
+      converter.HandleFunction(function, tm.type_info, ParametricEnv{}));
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
                            package.package->GetFunction("__test_module__f"));
 
@@ -883,8 +881,7 @@ fn f(x: Message) -> Message {
                               convert_options, /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr,
                               /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
                            package.package->GetFunction("__test_module__f"));
 
@@ -976,8 +973,8 @@ fn bind_whole(x: Message) -> Message {
     FunctionConverter converter(package_data, tm.module, &import_data,
                                 ConvertOptions(), /*proc_data=*/nullptr,
                                 /*channel_scope=*/nullptr, /*is_top=*/true);
-    XLS_ASSERT_OK(converter.HandleFunction(function, tm.type_info,
-                                           ParametricEnv{}));
+    XLS_ASSERT_OK(
+        converter.HandleFunction(function, tm.type_info, ParametricEnv{}));
     XLS_ASSERT_OK_AND_ASSIGN(
         xls::Function * ir_function,
         package.package->GetFunction("__test_module__" +
@@ -1043,8 +1040,8 @@ fn f(x: Outer, y: Outer) -> (bool, bool, Outer, Outer) {
   FunctionConverter converter(package_data, tm.module, &import_data,
                               ConvertOptions(), /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr, /*is_top=*/true);
-  XLS_ASSERT_OK(converter.HandleFunction(function, tm.type_info,
-                                         ParametricEnv{}));
+  XLS_ASSERT_OK(
+      converter.HandleFunction(function, tm.type_info, ParametricEnv{}));
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
                            package.package->GetFunction("__test_module__f"));
 
@@ -1135,8 +1132,8 @@ fn f(x: Message, y: Outer) ->
   FunctionConverter converter(package_data, tm.module, &import_data,
                               ConvertOptions(), /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr, /*is_top=*/true);
-  XLS_ASSERT_OK(converter.HandleFunction(function, tm.type_info,
-                                         ParametricEnv{}));
+  XLS_ASSERT_OK(
+      converter.HandleFunction(function, tm.type_info, ParametricEnv{}));
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
                            package.package->GetFunction("__test_module__f"));
   XLS_ASSERT_OK(package.package->SetTop(ir_function));
@@ -1223,8 +1220,7 @@ fn f(x: Outer) -> u4 {
   FunctionConverter converter(package_data, tm.module, &import_data,
                               convert_options, /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr, /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
                            package.package->GetFunction("__test_module__f"));
 
@@ -1270,8 +1266,7 @@ fn f(x: Wrapper) -> Wrapper {
                               convert_options, /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr,
                               /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
                            package.package->GetFunction("__test_module__f"));
 
@@ -1487,8 +1482,7 @@ fn f(x: Message, y: Message) -> bool {
                               convert_options, /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr,
                               /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
                            package.package->GetFunction("__test_module__f"));
 
@@ -1542,8 +1536,7 @@ fn f(x: Option) -> u8 {
                               convert_options, /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr,
                               /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
                            package.package->GetFunction("__test_module__f"));
 
@@ -1583,8 +1576,7 @@ fn f(x: Option, y: Option) -> bool {
                               convert_options, /*proc_data=*/nullptr,
                               /*channel_scope=*/nullptr,
                               /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
 
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
                            package.package->GetFunction("__test_module__f"));
