@@ -322,6 +322,29 @@ TEST(AstGeneratorMultiTest, GeneratesValidProcsWithRandomState) {
   }
 }
 
+TEST(AstGeneratorMultiTest, GeneratesRequiredSumTypesInProcs) {
+  FileTable file_table;
+  std::mt19937_64 rng{0};
+  AstGeneratorOptions options;
+  options.generate_proc = true;
+  options.require_sum_type = true;
+  constexpr int64_t kNumSamples = 8;
+  for (int64_t i = 0; i < kNumSamples; ++i) {
+    AstGenerator g(options, rng, file_table);
+    LOG(INFO) << "Generating required-sum proc sample: " << i;
+    std::string module_name = absl::StrFormat("sum_proc_sample_%d", i);
+    XLS_ASSERT_OK_AND_ASSIGN(AnnotatedModule module,
+                             g.Generate("main", module_name));
+
+    std::string text = module.module->ToString();
+    EXPECT_THAT(text, ContainsRegex(R"(enum x[0-9]+( : [us][0-9]+)? \{)"))
+        << text;
+    EXPECT_THAT(text, ContainsRegex(R"(proc main)")) << text;
+    EXPECT_THAT(text, ContainsRegex(R"(recv\()")) << text;
+    XLS_ASSERT_OK(ParseAndTypecheck<Proc>(text, module_name)) << text;
+  }
+}
+
 // Helper function that is used in a TEST_P so we can shard the work.
 static void TestRepeatable(uint64_t seed) {
   FileTable file_table;
@@ -537,6 +560,15 @@ TEST(AstGeneratorOptionsTest, CrossModuleSumTypeOptionRoundTrips) {
                            AstGeneratorOptions::FromProto(options.ToProto()));
   EXPECT_TRUE(decoded.require_sum_type);
   EXPECT_TRUE(decoded.require_cross_module_sum_type);
+}
+
+TEST(AstGeneratorOptionsTest, AllowsRequiredSumTypesInProcs) {
+  AstGeneratorOptions options;
+  options.generate_proc = true;
+  options.require_sum_type = true;
+
+  XLS_ASSERT_OK(options.Validate());
+  XLS_ASSERT_OK(AstGeneratorOptions::FromProto(options.ToProto()));
 }
 
 TEST(AstGeneratorOptionsTest, RejectsUnsupportedCrossModuleSumTypes) {
