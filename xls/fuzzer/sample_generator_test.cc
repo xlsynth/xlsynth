@@ -37,6 +37,7 @@ namespace xls {
 namespace {
 
 using ::absl_testing::IsOkAndHolds;
+using ::testing::ContainsRegex;
 using ::testing::HasSubstr;
 
 TEST(SampleGeneratorTest, GenerateBasicFunctionSample) {
@@ -58,6 +59,66 @@ TEST(SampleGeneratorTest, GenerateBasicFunctionSample) {
   XLS_EXPECT_OK(sample.GetArgsAndChannels(args_batch));
   EXPECT_EQ(args_batch.size(), kCallsPerSample);
   EXPECT_THAT(sample.input_text(), testing::HasSubstr("fn main"));
+}
+
+TEST(SampleGeneratorTest, GenerateCrossModuleSumFunctionSample) {
+  dslx::FileTable file_table;
+  std::mt19937_64 rng{0};
+  SampleOptions sample_options;
+  constexpr int kCallsPerSample = 2;
+  sample_options.set_calls_per_sample(kCallsPerSample);
+
+  dslx::AstGeneratorOptions generator_options;
+  generator_options.require_sum_type = true;
+  generator_options.require_cross_module_sum_type = true;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Sample sample,
+      GenerateSample(generator_options, sample_options, rng, file_table));
+
+  EXPECT_TRUE(sample.options().input_is_dslx());
+  EXPECT_TRUE(sample.options().convert_to_ir());
+  EXPECT_TRUE(sample.options().optimize_ir());
+  EXPECT_THAT(sample.input_text(), HasSubstr("import float32;"));
+  EXPECT_THAT(sample.input_text(), HasSubstr("float32::F32 {"));
+  EXPECT_THAT(sample.input_text(), HasSubstr(".fraction as "));
+  EXPECT_THAT(sample.input_text(),
+              HasSubstr("import xls.fuzzer.testdata.semantic_sum_provider;"));
+  EXPECT_THAT(sample.input_text(),
+              HasSubstr("semantic_sum_provider::Option::Some("));
+  EXPECT_THAT(sample.input_text(),
+              HasSubstr("semantic_sum_provider::identity("));
+  EXPECT_THAT(sample.input_text(),
+              HasSubstr("semantic_sum_provider::Option::None"));
+  EXPECT_THAT(sample.input_text(),
+              HasSubstr("semantic_sum_provider::Option) -> "
+                        "semantic_sum_provider::Option"));
+
+  std::vector<std::vector<dslx::InterpValue>> args_batch;
+  XLS_EXPECT_OK(sample.GetArgsAndChannels(args_batch));
+  ASSERT_EQ(args_batch.size(), kCallsPerSample);
+  for (const std::vector<dslx::InterpValue>& args : args_batch) {
+    ASSERT_FALSE(args.empty());
+    const dslx::InterpValue& imported_sum = args.back();
+    ASSERT_TRUE(imported_sum.IsTuple());
+    ASSERT_EQ(imported_sum.GetValuesOrDie().size(), 2);
+
+    const dslx::InterpValue& tag = imported_sum.GetValuesOrDie().at(0);
+    ASSERT_TRUE(tag.IsUBits());
+    EXPECT_THAT(tag.GetBitCount(), IsOkAndHolds(1));
+
+    const dslx::InterpValue& payload = imported_sum.GetValuesOrDie().at(1);
+    ASSERT_TRUE(payload.IsTuple());
+    ASSERT_EQ(payload.GetValuesOrDie().size(), 1);
+    EXPECT_TRUE(payload.GetValuesOrDie().at(0).IsUBits());
+    EXPECT_THAT(payload.GetValuesOrDie().at(0).GetBitCount(), IsOkAndHolds(8));
+  }
+
+  ASSERT_EQ(sample.testvector().function_args().args_size(), kCallsPerSample);
+  for (const std::string& args : sample.testvector().function_args().args()) {
+    EXPECT_THAT(
+        args,
+        ContainsRegex(R"(\(bits\[1\]:0x[01], \(bits\[8\]:0x[0-9a-f]+\)\)$)"));
+  }
 }
 
 TEST(SampleGeneratorTest, GenerateCodegenSample) {
