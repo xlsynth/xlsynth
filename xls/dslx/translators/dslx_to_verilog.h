@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -26,6 +27,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "xls/codegen/vast/vast.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/import_data.h"
@@ -99,6 +101,13 @@ class DslxTypeToVerilogManager {
       const dslx::TypeDefinition& def, dslx::ImportData* import_data,
       std::optional<std::string_view> verilog_type_name = std::nullopt);
 
+  // Registers the complete package input before adding exports from multiple
+  // independent modules. This makes colliding nominal sum names stable when
+  // the order of the input modules changes. The modules and their ImportData
+  // must remain alive until all exports have been added.
+  void PrepareForModules(
+      absl::Span<const std::pair<Module*, TypeInfo*>> modules);
+
   // Emits added DSLX types as a verilog package.
   std::string Emit() const { return file_->Emit(); }
 
@@ -145,6 +154,30 @@ class DslxTypeToVerilogManager {
       const TypeDefinition& type_definition, ImportData* import_data,
       std::optional<std::string_view> identifier = std::nullopt);
 
+  struct SumFamily {
+    std::unique_ptr<Type> type;
+    std::string name;
+    verilog::DataType* envelope = nullptr;
+    absl::flat_hash_map<const EnumDef*, verilog::DataType*> enums;
+    absl::flat_hash_map<std::string, verilog::DataType*> structs;
+    absl::flat_hash_map<int64_t, verilog::DataType*> signed_array_elements;
+  };
+
+  void PrepareSumNames(Module* module, TypeInfo* type_info);
+  absl::StatusOr<verilog::DataType*> SumToVastType(const SumType& sum,
+                                                   ImportData* import_data);
+  absl::StatusOr<verilog::DataType*> SumMemberToVastType(
+      const Type& type, SumFamily& family, ImportData* import_data);
+  absl::StatusOr<verilog::DataType*> AddSumAlias(const SumType& sum,
+                                                 std::string_view identifier,
+                                                 ImportData* import_data);
+  verilog::DataType* AddNamedType(std::string_view identifier,
+                                  verilog::DataType* type);
+  verilog::Def* MakeMember(std::string_view identifier,
+                           verilog::DataType* type);
+  verilog::DataType* MakeBits(int64_t width, bool is_signed = false);
+  std::string NewSumName(std::string_view identifier);
+
   // Vast package that contains typedefs for DSLX types.
   verilog::VerilogPackage* top_pkg_;
 
@@ -157,6 +190,11 @@ class DslxTypeToVerilogManager {
   absl::flat_hash_map<AstNode*, verilog::DataType*> converted_types_;
 
   std::unique_ptr<NameUniquer> typedef_name_uniquer_;
+  std::set<const Module*> prepared_sum_modules_;
+  std::set<std::string> legacy_package_names_;
+  absl::flat_hash_map<const SumDef*, std::string> nominal_sum_names_;
+  std::vector<std::unique_ptr<SumFamily>> sum_families_;
+  absl::flat_hash_map<std::string, verilog::DataType*> sum_aliases_;
 };
 
 }  // namespace xls::dslx

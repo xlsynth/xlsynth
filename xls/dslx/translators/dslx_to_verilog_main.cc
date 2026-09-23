@@ -19,6 +19,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "absl/flags/flag.h"
@@ -38,6 +39,7 @@
 #include "xls/dslx/command_line_utils.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/module.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/ir_convert/ir_converter_options_flags.h"
 #include "xls/dslx/ir_convert/ir_converter_options_flags.pb.h"
@@ -125,31 +127,44 @@ absl::Status RealMain(absl::Span<const std::string_view> paths) {
         "path to know where to resolve the entry function");
   }
 
+  ImportData import_data(CreateImportData(dslx_stdlib_path, dslx_paths,
+                                          enabled_warnings,
+                                          std::make_unique<RealFilesystem>()));
   XLS_ASSIGN_OR_RETURN(
       DslxTypeToVerilogManager type_to_verilog,
       DslxTypeToVerilogManager::Create(absl::GetFlag(FLAGS_namespace)));
 
+  std::vector<std::pair<Module*, TypeInfo*>> input_modules;
   for (std::string_view path : paths) {
-    ImportData import_data(
-        CreateImportData(dslx_stdlib_path, dslx_paths, enabled_warnings,
-                         std::make_unique<RealFilesystem>()));
-    XLS_ASSIGN_OR_RETURN(std::string text,
-                         import_data.vfs().GetFileContents(path));
     XLS_ASSIGN_OR_RETURN(std::string module_name, PathToName(path));
-    XLS_ASSIGN_OR_RETURN(
-        TypecheckedModule tm,
-        ParseAndTypecheck(text, path, module_name, &import_data, {}));
+    XLS_ASSIGN_OR_RETURN(ImportTokens tokens,
+                         ImportTokens::FromString(module_name));
+    // An earlier root may already have imported this file. Reuse that module
+    // so one source declaration has one identity in the generated package.
+    if (import_data.Contains(tokens)) {
+      XLS_ASSIGN_OR_RETURN(ModuleInfo * existing, import_data.Get(tokens));
+      input_modules.emplace_back(&existing->module(), existing->type_info());
+    } else {
+      XLS_ASSIGN_OR_RETURN(std::string text,
+                           import_data.vfs().GetFileContents(path));
+      XLS_ASSIGN_OR_RETURN(
+          TypecheckedModule tm,
+          ParseAndTypecheck(text, path, module_name, &import_data, {}));
+      input_modules.emplace_back(tm.module, tm.type_info);
+    }
+  }
+  type_to_verilog.PrepareForModules(input_modules);
 
-    for (const auto& def : tm.module->GetTypeDefinitions()) {
+  for (const auto& [module, type_info] : input_modules) {
+    for (const auto& def : module->GetTypeDefinitions()) {
       // Ignore private type definitions.
       XLS_ASSIGN_OR_RETURN(const TypeInfo::TypeSource type_definition_source,
-                           tm.type_info->ResolveTypeDefinition(def));
+                           type_info->ResolveTypeDefinition(def));
       if (!TypeDefinitionSourceIsPublic(type_definition_source)) {
         continue;
       }
       AstNode* def_node = TypeDefinitionToAstNode(def);
-      std::optional<Type*> type_from_type_info =
-          tm.type_info->GetItem(def_node);
+      std::optional<Type*> type_from_type_info = type_info->GetItem(def_node);
       if (!type_from_type_info.has_value()) {
         VLOG(3) << absl::StreamFormat("Skipping %s with no type info.",
                                       def_node->ToInlineString());

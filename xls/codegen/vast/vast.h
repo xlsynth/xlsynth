@@ -1446,6 +1446,37 @@ class Struct final : public DataType {
   std::vector<Def*> members_;
 };
 
+// Represents an ordinary packed, unsigned union type. All members must have the
+// same size.
+class Union final : public DataType {
+ public:
+  Union(absl::Span<Def* const> members, VerilogFile* file,
+        const SourceInfo& loc)
+      : DataType(file, loc), members_(members.begin(), members.end()) {}
+
+  bool IsScalar() const final { return false; }
+
+  bool IsUserDefined() const final { return true; }
+
+  absl::StatusOr<int64_t> WidthAsInt64() const final {
+    return absl::UnimplementedError(
+        "WidthAsInt64 is not implemented for unions.");
+  }
+
+  absl::StatusOr<int64_t> FlatBitCountAsInt64() const final;
+
+  std::optional<Expression*> width() const final { return std::nullopt; }
+
+  bool is_signed() const final { return false; }
+
+  std::string Emit(LineInfo* line_info) const final;
+
+  absl::Span<Def* const> members() const { return members_; }
+
+ private:
+  std::vector<Def*> members_;
+};
+
 // Defines an item in a localparam.
 class LocalParamItem final : public NamedTrait {
  public:
@@ -2561,7 +2592,7 @@ using VerilogPackageMember =
                  Comment*,                 // Comment text.
                  BlankLine*,               // Blank line.
                  InlineVerilogStatement*,  // InlineVerilog string statement.
-                 Typedef*, VerilogPackageSection*>;
+                 Typedef*, VerilogFunction*, VerilogPackageSection*>;
 
 // A ParameterSection is a container of ParameterMembers used to organize the
 // contents of a package. A Package contains a single top-level PackageSection
@@ -2604,6 +2635,14 @@ class VerilogPackageSection final : public VastNode {
   TypedefType* AddStructTypedef(std::string_view name,
                                 absl::Span<Def*> struct_members,
                                 const SourceInfo& loc);
+
+  // Adds a union typedef to the package section. Returns the type of the
+  // typedef rather than the typedef itself.
+  TypedefType* AddUnionTypedef(std::string_view name, Union* union_data_type,
+                               const SourceInfo& loc);
+  TypedefType* AddUnionTypedef(std::string_view name,
+                               absl::Span<Def*> union_members,
+                               const SourceInfo& loc);
 
   // Adds a parameter to the package section.  Returns a reference to the
   // parameter rather than the parameter itself.

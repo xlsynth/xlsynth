@@ -16,6 +16,7 @@ load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load(
     "//xls/build_rules:xls_dslx_rules.bzl",
     "xls_dslx_library",
@@ -44,6 +45,7 @@ cc_library(
         "//xls/dslx:import_data",
         "//xls/dslx:interp_value",
         "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:pos",
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info",
@@ -57,6 +59,7 @@ cc_library(
         "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",
         "@abseil-cpp//absl/strings:str_format",
+        "@abseil-cpp//absl/types:span",
         "@abseil-cpp//absl/types:variant",
     ],
 )
@@ -99,6 +102,7 @@ cc_binary(
         "//xls/dslx:virtualizable_file_system",
         "//xls/dslx:warning_kind",
         "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
         "//xls/dslx/ir_convert:ir_converter_options_flags",
         "//xls/dslx/ir_convert:ir_converter_options_flags_cc_proto",
         "//xls/dslx/type_system:type",
@@ -145,4 +149,38 @@ diff_test(
     name = "dslx_to_verilog_main_semantic_sum_test",
     file1 = "testdata/semantic_sum_pkg.sv",
     file2 = ":semantic_sum_pkg.sv",
+)
+
+sh_test(
+    name = "dslx_to_verilog_main_multifile_sum_test",
+    srcs = ["testdata/multifile_sum.sh"],
+    args = [
+        "$(rootpath :dslx_to_verilog_main)",
+        "$(rootpath testdata/sum_input_a.x)",
+        "$(rootpath testdata/sum_input_b.x)",
+    ],
+    data = [
+        ":dslx_to_verilog_main",
+        "testdata/sum_input_a.x",
+        "testdata/sum_input_b.x",
+    ],
+)
+
+# Requires an externally installed four-state SystemVerilog simulator. Invoke
+# explicitly with --test_env=XLS_SV_SIMULATOR=/path/to/vcs (or iverilog).
+sh_test(
+    name = "dslx_to_verilog_semantic_sum_consumer_test",
+    srcs = ["testdata/semantic_sum_consumer.sh"],
+    args = [
+        "$(rootpath :semantic_sum_pkg.sv)",
+        "$(rootpath testdata/semantic_sum_consumer.sv)",
+    ],
+    data = [
+        ":semantic_sum_pkg.sv",
+        "testdata/semantic_sum_consumer.sv",
+    ],
+    tags = [
+        "local",
+        "manual",
+    ],
 )
