@@ -788,6 +788,7 @@ std::string VerilogFunction::Emit(LineInfo* line_info) const {
   std::string return_type =
       return_value_def_->data_type()->EmitWithIdentifier(line_info, name());
   if (return_value_def_->data_type()->IsScalar() &&
+      !return_value_def_->data_type()->IsUserDefined() &&
       file()->use_system_verilog()) {
     // Preface the return type with "logic", so there's always a type
     // provided.
@@ -1062,6 +1063,20 @@ TypedefType* VerilogPackageSection::AddStructTypedef(
     std::string_view name, absl::Span<Def*> struct_members,
     const SourceInfo& loc) {
   return AddStructTypedef(name, file()->Make<Struct>(loc, struct_members), loc);
+}
+
+TypedefType* VerilogPackageSection::AddUnionTypedef(std::string_view name,
+                                                    Union* union_data_type,
+                                                    const SourceInfo& loc) {
+  Typedef* def = Add<Typedef>(
+      loc, file()->Make<Def>(loc, name, DataKind::kUser, union_data_type));
+  return file()->Make<TypedefType>(loc, def);
+}
+
+TypedefType* VerilogPackageSection::AddUnionTypedef(
+    std::string_view name, absl::Span<Def*> union_members,
+    const SourceInfo& loc) {
+  return AddUnionTypedef(name, file()->Make<Union>(loc, union_members), loc);
 }
 
 ParameterRef* VerilogPackageSection::AddParameter(std::string_view name,
@@ -1869,17 +1884,51 @@ absl::StatusOr<int64_t> Struct::FlatBitCountAsInt64() const {
   return result;
 }
 
-std::string Struct::Emit(LineInfo* line_info) const {
-  LineInfoStart(line_info, this);
-  std::string result = "struct packed {\n";
+absl::StatusOr<int64_t> Union::FlatBitCountAsInt64() const {
+  if (members_.empty()) {
+    return absl::InvalidArgumentError("A packed union must have a member.");
+  }
+  XLS_ASSIGN_OR_RETURN(int64_t bit_count,
+                       members_.front()->data_type()->FlatBitCountAsInt64());
+  for (const Def* member : absl::MakeConstSpan(members_).subspan(1)) {
+    XLS_ASSIGN_OR_RETURN(int64_t member_bit_count,
+                         member->data_type()->FlatBitCountAsInt64());
+    if (member_bit_count != bit_count) {
+      return absl::InvalidArgumentError(absl::StrFormat(
+          "Packed union members must have the same width; '%s' has %d bits, "
+          "but '%s' has %d bits.",
+          members_.front()->GetName(), bit_count, member->GetName(),
+          member_bit_count));
+    }
+  }
+  return bit_count;
+}
+
+namespace {
+
+std::string EmitPackedAggregate(const VastNode* node, std::string_view kind,
+                                absl::Span<Def* const> members,
+                                LineInfo* line_info) {
+  LineInfoStart(line_info, node);
+  std::string result = absl::StrCat(kind, " packed {\n");
   LineInfoIncrease(line_info, 1);
-  for (const Def* next : members_) {
+  for (const Def* next : members) {
     LineInfoIncrease(line_info, 1);
     absl::StrAppend(&result, Indent(next->Emit(line_info)), "\n");
   }
   absl::StrAppend(&result, "}");
-  LineInfoEnd(line_info, this);
+  LineInfoEnd(line_info, node);
   return result;
+}
+
+}  // namespace
+
+std::string Struct::Emit(LineInfo* line_info) const {
+  return EmitPackedAggregate(this, "struct", members_, line_info);
+}
+
+std::string Union::Emit(LineInfo* line_info) const {
+  return EmitPackedAggregate(this, "union", members_, line_info);
 }
 
 std::string LocalParamItem::Emit(LineInfo* line_info) const {
