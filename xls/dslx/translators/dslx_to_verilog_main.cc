@@ -14,16 +14,23 @@
 //
 // DSLX-to-SystemVerilog type and constant converter.
 
+#include <algorithm>
+#include <cstddef>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "absl/flags/flag.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/ascii.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
@@ -38,7 +45,9 @@
 #include "xls/dslx/command_line_utils.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/module.h"
 #include "xls/dslx/import_data.h"
+#include "xls/dslx/import_routines.h"
 #include "xls/dslx/ir_convert/ir_converter_options_flags.h"
 #include "xls/dslx/ir_convert/ir_converter_options_flags.pb.h"
 #include "xls/dslx/parse_and_typecheck.h"
@@ -67,6 +76,239 @@ bool TypeDefinitionSourceIsPublic(const TypeInfo::TypeSource& def_source) {
           [](const StructDef* struct_def) { return struct_def->is_public(); },
       },
       def_source.definition);
+}
+
+std::filesystem::path AbsolutePath(const std::filesystem::path& path,
+                                   const std::filesystem::path& cwd) {
+  return (path.is_absolute() ? path : cwd / path).lexically_normal();
+}
+
+// An explicitly supplied file and a source-level import must use the same cache
+// entry when this is the spelling the compiler resolves to that file.
+std::optional<std::string> RelativeModuleName(
+    const std::filesystem::path& path, const std::filesystem::path& root) {
+  std::filesystem::path relative = path.lexically_relative(root);
+  if (relative.extension() != ".x") {
+    return std::nullopt;
+  }
+  relative.replace_extension();
+  std::vector<std::string> components;
+  for (const std::filesystem::path& component : relative) {
+    std::string name = component.string();
+    if (name.empty() ||
+        !(absl::ascii_isalpha(name.front()) || name.front() == '_') ||
+        !std::all_of(name.begin(), name.end(), [](unsigned char c) {
+          return absl::ascii_isalnum(c) || c == '_';
+        })) {
+      return std::nullopt;
+    }
+    components.push_back(std::move(name));
+  }
+  return absl::StrJoin(components, ".");
+}
+
+std::vector<std::string> StandalonePathComponents(
+    const std::filesystem::path& path) {
+  std::vector<std::string> components;
+  for (const std::filesystem::path& component :
+       path.parent_path().relative_path()) {
+    components.push_back(component.string());
+  }
+  // Non-.x inputs are valid CLI inputs but do not have an import spelling.
+  // Preserve the extension distinction if both `foo` and `foo.x` are inputs.
+  components.push_back(path.extension() == ".x"
+                           ? path.stem().string()
+                           : path.filename().string() + ".");
+  return components;
+}
+
+// '$' cannot occur in a source-level DSLX import identifier. It makes these
+// cache keys distinct from named imports while projecting to '_' in Verilog.
+// For example, two files named shared.x can use $_one__shared and $_two__shared
+// without embedding the checkout's absolute location in generated sum names.
+std::string StandaloneModuleName(absl::Span<const std::string> components,
+                                 size_t depth) {
+  std::string result = "$_";
+  bool first = true;
+  for (const std::string& component :
+       components.last(std::min(depth, components.size()))) {
+    if (!first) {
+      absl::StrAppend(&result, "__");
+    }
+    first = false;
+    for (unsigned char c : component) {
+      if (absl::ascii_isalnum(c)) {
+        result.push_back(c);
+      } else {
+        absl::StrAppend(&result, "_", absl::Hex(c, absl::kZeroPad2));
+      }
+    }
+  }
+  return result;
+}
+
+struct ExplicitInput {
+  std::string_view path;
+  std::filesystem::path absolute;
+  std::optional<std::string> module_name;
+};
+
+bool PreferModuleName(std::string_view a, std::string_view b) {
+  return std::make_pair(std::count(a.begin(), a.end(), '.'), a) <
+         std::make_pair(std::count(b.begin(), b.end(), '.'), b);
+}
+
+absl::StatusOr<std::vector<ExplicitInput>> GetExplicitInputs(
+    absl::Span<const std::string_view> paths, ImportData& import_data) {
+  XLS_ASSIGN_OR_RETURN(std::filesystem::path cwd,
+                       import_data.vfs().GetCurrentDirectory());
+  std::vector<ExplicitInput> inputs;
+  std::set<std::filesystem::path> known_paths;
+  for (std::string_view path : paths) {
+    std::filesystem::path absolute = AbsolutePath(path, cwd);
+    known_paths.insert(absolute);
+    inputs.push_back({path, std::move(absolute), std::nullopt});
+  }
+  for (ExplicitInput& input : inputs) {
+    if (input.path == "/dev/stdin") {
+      // Keep stdin outside named imports and the standalone "$_" namespace.
+      input.module_name = "_$stdin";
+      continue;
+    }
+
+    auto resolves_to_input =
+        [&](std::string_view name) -> absl::StatusOr<bool> {
+      XLS_ASSIGN_OR_RETURN(ImportTokens tokens, ImportTokens::FromString(name));
+      absl::StatusOr<std::filesystem::path> resolved =
+          FindImportFilesystemPath(tokens, input.path, import_data);
+      if (resolved.ok()) {
+        std::filesystem::path absolute = AbsolutePath(*resolved, cwd);
+        known_paths.insert(absolute);
+        return absolute == input.absolute;
+      } else if (absl::IsNotFound(resolved.status())) {
+        return false;
+      } else {
+        return resolved.status();
+      }
+    };
+    auto try_root = [&](const std::filesystem::path& root) -> absl::Status {
+      std::optional<std::string> name =
+          RelativeModuleName(input.absolute, AbsolutePath(root, cwd));
+      if (name.has_value()) {
+        XLS_ASSIGN_OR_RETURN(bool matches, resolves_to_input(*name));
+        if (matches && (!input.module_name.has_value() ||
+                        PreferModuleName(*name, *input.module_name))) {
+          input.module_name = std::move(name);
+        }
+      }
+      return absl::OkStatus();
+    };
+
+    for (const std::filesystem::path& root :
+         import_data.additional_search_paths()) {
+      if (!root.empty()) {
+        XLS_RETURN_IF_ERROR(try_root(root));
+      }
+    }
+    if (!input.module_name.has_value()) {
+      XLS_RETURN_IF_ERROR(try_root(cwd));
+    }
+    if (!input.module_name.has_value()) {
+      XLS_ASSIGN_OR_RETURN(std::string basename, PathToName(input.path));
+      XLS_RETURN_IF_ERROR(resolves_to_input(basename).status());
+    }
+  }
+
+  for (ExplicitInput& input : inputs) {
+    if (!input.module_name.has_value()) {
+      std::vector<std::string> components =
+          StandalonePathComponents(input.absolute);
+      size_t depth = 1;
+      auto conflicts = [&](std::string_view name) {
+        return std::any_of(known_paths.begin(), known_paths.end(),
+                           [&](const std::filesystem::path& path) {
+                             return path != input.absolute &&
+                                    StandaloneModuleName(
+                                        StandalonePathComponents(path),
+                                        depth) == name;
+                           });
+      };
+      std::string name = StandaloneModuleName(components, depth);
+      while (depth < components.size() && conflicts(name)) {
+        name = StandaloneModuleName(components, ++depth);
+      }
+      input.module_name = std::move(name);
+    }
+  }
+  return inputs;
+}
+
+// An input path is not a source-level module spelling. If another root imports
+// that file, use the compiler's already-typechecked declaration for the
+// explicit export too. Overlapping search roots can otherwise give the same
+// input a second nominal sum identity. Distinct source-level imports remain
+// distinct as defined by the DSLX compiler; this only selects which one an
+// explicit path adds.
+absl::StatusOr<std::vector<std::pair<Module*, TypeInfo*>>>
+SelectExplicitModules(
+    absl::Span<const ExplicitInput> inputs,
+    absl::Span<const std::pair<Module*, TypeInfo*>> parsed_inputs,
+    ImportData& import_data) {
+  if (inputs.size() != parsed_inputs.size()) {
+    return absl::InternalError(
+        "Explicit inputs and typechecked modules differ");
+  }
+  XLS_ASSIGN_OR_RETURN(std::filesystem::path cwd,
+                       import_data.vfs().GetCurrentDirectory());
+  using ModuleAndType = std::pair<Module*, TypeInfo*>;
+  std::map<std::filesystem::path, std::map<std::string, ModuleAndType>>
+      imported_by_path;
+  std::vector<ModuleAndType> pending(parsed_inputs.begin(),
+                                     parsed_inputs.end());
+  std::set<Module*> visited;
+  std::set<Module*> resolved_imports;
+  while (!pending.empty()) {
+    auto [module, type_info] = pending.back();
+    pending.pop_back();
+    if (!visited.insert(module).second) {
+      continue;
+    }
+    for (const auto& [subject, imported] : type_info->GetRootImports()) {
+      pending.emplace_back(imported.module, imported.type_info);
+      if (resolved_imports.insert(imported.module).second) {
+        XLS_ASSIGN_OR_RETURN(ImportTokens tokens,
+                             ImportTokens::FromString(imported.module->name()));
+        std::filesystem::path importing_path = module->fs_path().value_or(
+            std::filesystem::path(inputs.front().path));
+        XLS_ASSIGN_OR_RETURN(std::filesystem::path resolved,
+                             FindImportFilesystemPath(
+                                 tokens, importing_path.string(), import_data));
+        imported_by_path[AbsolutePath(resolved, cwd)].emplace(
+            imported.module->name(),
+            ModuleAndType{imported.module, imported.type_info});
+      }
+    }
+  }
+
+  std::vector<ModuleAndType> result;
+  std::set<Module*> explicit_modules;
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    ModuleAndType selected = parsed_inputs[i];
+    auto imported = imported_by_path.find(inputs[i].absolute);
+    if (imported != imported_by_path.end() &&
+        !imported->second.contains(selected.first->name())) {
+      auto preferred =
+          std::min_element(imported->second.begin(), imported->second.end(),
+                           [](const auto& a, const auto& b) {
+                             return PreferModuleName(a.first, b.first);
+                           });
+      selected = preferred->second;
+    }
+    if (explicit_modules.insert(selected.first).second) {
+      result.push_back(selected);
+    }
+  }
+  return result;
 }
 
 absl::Status RealMain(absl::Span<const std::string_view> paths) {
@@ -129,27 +371,48 @@ absl::Status RealMain(absl::Span<const std::string_view> paths) {
       DslxTypeToVerilogManager type_to_verilog,
       DslxTypeToVerilogManager::Create(absl::GetFlag(FLAGS_namespace)));
 
-  for (std::string_view path : paths) {
-    ImportData import_data(
-        CreateImportData(dslx_stdlib_path, dslx_paths, enabled_warnings,
-                         std::make_unique<RealFilesystem>()));
-    XLS_ASSIGN_OR_RETURN(std::string text,
-                         import_data.vfs().GetFileContents(path));
-    XLS_ASSIGN_OR_RETURN(std::string module_name, PathToName(path));
+  ImportData import_data(CreateImportData(dslx_stdlib_path, dslx_paths,
+                                          enabled_warnings,
+                                          std::make_unique<RealFilesystem>()));
+  XLS_ASSIGN_OR_RETURN(std::vector<ExplicitInput> inputs,
+                       GetExplicitInputs(paths, import_data));
+  std::vector<std::pair<Module*, TypeInfo*>> parsed_inputs;
+  for (const ExplicitInput& input : inputs) {
+    XLS_ASSIGN_OR_RETURN(ImportTokens tokens,
+                         ImportTokens::FromString(*input.module_name));
+    if (import_data.Contains(tokens)) {
+      XLS_RETURN_IF_ERROR(import_data.vfs().FileExists(input.path));
+    } else {
+      XLS_ASSIGN_OR_RETURN(std::string text,
+                           import_data.vfs().GetFileContents(input.path));
+      XLS_RETURN_IF_ERROR(ParseAndTypecheck(text, input.path,
+                                            *input.module_name, &import_data,
+                                            {})
+                              .status());
+    }
+    XLS_ASSIGN_OR_RETURN(ModuleInfo * module, import_data.Get(tokens));
+    parsed_inputs.emplace_back(&module->module(), module->type_info());
+  }
+  std::vector<std::pair<Module*, TypeInfo*>> input_modules = parsed_inputs;
+  if (inputs.size() > 1) {
     XLS_ASSIGN_OR_RETURN(
-        TypecheckedModule tm,
-        ParseAndTypecheck(text, path, module_name, &import_data, {}));
+        input_modules,
+        SelectExplicitModules(inputs, parsed_inputs, import_data));
+  }
+  // Name collisions among sum declarations must be known before any root is
+  // emitted, independently of the order the caller supplied those roots.
+  type_to_verilog.PrepareForModules(input_modules);
 
-    for (const auto& def : tm.module->GetTypeDefinitions()) {
+  for (const auto& [module, type_info] : input_modules) {
+    for (const auto& def : module->GetTypeDefinitions()) {
       // Ignore private type definitions.
       XLS_ASSIGN_OR_RETURN(const TypeInfo::TypeSource type_definition_source,
-                           tm.type_info->ResolveTypeDefinition(def));
+                           type_info->ResolveTypeDefinition(def));
       if (!TypeDefinitionSourceIsPublic(type_definition_source)) {
         continue;
       }
       AstNode* def_node = TypeDefinitionToAstNode(def);
-      std::optional<Type*> type_from_type_info =
-          tm.type_info->GetItem(def_node);
+      std::optional<Type*> type_from_type_info = type_info->GetItem(def_node);
       if (!type_from_type_info.has_value()) {
         VLOG(3) << absl::StreamFormat("Skipping %s with no type info.",
                                       def_node->ToInlineString());
