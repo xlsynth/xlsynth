@@ -339,6 +339,51 @@ TEST_P(VastTest, DataTypes) {
   EXPECT_EQ((*bv_max->max())->Emit(nullptr), "10 * 5");
 }
 
+// Verifies: Packed unions overlay equal-width members and emit their types.
+// Catches: Wrong widths or missing errors for empty or unequal-width unions.
+TEST_P(VastTest, PackedUnionOverlaysEqualWidthMembers) {
+  VerilogFile f(GetFileType());
+  const SourceInfo si;
+  std::vector<Def*> fields = {
+      f.Make<Def>(si, "high", DataKind::kLogic, f.BitVectorType(8, si)),
+      f.Make<Def>(si, "low", DataKind::kLogic, f.BitVectorType(8, si))};
+  Struct* structured_view = f.Make<Struct>(si, fields);
+  std::vector<Def*> members = {
+      f.Make<Def>(si, "bits", DataKind::kLogic, f.BitVectorType(16, si)),
+      f.Make<Def>(si, "fields", DataKind::kUser, structured_view)};
+  Union* union_type = f.Make<Union>(si, members);
+
+  EXPECT_FALSE(union_type->IsScalar());
+  EXPECT_TRUE(union_type->IsUserDefined());
+  EXPECT_FALSE(union_type->is_signed());
+  EXPECT_EQ(union_type->width(), std::nullopt);
+  EXPECT_THAT(union_type->WidthAsInt64(),
+              StatusIs(absl::StatusCode::kUnimplemented));
+  EXPECT_THAT(union_type->FlatBitCountAsInt64(), IsOkAndHolds(16));
+  EXPECT_EQ(union_type->members().size(), 2);
+  EXPECT_EQ(union_type->EmitWithIdentifier(nullptr, "payload"),
+            R"(union packed {
+  logic [15:0] bits;
+  struct packed {
+    logic [7:0] high;
+    logic [7:0] low;
+  } fields;
+} payload)");
+
+  members.pop_back();
+  EXPECT_THAT(f.Make<Union>(si, members)->FlatBitCountAsInt64(),
+              IsOkAndHolds(16));
+  members.push_back(
+      f.Make<Def>(si, "short", DataKind::kLogic, f.BitVectorType(8, si)));
+  EXPECT_THAT(
+      f.Make<Union>(si, members)->FlatBitCountAsInt64(),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("'bits' has 16 bits, but 'short' has 8 bits")));
+  EXPECT_THAT(f.Make<Union>(si, std::vector<Def*>{})->FlatBitCountAsInt64(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("must have a member")));
+}
+
 TEST_P(VastTest, ModuleWithManyVariableDefinitions) {
   VerilogFile f(GetFileType());
   Module* module = f.Make<Module>(SourceInfo(), "my_module");
@@ -2801,6 +2846,78 @@ endpackage)");
             std::vector<LineSpan>{LineSpan(12, 12)});
   EXPECT_EQ(line_info.LookupNode(param_nodef_ref->parameter()).value(),
             std::vector<LineSpan>{LineSpan(13, 13)});
+}
+
+// Verifies: Package unions and functions track emitted SystemVerilog lines.
+// Catches: Missing members, incorrect cast syntax, or incorrect line tracking.
+TEST_P(VastTest, PackageUnionAndFunction) {
+  VerilogFile f(GetFileType());
+  const SourceInfo si;
+  VerilogPackage* package = f.AddVerilogPackage("payload_pkg", si);
+  std::vector<Def*> members = {
+      f.Make<Def>(si, "bits", DataKind::kLogic, f.BitVectorType(16, si)),
+      f.Make<Def>(si, "signed_bits", DataKind::kLogic,
+                  f.BitVectorType(16, si, /*is_signed=*/true))};
+  TypedefType* union_type = package->top()->AddUnionTypedef(
+      "payload_t", absl::Span<Def*>(members), si);
+  VerilogPackageSection* section = package->Add<VerilogPackageSection>(si);
+  VerilogFunction* function =
+      section->Add<VerilogFunction>(si, "make_payload", union_type);
+  LogicRef* bits = function->AddArgument(
+      f.Make<Def>(si, "bits", DataKind::kLogic, f.BitVectorType(16, si)), si);
+  BlockingAssignment* assignment = function->AddStatement<BlockingAssignment>(
+      si, function->return_value_ref(), f.Make<TypeCast>(si, union_type, bits));
+
+  LineInfo line_info;
+  EXPECT_EQ(package->Emit(&line_info), R"(package payload_pkg;
+  typedef union packed {
+    logic [15:0] bits;
+    logic signed [15:0] signed_bits;
+  } payload_t;
+  function automatic payload_t make_payload (input logic [15:0] bits);
+    begin
+      make_payload = payload_t'(bits);
+    end
+  endfunction
+endpackage)");
+  EXPECT_EQ(line_info.LookupNode(package).value(),
+            std::vector<LineSpan>{LineSpan(0, 10)});
+  EXPECT_EQ(line_info.LookupNode(union_type->type_def()).value(),
+            std::vector<LineSpan>{LineSpan(1, 4)});
+  EXPECT_EQ(line_info.LookupNode(section).value(),
+            std::vector<LineSpan>{LineSpan(5, 9)});
+  EXPECT_EQ(line_info.LookupNode(function).value(),
+            std::vector<LineSpan>{LineSpan(5, 9)});
+  EXPECT_EQ(line_info.LookupNode(assignment).value(),
+            std::vector<LineSpan>{LineSpan(7, 7)});
+}
+
+// Verifies: Scalar typedefs are emitted by name as function return types.
+// Catches: An extra logic keyword or range being added to a named return type.
+TEST_P(VastTest, FunctionWithUserDefinedScalarReturnUsesOnlyNamedType) {
+  VerilogFile f(GetFileType());
+  const SourceInfo si;
+  VerilogPackage* package = f.AddVerilogPackage("tag_pkg", si);
+  Enum* tag = f.Make<Enum>(si, DataKind::kLogic, f.ScalarType(si));
+  EnumMemberRef* none =
+      tag->AddMember("Tag_None", f.Literal(UBits(0, 1), si), si);
+  Typedef* declaration =
+      package->Add<Typedef>(si, f.Make<Def>(si, "tag_t", DataKind::kUser, tag));
+  TypedefType* tag_type = f.Make<TypedefType>(si, declaration);
+  VerilogFunction* function =
+      package->Add<VerilogFunction>(si, "get_tag", tag_type);
+  function->AddStatement<BlockingAssignment>(si, function->return_value_ref(),
+                                             none);
+  EXPECT_EQ(package->Emit(nullptr), R"(package tag_pkg;
+  typedef enum logic {
+    Tag_None = 1'h0
+  } tag_t;
+  function automatic tag_t get_tag ();
+    begin
+      get_tag = Tag_None;
+    end
+  endfunction
+endpackage)");
 }
 
 TEST_P(VastTest, PackageSections) {
