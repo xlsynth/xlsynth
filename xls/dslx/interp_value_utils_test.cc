@@ -1616,6 +1616,25 @@ TEST(InterpValueHelpersTest,
               IsOkAndHolds("Option::EmptyStruct {}"));
 }
 
+// Verifies: Call tracing alone accepts channels as opaque leaves.
+// Catches: Channels being rejected in calls or traversed as values.
+TEST(InterpValueHelpersTest, ChannelFormatDescriptorsRequireCallTracing) {
+  const ChannelType channel_type(BitsType::MakeU8(), ChannelDirection::kOut);
+  const ArrayType channel_array_type(channel_type.CloneToUnique(),
+                                     TypeDim::CreateU32(2));
+  const Type* channel_types[] = {&channel_type, &channel_array_type};
+  for (const Type* type : channel_types) {
+    EXPECT_THAT(MakeValueFormatDescriptor(*type, FormatPreference::kHex),
+                StatusIs(absl::StatusCode::kInvalidArgument,
+                         HasSubstr("Cannot format a channel type")));
+    XLS_ASSERT_OK_AND_ASSIGN(
+        ValueFormatDescriptor descriptor,
+        MakeTraceCallFormatDescriptor(*type, FormatPreference::kHex));
+    ASSERT_TRUE(descriptor.IsLeafValue());
+    EXPECT_EQ(descriptor.leaf_format(), FormatPreference::kHex);
+  }
+}
+
 // Both construction and retention must stay bounded: memoization alone still
 // expands copies, and shared storage alone still rebuilds every alternative.
 TEST(InterpValueHelpersTest,
