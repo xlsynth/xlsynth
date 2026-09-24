@@ -33,9 +33,12 @@
 
 namespace xls {
 
-absl::StatusOr<std::vector<FormatStep>> ParseFormatString(
-    std::string_view format_string) {
+namespace {
+
+absl::StatusOr<std::vector<FormatStep>> ParseFormatStringImpl(
+    std::string_view format_string, bool allow_control_steps) {
   std::vector<FormatStep> steps;
+  int64_t conditional_depth = 0;
 
   int64_t i = 0;
   auto consume_substr = [&i, format_string](std::string_view m) -> bool {
@@ -63,6 +66,24 @@ absl::StatusOr<std::vector<FormatStep>> ParseFormatString(
     }
     if (consume_substr("}}")) {
       absl::StrAppend(&fragment, "}}");
+      continue;
+    }
+    if (allow_control_steps && consume_substr("{?}")) {
+      push_fragment();
+      steps.push_back(FormatControl::kBeginConditional);
+      ++conditional_depth;
+      continue;
+    }
+    if (allow_control_steps && consume_substr("{/}")) {
+      if (conditional_depth == 0) {
+        return absl::InvalidArgumentError(absl::StrFormat(
+            "Conditional format end without matching begin in format string "
+            "\"%s\"",
+            format_string));
+      }
+      push_fragment();
+      steps.push_back(FormatControl::kEndConditional);
+      --conditional_depth;
       continue;
     }
     if (consume_substr("{}")) {
@@ -133,7 +154,47 @@ absl::StatusOr<std::vector<FormatStep>> ParseFormatString(
   }
 
   push_fragment();
+  if (conditional_depth != 0) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Conditional format begin without matching end in format string "
+        "\"%s\"",
+        format_string));
+  }
   return steps;
+}
+
+}  // namespace
+
+absl::StatusOr<std::vector<FormatStep>> ParseFormatString(
+    std::string_view format_string) {
+  return ParseFormatStringImpl(format_string, /*allow_control_steps=*/false);
+}
+
+absl::StatusOr<std::vector<FormatStep>> ParseIrFormatString(
+    std::string_view format_string) {
+  return ParseFormatStringImpl(format_string, /*allow_control_steps=*/true);
+}
+
+absl::Status ValidateFormatSteps(absl::Span<const FormatStep> format) {
+  int64_t conditional_depth = 0;
+  for (const FormatStep& step : format) {
+    if (auto* control = std::get_if<FormatControl>(&step)) {
+      if (*control == FormatControl::kBeginConditional) {
+        ++conditional_depth;
+      } else if (conditional_depth == 0) {
+        return absl::InvalidArgumentError(
+            "Conditional format end without matching begin.");
+      } else {
+        --conditional_depth;
+      }
+    }
+  }
+  if (conditional_depth != 0) {
+    return absl::InvalidArgumentError(
+        "Conditional format begin without matching end.");
+  } else {
+    return absl::OkStatus();
+  }
 }
 
 std::vector<FormatPreference> OperandPreferencesFromFormat(
@@ -148,10 +209,13 @@ std::vector<FormatPreference> OperandPreferencesFromFormat(
 }
 
 int64_t OperandsExpectedByFormat(absl::Span<const FormatStep> format) {
-  return std::count_if(format.begin(), format.end(),
-                       [](const FormatStep& step) {
-                         return std::holds_alternative<FormatPreference>(step);
-                       });
+  return std::count_if(
+      format.begin(), format.end(), [](const FormatStep& step) {
+        const auto* control = std::get_if<FormatControl>(&step);
+        return std::holds_alternative<FormatPreference>(step) ||
+               (control != nullptr &&
+                *control == FormatControl::kBeginConditional);
+      });
 }
 
 std::string StepsToXlsFormatString(absl::Span<const FormatStep> format) {
@@ -160,10 +224,19 @@ std::string StepsToXlsFormatString(absl::Span<const FormatStep> format) {
         if (std::holds_alternative<FormatPreference>(step)) {
           absl::StrAppend(out, FormatPreferenceToXlsSpecifier(
                                    std::get<FormatPreference>(step)));
-        } else {
+        } else if (std::holds_alternative<std::string>(step)) {
           absl::StrAppend(out, std::get<std::string>(step));
+        } else {
+          absl::StrAppend(out, std::get<FormatControl>(step) ==
+                                       FormatControl::kBeginConditional
+                                   ? "{?}"
+                                   : "{/}");
         }
       });
+}
+
+std::string UnescapeFormatStringLiteral(std::string_view literal) {
+  return absl::StrReplaceAll(literal, {{"{{", "{"}, {"}}", "}"}});
 }
 
 std::string StepsToVerilogFormatString(absl::Span<const FormatStep> format) {
@@ -172,12 +245,14 @@ std::string StepsToVerilogFormatString(absl::Span<const FormatStep> format) {
         if (std::holds_alternative<FormatPreference>(step)) {
           absl::StrAppend(out, FormatPreferenceToVerilogSpecifier(
                                    std::get<FormatPreference>(step)));
+        } else if (std::holds_alternative<std::string>(step)) {
+          absl::StrAppend(
+              out, UnescapeFormatStringLiteral(std::get<std::string>(step)));
         } else {
-          // Convert {{ and }} to { and }.
-          std::string step_str = absl::StrReplaceAll(
-              std::get<std::string>(step), {{"{{", "{"}, {"}}", "}"}});
-
-          absl::StrAppend(out, step_str);
+          absl::StrAppend(out, std::get<FormatControl>(step) ==
+                                       FormatControl::kBeginConditional
+                                   ? "{?}"
+                                   : "{/}");
         }
       });
 }
