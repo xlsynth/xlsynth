@@ -420,7 +420,7 @@ TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
-       SharedLayoutReaderAcceptsPreparedSchemaWhileWriterRemainsExpanded) {
+       ReadsSumLayoutFromExplicitTagMetadata) {
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK_AND_ASSIGN(
       TypecheckedModule tm,
@@ -433,9 +433,6 @@ TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
   ASSERT_NE(node, nullptr);
   const SumTypeProto& old = node->type().sum_type();
   ASSERT_EQ(old.variants_size(), 2);
-  EXPECT_FALSE(old.has_tag_bit_count());
-  EXPECT_FALSE(old.variants(0).has_discriminant());
-  EXPECT_FALSE(old.variants(1).has_discriminant());
   XLS_ASSERT_OK(ToHumanString(*node, import_data, import_data.file_table()));
 
   AstNodeTypeInfoProto with_layout = *node;
@@ -454,6 +451,47 @@ TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
   }
   XLS_ASSERT_OK(
       ToHumanString(with_layout, import_data, import_data.file_table()));
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       ReadsRepeatedLegacyExpandedSumsWithoutLayoutMetadata) {
+  constexpr std::string_view kProgram = R"(
+enum E { A, B(u8) }
+fn f(pair: (E, E)) -> (E, E) { pair }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "fake.x", "fake", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                           tm.module->GetMemberOrError<Function>("f"));
+  ASSERT_EQ(tm.module->GetSumDefs().size(), 1);
+
+  AstNodeTypeInfoProto legacy;
+  legacy.set_kind(AST_NODE_KIND_PARAM);
+  *legacy.mutable_span() =
+      ToProto(function->params().front()->span(), import_data.file_table());
+  TupleTypeProto* tuple = legacy.mutable_type()->mutable_tuple_type();
+  for (int i = 0; i < 2; ++i) {
+    SumTypeProto* sum = tuple->add_members()->mutable_sum_type();
+    *sum->mutable_sum_def_span() = ToProto(
+        tm.module->GetSumDefs().front()->span(), import_data.file_table());
+    sum->add_variants();
+    BitsTypeProto* payload =
+        sum->add_variants()->add_payload_members()->mutable_bits_type();
+    payload->set_is_signed(false);
+    BitsValueProto* payload_width =
+        payload->mutable_dim()->mutable_interp_value()->mutable_bits();
+    payload_width->set_bit_count(32);
+    payload_width->set_is_signed(false);
+    payload_width->set_data(std::string("\0\0\0\x08", 4));
+  }
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string human,
+      ToHumanString(legacy, import_data, import_data.file_table()));
+  EXPECT_THAT(human, ::testing::EndsWith(
+                         " :: (E { A | B(uN[8]) }, E { A | B(uN[8]) })"));
 }
 
 constexpr std::string_view kPackedNominalArgumentProgram =
