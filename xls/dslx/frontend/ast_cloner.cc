@@ -1456,7 +1456,7 @@ class AstCloner : public AstNodeVisitor {
     XLS_RETURN_IF_ERROR(ReplaceOrVisit(n->function_type()));
     old_to_new_[n] = module(n)->Make<ParamTypeAnnotation>(
         absl::down_cast<TypeAnnotation*>(old_to_new_[n->function_type()]),
-        n->param_index());
+        n->param_index(), n->inference_role());
     return absl::OkStatus();
   }
 

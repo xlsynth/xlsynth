@@ -778,6 +778,11 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     const TypeAnnotation* constructor_type = module_.Make<MemberTypeAnnotation>(
         node->constructor_ref()->span(),
         const_cast<TypeAnnotation*>(sum_value_type), variant->identifier());
+    // The constructor reference is converted separately from the pattern. Use
+    // the matched value's type there too, so omitted parametrics are inferred
+    // from the scrutinee rather than concretized as an abstract sum.
+    XLS_RETURN_IF_ERROR(
+        table_.SetTypeAnnotation(node->constructor_ref(), constructor_type));
     const auto* tuple_payload = std::get_if<TuplePattern*>(&node->payload());
     const auto* struct_payload = std::get_if<StructPattern*>(&node->payload());
     if (variant->is_unit()) {
@@ -814,7 +819,8 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       }
       for (int64_t i = 0; i < members.size(); ++i) {
         const TypeAnnotation* payload_type = module_.Make<ParamTypeAnnotation>(
-            const_cast<TypeAnnotation*>(constructor_type), i);
+            const_cast<TypeAnnotation*>(constructor_type), i,
+            ParamTypeAnnotation::InferenceRole::kPatternBinding);
         XLS_RETURN_IF_ERROR(BindPatternToType(members[i], payload_type));
       }
       return absl::OkStatus();
