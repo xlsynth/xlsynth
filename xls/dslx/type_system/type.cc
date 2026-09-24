@@ -149,13 +149,8 @@ absl::StatusOr<uint32_t> ComputeMaxSumPayloadBitCount(
     absl::Span<const SumTypeVariant> variants) {
   TypeDim payload_bit_count = TypeDim::CreateU32(0);
   for (const SumTypeVariant& variant : variants) {
-    TypeDim variant_bits = TypeDim::CreateU32(0);
-    for (int64_t i = 0; i < variant.size(); ++i) {
-      XLS_ASSIGN_OR_RETURN(
-          TypeDim member_bits,
-          internal::GetBitCountWithSharedSumPayload(variant.GetMemberType(i)));
-      XLS_ASSIGN_OR_RETURN(variant_bits, variant_bits.Add(member_bits));
-    }
+    XLS_ASSIGN_OR_RETURN(TypeDim variant_bits,
+                         internal::GetBitCountWithSharedSumPayload(variant));
     XLS_ASSIGN_OR_RETURN(InterpValue variant_is_wider,
                          variant_bits.value().Gt(payload_bit_count.value()));
     if (variant_is_wider.IsTrue()) {
@@ -1669,6 +1664,17 @@ absl::StatusOr<bool> TypeIsInhabited(const Type& type) {
 }
 
 namespace internal {
+
+absl::StatusOr<TypeDim> GetBitCountWithSharedSumPayload(
+    const SumTypeVariant& variant) {
+  TypeDim variant_bits = TypeDim::CreateU32(0);
+  for (int64_t i = 0; i < variant.size(); ++i) {
+    XLS_ASSIGN_OR_RETURN(TypeDim member_bits, GetBitCountWithSharedSumPayload(
+                                                  variant.GetMemberType(i)));
+    XLS_ASSIGN_OR_RETURN(variant_bits, variant_bits.Add(member_bits));
+  }
+  return variant_bits;
+}
 
 absl::StatusOr<TypeDim> GetBitCountWithSharedSumPayload(const Type& type) {
   if (const auto* sum = dynamic_cast<const SumType*>(&type)) {

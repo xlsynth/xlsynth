@@ -1399,6 +1399,9 @@ namespace internal {
 // Returns the flattened width when each semantic sum uses its tag and only
 // the widest of its payloads, including sums nested in other types.
 absl::StatusOr<TypeDim> GetBitCountWithSharedSumPayload(const Type& type);
+// Returns the combined width of one variant's members using the same layout.
+absl::StatusOr<TypeDim> GetBitCountWithSharedSumPayload(
+    const SumTypeVariant& variant);
 
 }  // namespace internal
 

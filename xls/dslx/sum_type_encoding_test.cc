@@ -229,6 +229,45 @@ TEST(SumTypeEncodingTest, RejectsVariantInfoFromDifferentEncoding) {
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
+TEST(SumTypeEncodingTest, CountsOnlyTheWidestNestedPayload) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumType inner = MakeTuplePayloadSumType(module);
+  SumTypeEncoding inner_encoding(inner);
+  XLS_ASSERT_OK_AND_ASSIGN(int64_t inner_slot,
+                           inner_encoding.payload_slot_bit_count());
+  EXPECT_EQ(inner_slot, 48);
+
+  SumType outer_shape = MakeTuplePayloadSumType(module);
+  const auto& declaration = outer_shape.nominal_type();
+  std::vector<SumTypeVariant> variants;
+  variants.push_back(SumTypeVariant::MakeUnit(*declaration.variants()[0]));
+  std::vector<std::unique_ptr<Type>> left;
+  left.push_back(inner.CloneToUnique());
+  variants.push_back(
+      SumTypeVariant::MakeTuple(*declaration.variants()[1], std::move(left)));
+  std::vector<std::unique_ptr<Type>> pair;
+  pair.push_back(std::make_unique<ArrayType>(inner.CloneToUnique(),
+                                             TypeDim::CreateU32(2)));
+  pair.push_back(BitsType::MakeU8());
+  variants.push_back(
+      SumTypeVariant::MakeTuple(*declaration.variants()[2], std::move(pair)));
+  SumType outer(declaration, std::move(variants));
+  SumTypeEncoding encoding(outer);
+  XLS_ASSERT_OK_AND_ASSIGN(int64_t outer_slot,
+                           encoding.payload_slot_bit_count());
+  EXPECT_EQ(outer_slot, 108);
+
+  std::vector<int64_t> payload_widths;
+  XLS_ASSERT_OK(encoding.ForEachVariant(
+      [&](const SumTypeEncoding::VariantInfo& variant) -> absl::Status {
+        XLS_ASSIGN_OR_RETURN(int64_t width, variant.payload_bit_count());
+        payload_widths.push_back(width);
+        return absl::OkStatus();
+      }));
+  EXPECT_THAT(payload_widths, ElementsAre(0, 50, 108));
+}
+
 TEST(SumTypeEncodingTest, RejectsSumVariantsOutsideDeclarationOrder) {
   FileTable file_table;
   Module module("test", /*fs_path=*/std::nullopt, file_table);

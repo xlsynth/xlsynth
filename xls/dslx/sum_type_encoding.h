@@ -106,6 +106,7 @@ class SumTypeEncoding {
     const InterpValue* const discriminant;
 
     int64_t payload_size() const { return variant->size(); }
+    absl::StatusOr<int64_t> payload_bit_count() const;
 
    private:
     friend class SumTypeEncoding;
@@ -119,6 +120,7 @@ class SumTypeEncoding {
 
   explicit SumTypeEncoding(const SumType& type);
 
+  absl::StatusOr<int64_t> payload_slot_bit_count() const;
   absl::StatusOr<int64_t> tag_bit_count() const;
 
   absl::StatusOr<VariantInfo> GetVariant(std::string_view variant_name) const;
