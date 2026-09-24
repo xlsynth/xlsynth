@@ -444,6 +444,8 @@ absl::StatusOr<SumTypeProto> ToProto(const SumType& sum_type,
   SumTypeProto proto;
   *proto.mutable_sum_def_span() =
       ToProto(sum_type.nominal_type().span(), file_table);
+  XLS_ASSIGN_OR_RETURN(*proto.mutable_tag_bit_count(),
+                       ToProto(sum_type.tag_bit_count(), file_table));
   for (const SumType::ParametricArgument& argument :
        sum_type.parametric_arguments()) {
     SumTypeParametricProto* proto_argument = proto.add_parametric_arguments();
@@ -467,6 +469,9 @@ absl::StatusOr<SumTypeProto> ToProto(const SumType& sum_type,
     XLS_ASSIGN_OR_RETURN(
         *proto.add_variants(),
         ToProto(sum_type.variants().at(variant_index), file_table, context));
+    XLS_ASSIGN_OR_RETURN(
+        *proto.mutable_variants(variant_index)->mutable_discriminant(),
+        ToProto(sum_type.GetDiscriminant(variant_index)));
   }
   VLOG(5) << "- proto: " << proto.ShortDebugString();
   return proto;

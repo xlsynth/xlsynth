@@ -390,6 +390,8 @@ class FunctionConverter {
   absl::Status AssertPhase1SemanticSumValueIsWellFormed(
       const Type& type, BValue value, const SourceInfo& loc, const Span& span,
       std::string_view message_observer, std::string_view label_suffix);
+  absl::StatusOr<BValue> BuildSemanticSumTagIsDeclaredPredicate(
+      const SumType& sum_type, BValue value, const SourceInfo& loc);
   absl::Status HandleConcat(const Binop* node, BValue lhs, BValue rhs);
   absl::Status HandleEq(const Binop* node, BValue lhs, BValue rhs);
   absl::Status HandleNe(const Binop* node, BValue lhs, BValue rhs);
@@ -501,13 +503,20 @@ class FunctionConverter {
   // Handles the `cover!()` builtin invocation.
   absl::Status HandleCoverBuiltin(const Invocation* node, BValue condition);
 
-  // Handles an arm of a match expression.
+  // Handles an arm of a match expression. A wildcard at the match root retains
+  // the malformed-input fallback policy; nested wildcards do not inspect tags.
   absl::StatusOr<BValue> HandleMatcher(const PatternTree& matcher,
                                        const BValue& matched_value,
-                                       const Type& matched_type);
+                                       const Type& matched_type,
+                                       bool is_match_root = true);
   absl::StatusOr<BValue> HandleSumVariantPayloadPattern(
       const PatternTree& matcher, const SumVariantPayloadPattern* pattern,
       const BValue& matched_value, const SumType& matched_type);
+  // Projects packed sum payloads on demand. Ignored tuple members remain
+  // packed; bound values and observing patterns use the ordinary matcher.
+  absl::StatusOr<BValue> HandlePackedSumPayloadMatcher(
+      const PatternTree& matcher, BValue packed_value,
+      const Type& matched_type);
 
   // Makes the specified builtin available to the package.
   absl::StatusOr<BValue> DefMapWithBuiltin(const Invocation* parent_node,

@@ -16,7 +16,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -56,7 +55,7 @@ class ValueFormatDescriptorBuilder {
   const FormatPreference field_preference_;
   // The vector object's address identifies the complete immutable sum data,
   // including for empty sums. Keys are borrowed only for this synchronous
-  // construction; completed descriptors own their strings and format metadata.
+  // construction; completed descriptors own their strings and packed metadata.
   absl::flat_hash_map<const std::vector<SumTypeVariant>*, ValueFormatDescriptor>
       sum_descriptors_;
 };
@@ -118,14 +117,14 @@ absl::StatusOr<ValueFormatDescriptor> MakeEnumFormatDescriptor(
 
 absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::BuildSum(
     const SumType& type) {
-  const Phase1SumTypeEncoding encoding(type);
+  const SumTypeEncoding encoding(type);
   std::vector<ValueFormatSumVariantDescriptor> variants;
-  std::vector<size_t> payload_starts;
+  std::vector<Bits> variant_tag_bits;
   variants.reserve(type.variant_count());
-  payload_starts.reserve(type.variant_count());
+  variant_tag_bits.reserve(type.variant_count());
   XLS_RETURN_IF_ERROR(encoding.ForEachVariant(
-      [&](const Phase1SumTypeEncoding::VariantInfo& info) -> absl::Status {
-        payload_starts.push_back(static_cast<size_t>(info.payload_start));
+      [&](const SumTypeEncoding::VariantInfo& info) -> absl::Status {
+        variant_tag_bits.push_back(info.discriminant->GetBitsOrDie());
         const SumTypeVariant& variant = *info.variant;
         std::vector<ValueFormatDescriptor> payload_formats;
         payload_formats.reserve(variant.size());
@@ -153,9 +152,12 @@ absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::BuildSum(
         }
         return absl::OkStatus();
       }));
-  return ValueFormatDescriptor::MakeSum(type.nominal_type().identifier(),
-                                        variants, payload_starts,
-                                        encoding.payload_slot_count());
+  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
+  XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                       encoding.payload_slot_bit_count());
+  return ValueFormatDescriptor::MakeSum(
+      type.nominal_type().identifier(), variants, tag_bit_count,
+      payload_slot_bit_count, variant_tag_bits);
 }
 
 absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::Build(

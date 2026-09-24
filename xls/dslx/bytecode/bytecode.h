@@ -253,8 +253,13 @@ class Bytecode {
   // anything" flag.
   class MatchArmItem {
    public:
-    static MatchArmItem MakeInterpValue(const InterpValue& interp_value);
-    static MatchArmItem MakeLoad(SlotIndex slot_index);
+    // Sum-containing constants require their semantic type for equality. The
+    // borrowed type must outlive the bytecode; omit it for raw comparisons.
+    static MatchArmItem MakeInterpValue(const InterpValue& interp_value,
+                                        const Type* value_type = nullptr);
+    // Loads a constant from a frame slot, with the same type lifetime contract.
+    static MatchArmItem MakeLoad(SlotIndex slot_index,
+                                 const Type* value_type = nullptr);
     static MatchArmItem MakeStore(SlotIndex slot_index);
     static MatchArmItem MakeRange(InterpValue start, InterpValue limit);
     static MatchArmItem MakeSum(const SumType* sum_type,
@@ -296,6 +301,7 @@ class Bytecode {
     absl::StatusOr<const SumMatchData*> sum_match_data() const;
     absl::StatusOr<std::vector<MatchArmItem>> tuple_elements() const;
     Kind kind() const { return kind_; }
+    const Type* value_type() const { return value_type_; }
 
     std::string ToString() const;
 
@@ -307,6 +313,9 @@ class Bytecode {
                      data);
 
     Kind kind_;
+    // Literal/load patterns containing sums need semantic equality. Borrowed
+    // from the emitter's TypeInfo, just like SumMatchData::sum_type.
+    const Type* value_type_ = nullptr;
     std::optional<std::variant<InterpValue, SlotIndex, RangeData, SumMatchData,
                                std::vector<MatchArmItem>>>
         data_;

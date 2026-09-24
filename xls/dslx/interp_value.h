@@ -715,17 +715,6 @@ struct RangeData {
   }
 };
 
-// Borrowed view of the `(tag, payload_slots)` tuple carrier for an encoded
-// semantic sum. The source value must outlive the view.
-struct EncodedSumView {
-  const InterpValue& tag;
-  absl::Span<const InterpValue> payload_slots;
-};
-
-// Checks that `value` is a two-element tuple whose second element is a tuple.
-// Does not validate the tag or payload values against a nominal sum type.
-absl::StatusOr<EncodedSumView> GetEncodedSumView(const InterpValue& value);
-
 namespace internal {
 
 // Borrowed view of the semantic-sum `(tag, packed-payload-slot)` carrier.

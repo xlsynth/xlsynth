@@ -110,6 +110,17 @@ int64_t GetLeafTypeCount(const Type& type) {
       result += GetLeafTypeCount(*member);
     }
     return result;
+  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type);
+             struct_type != nullptr) {
+    int64_t result = 0;
+    for (int64_t i = 0; i < struct_type->size(); ++i) {
+      result += GetLeafTypeCount(struct_type->GetMemberType(i));
+    }
+    return result;
+  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type);
+             array_type != nullptr && !GetBitsLike(type).has_value()) {
+    return array_type->size().GetAsInt64().value() *
+           GetLeafTypeCount(array_type->element_type());
   } else if (type.IsSum()) {
     if (type.AsSum().variant_count() == 0) {
       return 0;
@@ -127,6 +138,17 @@ void AppendStorageLeafTypes(const Type& type, FlattenedLeafTypes* result) {
   } else if (type.IsTuple()) {
     for (const std::unique_ptr<Type>& member : type.AsTuple().members()) {
       AppendStorageLeafTypes(*member, result);
+    }
+  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type);
+             struct_type != nullptr) {
+    for (int64_t i = 0; i < struct_type->size(); ++i) {
+      AppendStorageLeafTypes(struct_type->GetMemberType(i), result);
+    }
+  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type);
+             array_type != nullptr && !GetBitsLike(type).has_value()) {
+    const int64_t size = array_type->size().GetAsInt64().value();
+    for (int64_t i = 0; i < size; ++i) {
+      AppendStorageLeafTypes(array_type->element_type(), result);
     }
   } else if (type.IsSum()) {
     if (type.AsSum().variant_count() != 0) {
@@ -465,7 +487,8 @@ int64_t GetSumVariantIndex(const SumType& sum_type,
 // Nested sums still use a checker-local declaration-order product until Phase 3
 // replaces this MVP with a recursive checker. This ordinal is semantic checker
 // state, not the runtime payload-slot layout or a wire discriminant.
-InterpValue MakeSumTagValue(const SumType& sum_type, int64_t variant_index) {
+InterpValue MakeDenseSumVariantOrdinal(const SumType& sum_type,
+                                       int64_t variant_index) {
   int64_t bit_count = sum_type.tag_bit_count().GetAsInt64().value();
   return InterpValue::MakeUBits(bit_count, variant_index);
 }
@@ -537,8 +560,8 @@ SumConstantValue ResolveSumConstantValue(const Expr& expression,
       if (const auto* constructor =
               dynamic_cast<const ColonRef*>(constructor_expression);
           constructor != nullptr) {
-        absl::StatusOr<Phase1SumTypeEncoding::VariantInfo> variant =
-            Phase1SumTypeEncoding(sum_type).GetVariant(constructor->attr());
+        absl::StatusOr<SumTypeEncoding::VariantInfo> variant =
+            SumTypeEncoding(sum_type).GetVariant(constructor->attr());
         if (variant.ok() && variant->variant->is_unit()) {
           value = CreateSumValue(sum_type, constructor->attr(), {}).value();
         }
@@ -547,14 +570,18 @@ SumConstantValue ResolveSumConstantValue(const Expr& expression,
   }
   CHECK(value.has_value()) << "Missing semantic-sum constexpr value for `"
                            << expression.ToString() << "`";
-  absl::StatusOr<EncodedSumView> encoded =
-      GetEncodedSumView(*value);
+  absl::StatusOr<internal::EncodedSumView> encoded =
+      internal::GetEncodedSumView(*value);
   CHECK_OK(encoded.status()) << "Invalid semantic-sum constexpr value for `"
                              << expression.ToString() << "`";
-  int64_t variant_index = encoded->tag.GetBitValueUnsigned().value();
+  const SumTypeEncoding encoding(sum_type);
+  absl::StatusOr<SumTypeEncoding::VariantInfo> variant =
+      encoding.GetVariantByTagBits(encoded->tag.GetBitsOrDie());
+  CHECK_OK(variant.status()) << "Invalid semantic-sum constexpr tag for `"
+                             << expression.ToString() << "`";
   return SumConstantValue{
       .value = std::move(*value),
-      .variant_index = variant_index,
+      .variant_index = variant->variant_index,
   };
 }
 
@@ -567,44 +594,48 @@ void AppendConstantValueLeaves(const InterpValue& value, const Type& type,
     for (int64_t i = 0; i < members.size(); ++i) {
       AppendConstantValueLeaves(member_values[i], *members[i], result);
     }
+  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type);
+             struct_type != nullptr) {
+    const std::vector<InterpValue>& members = value.GetValuesOrDie();
+    CHECK_EQ(members.size(), struct_type->size());
+    for (int64_t i = 0; i < struct_type->size(); ++i) {
+      AppendConstantValueLeaves(members[i], struct_type->GetMemberType(i),
+                                result);
+    }
+  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type);
+             array_type != nullptr && !GetBitsLike(type).has_value()) {
+    for (const InterpValue& member : value.GetValuesOrDie()) {
+      AppendConstantValueLeaves(member, array_type->element_type(), result);
+    }
   } else if (type.IsSum()) {
     const SumType& sum_type = type.AsSum();
-    absl::StatusOr<EncodedSumView> encoded =
-        GetEncodedSumView(value);
+    absl::StatusOr<internal::EncodedSumView> encoded =
+        internal::GetEncodedSumView(value);
     CHECK_OK(encoded.status());
-    int64_t variant_index = encoded->tag.GetBitValueUnsigned().value();
-    CHECK_LT(variant_index, sum_type.variants().size());
-    const Phase1SumTypeEncoding encoding(sum_type);
-    Phase1SumTypeEncoding::VariantInfo variant =
-        encoding
-            .GetVariant(
-                sum_type.variants()[variant_index].variant().identifier())
-            .value();
-    result->push_back(MakeSumTagValue(sum_type, variant.variant_index));
-    std::vector<const InterpValue*> active_payload_values(
-        variant.variant->size(), nullptr);
-    CHECK_OK(encoding.ForEachActivePayloadSlot(
-        variant,
-        [&](int64_t slot_index, int64_t active_index,
-            const Type& /*slot_type*/) -> absl::Status {
-          CHECK_LT(slot_index, encoded->payload_slots.size());
-          active_payload_values[active_index] =
-              &encoded->payload_slots[slot_index];
-          return absl::OkStatus();
-        }));
-    CHECK_OK(encoding.VisitPayloadAssemblyOrder(
-        variant,
-        [&](int64_t active_index) -> absl::Status {
-          CHECK(active_payload_values[active_index] != nullptr);
-          AppendConstantValueLeaves(
-              *active_payload_values[active_index],
-              variant.variant->GetMemberType(active_index), result);
-          return absl::OkStatus();
-        },
-        [&](const Type& inactive_type) -> absl::Status {
-          AppendWildcardLeavesForType(inactive_type, result);
-          return absl::OkStatus();
-        }));
+    const SumTypeEncoding encoding(sum_type);
+    absl::StatusOr<SumTypeEncoding::VariantInfo> active_variant =
+        encoding.GetVariantByTagBits(encoded->tag.GetBitsOrDie());
+    CHECK_OK(active_variant.status());
+    absl::StatusOr<std::vector<InterpValue>> active_payload_values =
+        GetSumPayloadValues(sum_type, value);
+    CHECK_OK(active_payload_values.status());
+    result->push_back(
+        MakeDenseSumVariantOrdinal(sum_type, active_variant->variant_index));
+    for (int64_t variant_index = 0; variant_index < sum_type.variant_count();
+         ++variant_index) {
+      const SumTypeVariant& variant = sum_type.variants()[variant_index];
+      for (int64_t member_index = 0; member_index < variant.size();
+           ++member_index) {
+        if (variant_index == active_variant->variant_index) {
+          AppendConstantValueLeaves(active_payload_values->at(member_index),
+                                    variant.GetMemberType(member_index),
+                                    result);
+        } else {
+          AppendWildcardLeavesForType(variant.GetMemberType(member_index),
+                                      result);
+        }
+      }
+    }
   } else {
     result->push_back(value);
   }
@@ -613,31 +644,21 @@ void AppendConstantValueLeaves(const InterpValue& value, const Type& type,
 void AppendSumConstructorPayloadLeaves(
     const SumConstantValue& constant, const SumType& sum_type,
     std::vector<IntervalPatternLeaf>* result) {
-  const Phase1SumTypeEncoding encoding(sum_type);
   CHECK_LT(constant.variant_index, sum_type.variants().size());
-  Phase1SumTypeEncoding::VariantInfo variant =
-      encoding
-          .GetVariant(sum_type.variants()[constant.variant_index]
-                          .variant()
-                          .identifier())
-          .value();
-  absl::StatusOr<EncodedSumView> encoded =
-      GetEncodedSumView(constant.value);
-  CHECK_OK(encoded.status());
-  CHECK_OK(encoding.ForEachActivePayloadSlot(
-      variant,
-      [&](int64_t slot_index, int64_t active_index,
-          const Type& slot_type) -> absl::Status {
-        static_cast<void>(active_index);
-        CHECK_LT(slot_index, encoded->payload_slots.size());
-        AppendConstantValueLeaves(encoded->payload_slots[slot_index], slot_type,
-                                  result);
-        return absl::OkStatus();
-      }));
+  const SumTypeVariant& variant = sum_type.variants()[constant.variant_index];
+  absl::StatusOr<std::vector<InterpValue>> payload_values =
+      GetSumPayloadValues(sum_type, constant.value);
+  CHECK_OK(payload_values.status());
+  CHECK_EQ(payload_values->size(), variant.size());
+  for (int64_t member_index = 0; member_index < variant.size();
+       ++member_index) {
+    AppendConstantValueLeaves(payload_values->at(member_index),
+                              variant.GetMemberType(member_index), result);
+  }
 }
 
 // Expands one active payload member. Callers decide how to represent inactive
-// storage slots, such as adding wildcard leaves for the full storage layout.
+// constructors in the checker-local declaration-order product.
 std::vector<IntervalPatternLeaf> ExpandActiveSumPayloadMemberPatternLeaves(
     const SumTypeVariant& variant,
     const SumVariantPayloadPattern& constructor_pattern, int64_t active_index,
@@ -692,12 +713,12 @@ struct ExpandedSumVariantPattern {
   std::vector<IntervalPatternLeaf> leaves;
 };
 
-std::optional<Phase1SumTypeEncoding::VariantInfo> GetDirectUnitSumVariant(
+std::optional<SumTypeEncoding::VariantInfo> GetDirectUnitSumVariant(
     const ColonRef& pattern, const SumType& type, const TypeInfo& type_info) {
-  std::optional<Phase1SumTypeEncoding::VariantInfo> result;
+  std::optional<SumTypeEncoding::VariantInfo> result;
   if (!type_info.IsKnownConstExpr(&pattern)) {
-    absl::StatusOr<Phase1SumTypeEncoding::VariantInfo> variant =
-        Phase1SumTypeEncoding(type).GetVariant(pattern.attr());
+    absl::StatusOr<SumTypeEncoding::VariantInfo> variant =
+        SumTypeEncoding(type).GetVariant(pattern.attr());
     if (variant.ok() && variant->variant->is_unit()) {
       result.emplace(*variant);
     }
@@ -728,7 +749,7 @@ ExpandedSumVariantPattern ExpandSumVariantPayloadPatternLeaves(
                                                  std::move(result)};
               },
               [&](ColonRef* colon_ref) -> ExpandedSumVariantPattern {
-                std::optional<Phase1SumTypeEncoding::VariantInfo> variant =
+                std::optional<SumTypeEncoding::VariantInfo> variant =
                     GetDirectUnitSumVariant(*colon_ref, type, type_info);
                 if (variant.has_value()) {
                   return ExpandedSumVariantPattern{variant->variant_index, {}};
@@ -749,71 +770,62 @@ ExpandedSumVariantPattern ExpandSumVariantPayloadPatternLeaves(
 std::vector<IntervalPatternLeaf> ExpandSumPatternLeaves(
     const PatternTree& pattern, const SumType& type, const TypeInfo& type_info,
     const FileTable& file_table) {
-  const Phase1SumTypeEncoding encoding(type);
   auto make_variant_pattern_leaves =
-      [&](const Phase1SumTypeEncoding::VariantInfo& active_variant,
+      [&](int64_t active_variant_index,
           const SumVariantPayloadPattern* constructor_pattern)
       -> std::vector<IntervalPatternLeaf> {
     std::vector<IntervalPatternLeaf> result;
-    result.push_back(MakeSumTagValue(type, active_variant.variant_index));
-    const SumTypeVariant& variant = *active_variant.variant;
-    CHECK_OK(encoding.VisitPayloadAssemblyOrder(
-        active_variant,
-        [&](int64_t active_index) -> absl::Status {
-          if (constructor_pattern != nullptr) {
-            std::vector<IntervalPatternLeaf> member_leaves =
-                ExpandActiveSumPayloadMemberPatternLeaves(
-                    variant, *constructor_pattern, active_index, type_info,
-                    file_table);
-            result.insert(result.end(), member_leaves.begin(),
-                          member_leaves.end());
-          } else {
-            CHECK(variant.is_unit());
-          }
-          return absl::OkStatus();
-        },
-        [&](const Type& inactive_type) -> absl::Status {
-          AppendWildcardLeavesForType(inactive_type, &result);
-          return absl::OkStatus();
-        }));
+    result.push_back(MakeDenseSumVariantOrdinal(type, active_variant_index));
+    for (int64_t variant_index = 0; variant_index < type.variant_count();
+         ++variant_index) {
+      const SumTypeVariant& variant = type.variants()[variant_index];
+      if (variant_index == active_variant_index) {
+        AppendSumVariantPayloadPatternLeaves(variant, constructor_pattern,
+                                             type_info, file_table, &result);
+      } else {
+        for (int64_t member_index = 0; member_index < variant.size();
+             ++member_index) {
+          AppendWildcardLeavesForType(variant.GetMemberType(member_index),
+                                      &result);
+        }
+      }
+    }
     return result;
   };
 
   return absl::visit(
-      Visitor{
-          [&](SumVariantPayloadPattern* constructor_pattern)
-              -> std::vector<IntervalPatternLeaf> {
-            Phase1SumTypeEncoding::VariantInfo variant =
-                encoding
-                    .GetVariant(constructor_pattern->constructor_ref()->attr())
-                    .value();
-            return make_variant_pattern_leaves(variant, constructor_pattern);
-          },
-          [&](ColonRef* colon_ref) -> std::vector<IntervalPatternLeaf> {
-            std::optional<Phase1SumTypeEncoding::VariantInfo> variant =
-                GetDirectUnitSumVariant(*colon_ref, type, type_info);
-            if (variant.has_value()) {
-              return make_variant_pattern_leaves(
-                  *variant, /*constructor_pattern=*/nullptr);
-            }
-            SumConstantValue constant =
-                ResolveSumConstantValue(*colon_ref, type, type_info);
-            std::vector<IntervalPatternLeaf> result;
-            AppendConstantValueLeaves(constant.value, type, &result);
-            return result;
-          },
-          [&](NameRef* name_ref) -> std::vector<IntervalPatternLeaf> {
-            SumConstantValue constant =
-                ResolveSumConstantValue(*name_ref, type, type_info);
-            std::vector<IntervalPatternLeaf> result;
-            AppendConstantValueLeaves(constant.value, type, &result);
-            return result;
-          },
-          [&](const auto&) -> std::vector<IntervalPatternLeaf> {
-            LOG(FATAL) << "Unsupported pattern for sum type `"
-                       << type.ToString() << "`";
-            return {};
-          }},
+      Visitor{[&](SumVariantPayloadPattern* constructor_pattern)
+                  -> std::vector<IntervalPatternLeaf> {
+                int64_t variant_index = GetSumVariantIndex(
+                    type, constructor_pattern->constructor_ref()->attr());
+                return make_variant_pattern_leaves(variant_index,
+                                                   constructor_pattern);
+              },
+              [&](ColonRef* colon_ref) -> std::vector<IntervalPatternLeaf> {
+                std::optional<SumTypeEncoding::VariantInfo> variant =
+                    GetDirectUnitSumVariant(*colon_ref, type, type_info);
+                if (variant.has_value()) {
+                  return make_variant_pattern_leaves(
+                      variant->variant_index, /*constructor_pattern=*/nullptr);
+                }
+                SumConstantValue constant =
+                    ResolveSumConstantValue(*colon_ref, type, type_info);
+                std::vector<IntervalPatternLeaf> result;
+                AppendConstantValueLeaves(constant.value, type, &result);
+                return result;
+              },
+              [&](NameRef* name_ref) -> std::vector<IntervalPatternLeaf> {
+                SumConstantValue constant =
+                    ResolveSumConstantValue(*name_ref, type, type_info);
+                std::vector<IntervalPatternLeaf> result;
+                AppendConstantValueLeaves(constant.value, type, &result);
+                return result;
+              },
+              [&](const auto&) -> std::vector<IntervalPatternLeaf> {
+                LOG(FATAL) << "Unsupported pattern for sum type `"
+                           << type.ToString() << "`";
+                return {};
+              }},
       pattern);
 }
 
@@ -833,16 +845,19 @@ std::vector<IntervalPatternLeaf> ExpandPatternLeaves(
         << PatternToString(pattern) << "`";
     return ExpandSumPatternLeaves(pattern, type.AsSum(), type_info, file_table);
   }
-  // If the type is not a tuple then we expect the pattern to be a single leaf.
-  if (!type.IsTuple()) {
+  const bool is_expanded_aggregate =
+      type.IsTuple() || dynamic_cast<const StructTypeBase*>(&type) != nullptr ||
+      (dynamic_cast<const ArrayType*>(&type) != nullptr &&
+       !GetBitsLike(type).has_value());
+  if (!is_expanded_aggregate) {
     CHECK(!std::holds_alternative<TuplePattern*>(pattern))
-        << "Expected a single leaf for non-tuple type";
+        << "Expected a single leaf for non-aggregate type";
     return {ToIntervalPatternLeaf(pattern)};
   }
   if (const auto* name_ref = std::get_if<NameRef*>(&pattern);
       name_ref != nullptr) {
     std::optional<InterpValue> value = type_info.GetConstExprOption(*name_ref);
-    CHECK(value.has_value()) << "Missing tuple constexpr value for `"
+    CHECK(value.has_value()) << "Missing aggregate constexpr value for `"
                              << (*name_ref)->ToString() << "`";
     std::vector<IntervalPatternLeaf> result;
     AppendConstantValueLeaves(*value, type, &result);
@@ -850,11 +865,16 @@ std::vector<IntervalPatternLeaf> ExpandPatternLeaves(
   } else if (const auto* colon_ref = std::get_if<ColonRef*>(&pattern);
              colon_ref != nullptr) {
     std::optional<InterpValue> value = type_info.GetConstExprOption(*colon_ref);
-    CHECK(value.has_value()) << "Missing tuple constexpr value for `"
+    CHECK(value.has_value()) << "Missing aggregate constexpr value for `"
                              << (*colon_ref)->ToString() << "`";
     std::vector<IntervalPatternLeaf> result;
     AppendConstantValueLeaves(*value, type, &result);
     return result;
+  }
+  if (!type.IsTuple()) {
+    CHECK(!std::holds_alternative<TuplePattern*>(pattern))
+        << "Expected a single leaf for non-tuple type";
+    return {ToIntervalPatternLeaf(pattern)};
   }
   // Walk through the pattern and expand any RestOfTuple markers into the
   // appropriate number of wildcards.
@@ -905,7 +925,10 @@ std::vector<IntervalPatternLeaf> ExpandPatternLeaves(
     auto append_non_rest_leaf = [&]() {
       CHECK_LT(types_index, tuple_members.size());
       const Type& type_at_index = *tuple_members[types_index];
-      if (type_at_index.IsSum() || type_at_index.IsTuple()) {
+      if (type_at_index.IsSum() || type_at_index.IsTuple() ||
+          dynamic_cast<const StructTypeBase*>(&type_at_index) != nullptr ||
+          (dynamic_cast<const ArrayType*>(&type_at_index) != nullptr &&
+           !GetBitsLike(type_at_index).has_value())) {
         std::vector<IntervalPatternLeaf> member_pattern_leaves =
             ExpandPatternLeaves(node, type_at_index, type_info, file_table);
         result.insert(result.end(), member_pattern_leaves.begin(),
@@ -1072,6 +1095,30 @@ std::string FormatSampleForType(
                                     leaf_types, leaf_index);
     }
     result += ")";
+  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type);
+             struct_type != nullptr) {
+    result = struct_type->struct_def_base().identifier();
+    result += " {";
+    for (int64_t i = 0; i < struct_type->size(); ++i) {
+      result += i == 0 ? " " : ", ";
+      result += struct_type->GetMemberName(i);
+      result += ": ";
+      result += FormatSampleForType(struct_type->GetMemberType(i), dimensions,
+                                    leaf_types, leaf_index);
+    }
+    result += " }";
+  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type);
+             array_type != nullptr && !GetBitsLike(type).has_value()) {
+    result += "[";
+    const int64_t size = array_type->size().GetAsInt64().value();
+    for (int64_t i = 0; i < size; ++i) {
+      if (i != 0) {
+        result += ", ";
+      }
+      result += FormatSampleForType(array_type->element_type(), dimensions,
+                                    leaf_types, leaf_index);
+    }
+    result += "]";
   } else if (type.IsSum()) {
     CHECK_LT(*leaf_index, dimensions.size());
     const SumType& sum_type = type.AsSum();
@@ -1450,9 +1497,10 @@ MatchExhaustivenessChecker::AddPattern(const PatternTree& pattern) {
                              variant_state.leaf_types, variant_state.coverage);
     }
   } else {
-    NdIntervalWithEmpty this_pattern_interval =
-        PatternToInterval(pattern, impl_->matched_type_,
-                          impl_->leaf_types_.flat, impl_->type_info_);
+    std::vector<IntervalPatternLeaf> pattern_leaves = ExpandPatternLeaves(
+        pattern, impl_->matched_type_, impl_->type_info_, file_table());
+    NdIntervalWithEmpty this_pattern_interval = PatternLeavesToInterval(
+        pattern_leaves, impl_->leaf_types_.flat, impl_->type_info_);
     result = impl_->AddInterval(pattern, this_pattern_interval,
                                 impl_->leaf_types_, impl_->coverage_);
   }
@@ -1477,9 +1525,9 @@ MatchExhaustivenessChecker::FormatSimplestUncoveredValue() const {
       std::vector<std::string> payload_values;
       payload_values.reserve(variant.size());
       for (int64_t i = 0; i < variant.size(); ++i) {
-        payload_values.push_back(FormatSampleForType(
-            variant.GetMemberType(i), dimensions, variant_state.leaf_types.flat,
-            &leaf_index));
+        payload_values.push_back(
+            FormatSampleForType(variant.GetMemberType(i), dimensions,
+                                variant_state.leaf_types.flat, &leaf_index));
       }
       CHECK_EQ(leaf_index, dimensions.size());
       result =
