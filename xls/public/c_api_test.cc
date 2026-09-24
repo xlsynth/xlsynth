@@ -2983,19 +2983,19 @@ TEST(XlsCApiTest, DslxMetadataLookupDoesNotScanStructTypes) {
     int64_t& comparisons_;
   };
 
-  constexpr int64_t kCount = 64;
   // A declaration-only index fixes the first case but still scans the second.
   struct StructCase {
     const char* name;
     bool generic;
     bool contains_sum;
   };
-  for (const StructCase& test_case :
-       {StructCase{"ordinary_distinct", false, false},
-        {"ordinary_generic", true, false},
-        {"sum_distinct", false, true},
-        {"sum_generic", true, true}}) {
-    SCOPED_TRACE(test_case.name);
+  struct LookupComparisons {
+    int64_t cold = 0;
+    int64_t warm = 0;
+  };
+  auto measure = [](const StructCase& test_case, int64_t count,
+                    LookupComparisons& result) {
+    SCOPED_TRACE(absl::StrFormat("count=%d", count));
     const bool generic = test_case.generic;
     const bool contains_sum = test_case.contains_sum;
     std::string program;
@@ -3010,7 +3010,7 @@ struct Wrapper<T: type> { value: T }
     } else if (contains_sum) {
       program = "enum S { Only() }\n";
     }
-    for (int64_t i = 0; i < kCount; ++i) {
+    for (int64_t i = 0; i < count; ++i) {
       if (generic && contains_sum) {
         absl::StrAppendFormat(&program,
                               "const V%d = Wrapper<Phantom<u32:%d>> { "
@@ -3051,7 +3051,7 @@ struct Wrapper<T: type> { value: T }
     auto* type_info = xls_dslx_typechecked_module_get_type_info(module_owner);
     auto* cpp_type_info = reinterpret_cast<xls::dslx::TypeInfo*>(type_info);
     std::vector<xls_dslx_expr*> expressions;
-    for (int64_t i = 0; i < kCount; ++i) {
+    for (int64_t i = 0; i < count; ++i) {
       const int64_t index =
           (generic ? i + 1 : 2 * i + 1) + (contains_sum ? 1 : 0);
       auto* constant = xls_dslx_module_member_get_constant_def(
@@ -3068,8 +3068,9 @@ struct Wrapper<T: type> { value: T }
                                            *structure, comparisons));
     }
     for (int pass = 0; pass < 2; ++pass) {
+      SCOPED_TRACE(pass == 0 ? "cold" : "warm");
       comparisons = 0;
-      for (int64_t i = 0; i < kCount; ++i) {
+      for (int64_t i = 0; i < count; ++i) {
         xls_dslx_interp_value* value = nullptr;
         ASSERT_TRUE(xls_dslx_type_info_get_const_expr(type_info, expressions[i],
                                                       &error, &value))
@@ -3081,17 +3082,49 @@ struct Wrapper<T: type> { value: T }
           EXPECT_THAT(text,
                       HasSubstr(generic ? "Phantom::Only()" : "S::Only()"));
         } else {
+          const int64_t bit_count = generic ? i + 1 : 8;
           EXPECT_EQ(std::string_view(text),
-                    absl::StrFormat("(u%d:0)", generic ? i + 1 : 8));
+                    absl::StrFormat("(u%d:%s)", bit_count,
+                                    bit_count <= 64 ? "0" : "0x0"));
         }
       }
-      RecordProperty(absl::StrFormat("%s_%s_comparisons", test_case.name,
-                                     pass == 0 ? "cold" : "warm"),
+      RecordProperty(absl::StrFormat("%s_%s_%d_comparisons", test_case.name,
+                                     pass == 0 ? "cold" : "warm", count),
                      std::to_string(comparisons));
-      if (pass != 0) {
-        EXPECT_GT(comparisons, 0);
+      if (pass == 0) {
+        result.cold = comparisons;
+      } else {
+        result.warm = comparisons;
       }
-      EXPECT_LE(comparisons, 4 * kCount);
+    }
+  };
+
+  constexpr int64_t kSmallCount = 32;
+  constexpr int64_t kLargeCount = 128;
+  for (const StructCase& test_case :
+       {StructCase{"ordinary_distinct", false, false},
+        {"ordinary_generic", true, false},
+        {"sum_distinct", false, true},
+        {"sum_generic", true, true}}) {
+    SCOPED_TRACE(test_case.name);
+    LookupComparisons small;
+    LookupComparisons large;
+    ASSERT_NO_FATAL_FAILURE(measure(test_case, kSmallCount, small));
+    ASSERT_NO_FATAL_FAILURE(measure(test_case, kLargeCount, large));
+
+    // Four times the input allows twice the linear growth plus room for hash
+    // collisions or resizing. A scan of all previous types grows about 16-fold.
+    {
+      SCOPED_TRACE("cold");
+      EXPECT_LE(large.cold, 8 * small.cold + kLargeCount)
+          << "32 types: " << small.cold << "; 128 types: " << large.cold;
+    }
+    {
+      SCOPED_TRACE("warm");
+      EXPECT_GE(small.warm, kSmallCount);
+      EXPECT_GE(large.warm, kLargeCount);
+      EXPECT_LE(large.warm, 8 * small.warm + kLargeCount)
+          << "32 types: " << small.warm << "; 128 types: " << large.warm;
     }
   }
 }
