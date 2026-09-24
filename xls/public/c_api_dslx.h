@@ -149,7 +149,9 @@ bool xls_dslx_parametric_env_create(
     const struct xls_dslx_parametric_env_item* items, size_t items_count,
     char** error_out, struct xls_dslx_parametric_env** env_out);
 
-// Clones an existing parametric environment.
+// Clones an existing parametric environment into independently owned storage.
+// The clone can outlive `env`, but its values retain the import-context
+// lifetime requirements described by `xls_dslx_interp_value_clone`.
 struct xls_dslx_parametric_env* xls_dslx_parametric_env_clone(
     const struct xls_dslx_parametric_env* env);
 
@@ -167,10 +169,13 @@ uint64_t xls_dslx_parametric_env_hash(
     const struct xls_dslx_parametric_env* env);
 
 // Returns a newly allocated string describing the parametric environment.
+// Semantic-sum bindings retain their DSLX constructor formatting. Free the
+// returned string with `xls_c_str_free`.
 char* xls_dslx_parametric_env_to_string(
     const struct xls_dslx_parametric_env* env);
 
-// Frees a previously created parametric environment.
+// Frees a parametric environment returned by create or clone. Environments
+// borrowed from invocation-callee data must not be passed to this function.
 void xls_dslx_parametric_env_free(struct xls_dslx_parametric_env*);
 
 // Returns the number of bindings contained in the parametric environment.
@@ -181,7 +186,13 @@ int64_t xls_dslx_parametric_env_get_binding_count(
 const char* xls_dslx_parametric_env_get_binding_identifier(
     const struct xls_dslx_parametric_env* env, int64_t index);
 
-// Returns the value of the binding at `index`.
+// Returns the borrowed value of the binding at `index`; do not free it. The
+// value remains valid only while `env` remains valid. If `env` was borrowed
+// from invocation-callee data, that data must also remain alive; if the data
+// was borrowed from an invocation-callee-data array, the array must remain
+// alive as well. Clone the value with `xls_dslx_interp_value_clone` before
+// releasing these handles if the value must outlive them. The clone still has
+// the import-context lifetime requirements described by that function.
 struct xls_dslx_interp_value* xls_dslx_parametric_env_get_binding_value(
     const struct xls_dslx_parametric_env* env, int64_t index);
 
@@ -198,17 +209,26 @@ bool xls_dslx_interp_value_make_enum(struct xls_dslx_enum_def* def,
                                      char** error_out,
                                      struct xls_dslx_interp_value** result_out);
 
-// Constructs a tuple InterpValue from elements.
+// Constructs a tuple InterpValue from elements. A sum-bearing tuple requires
+// elements with known DSLX types; otherwise returns an owned error and a null
+// result, as for incompatible sum-bearing array elements below.
 bool xls_dslx_interp_value_make_tuple(
     size_t element_count, struct xls_dslx_interp_value** elements,
     char** error_out, struct xls_dslx_interp_value** result_out);
 
 // Constructs an array InterpValue from elements of the same type.
+// If any element contains a semantic sum, incompatible or unknown element types
+// return false, an owned error string, and a null result. This includes nominal
+// distinctions and sum parametric arguments, even when storage layouts match.
+// Ordinary arrays retain their existing construction behavior.
 bool xls_dslx_interp_value_make_array(
     size_t element_count, struct xls_dslx_interp_value** elements,
     char** error_out, struct xls_dslx_interp_value** result_out);
 
-// Clones an InterpValue.
+// Clones an InterpValue into an independently owned handle. The clone can
+// outlive the source handle, but does not retain the import context
+// (`xls_dslx_import_data`) or its AST nodes. Keep that context alive for
+// operations that access those nodes, such as formatting ordinary enum values.
 struct xls_dslx_interp_value* xls_dslx_interp_value_clone(
     const struct xls_dslx_interp_value* value);
 
@@ -660,6 +680,8 @@ char* xls_dslx_type_alias_to_string(struct xls_dslx_type_alias*);
 
 // -- interp_value
 
+// Formats semantic sums with DSLX constructor names, including nested payloads.
+// Values without semantic formatting metadata retain their existing format.
 // Note: return value is owned by the caller, free via `xls_c_str_free`.
 char* xls_dslx_interp_value_to_string(struct xls_dslx_interp_value*);
 
@@ -717,20 +739,34 @@ void xls_dslx_invocation_callee_data_array_free(
 int64_t xls_dslx_invocation_callee_data_array_get_count(
     struct xls_dslx_invocation_callee_data_array* array);
 
+// Returns an array-owned borrowed entry. It and all environments or values
+// borrowed through it become invalid when the array is freed. Clone the entry
+// with `xls_dslx_invocation_callee_data_clone` to outlive the array; the clone
+// still has the import-context lifetime requirements documented below.
 struct xls_dslx_invocation_callee_data*
 xls_dslx_invocation_callee_data_array_get(
     struct xls_dslx_invocation_callee_data_array* array, int64_t index);
 
+// Clones an entry and its environments into independently owned storage.
+// AST nodes and type information referenced by the entry remain borrowed from
+// the import context (`xls_dslx_import_data`). Keep that context alive when
+// using those references or formatting ordinary enum bindings.
 struct xls_dslx_invocation_callee_data* xls_dslx_invocation_callee_data_clone(
     struct xls_dslx_invocation_callee_data* data);
 
+// Frees an independently owned cloned entry, not an array-borrowed entry.
 void xls_dslx_invocation_callee_data_free(
     struct xls_dslx_invocation_callee_data* data);
 
+// Returns a borrowed environment owned by `data`; do not free it. An
+// array-borrowed `data` additionally requires its owning array to remain alive.
+// Clone the environment before releasing either owner when it must outlive
+// them; `xls_dslx_parametric_env_clone` does not retain the import context.
 const struct xls_dslx_parametric_env*
 xls_dslx_invocation_callee_data_get_callee_bindings(
     struct xls_dslx_invocation_callee_data* data);
 
+// Same ownership and lifetime rules as the callee-binding environment above.
 const struct xls_dslx_parametric_env*
 xls_dslx_invocation_callee_data_get_caller_bindings(
     struct xls_dslx_invocation_callee_data* data);
@@ -753,6 +789,10 @@ struct xls_dslx_function* xls_dslx_invocation_data_get_caller(
 
 // -- type (deduced type information)
 
+// Returns the total bit count. For channels this is the message width, not a
+// packed representation of the handle. Semantic sums contribute their
+// discriminant width plus their largest constructor payload width; surrounding
+// aggregate widths include their packed semantic-sum members.
 bool xls_dslx_type_get_total_bit_count(const struct xls_dslx_type*,
                                        char** error_out, int64_t* result_out);
 
@@ -776,8 +816,7 @@ bool xls_dslx_type_is_struct(const struct xls_dslx_type*);
 bool xls_dslx_type_is_array(const struct xls_dslx_type*);
 
 // Precondition: xls_dslx_type_is_struct
-int64_t xls_dslx_type_struct_get_member_count(
-    const struct xls_dslx_type* type);
+int64_t xls_dslx_type_struct_get_member_count(const struct xls_dslx_type* type);
 
 // Precondition: xls_dslx_type_is_struct
 const struct xls_dslx_type* xls_dslx_type_struct_get_member_type(

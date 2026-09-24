@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -27,14 +28,18 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
+#include "absl/container/node_hash_map.h"
 #include "absl/hash/hash.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
+#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "absl/types/variant.h"
 #include "xls/common/attribute_data.h"
+#include "xls/common/status/status_macros.h"
 #include "xls/common/visitor.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/frontend/ast.h"
@@ -45,19 +50,870 @@
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/interp_value_from_string.h"
+#include "xls/dslx/make_value_format_descriptor.h"
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/replace_invocations.h"
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/type_system/unwrap_meta_type.h"
+#include "xls/dslx/value_format_descriptor.h"
 #include "xls/dslx/virtualizable_file_system.h"
 #include "xls/dslx/warning_kind.h"
 #include "xls/ir/bits.h"
+#include "xls/ir/format_preference.h"
 #include "xls/ir/value.h"
+#include "xls/public/c_api_dslx_internal.h"
 #include "xls/public/c_api_impl_helpers.h"
 
 namespace {
+
+// Tokens outlive their owning ImportData without retaining its AST. Equality
+// is decided with DSLX Types while that owner is alive, including unused sum
+// parameters; printed type names and format descriptors cannot establish it.
+struct NominalTypeIdentity {};
+using NominalTypeIdentityPtr = std::shared_ptr<const NominalTypeIdentity>;
+
+struct BitsTypeIdentity {
+  bool is_signed;
+  int64_t bit_count;
+  bool operator==(const BitsTypeIdentity&) const = default;
+};
+
+struct ValueTypeIdentity;
+struct ArrayTypeIdentity {
+  int64_t size;
+  std::shared_ptr<const ValueTypeIdentity> element;
+  bool operator==(const ArrayTypeIdentity& other) const;
+};
+
+struct ValueTypeIdentity {
+  std::variant<BitsTypeIdentity, ArrayTypeIdentity,
+               std::vector<ValueTypeIdentity>, NominalTypeIdentityPtr,
+               std::monostate>
+      shape;
+  bool operator==(const ValueTypeIdentity&) const = default;
+};
+
+bool ArrayTypeIdentity::operator==(const ArrayTypeIdentity& other) const {
+  return size == other.size && *element == *other.element;
+}
+
+struct ValueMetadata {
+  // Raw C constructors can make values outside the DSLX type system, such as
+  // heterogeneous arrays or undeclared enum patterns. Do not treat those as
+  // wildcards when composing a later sum-bearing, semantically formatted value.
+  std::optional<ValueTypeIdentity> type;
+  xls::dslx::ValueFormatDescriptor descriptor;
+  bool contains_sum;
+};
+using ValueMetadataPtr = std::shared_ptr<const ValueMetadata>;
+using BindingMetadata = std::vector<ValueMetadataPtr>;
+
+class ImportDataHandle {
+ public:
+  struct NominalMetadata {
+    NominalTypeIdentityPtr identity =
+        std::make_shared<const NominalTypeIdentity>();
+    // Identity-only interning leaves the descriptor absent until requested.
+    ValueMetadataPtr value_metadata;
+  };
+
+  explicit ImportDataHandle(xls::dslx::ImportData data)
+      : data(std::move(data)) {}
+
+  // Both lookup and insertion require mutex. Equality includes the nominal
+  // declaration and concrete dimensions, not just the printed type name.
+  const NominalMetadata* FindEnumType(const xls::dslx::EnumType& type) {
+    if (enum_nominal_types_ == nullptr) {
+      return nullptr;
+    } else {
+      auto existing = enum_nominal_types_->find(type);
+      return existing == enum_nominal_types_->end() ? nullptr
+                                                    : &existing->second;
+    }
+  }
+
+  NominalMetadata& InternNominalType(const xls::dslx::EnumType& type) {
+    if (enum_nominal_types_ == nullptr) {
+      enum_nominal_types_ = std::make_unique<EnumTypeIndex>();
+    }
+    auto existing = enum_nominal_types_->find(type);
+    if (existing != enum_nominal_types_->end()) {
+      return existing->second;
+    } else {
+      return enum_nominal_types_
+          ->try_emplace(EnumTypeKey{&type.nominal_type(), type.size().Clone(),
+                                    type.is_signed()})
+          .first->second;
+    }
+  }
+
+  NominalMetadata& InternNominalType(const xls::dslx::SumType& type) {
+    return sum_nominal_types_.try_emplace(type).first->second;
+  }
+
+  NominalTypeIdentityPtr InternStructType(const xls::dslx::StructType& type) {
+    if (struct_nominal_types_ == nullptr) {
+      struct_nominal_types_ = std::make_unique<StructTypeIndex>();
+    }
+    auto existing = struct_nominal_types_->find(type);
+    if (existing != struct_nominal_types_->end()) {
+      return existing->identity;
+    } else {
+      return struct_nominal_types_
+          ->insert(
+              StructTypeEntry{type.CloneToUnique(),
+                              std::make_shared<const NominalTypeIdentity>()})
+          .first->identity;
+    }
+  }
+
+  // The first sum-bearing root keeps its completed descriptor graph without
+  // publishing descendant formatting metadata. A second uncached metadata
+  // build promotes that graph for owner reuse, even for the same aggregate
+  // type; a cache hit on a direct sum does not count as a build.
+  void PromoteSumDescriptorGraph();
+  void RetainFirstSumDescriptorGraph(const xls::dslx::Type& type,
+                                     ValueMetadataPtr metadata);
+  bool has_pending_sum_descriptor_graph() const {
+    return first_sum_descriptor_graph_.has_value();
+  }
+  bool shares_sum_descriptors() const { return shares_sum_descriptors_; }
+
+  xls::dslx::ImportData data;
+  // Serialize TypeInfo and nominal-metadata access with C parse/clone/import
+  // operations on this owner. Ownership queries use ImportData's shorter lock.
+  absl::Mutex mutex;
+  // Tests install this before concurrent operations; it must not block.
+  std::function<void()> metadata_lock_observer_for_testing;
+
+ private:
+  // These are exactly EnumType's equality fields. Member values feed the
+  // descriptor builder, but are not part of the nominal identity key.
+  struct EnumTypeKey {
+    const xls::dslx::EnumDef* definition;
+    xls::dslx::TypeDim size;
+    bool is_signed;
+  };
+
+  struct EnumTypeHash {
+    using is_transparent = void;
+    static size_t Hash(const xls::dslx::EnumDef* definition,
+                       const xls::dslx::TypeDim& size, bool is_signed) {
+      // TypeDim equality compares InterpValue bit patterns, including their
+      // width, but not their signed/unsigned value tag. Non-bits dimensions
+      // conservatively collide and are still compared with full equality.
+      const auto& value = size.value();
+      return absl::HashOf(
+          definition, is_signed,
+          value.HasBits() ? absl::HashOf(value.GetBitsOrDie()) : 0);
+    }
+    size_t operator()(const EnumTypeKey& key) const {
+      return Hash(key.definition, key.size, key.is_signed);
+    }
+    size_t operator()(const xls::dslx::EnumType& type) const {
+      return Hash(&type.nominal_type(), type.size(), type.is_signed());
+    }
+  };
+
+  struct EnumTypeEqual {
+    using is_transparent = void;
+    bool operator()(const EnumTypeKey& stored,
+                    const xls::dslx::EnumType& lookup) const {
+      return stored.definition == &lookup.nominal_type() &&
+             stored.size == lookup.size() &&
+             stored.is_signed == lookup.is_signed();
+    }
+    bool operator()(const EnumTypeKey& stored,
+                    const EnumTypeKey& lookup) const {
+      return stored.definition == lookup.definition &&
+             stored.size == lookup.size && stored.is_signed == lookup.is_signed;
+    }
+  };
+  using EnumTypeIndex = absl::flat_hash_map<EnumTypeKey, NominalMetadata,
+                                            EnumTypeHash, EnumTypeEqual>;
+
+  struct SumTypeHash {
+    size_t operator()(const xls::dslx::SumType& type) const {
+      return absl::HashOf(&type.nominal_type(), type.parametric_arguments_hash());
+    }
+  };
+
+  struct SumTypeEqual {
+    bool operator()(const xls::dslx::SumType& stored,
+                    const xls::dslx::SumType& lookup) const {
+      // Abseil passes the stored key first. Use the borrowed lookup's virtual
+      // equality so derived observation types remain visible with value keys.
+      return &stored.nominal_type() == &lookup.nominal_type() &&
+             stored.parametric_arguments_hash() ==
+                 lookup.parametric_arguments_hash() &&
+             lookup == stored;
+    }
+  };
+
+  struct StructTypeEntry {
+    std::unique_ptr<const xls::dslx::Type> type;
+    NominalTypeIdentityPtr identity;
+  };
+
+  struct StructTypeHash {
+    using is_transparent = void;
+    size_t operator()(const xls::dslx::Type& type) const {
+      return xls::dslx::HashTypeForSumCache(type);
+    }
+    size_t operator()(const StructTypeEntry& entry) const {
+      return (*this)(*entry.type);
+    }
+  };
+
+  struct StructTypeEqual {
+    using is_transparent = void;
+    bool operator()(const StructTypeEntry& stored,
+                    const xls::dslx::Type& lookup) const {
+      return lookup == *stored.type;
+    }
+    bool operator()(const StructTypeEntry& stored,
+                    const StructTypeEntry& lookup) const {
+      return (*this)(stored, *lookup.type);
+    }
+  };
+  using StructTypeIndex =
+      absl::flat_hash_set<StructTypeEntry, StructTypeHash, StructTypeEqual>;
+
+  // Declared after data so the AST-dependent keys are destroyed first. Borrowed
+  // lookup avoids cloning dimensions on hits; keys never clone enum members.
+  std::unique_ptr<EnumTypeIndex> enum_nominal_types_;
+  // Each node stores a shallow SumType copy with its metadata, avoiding a
+  // separate type-wrapper allocation. Full equality resolves hash collisions.
+  absl::node_hash_map<xls::dslx::SumType, NominalMetadata, SumTypeHash,
+                      SumTypeEqual>
+      sum_nominal_types_;
+  // All structs share the full-equality index. Entries clone a type once and
+  // retain only its identity; formatting descriptors belong to returned values.
+  std::unique_ptr<StructTypeIndex> struct_nominal_types_;
+  struct SumDescriptorGraph {
+    std::unique_ptr<xls::dslx::Type> type;
+    ValueMetadataPtr metadata;
+  };
+  // The concrete Type clone keeps every borrowed payload Type reachable even
+  // if the first C value is freed before another getter promotes the graph.
+  // Both fields are destroyed before data and its AST at owner teardown.
+  std::optional<SumDescriptorGraph> first_sum_descriptor_graph_;
+  bool shares_sum_descriptors_ = false;
+};
+
+void HarvestSumDescriptorGraph(
+    const xls::dslx::Type& type,
+    const xls::dslx::ValueFormatDescriptor& descriptor, ImportDataHandle& owner,
+    absl::flat_hash_set<const void*>& visited) {
+  if (const auto* sum = dynamic_cast<const xls::dslx::SumType*>(&type)) {
+    CHECK(descriptor.IsSum());
+    CHECK_EQ(descriptor.sum_variant_count(), sum->variant_count());
+    if (visited.insert(descriptor.sum_format_identity()).second) {
+      auto& entry = owner.InternNominalType(*sum);
+      if (entry.value_metadata == nullptr) {
+        // A descriptor copy shares its immutable SumFormat. The existing
+        // owner index still checks full Type equality after nominal/hash hits.
+        entry.value_metadata = std::make_shared<const ValueMetadata>(
+            ValueMetadata{ValueTypeIdentity{entry.identity}, descriptor, true});
+      }
+      for (int64_t i = 0; i < sum->variant_count(); ++i) {
+        const auto& variant = sum->variants()[i];
+        auto payload_formats = descriptor.sum_variant(i).payload_formats();
+        CHECK_EQ(payload_formats.size(), variant.size());
+        for (int64_t j = 0; j < variant.size(); ++j) {
+          HarvestSumDescriptorGraph(variant.GetMemberType(j),
+                                    payload_formats[j], owner, visited);
+        }
+      }
+    }
+  } else if (const auto* tuple =
+                 dynamic_cast<const xls::dslx::TupleType*>(&type)) {
+    CHECK(descriptor.IsTuple());
+    auto elements = descriptor.tuple_elements();
+    CHECK_EQ(elements.size(), tuple->size());
+    for (int64_t i = 0; i < tuple->size(); ++i) {
+      HarvestSumDescriptorGraph(tuple->GetMemberType(i), elements[i], owner,
+                                visited);
+    }
+  } else if (const auto* structure =
+                 dynamic_cast<const xls::dslx::StructTypeBase*>(&type)) {
+    CHECK(descriptor.IsStruct());
+    auto elements = descriptor.struct_elements();
+    CHECK_EQ(elements.size(), structure->size());
+    for (int64_t i = 0; i < structure->size(); ++i) {
+      HarvestSumDescriptorGraph(structure->GetMemberType(i), elements[i], owner,
+                                visited);
+    }
+  } else if (const auto* array =
+                 dynamic_cast<const xls::dslx::ArrayType*>(&type)) {
+    if (!xls::dslx::IsBitsLike(type)) {
+      CHECK(descriptor.IsArray());
+      HarvestSumDescriptorGraph(array->element_type(),
+                                descriptor.array_element_format(), owner,
+                                visited);
+    }
+  }
+}
+
+void ImportDataHandle::PromoteSumDescriptorGraph() {
+  if (!shares_sum_descriptors_ && first_sum_descriptor_graph_.has_value()) {
+    absl::flat_hash_set<const void*> visited;
+    HarvestSumDescriptorGraph(*first_sum_descriptor_graph_->type,
+                              first_sum_descriptor_graph_->metadata->descriptor,
+                              *this, visited);
+    first_sum_descriptor_graph_.reset();
+    shares_sum_descriptors_ = true;
+  }
+}
+
+void ImportDataHandle::RetainFirstSumDescriptorGraph(
+    const xls::dslx::Type& type, ValueMetadataPtr metadata) {
+  if (!shares_sum_descriptors_ && !first_sum_descriptor_graph_.has_value()) {
+    first_sum_descriptor_graph_ =
+        SumDescriptorGraph{type.CloneToUnique(), std::move(metadata)};
+  }
+}
+
+struct ImportDataRegistry {
+  absl::Mutex mutex;
+  std::vector<ImportDataHandle*> owners;
+};
+
+ImportDataRegistry& GetImportDataRegistry() {
+  // The registry itself outlives all C handles, including handles freed by a
+  // client's static destructors. It does not own the registered ImportData.
+  static auto* registry = new ImportDataRegistry;
+  return *registry;
+}
+
+ImportDataHandle& UnwrapImportData(struct xls_dslx_import_data* data) {
+  CHECK_NE(data, nullptr);
+  return *reinterpret_cast<ImportDataHandle*>(data);
+}
+
+bool NeedsValueMetadata(const xls::dslx::Type& type) {
+  if (type.IsEnum() || type.IsSum() || type.IsStruct()) {
+    return true;
+  } else if (auto* tuple = dynamic_cast<const xls::dslx::TupleType*>(&type)) {
+    return std::any_of(
+        tuple->members().begin(), tuple->members().end(),
+        [](const auto& member) { return NeedsValueMetadata(*member); });
+  } else if (auto* array = dynamic_cast<const xls::dslx::ArrayType*>(&type)) {
+    // Empty arrays have no runtime element from which to recover the type.
+    // Bits-like ArrayTypes such as uN[0] retain their width and signedness.
+    const auto size = array->size().GetAsInt64();
+    return (size.ok() && *size == 0 && !xls::dslx::IsBitsLike(type)) ||
+           NeedsValueMetadata(array->element_type());
+  } else {
+    return false;
+  }
+}
+
+absl::StatusOr<ValueTypeIdentity> MakeTypeIdentity(const xls::dslx::Type& type,
+                                                   ImportDataHandle& owner) {
+  if (auto bits = xls::dslx::GetBitsLike(type)) {
+    XLS_ASSIGN_OR_RETURN(bool is_signed, bits->is_signed.GetAsBool());
+    XLS_ASSIGN_OR_RETURN(int64_t size, bits->size.GetAsInt64());
+    return ValueTypeIdentity{BitsTypeIdentity{is_signed, size}};
+  } else if (auto* tuple = dynamic_cast<const xls::dslx::TupleType*>(&type)) {
+    std::vector<ValueTypeIdentity> members;
+    members.reserve(tuple->size());
+    for (const auto& member : tuple->members()) {
+      XLS_ASSIGN_OR_RETURN(auto identity, MakeTypeIdentity(*member, owner));
+      members.push_back(std::move(identity));
+    }
+    return ValueTypeIdentity{std::move(members)};
+  } else if (auto* array = dynamic_cast<const xls::dslx::ArrayType*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(int64_t size, array->size().GetAsInt64());
+    XLS_ASSIGN_OR_RETURN(auto element,
+                         MakeTypeIdentity(array->element_type(), owner));
+    return ValueTypeIdentity{ArrayTypeIdentity{
+        size, std::make_shared<const ValueTypeIdentity>(std::move(element))}};
+  } else if (const auto* enumeration =
+                 dynamic_cast<const xls::dslx::EnumType*>(&type)) {
+    return ValueTypeIdentity{owner.InternNominalType(*enumeration).identity};
+  } else if (auto* sum = dynamic_cast<const xls::dslx::SumType*>(&type)) {
+    return ValueTypeIdentity{owner.InternNominalType(*sum).identity};
+  } else if (const auto* structure =
+                 dynamic_cast<const xls::dslx::StructType*>(&type)) {
+    return ValueTypeIdentity{owner.InternStructType(*structure)};
+  } else if (type.IsToken()) {
+    return ValueTypeIdentity{std::monostate{}};
+  } else {
+    return absl::InvalidArgumentError("Cannot retain a C value identity for " +
+                                      type.ToString());
+  }
+}
+
+template <typename NominalType, typename DescriptorFactory>
+absl::StatusOr<ValueMetadataPtr> MakeNominalValueMetadata(
+    const NominalType& type, ImportDataHandle& owner,
+    const DescriptorFactory& make_descriptor, bool promote_on_miss = false) {
+  // Sum entries are node-stable across recursive construction. Enum entries
+  // need not be: their leaf descriptor builder cannot intern another enum.
+  auto& entry = owner.InternNominalType(type);
+  ValueMetadataPtr metadata = entry.value_metadata;
+  if (metadata == nullptr && promote_on_miss &&
+      owner.has_pending_sum_descriptor_graph()) {
+    owner.PromoteSumDescriptorGraph();
+    metadata = entry.value_metadata;
+  }
+  if (metadata == nullptr) {
+    // The canonical builder preserves last-declared names for enum aliases
+    // and describes every sum constructor. Published metadata remains
+    // available between nonoverlapping C handles.
+    XLS_ASSIGN_OR_RETURN(auto descriptor, make_descriptor());
+    metadata = std::make_shared<const ValueMetadata>(
+        ValueMetadata{ValueTypeIdentity{entry.identity}, std::move(descriptor),
+                      type.IsSum()});
+    entry.value_metadata = metadata;
+  }
+  return metadata;
+}
+
+absl::StatusOr<ValueMetadataPtr> MakeValueMetadata(const xls::dslx::Type& type,
+                                                   ImportDataHandle& owner) {
+  auto enum_provider = [&](const xls::dslx::EnumType& enum_type)
+      -> absl::StatusOr<xls::dslx::ValueFormatDescriptor> {
+    XLS_ASSIGN_OR_RETURN(auto metadata, MakeValueMetadata(enum_type, owner));
+    return metadata->descriptor;
+  };
+  auto make_descriptor = [&](bool share_nested_sums)
+      -> absl::StatusOr<xls::dslx::ValueFormatDescriptor> {
+    if (share_nested_sums) {
+      return xls::dslx::MakeDefaultValueFormatDescriptorWithNestedSumProvider(
+          type, enum_provider,
+          [&](const xls::dslx::SumType& nested_sum)
+              -> absl::StatusOr<xls::dslx::ValueFormatDescriptor> {
+            XLS_ASSIGN_OR_RETURN(auto metadata,
+                                 MakeValueMetadata(nested_sum, owner));
+            return metadata->descriptor;
+          });
+    } else {
+      return xls::dslx::MakeValueFormatDescriptor(
+          type, xls::FormatPreference::kDefault, enum_provider);
+    }
+  };
+  if (const auto* enumeration =
+          dynamic_cast<const xls::dslx::EnumType*>(&type)) {
+    // A leaf uses the canonical table builder directly, without calling the
+    // owner provider recursively for the same unfinished enum entry.
+    return MakeNominalValueMetadata(*enumeration, owner, [&] {
+      return xls::dslx::MakeValueFormatDescriptor(
+          type, xls::FormatPreference::kDefault);
+    });
+  } else if (auto* sum = dynamic_cast<const xls::dslx::SumType*>(&type)) {
+    bool built_descriptor = false;
+    XLS_ASSIGN_OR_RETURN(
+        auto metadata,
+        MakeNominalValueMetadata(
+            *sum, owner,
+            [&] {
+              built_descriptor = true;
+              return make_descriptor(owner.shares_sum_descriptors());
+            },
+            /*promote_on_miss=*/true));
+    if (built_descriptor) {
+      owner.RetainFirstSumDescriptorGraph(type, metadata);
+    }
+    return metadata;
+  } else {
+    const bool contains_sum = xls::dslx::TypeContainsSemanticSum(type);
+    if (contains_sum) {
+      owner.PromoteSumDescriptorGraph();
+    }
+    XLS_ASSIGN_OR_RETURN(auto identity, MakeTypeIdentity(type, owner));
+    XLS_ASSIGN_OR_RETURN(
+        auto descriptor,
+        make_descriptor(contains_sum && owner.shares_sum_descriptors()));
+    ValueMetadataPtr metadata =
+        std::make_shared<const ValueMetadata>(ValueMetadata{
+            std::move(identity), std::move(descriptor), contains_sum});
+    if (contains_sum) {
+      owner.RetainFirstSumDescriptorGraph(type, metadata);
+    }
+    return metadata;
+  }
+}
+
+ImportDataHandle* FindOwningImportData(const xls::dslx::TypeInfo& type_info) {
+  auto& registry = GetImportDataRegistry();
+  absl::MutexLock registry_lock(&registry.mutex);
+  auto it = std::find_if(registry.owners.begin(), registry.owners.end(),
+                         [&](const auto* candidate) {
+                           return &candidate->data.file_table() ==
+                                  &type_info.file_table();
+                         });
+  if (it != registry.owners.end()) {
+    return *it;
+  } else {
+    return nullptr;
+  }
+}
+
+absl::StatusOr<ValueMetadataPtr> MakeValueMetadata(
+    const xls::dslx::Type& type, const xls::dslx::TypeInfo& type_info) {
+  ImportDataHandle* owner = FindOwningImportData(type_info);
+  if (owner == nullptr) {
+    return absl::InvalidArgumentError("TypeInfo has no owning C ImportData");
+  } else {
+    // The caller must keep this borrowed TypeInfo's owner alive. No unmatched
+    // owner escapes the registry lock, and we do not hold it while waiting.
+    if (owner->metadata_lock_observer_for_testing) {
+      owner->metadata_lock_observer_for_testing();
+    }
+    absl::MutexLock owner_lock(&owner->mutex);
+    return MakeValueMetadata(type, *owner);
+  }
+}
+
+absl::StatusOr<ValueMetadataPtr> MakeEnumMetadata(const xls::dslx::EnumDef& def,
+                                                  bool is_signed,
+                                                  const xls::Bits& bits) {
+  ImportDataHandle* owner = nullptr;
+  {
+    auto& registry = GetImportDataRegistry();
+    absl::MutexLock registry_lock(&registry.mutex);
+    auto it = std::find_if(registry.owners.begin(), registry.owners.end(),
+                           [&](const auto* candidate) {
+                             return candidate->data.OwnsModule(def.owner());
+                           });
+    if (it != registry.owners.end()) {
+      owner = *it;
+    }
+  }
+  if (owner == nullptr) {
+    return absl::InvalidArgumentError(
+        "Enum definition has no owning C ImportData");
+  } else {
+    // The caller keeps the borrowed definition's owner alive; unrelated
+    // contexts need the registry while this context waits for its operation.
+    if (owner->metadata_lock_observer_for_testing) {
+      owner->metadata_lock_observer_for_testing();
+    }
+    absl::MutexLock owner_lock(&owner->mutex);
+    XLS_ASSIGN_OR_RETURN(auto* type_info, owner->data.GetRootTypeInfo());
+    XLS_ASSIGN_OR_RETURN(auto* meta_type, type_info->GetItemOrError(&def));
+    XLS_ASSIGN_OR_RETURN(const auto* type,
+                         xls::dslx::UnwrapMetaType(*meta_type));
+    if (auto* enum_type = dynamic_cast<const xls::dslx::EnumType*>(type)) {
+      XLS_ASSIGN_OR_RETURN(int64_t bit_count, enum_type->size().GetAsInt64());
+      ValueMetadataPtr metadata;
+      bool is_member = false;
+      if (enum_type->is_signed() == is_signed &&
+          bit_count == bits.bit_count()) {
+        if (const auto* entry = owner->FindEnumType(*enum_type)) {
+          metadata = entry->value_metadata;
+        }
+        if (metadata != nullptr) {
+          is_member = metadata->descriptor.value_to_name().contains(bits);
+        } else {
+          // An invalid-only raw constructor must not intern a nominal type or
+          // build a formatting table merely to discover it is not a member.
+          is_member =
+              std::any_of(enum_type->members().begin(),
+                          enum_type->members().end(), [&](const auto& member) {
+                            return member.GetBitsOrDie() == bits;
+                          });
+        }
+      }
+      if (is_member && metadata != nullptr) {
+        return metadata;
+      } else if (is_member) {
+        return MakeValueMetadata(*enum_type, *owner);
+      } else {
+        // Preserve the raw constructor's ordinary-value behavior, but do not
+        // pass undeclared patterns or mismatched widths/signs to a semantic
+        // enum formatter inside a later sum-bearing aggregate.
+        return std::make_shared<const ValueMetadata>(
+            ValueMetadata{std::nullopt,
+                          xls::dslx::ValueFormatDescriptor::MakeLeafValue(
+                              xls::FormatPreference::kDefault),
+                          false});
+      }
+    } else {
+      return absl::InvalidArgumentError("Expected a concrete enum type");
+    }
+  }
+}
+
+struct FormattedParametricBinding {
+  std::string identifier;
+  xls::dslx::InterpValue value;
+  ValueMetadataPtr metadata;
+};
+
+class InterpValueHandle {
+ public:
+  explicit InterpValueHandle(xls::dslx::InterpValue value,
+                             ValueMetadataPtr metadata = nullptr)
+      : value_(std::in_place_type<xls::dslx::InterpValue>, std::move(value)),
+        metadata_(std::move(metadata)) {}
+
+  static std::unique_ptr<InterpValueHandle> Borrowed(
+      const xls::dslx::InterpValue& value,
+      ValueMetadataPtr metadata = nullptr) {
+    return std::unique_ptr<InterpValueHandle>(
+        new InterpValueHandle(&value, std::move(metadata)));
+  }
+
+  const xls::dslx::InterpValue& value() const {
+    if (const auto* owned = std::get_if<xls::dslx::InterpValue>(&value_)) {
+      return *owned;
+    } else {
+      return *std::get<const xls::dslx::InterpValue*>(value_);
+    }
+  }
+
+  bool is_owned() const {
+    return std::holds_alternative<xls::dslx::InterpValue>(value_);
+  }
+
+  const ValueMetadataPtr& metadata() const { return metadata_; }
+
+ private:
+  explicit InterpValueHandle(const xls::dslx::InterpValue* value,
+                             ValueMetadataPtr metadata)
+      : value_(value), metadata_(std::move(metadata)) {}
+
+  std::variant<xls::dslx::InterpValue, const xls::dslx::InterpValue*> value_;
+  ValueMetadataPtr metadata_;
+};
+
+class ParametricEnvHandle {
+ public:
+  explicit ParametricEnvHandle(xls::dslx::ParametricEnv env,
+                               BindingMetadata binding_metadata = {})
+      : env_(std::in_place_type<xls::dslx::ParametricEnv>, std::move(env)) {
+    InitializeBindingViews(binding_metadata);
+  }
+
+  ParametricEnvHandle(const xls::dslx::ParametricEnv* env,
+                      const BindingMetadata& binding_metadata)
+      : env_(env) {
+    CHECK_NE(env, nullptr);
+    InitializeBindingViews(binding_metadata);
+  }
+
+  const xls::dslx::ParametricEnv& env() const {
+    if (const auto* owned = std::get_if<xls::dslx::ParametricEnv>(&env_)) {
+      return *owned;
+    } else {
+      return *std::get<const xls::dslx::ParametricEnv*>(env_);
+    }
+  }
+
+  bool is_owned() const {
+    return std::holds_alternative<xls::dslx::ParametricEnv>(env_);
+  }
+
+  const InterpValueHandle& binding_value(int64_t index) const {
+    return *binding_values_.at(index);
+  }
+
+  BindingMetadata binding_metadata() const {
+    BindingMetadata metadata;
+    metadata.reserve(binding_values_.size());
+    for (const auto& binding_value : binding_values_) {
+      metadata.push_back(binding_value->metadata());
+    }
+    return metadata;
+  }
+
+  std::unique_ptr<ParametricEnvHandle> Clone() const {
+    return std::make_unique<ParametricEnvHandle>(env(), binding_metadata());
+  }
+
+ private:
+  void InitializeBindingViews(const BindingMetadata& binding_metadata) {
+    CHECK(binding_metadata.empty() ||
+          binding_metadata.size() == env().bindings().size());
+    binding_values_.reserve(env().bindings().size());
+    for (size_t i = 0; i < env().bindings().size(); ++i) {
+      const xls::dslx::ParametricEnvItem& binding = env().bindings().at(i);
+      binding_values_.push_back(InterpValueHandle::Borrowed(
+          binding.value,
+          binding_metadata.empty() ? nullptr : binding_metadata.at(i)));
+    }
+  }
+
+  std::variant<xls::dslx::ParametricEnv, const xls::dslx::ParametricEnv*> env_;
+  std::vector<std::unique_ptr<InterpValueHandle>> binding_values_;
+};
+
+class InvocationCalleeDataHandle {
+ public:
+  InvocationCalleeDataHandle(xls::dslx::InvocationCalleeData value,
+                             const BindingMetadata& callee_metadata,
+                             const BindingMetadata& caller_metadata)
+      : value_(std::move(value)),
+        callee_bindings_(&value_.callee_bindings, callee_metadata),
+        caller_bindings_(&value_.caller_bindings, caller_metadata) {}
+
+  const xls::dslx::InvocationCalleeData& value() const { return value_; }
+  const ParametricEnvHandle& callee_bindings() const {
+    return callee_bindings_;
+  }
+  const ParametricEnvHandle& caller_bindings() const {
+    return caller_bindings_;
+  }
+
+  std::unique_ptr<InvocationCalleeDataHandle> Clone() const {
+    return std::make_unique<InvocationCalleeDataHandle>(
+        value_, callee_bindings_.binding_metadata(),
+        caller_bindings_.binding_metadata());
+  }
+
+ private:
+  xls::dslx::InvocationCalleeData value_;
+  ParametricEnvHandle callee_bindings_;
+  ParametricEnvHandle caller_bindings_;
+};
+
+const InterpValueHandle& UnwrapInterpValueHandle(
+    const struct xls_dslx_interp_value* value) {
+  CHECK_NE(value, nullptr);
+  return *reinterpret_cast<const InterpValueHandle*>(value);
+}
+
+std::optional<ValueTypeIdentity> RuntimeTypeIdentity(
+    const xls::dslx::InterpValue& value) {
+  if (value.IsBits()) {
+    return ValueTypeIdentity{
+        BitsTypeIdentity{value.IsSigned(), value.GetBitsOrDie().bit_count()}};
+  } else if (value.IsTuple() || value.IsArray()) {
+    std::vector<ValueTypeIdentity> members;
+    for (const auto& member : value.GetValuesOrDie()) {
+      auto identity = RuntimeTypeIdentity(member);
+      if (!identity.has_value()) {
+        return std::nullopt;
+      } else {
+        members.push_back(std::move(*identity));
+      }
+    }
+    if (value.IsTuple()) {
+      return ValueTypeIdentity{std::move(members)};
+    } else if (members.empty() || !std::all_of(members.begin(), members.end(),
+                                               [&](const auto& member) {
+                                                 return member ==
+                                                        members.front();
+                                               })) {
+      return std::nullopt;
+    } else {
+      return ValueTypeIdentity{
+          ArrayTypeIdentity{static_cast<int64_t>(members.size()),
+                            std::make_shared<const ValueTypeIdentity>(
+                                std::move(members.front()))}};
+    }
+  } else if (value.IsToken()) {
+    return ValueTypeIdentity{std::monostate{}};
+  } else {
+    // Nominal identities cannot be recovered from their erased storage.
+    return std::nullopt;
+  }
+}
+
+enum class AggregateKind { kTuple, kArray };
+
+absl::StatusOr<ValueMetadataPtr> MakeAggregateMetadata(
+    absl::Span<xls_dslx_interp_value* const> elements, AggregateKind kind) {
+  const bool has_metadata =
+      std::any_of(elements.begin(), elements.end(), [](const auto* element) {
+        return UnwrapInterpValueHandle(element).metadata() != nullptr;
+      });
+  if (!has_metadata) {
+    return nullptr;
+  } else {
+    bool contains_sum = false;
+    bool has_type = true;
+    std::vector<ValueTypeIdentity> member_types;
+    std::vector<xls::dslx::ValueFormatDescriptor> descriptors;
+    member_types.reserve(elements.size());
+    if (kind == AggregateKind::kTuple) {
+      descriptors.reserve(elements.size());
+    }
+    for (const auto* element : elements) {
+      const auto& handle = UnwrapInterpValueHandle(element);
+      const auto& metadata = handle.metadata();
+      auto identity = metadata != nullptr ? metadata->type
+                                          : RuntimeTypeIdentity(handle.value());
+      if (identity.has_value()) {
+        member_types.push_back(std::move(*identity));
+      } else {
+        has_type = false;
+      }
+      if (metadata != nullptr) {
+        contains_sum |= metadata->contains_sum;
+      }
+      if (kind == AggregateKind::kTuple) {
+        descriptors.push_back(
+            metadata != nullptr
+                ? metadata->descriptor
+                : xls::dslx::ValueFormatDescriptor::MakeLeafValue(
+                      xls::FormatPreference::kDefault));
+      }
+    }
+    if (kind == AggregateKind::kArray && has_type) {
+      has_type = !member_types.empty() &&
+                 std::all_of(member_types.begin(), member_types.end(),
+                             [&](const auto& member) {
+                               return member == member_types.front();
+                             });
+    }
+    if (contains_sum && !has_type) {
+      return absl::InvalidArgumentError(
+          kind == AggregateKind::kArray
+              ? "Sum-bearing array elements have incompatible DSLX types"
+              : "Sum-bearing tuple contains an element with no DSLX type");
+    } else {
+      std::optional<ValueTypeIdentity> identity;
+      auto descriptor = xls::dslx::ValueFormatDescriptor::MakeLeafValue(
+          xls::FormatPreference::kDefault);
+      if (kind == AggregateKind::kTuple) {
+        descriptor = xls::dslx::ValueFormatDescriptor::MakeTuple(descriptors);
+        if (has_type) {
+          identity = ValueTypeIdentity{std::move(member_types)};
+        }
+      } else if (has_type) {
+        const auto& first =
+            UnwrapInterpValueHandle(elements.front()).metadata();
+        descriptor = xls::dslx::ValueFormatDescriptor::MakeArray(
+            first != nullptr ? first->descriptor : descriptor, elements.size());
+        identity = ValueTypeIdentity{
+            ArrayTypeIdentity{static_cast<int64_t>(elements.size()),
+                              std::make_shared<const ValueTypeIdentity>(
+                                  std::move(member_types.front()))}};
+      }
+      return std::make_shared<const ValueMetadata>(ValueMetadata{
+          std::move(identity), std::move(descriptor), contains_sum});
+    }
+  }
+}
+
+std::string FormatInterpValueHandle(const InterpValueHandle& handle) {
+  if (handle.metadata() != nullptr && handle.metadata()->contains_sum) {
+    absl::StatusOr<std::string> formatted = handle.value().ToFormattedString(
+        handle.metadata()->descriptor, /*include_type_prefix=*/true);
+    CHECK_OK(formatted.status());
+    return std::move(*formatted);
+  } else {
+    return handle.value().ToString();
+  }
+}
+
+const ParametricEnvHandle& UnwrapParametricEnvHandle(
+    const struct xls_dslx_parametric_env* env) {
+  CHECK_NE(env, nullptr);
+  return *reinterpret_cast<const ParametricEnvHandle*>(env);
+}
+
+const InvocationCalleeDataHandle& UnwrapInvocationCalleeDataHandle(
+    const struct xls_dslx_invocation_callee_data* data) {
+  CHECK_NE(data, nullptr);
+  return *reinterpret_cast<const InvocationCalleeDataHandle*>(data);
+}
 
 struct CallGraphHolder {
   xls::dslx::TypeInfo* type_info;
@@ -83,14 +939,88 @@ const struct xls_dslx_type* GetMetaTypeHelper(
   return reinterpret_cast<const struct xls_dslx_type*>(*unwrapped);
 }
 
+bool BindingNeedsTypeLookup(const xls::dslx::ParametricEnvItem& binding) {
+  // These values cannot contain nominal fields. In particular, builtins have
+  // bits/type bindings without a published derived TypeInfo to look them up in.
+  return !binding.value.IsBits() && !binding.value.IsTypeReference() &&
+         !binding.value.IsToken();
+}
+
+BindingMetadata MakeBindingMetadata(const xls::dslx::ParametricEnv& env,
+                                    const xls::dslx::AstNode* parametric_owner,
+                                    const xls::dslx::TypeInfo* type_info,
+                                    ImportDataHandle& owner) {
+  BindingMetadata metadata;
+  metadata.reserve(env.size());
+  // Bindings are sorted by name, whereas function parametrics use declaration
+  // order. Resolve their NameDefs in the captured concrete context while the
+  // C owner is locked. Raw values cannot recover nominal types.
+  for (const auto& binding : env.bindings()) {
+    ValueMetadataPtr value_metadata;
+    if (BindingNeedsTypeLookup(binding)) {
+      CHECK_NE(parametric_owner, nullptr);
+      CHECK_NE(type_info, nullptr);
+      auto find_formal =
+          [&](const auto& formals) -> const xls::dslx::ParametricBinding* {
+        auto it = std::find_if(
+            formals.begin(), formals.end(), [&](const auto* candidate) {
+              return candidate->identifier() == binding.identifier;
+            });
+        return it == formals.end() ? nullptr : *it;
+      };
+      const xls::dslx::ParametricBinding* formal = nullptr;
+      if (const auto* function =
+              dynamic_cast<const xls::dslx::Function*>(parametric_owner)) {
+        formal = find_formal(function->parametric_bindings());
+        if (formal == nullptr) {
+          if (auto target_struct = function->GetTargetStruct()) {
+            formal = find_formal((*target_struct)->parametric_bindings());
+          }
+        }
+      } else if (const auto* struct_def =
+                     dynamic_cast<const xls::dslx::StructDefBase*>(
+                         parametric_owner)) {
+        formal = find_formal(struct_def->parametric_bindings());
+      } else if (const auto* sum_def =
+                     dynamic_cast<const xls::dslx::SumDef*>(parametric_owner)) {
+        formal = find_formal(sum_def->parametric_bindings());
+      }
+      CHECK_NE(formal, nullptr);
+      auto type = type_info->GetItemOrError(formal->name_def());
+      CHECK_OK(type.status());
+      if (NeedsValueMetadata(**type)) {
+        auto result = MakeValueMetadata(**type, owner);
+        CHECK_OK(result.status());
+        value_metadata = std::move(*result);
+      }
+    }
+    metadata.push_back(std::move(value_metadata));
+  }
+  return metadata;
+}
+
 struct InvocationCalleeDataArray {
   InvocationCalleeDataArray() = default;
 
   explicit InvocationCalleeDataArray(
-      std::vector<xls::dslx::InvocationCalleeData> entries_in)
-      : entries(std::move(entries_in)) {}
+      std::vector<xls::dslx::InvocationCalleeData> entries_in,
+      const xls::dslx::TypeInfo& type_info, ImportDataHandle& owner) {
+    entries.reserve(entries_in.size());
+    for (xls::dslx::InvocationCalleeData& entry : entries_in) {
+      const xls::dslx::TypeInfo& concrete_type_info =
+          entry.derived_type_info == nullptr ? type_info
+                                             : *entry.derived_type_info;
+      BindingMetadata callee_metadata = MakeBindingMetadata(
+          entry.callee_bindings, entry.callee, &concrete_type_info, owner);
+      BindingMetadata caller_metadata = MakeBindingMetadata(
+          entry.caller_bindings, entry.caller_parametric_owner,
+          entry.caller_type_info, owner);
+      entries.push_back(std::make_unique<InvocationCalleeDataHandle>(
+          std::move(entry), callee_metadata, caller_metadata));
+    }
+  }
 
-  std::vector<xls::dslx::InvocationCalleeData> entries;
+  std::vector<std::unique_ptr<InvocationCalleeDataHandle>> entries;
 };
 
 template <typename T>
@@ -112,6 +1042,65 @@ xls::dslx::ModuleMember* FindModuleMemberForNode(T* node) {
 
 }  // namespace
 
+namespace xls {
+
+const dslx::ParametricEnv* UnwrapDslxParametricEnv(
+    const struct xls_dslx_parametric_env* env) {
+  if (env == nullptr) {
+    return nullptr;
+  } else {
+    return &UnwrapParametricEnvHandle(env).env();
+  }
+}
+
+void SetDslxImporterStackObserverForTesting(
+    struct xls_dslx_import_data* import_data,
+    std::function<void(const dslx::Span&, const std::filesystem::path&)>
+        observer) {
+  auto& owner = UnwrapImportData(import_data);
+  absl::MutexLock owner_lock(&owner.mutex);
+  owner.data.SetImporterStackObserver(std::move(observer));
+}
+
+void SetDslxMetadataLockObserverForTesting(
+    struct xls_dslx_import_data* import_data, std::function<void()> observer) {
+  auto& owner = UnwrapImportData(import_data);
+  absl::MutexLock owner_lock(&owner.mutex);
+  owner.metadata_lock_observer_for_testing = std::move(observer);
+}
+
+std::weak_ptr<const void> GetDslxValueMetadataForTesting(
+    const struct xls_dslx_interp_value* value) {
+  return UnwrapInterpValueHandle(value).metadata();
+}
+
+const dslx::ValueFormatDescriptor* GetDslxValueFormatDescriptorForTesting(
+    const struct xls_dslx_interp_value* value) {
+  const auto& metadata = UnwrapInterpValueHandle(value).metadata();
+  if (metadata != nullptr) {
+    return &metadata->descriptor;
+  } else {
+    return nullptr;
+  }
+}
+
+std::weak_ptr<const void> GetDslxCachedEnumMetadataForTesting(
+    struct xls_dslx_import_data* import_data,
+    const struct xls_dslx_type* enum_type) {
+  auto& owner = UnwrapImportData(import_data);
+  absl::MutexLock owner_lock(&owner.mutex);
+  CHECK_NE(enum_type, nullptr);
+  const auto* type = reinterpret_cast<const dslx::Type*>(enum_type);
+  CHECK(type->IsEnum());
+  if (const auto* entry = owner.FindEnumType(type->AsEnum())) {
+    return entry->value_metadata;
+  } else {
+    return {};
+  }
+}
+
+}  // namespace xls
+
 extern "C" {
 
 bool xls_dslx_parametric_env_create(
@@ -122,52 +1111,63 @@ bool xls_dslx_parametric_env_create(
   *error_out = nullptr;
   if (items_count == 0) {
     *env_out = reinterpret_cast<xls_dslx_parametric_env*>(
-        new xls::dslx::ParametricEnv());
+        new ParametricEnvHandle(xls::dslx::ParametricEnv()));
     return true;
   }
 
-  std::vector<std::pair<std::string, xls::dslx::InterpValue>> v;
-  v.reserve(items_count);
+  std::vector<FormattedParametricBinding> formatted_bindings;
+  formatted_bindings.reserve(items_count);
   for (size_t i = 0; i < items_count; ++i) {
     const xls_dslx_parametric_env_item& it = items[i];
     CHECK_NE(it.identifier, nullptr);
     CHECK_NE(it.value, nullptr);
-    const xls::dslx::InterpValue* iv =
-        reinterpret_cast<const xls::dslx::InterpValue*>(it.value);
-    v.emplace_back(it.identifier, *iv);
+    const InterpValueHandle& value = UnwrapInterpValueHandle(it.value);
+    formatted_bindings.push_back(FormattedParametricBinding{
+        .identifier = it.identifier,
+        .value = value.value(),
+        .metadata = value.metadata(),
+    });
   }
 
-  *env_out = reinterpret_cast<xls_dslx_parametric_env*>(
-      new xls::dslx::ParametricEnv(absl::MakeSpan(v)));
+  std::stable_sort(
+      formatted_bindings.begin(), formatted_bindings.end(),
+      [](const FormattedParametricBinding& lhs,
+         const FormattedParametricBinding& rhs) {
+        return lhs.identifier < rhs.identifier ||
+               (lhs.identifier == rhs.identifier && lhs.value < rhs.value);
+      });
+  std::vector<std::pair<std::string, xls::dslx::InterpValue>> values;
+  BindingMetadata metadata;
+  values.reserve(formatted_bindings.size());
+  metadata.reserve(formatted_bindings.size());
+  for (FormattedParametricBinding& binding : formatted_bindings) {
+    values.emplace_back(std::move(binding.identifier),
+                        std::move(binding.value));
+    metadata.push_back(std::move(binding.metadata));
+  }
+
+  *env_out = reinterpret_cast<xls_dslx_parametric_env*>(new ParametricEnvHandle(
+      xls::dslx::ParametricEnv(absl::MakeSpan(values)), std::move(metadata)));
   return true;
 }
 
 struct xls_dslx_parametric_env* xls_dslx_parametric_env_clone(
     const struct xls_dslx_parametric_env* env) {
-  CHECK_NE(env, nullptr);
-  const auto* cpp_env = reinterpret_cast<const xls::dslx::ParametricEnv*>(env);
-  auto* heap = new xls::dslx::ParametricEnv(*cpp_env);
-  return reinterpret_cast<xls_dslx_parametric_env*>(heap);
+  return reinterpret_cast<xls_dslx_parametric_env*>(
+      UnwrapParametricEnvHandle(env).Clone().release());
 }
 
 bool xls_dslx_parametric_env_equals(const struct xls_dslx_parametric_env* lhs,
                                     const struct xls_dslx_parametric_env* rhs) {
-  CHECK_NE(lhs, nullptr);
-  CHECK_NE(rhs, nullptr);
-  const auto* cpp_lhs = reinterpret_cast<const xls::dslx::ParametricEnv*>(lhs);
-  const auto* cpp_rhs = reinterpret_cast<const xls::dslx::ParametricEnv*>(rhs);
-  return *cpp_lhs == *cpp_rhs;
+  return UnwrapParametricEnvHandle(lhs).env() ==
+         UnwrapParametricEnvHandle(rhs).env();
 }
 
 bool xls_dslx_parametric_env_less_than(
     const struct xls_dslx_parametric_env* lhs,
     const struct xls_dslx_parametric_env* rhs) {
-  CHECK_NE(lhs, nullptr);
-  CHECK_NE(rhs, nullptr);
-  const auto* cpp_lhs = reinterpret_cast<const xls::dslx::ParametricEnv*>(lhs);
-  const auto* cpp_rhs = reinterpret_cast<const xls::dslx::ParametricEnv*>(rhs);
-  const auto& lhs_bindings = cpp_lhs->bindings();
-  const auto& rhs_bindings = cpp_rhs->bindings();
+  const auto& lhs_bindings = UnwrapParametricEnvHandle(lhs).env().bindings();
+  const auto& rhs_bindings = UnwrapParametricEnvHandle(rhs).env().bindings();
   const int64_t common = std::min(lhs_bindings.size(), rhs_bindings.size());
   for (int64_t i = 0; i < common; ++i) {
     const auto& lhs_item = lhs_bindings[i];
@@ -190,57 +1190,65 @@ bool xls_dslx_parametric_env_less_than(
 
 uint64_t xls_dslx_parametric_env_hash(
     const struct xls_dslx_parametric_env* env) {
-  CHECK_NE(env, nullptr);
-  const auto* cpp_env = reinterpret_cast<const xls::dslx::ParametricEnv*>(env);
-  return static_cast<uint64_t>(absl::HashOf(*cpp_env));
+  return static_cast<uint64_t>(
+      absl::HashOf(UnwrapParametricEnvHandle(env).env()));
 }
 
 char* xls_dslx_parametric_env_to_string(
     const struct xls_dslx_parametric_env* env) {
-  CHECK_NE(env, nullptr);
-  const auto* cpp_env = reinterpret_cast<const xls::dslx::ParametricEnv*>(env);
-  return xls::ToOwnedCString(cpp_env->ToString());
+  const ParametricEnvHandle& handle = UnwrapParametricEnvHandle(env);
+  std::string formatted = "{";
+  for (size_t i = 0; i < handle.env().bindings().size(); ++i) {
+    if (i != 0) {
+      formatted.append(", ");
+    }
+    absl::StrAppendFormat(&formatted, "%s: %s",
+                          handle.env().bindings().at(i).identifier,
+                          FormatInterpValueHandle(handle.binding_value(i)));
+  }
+  formatted.push_back('}');
+  return xls::ToOwnedCString(formatted);
 }
 
 void xls_dslx_parametric_env_free(struct xls_dslx_parametric_env* env) {
-  delete reinterpret_cast<xls::dslx::ParametricEnv*>(env);
+  if (env != nullptr) {
+    auto* handle = reinterpret_cast<ParametricEnvHandle*>(env);
+    CHECK(handle->is_owned())
+        << "Borrowed parametric environments must not be freed.";
+    delete handle;
+  }
 }
 
 int64_t xls_dslx_parametric_env_get_binding_count(
     const struct xls_dslx_parametric_env* env) {
-  CHECK_NE(env, nullptr);
-  auto* cpp_env = reinterpret_cast<const xls::dslx::ParametricEnv*>(env);
-  return cpp_env->size();
+  return UnwrapParametricEnvHandle(env).env().size();
 }
 
 const char* xls_dslx_parametric_env_get_binding_identifier(
     const struct xls_dslx_parametric_env* env, int64_t index) {
-  CHECK_NE(env, nullptr);
-  auto* cpp_env = reinterpret_cast<const xls::dslx::ParametricEnv*>(env);
-  const xls::dslx::ParametricEnvItem& item = cpp_env->bindings().at(index);
+  const xls::dslx::ParametricEnvItem& item =
+      UnwrapParametricEnvHandle(env).env().bindings().at(index);
   return item.identifier.c_str();
 }
 
 struct xls_dslx_interp_value* xls_dslx_parametric_env_get_binding_value(
     const struct xls_dslx_parametric_env* env, int64_t index) {
-  CHECK_NE(env, nullptr);
-  auto* cpp_env = reinterpret_cast<const xls::dslx::ParametricEnv*>(env);
-  const xls::dslx::ParametricEnvItem& item = cpp_env->bindings().at(index);
   return reinterpret_cast<xls_dslx_interp_value*>(
-      const_cast<xls::dslx::InterpValue*>(&item.value));
+      const_cast<InterpValueHandle*>(
+          &UnwrapParametricEnvHandle(env).binding_value(index)));
 }
 
 // InterpValue simple constructors
 struct xls_dslx_interp_value* xls_dslx_interp_value_make_ubits(
     int64_t bit_count, uint64_t value) {
-  auto* iv = new xls::dslx::InterpValue(xls::dslx::InterpValue::MakeUBits(
+  auto* iv = new InterpValueHandle(xls::dslx::InterpValue::MakeUBits(
       bit_count, static_cast<int64_t>(value)));
   return reinterpret_cast<xls_dslx_interp_value*>(iv);
 }
 
 struct xls_dslx_interp_value* xls_dslx_interp_value_make_sbits(
     int64_t bit_count, int64_t value) {
-  auto* iv = new xls::dslx::InterpValue(
+  auto* iv = new InterpValueHandle(
       xls::dslx::InterpValue::MakeSBits(bit_count, value));
   return reinterpret_cast<xls_dslx_interp_value*>(iv);
 }
@@ -253,10 +1261,17 @@ bool xls_dslx_interp_value_make_enum(
   *error_out = nullptr;
   auto* enum_def = reinterpret_cast<xls::dslx::EnumDef*>(def);
   const xls::Bits* cpp_bits = reinterpret_cast<const xls::Bits*>(bits);
-  auto iv = xls::dslx::InterpValue::MakeEnum(*cpp_bits, is_signed, enum_def);
-  *result_out = reinterpret_cast<xls_dslx_interp_value*>(
-      new xls::dslx::InterpValue(std::move(iv)));
-  return true;
+  auto metadata = MakeEnumMetadata(*enum_def, is_signed, *cpp_bits);
+  if (!metadata.ok()) {
+    *error_out = xls::ToOwnedCString(metadata.status().ToString());
+    *result_out = nullptr;
+    return false;
+  } else {
+    auto iv = xls::dslx::InterpValue::MakeEnum(*cpp_bits, is_signed, enum_def);
+    *result_out = reinterpret_cast<xls_dslx_interp_value*>(
+        new InterpValueHandle(std::move(iv), std::move(*metadata)));
+    return true;
+  }
 }
 
 bool xls_dslx_interp_value_from_string(
@@ -273,7 +1288,7 @@ bool xls_dslx_interp_value_from_string(
     return false;
   }
   *result_out = reinterpret_cast<xls_dslx_interp_value*>(
-      new xls::dslx::InterpValue(std::move(status_or.value())));
+      new InterpValueHandle(std::move(status_or.value())));
   return true;
 }
 
@@ -283,17 +1298,23 @@ bool xls_dslx_interp_value_make_tuple(
   CHECK_NE(error_out, nullptr);
   CHECK_NE(result_out, nullptr);
   *error_out = nullptr;
-  std::vector<xls::dslx::InterpValue> vec;
-  vec.reserve(element_count);
-  for (size_t i = 0; i < element_count; ++i) {
-    CHECK_NE(elements[i], nullptr);
-    auto* iv = reinterpret_cast<xls::dslx::InterpValue*>(elements[i]);
-    vec.push_back(*iv);
+  auto metadata = MakeAggregateMetadata(
+      absl::MakeConstSpan(elements, element_count), AggregateKind::kTuple);
+  if (!metadata.ok()) {
+    *result_out = nullptr;
+    *error_out = xls::ToOwnedCString(metadata.status().ToString());
+    return false;
+  } else {
+    std::vector<xls::dslx::InterpValue> vec;
+    vec.reserve(element_count);
+    for (size_t i = 0; i < element_count; ++i) {
+      vec.push_back(UnwrapInterpValueHandle(elements[i]).value());
+    }
+    auto value = xls::dslx::InterpValue::MakeTuple(std::move(vec));
+    *result_out = reinterpret_cast<xls_dslx_interp_value*>(
+        new InterpValueHandle(std::move(value), std::move(*metadata)));
+    return true;
   }
-  auto value = xls::dslx::InterpValue::MakeTuple(std::move(vec));
-  *result_out = reinterpret_cast<xls_dslx_interp_value*>(
-      new xls::dslx::InterpValue(std::move(value)));
-  return true;
 }
 
 bool xls_dslx_interp_value_make_array(
@@ -302,31 +1323,35 @@ bool xls_dslx_interp_value_make_array(
   CHECK_NE(error_out, nullptr);
   CHECK_NE(result_out, nullptr);
   *error_out = nullptr;
-  std::vector<xls::dslx::InterpValue> vec;
-  vec.reserve(element_count);
-  for (size_t i = 0; i < element_count; ++i) {
-    CHECK_NE(elements[i], nullptr);
-    auto* iv = reinterpret_cast<xls::dslx::InterpValue*>(elements[i]);
-    vec.push_back(*iv);
-  }
-  absl::StatusOr<xls::dslx::InterpValue> arr =
-      xls::dslx::InterpValue::MakeArray(std::move(vec));
-  if (!arr.ok()) {
+  auto metadata = MakeAggregateMetadata(
+      absl::MakeConstSpan(elements, element_count), AggregateKind::kArray);
+  if (!metadata.ok()) {
     *result_out = nullptr;
-    *error_out = xls::ToOwnedCString(arr.status().ToString());
+    *error_out = xls::ToOwnedCString(metadata.status().ToString());
     return false;
+  } else {
+    std::vector<xls::dslx::InterpValue> vec;
+    vec.reserve(element_count);
+    for (size_t i = 0; i < element_count; ++i) {
+      vec.push_back(UnwrapInterpValueHandle(elements[i]).value());
+    }
+    auto array = xls::dslx::InterpValue::MakeArray(std::move(vec));
+    if (!array.ok()) {
+      *result_out = nullptr;
+      *error_out = xls::ToOwnedCString(array.status().ToString());
+      return false;
+    } else {
+      *result_out = reinterpret_cast<xls_dslx_interp_value*>(
+          new InterpValueHandle(std::move(*array), std::move(*metadata)));
+      return true;
+    }
   }
-  *result_out = reinterpret_cast<xls_dslx_interp_value*>(
-      new xls::dslx::InterpValue(std::move(*arr)));
-  return true;
 }
 
 struct xls_dslx_interp_value* xls_dslx_interp_value_clone(
     const struct xls_dslx_interp_value* value) {
-  CHECK_NE(value, nullptr);
-  const auto* cpp_interp_value =
-      reinterpret_cast<const xls::dslx::InterpValue*>(value);
-  auto* heap = new xls::dslx::InterpValue(*cpp_interp_value);
+  const InterpValueHandle& source = UnwrapInterpValueHandle(value);
+  auto* heap = new InterpValueHandle(source.value(), source.metadata());
   return reinterpret_cast<xls_dslx_interp_value*>(heap);
 }
 
@@ -339,12 +1364,23 @@ struct xls_dslx_import_data* xls_dslx_import_data_create(
   xls::dslx::ImportData import_data = CreateImportData(
       cpp_stdlib_path, cpp_additional_search_paths, xls::dslx::kAllWarningsSet,
       std::make_unique<xls::dslx::RealFilesystem>());
-  return reinterpret_cast<xls_dslx_import_data*>(
-      new xls::dslx::ImportData{std::move(import_data)});
+  auto* owner = new ImportDataHandle(std::move(import_data));
+  auto& registry = GetImportDataRegistry();
+  absl::MutexLock registry_lock(&registry.mutex);
+  registry.owners.push_back(owner);
+  return reinterpret_cast<xls_dslx_import_data*>(owner);
 }
 
 void xls_dslx_import_data_free(struct xls_dslx_import_data* x) {
-  delete reinterpret_cast<xls::dslx::ImportData*>(x);
+  if (x != nullptr) {
+    auto* owner = reinterpret_cast<ImportDataHandle*>(x);
+    auto& registry = GetImportDataRegistry();
+    {
+      absl::MutexLock registry_lock(&registry.mutex);
+      std::erase(registry.owners, owner);
+    }
+    delete owner;
+  }
 }
 
 void xls_dslx_typechecked_module_free(struct xls_dslx_typechecked_module* tm) {
@@ -381,7 +1417,9 @@ bool xls_dslx_parse_and_typecheck(
     const char* text, const char* path, const char* module_name,
     struct xls_dslx_import_data* import_data, char** error_out,
     struct xls_dslx_typechecked_module** result_out) {
-  auto* cpp_import_data = reinterpret_cast<xls::dslx::ImportData*>(import_data);
+  auto& import_owner = UnwrapImportData(import_data);
+  absl::MutexLock import_lock(&import_owner.mutex);
+  auto* cpp_import_data = &import_owner.data;
 
   absl::StatusOr<xls::dslx::TypecheckedModule> tm =
       xls::dslx::ParseAndTypecheck(text, path, module_name, cpp_import_data);
@@ -447,7 +1485,9 @@ bool xls_dslx_typechecked_module_clone_removing_members(
   }
 
   auto* cpp_tm = reinterpret_cast<xls::dslx::TypecheckedModule*>(tm);
-  auto* cpp_import_data = reinterpret_cast<xls::dslx::ImportData*>(import_data);
+  auto& import_owner = UnwrapImportData(import_data);
+  absl::MutexLock import_lock(&import_owner.mutex);
+  auto* cpp_import_data = &import_owner.data;
 
   std::string subject = std::string(install_subject);
   if (subject.empty()) {
@@ -1098,7 +2138,7 @@ bool xls_dslx_typechecked_module_insert_function_specializations(
 
     xls::dslx::ParametricEnv empty_env;
     const xls::dslx::ParametricEnv* request_env =
-        reinterpret_cast<const xls::dslx::ParametricEnv*>(req.env);
+        xls::UnwrapDslxParametricEnv(req.env);
     const xls::dslx::ParametricEnv& env_ref =
         request_env != nullptr ? *request_env : empty_env;
 
@@ -1112,30 +2152,32 @@ bool xls_dslx_typechecked_module_insert_function_specializations(
     }
   }
 
-  auto* cpp_import_data = reinterpret_cast<xls::dslx::ImportData*>(import_data);
-  if (cpp_import_data == nullptr) {
+  if (import_data == nullptr) {
     *error_out = xls::ToOwnedCString(
         absl::InvalidArgumentError("ImportData must be provided").ToString());
     return false;
+  } else {
+    auto& import_owner = UnwrapImportData(import_data);
+    absl::MutexLock import_lock(&import_owner.mutex);
+    auto* cpp_import_data = &import_owner.data;
+    std::string path = cpp_tm->module->fs_path().has_value()
+                           ? cpp_tm->module->fs_path()->string()
+                           : std::string(cpp_tm->module->name());
+    cloned_module->SetName(install_subject);
+
+    absl::StatusOr<xls::dslx::TypecheckedModule> retyped_or =
+        xls::dslx::TypecheckModule(std::move(cloned_module), path,
+                                   cpp_import_data);
+    if (!retyped_or.ok()) {
+      *error_out = xls::ToOwnedCString(retyped_or.status().ToString());
+      return false;
+    } else {
+      auto* tm_on_heap =
+          new xls::dslx::TypecheckedModule{std::move(retyped_or.value())};
+      *result_out = reinterpret_cast<xls_dslx_typechecked_module*>(tm_on_heap);
+      return true;
+    }
   }
-
-  std::string path = cpp_tm->module->fs_path().has_value()
-                         ? cpp_tm->module->fs_path()->string()
-                         : std::string(cpp_tm->module->name());
-  cloned_module->SetName(install_subject);
-
-  absl::StatusOr<xls::dslx::TypecheckedModule> retyped_or =
-      xls::dslx::TypecheckModule(std::move(cloned_module), path,
-                                 cpp_import_data);
-  if (!retyped_or.ok()) {
-    *error_out = xls::ToOwnedCString(retyped_or.status().ToString());
-    return false;
-  }
-
-  auto* tm_on_heap =
-      new xls::dslx::TypecheckedModule{std::move(retyped_or.value())};
-  *result_out = reinterpret_cast<xls_dslx_typechecked_module*>(tm_on_heap);
-  return true;
 }
 
 struct xls_dslx_quickcheck* xls_dslx_module_member_get_quickcheck(
@@ -1668,7 +2710,25 @@ bool xls_dslx_type_info_get_const_expr(
     return false;
   }
 
-  auto* heap = new xls::dslx::InterpValue{*std::move(value)};
+  ValueMetadataPtr metadata;
+  std::optional<xls::dslx::Type*> concrete_type;
+  // Plain bits retain their own width and signedness. Enums and aggregate
+  // carriers still need declared-type metadata, even when their payload is empty.
+  if (!value->IsBits()) {
+    concrete_type = cpp_type_info->GetItem(cpp_expr);
+  }
+  if (concrete_type.has_value() && NeedsValueMetadata(**concrete_type)) {
+    auto metadata_or = MakeValueMetadata(**concrete_type, *cpp_type_info);
+    if (!metadata_or.ok()) {
+      *result_out = nullptr;
+      *error_out = xls::ToOwnedCString(metadata_or.status().ToString());
+      return false;
+    } else {
+      metadata = std::move(*metadata_or);
+    }
+  }
+
+  auto* heap = new InterpValueHandle(*std::move(value), std::move(metadata));
   *result_out = reinterpret_cast<xls_dslx_interp_value*>(heap);
   *error_out = nullptr;
   return true;
@@ -1681,9 +2741,17 @@ xls_dslx_type_info_get_unique_invocation_callee_data(
   CHECK_NE(function, nullptr);
   auto* cpp_type_info = reinterpret_cast<xls::dslx::TypeInfo*>(type_info);
   auto* cpp_function = reinterpret_cast<xls::dslx::Function*>(function);
+  ImportDataHandle* owner = FindOwningImportData(*cpp_type_info);
+  CHECK_NE(owner, nullptr);
+  if (owner->metadata_lock_observer_for_testing) {
+    owner->metadata_lock_observer_for_testing();
+  }
+  // Registry lookup is complete before waiting on this owner's metadata lock.
+  absl::MutexLock owner_lock(&owner->mutex);
   std::vector<xls::dslx::InvocationCalleeData> entries =
       cpp_type_info->GetUniqueInvocationCalleeData(cpp_function);
-  auto* array = new InvocationCalleeDataArray(std::move(entries));
+  auto* array =
+      new InvocationCalleeDataArray(std::move(entries), *cpp_type_info, *owner);
   return reinterpret_cast<xls_dslx_invocation_callee_data_array*>(array);
 }
 
@@ -1694,9 +2762,16 @@ xls_dslx_type_info_get_all_invocation_callee_data(
   CHECK_NE(function, nullptr);
   auto* cpp_type_info = reinterpret_cast<xls::dslx::TypeInfo*>(type_info);
   auto* cpp_function = reinterpret_cast<xls::dslx::Function*>(function);
+  ImportDataHandle* owner = FindOwningImportData(*cpp_type_info);
+  CHECK_NE(owner, nullptr);
+  if (owner->metadata_lock_observer_for_testing) {
+    owner->metadata_lock_observer_for_testing();
+  }
+  absl::MutexLock owner_lock(&owner->mutex);
   std::vector<xls::dslx::InvocationCalleeData> entries =
       cpp_type_info->GetAllInvocationCalleeData(cpp_function);
-  auto* array = new InvocationCalleeDataArray(std::move(entries));
+  auto* array =
+      new InvocationCalleeDataArray(std::move(entries), *cpp_type_info, *owner);
   return reinterpret_cast<xls_dslx_invocation_callee_data_array*>(array);
 }
 
@@ -1737,16 +2812,16 @@ xls_dslx_invocation_callee_data_array_get(
     struct xls_dslx_invocation_callee_data_array* array, int64_t index) {
   CHECK_NE(array, nullptr);
   auto* cpp_array = reinterpret_cast<InvocationCalleeDataArray*>(array);
-  xls::dslx::InvocationCalleeData& entry = cpp_array->entries.at(index);
-  return reinterpret_cast<xls_dslx_invocation_callee_data*>(&entry);
+  return reinterpret_cast<xls_dslx_invocation_callee_data*>(
+      cpp_array->entries.at(index).get());
 }
 
 struct xls_dslx_invocation_callee_data* xls_dslx_invocation_callee_data_clone(
     struct xls_dslx_invocation_callee_data* data) {
-  CHECK_NE(data, nullptr);
-  auto* cpp_data = reinterpret_cast<xls::dslx::InvocationCalleeData*>(data);
-  auto* clone = new xls::dslx::InvocationCalleeData(*cpp_data);
-  return reinterpret_cast<xls_dslx_invocation_callee_data*>(clone);
+  const InvocationCalleeDataHandle& source =
+      UnwrapInvocationCalleeDataHandle(data);
+  return reinterpret_cast<xls_dslx_invocation_callee_data*>(
+      source.Clone().release());
 }
 
 void xls_dslx_invocation_callee_data_free(
@@ -1754,42 +2829,35 @@ void xls_dslx_invocation_callee_data_free(
   if (data == nullptr) {
     return;
   }
-  auto* cpp_data = reinterpret_cast<xls::dslx::InvocationCalleeData*>(data);
-  delete cpp_data;
+  delete reinterpret_cast<InvocationCalleeDataHandle*>(data);
 }
 
 const struct xls_dslx_parametric_env*
 xls_dslx_invocation_callee_data_get_callee_bindings(
     struct xls_dslx_invocation_callee_data* data) {
-  CHECK_NE(data, nullptr);
-  auto* cpp_data = reinterpret_cast<xls::dslx::InvocationCalleeData*>(data);
   return reinterpret_cast<const struct xls_dslx_parametric_env*>(
-      &cpp_data->callee_bindings);
+      &UnwrapInvocationCalleeDataHandle(data).callee_bindings());
 }
 
 const struct xls_dslx_parametric_env*
 xls_dslx_invocation_callee_data_get_caller_bindings(
     struct xls_dslx_invocation_callee_data* data) {
-  CHECK_NE(data, nullptr);
-  auto* cpp_data = reinterpret_cast<xls::dslx::InvocationCalleeData*>(data);
   return reinterpret_cast<const struct xls_dslx_parametric_env*>(
-      &cpp_data->caller_bindings);
+      &UnwrapInvocationCalleeDataHandle(data).caller_bindings());
 }
 
 struct xls_dslx_type_info*
 xls_dslx_invocation_callee_data_get_derived_type_info(
     struct xls_dslx_invocation_callee_data* data) {
-  CHECK_NE(data, nullptr);
-  auto* cpp_data = reinterpret_cast<xls::dslx::InvocationCalleeData*>(data);
-  return reinterpret_cast<xls_dslx_type_info*>(cpp_data->derived_type_info);
+  return reinterpret_cast<xls_dslx_type_info*>(
+      UnwrapInvocationCalleeDataHandle(data).value().derived_type_info);
 }
 
 struct xls_dslx_invocation* xls_dslx_invocation_callee_data_get_invocation(
     struct xls_dslx_invocation_callee_data* data) {
-  CHECK_NE(data, nullptr);
-  auto* cpp_data = reinterpret_cast<xls::dslx::InvocationCalleeData*>(data);
   return reinterpret_cast<xls_dslx_invocation*>(
-      const_cast<xls::dslx::Invocation*>(cpp_data->invocation));
+      const_cast<xls::dslx::Invocation*>(
+          UnwrapInvocationCalleeDataHandle(data).value().invocation));
 }
 
 struct xls_dslx_invocation* xls_dslx_invocation_data_get_invocation(
@@ -1819,21 +2887,24 @@ struct xls_dslx_function* xls_dslx_invocation_data_get_caller(
 // -- interp_value
 
 char* xls_dslx_interp_value_to_string(struct xls_dslx_interp_value* v) {
-  auto* cpp_interp_value = reinterpret_cast<xls::dslx::InterpValue*>(v);
-  return xls::ToOwnedCString(cpp_interp_value->ToString());
+  return xls::ToOwnedCString(
+      FormatInterpValueHandle(UnwrapInterpValueHandle(v)));
 }
 
 void xls_dslx_interp_value_free(struct xls_dslx_interp_value* v) {
-  auto* cpp_interp_value = reinterpret_cast<xls::dslx::InterpValue*>(v);
-  delete cpp_interp_value;
+  if (v != nullptr) {
+    auto* handle = reinterpret_cast<InterpValueHandle*>(v);
+    CHECK(handle->is_owned())
+        << "Borrowed interpreter values must not be freed.";
+    delete handle;
+  }
 }
 
 bool xls_dslx_interp_value_convert_to_ir(const struct xls_dslx_interp_value* v,
                                          char** error_out,
                                          struct xls_value** result_out) {
-  const auto* cpp_interp_value =
-      reinterpret_cast<const xls::dslx::InterpValue*>(v);
-  absl::StatusOr<xls::Value> ir_value = cpp_interp_value->ConvertToIr();
+  absl::StatusOr<xls::Value> ir_value =
+      UnwrapInterpValueHandle(v).value().ConvertToIr();
   if (!ir_value.ok()) {
     *error_out = xls::ToOwnedCString(ir_value.status().ToString());
     *result_out = nullptr;
@@ -2026,7 +3097,9 @@ bool xls_dslx_replace_invocations_in_module(
   CHECK(rules != nullptr || rules_count == 0);
 
   auto* cpp_tm = reinterpret_cast<xls::dslx::TypecheckedModule*>(tm);
-  auto* cpp_import_data = reinterpret_cast<xls::dslx::ImportData*>(import_data);
+  auto& import_owner = UnwrapImportData(import_data);
+  absl::MutexLock import_lock(&import_owner.mutex);
+  auto* cpp_import_data = &import_owner.data;
 
   std::vector<const xls::dslx::Function*> callers_cpp;
   callers_cpp.reserve(callers_count);
@@ -2047,12 +3120,10 @@ bool xls_dslx_replace_invocations_in_module(
         reinterpret_cast<const xls::dslx::Function*>(r.from_callee);
     rr.to_callee = reinterpret_cast<const xls::dslx::Function*>(r.to_callee);
     if (r.match_callee_env != nullptr) {
-      rr.match_callee_env = *reinterpret_cast<const xls::dslx::ParametricEnv*>(
-          r.match_callee_env);
+      rr.match_callee_env = *xls::UnwrapDslxParametricEnv(r.match_callee_env);
     }
     if (r.to_callee_env != nullptr) {
-      rr.to_callee_env =
-          *reinterpret_cast<const xls::dslx::ParametricEnv*>(r.to_callee_env);
+      rr.to_callee_env = *xls::UnwrapDslxParametricEnv(r.to_callee_env);
     }
     rules_cpp.push_back(std::move(rr));
   }

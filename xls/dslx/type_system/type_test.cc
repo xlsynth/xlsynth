@@ -1261,6 +1261,26 @@ TEST(TypeTest, SumArgumentHashUsesSemanticBitEquality) {
             SumType::HashParametricArguments(rhs));
 }
 
+// Struct cache keys follow member equality, including normalized bit types, and
+// ignore nominal dimensions that do not participate in StructType equality.
+TEST(TypeTest, SumCacheStructHashUsesSemanticMemberEquality) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  StructType original = CreateSimpleStruct(module);
+  std::vector<std::unique_ptr<Type>> members;
+  members.push_back(std::make_unique<ArrayType>(
+      std::make_unique<BitsConstructorType>(TypeDim::CreateBool(false)),
+      TypeDim::CreateU32(8)));
+  members.push_back(BitsType::MakeU1());
+  StructType equivalent(std::move(members), original.nominal_type(),
+                        {{"unused", TypeDim::CreateU32(42)}});
+
+  ASSERT_EQ(original, equivalent);
+  EXPECT_EQ(HashTypeForSumCache(original), HashTypeForSumCache(equivalent));
+  EXPECT_EQ(HashTypeForSumCache(original),
+            HashTypeForSumCache(*original.CloneToUnique()));
+}
+
 // Verifies: equal eager arrays and symbolic ranges select the same sum bucket.
 // Catches: hashing an array's storage representation instead of its elements.
 TEST(TypeTest, SumArgumentHashUsesLogicalArrayValues) {
