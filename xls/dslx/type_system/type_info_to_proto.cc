@@ -49,6 +49,7 @@
 #include "xls/dslx/type_system/type_info.pb.h"
 #include "xls/dslx/type_system/unwrap_meta_type.h"
 #include "xls/ir/bits.h"
+#include "xls/ir/bits_ops.h"
 
 namespace xls::dslx {
 namespace {
@@ -252,6 +253,33 @@ absl::StatusOr<InterpValueProto> ToProto(const InterpValue& v) {
   return proto;
 }
 
+// Nominal arguments already carry runtime structure. Pack it without the IR
+// value codec, which cannot represent empty arrays or zero-bit leaves. The
+// binding's declared type restores structure and nominal identity on read.
+absl::StatusOr<Bits> PackSumParametricValue(const InterpValue& value) {
+  if (value.IsBits() || value.IsEnum()) {
+    return value.GetBitsOrDie();
+  } else if (value.IsTuple() || value.IsArray()) {
+    std::vector<Bits> members;
+    members.reserve(value.GetValuesOrDie().size());
+    for (const InterpValue& member : value.GetValuesOrDie()) {
+      XLS_ASSIGN_OR_RETURN(Bits packed, PackSumParametricValue(member));
+      members.push_back(std::move(packed));
+    }
+    // Tuples (including structs and encoded sums) are MSB-first. Arrays
+    // use DSLX's packed-payload order, with element zero in the low bits.
+    if (value.IsArray()) {
+      std::reverse(members.begin(), members.end());
+    }
+    return bits_ops::Concat(members);
+  } else if (value.IsToken()) {
+    return Bits(0);
+  } else {
+    return absl::UnimplementedError(absl::StrCat(
+        "TypeInfoProto: cannot pack sum parametric value: ", value.ToString()));
+  }
+}
+
 absl::StatusOr<TypeDimProto> ToProto(const TypeDim& ctd,
                                      const FileTable& file_table) {
   TypeDimProto proto;
@@ -416,6 +444,24 @@ absl::StatusOr<SumTypeProto> ToProto(const SumType& sum_type,
   SumTypeProto proto;
   *proto.mutable_sum_def_span() =
       ToProto(sum_type.nominal_type().span(), file_table);
+  for (const SumType::ParametricArgument& argument :
+       sum_type.parametric_arguments()) {
+    SumTypeParametricProto* proto_argument = proto.add_parametric_arguments();
+    if (const auto* value = std::get_if<InterpValue>(&argument)) {
+      if (value->IsBits()) {
+        XLS_ASSIGN_OR_RETURN(*proto_argument->mutable_value(), ToProto(*value));
+      } else {
+        XLS_ASSIGN_OR_RETURN(Bits packed, PackSumParametricValue(*value));
+        *proto_argument->mutable_packed_value() =
+            ToProto(packed, /*is_signed=*/false);
+      }
+    } else {
+      XLS_ASSIGN_OR_RETURN(
+          *proto_argument->mutable_type(),
+          ToProto(*std::get<std::unique_ptr<const Type>>(argument), file_table,
+                  context));
+    }
+  }
   for (int64_t variant_index = 0; variant_index < sum_type.variant_count();
        ++variant_index) {
     XLS_ASSIGN_OR_RETURN(
@@ -581,6 +627,20 @@ Bits FromProto(const BitsValueProto& proto) {
   // Bits::FromBytes expects data in little-endian format.
   std::reverse(bytes.begin(), bytes.end());
   return Bits::FromBytes(bytes, proto.bit_count());
+}
+
+absl::StatusOr<InterpValue> FromPackedProto(const BitsValueProto& proto,
+                                            const Type& type) {
+  if (!proto.has_bit_count() || proto.bit_count() < 0 || proto.is_signed()) {
+    return absl::InvalidArgumentError(
+        "Packed sum parametric value requires an unsigned bit count.");
+  } else if (proto.data().size() !=
+             (static_cast<int64_t>(proto.bit_count()) + 7) / 8) {
+    return absl::InvalidArgumentError(
+        "Packed sum parametric value data does not match its bit count.");
+  } else {
+    return internal::UnflattenValueForType(type, FromProto(proto));
+  }
 }
 
 absl::StatusOr<InterpValue> FromProto(const InterpValueProto& ivp) {
@@ -1114,13 +1174,21 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
               sum_def->identifier(), argument_index,
               expects_type ? "type" : "value"));
         }
-        if (argument.has_value()) {
+        if (argument.has_value() || argument.has_packed_value()) {
           XLS_ASSIGN_OR_RETURN(
               Type * annotation_type,
               root_type_info->GetItemOrError(binding->type_annotation()));
           XLS_ASSIGN_OR_RETURN(const Type* binding_type,
                                UnwrapMetaType(*annotation_type));
-          XLS_ASSIGN_OR_RETURN(InterpValue value, FromProto(argument.value()));
+          XLS_ASSIGN_OR_RETURN(InterpValue value,
+                               [&]() -> absl::StatusOr<InterpValue> {
+                                 if (argument.has_value()) {
+                                   return FromProto(argument.value());
+                                 } else {
+                                   return FromPackedProto(
+                                       argument.packed_value(), *binding_type);
+                                 }
+                               }());
           if (absl::Status status =
                   ValidateInterpValueMatchesType(value, *binding_type);
               !status.ok()) {
