@@ -15,6 +15,7 @@
 #include "xls/dslx/value_format_descriptor.h"
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -104,8 +105,10 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeStruct(
 ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
     std::string_view sum_name,
     absl::Span<const ValueFormatSumVariantDescriptor> variants,
-    absl::Span<const size_t> payload_starts, size_t payload_slot_count) {
+    absl::Span<const size_t> payload_starts, size_t payload_slot_count,
+    absl::Span<const Bits> variant_tag_bits) {
   CHECK_EQ(variants.size(), payload_starts.size());
+  CHECK_EQ(variants.size(), variant_tag_bits.size());
   ValueFormatDescriptor vfd(ValueFormatDescriptorKind::kSum);
   SumFormat& sum_format = vfd.nominal_format_.emplace<SumFormat>();
   sum_format.name = sum_name;
@@ -125,6 +128,8 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
                                            variant.payload_formats().end()));
   }
   sum_format.payload_slot_count = payload_slot_count;
+  sum_format.variant_tag_bits =
+      std::vector<Bits>(variant_tag_bits.begin(), variant_tag_bits.end());
   return vfd;
 }
 
@@ -136,6 +141,18 @@ ValueFormatSumVariantView ValueFormatDescriptor::sum_variant(size_t i) const {
       variant.name, variant.kind, variant.payload_start,
       absl::MakeConstSpan(variant.field_names),
       absl::MakeConstSpan(variant.payload_formats));
+}
+
+std::optional<size_t> ValueFormatDescriptor::sum_variant_index_for_tag_bits(
+    const Bits& tag_bits) const {
+  CHECK(IsSum());
+  const SumFormat& sum_format = std::get<SumFormat>(nominal_format_);
+  for (size_t i = 0; i < sum_format.variant_tag_bits.size(); ++i) {
+    if (sum_format.variant_tag_bits[i] == tag_bits) {
+      return i;
+    }
+  }
+  return std::nullopt;
 }
 
 absl::Status ValueFormatDescriptor::Accept(ValueFormatVisitor& v) const {

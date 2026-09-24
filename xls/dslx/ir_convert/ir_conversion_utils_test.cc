@@ -106,7 +106,7 @@ class IrConversionUtilsSemanticSumTest : public ::testing::Test {
 TEST_F(IrConversionUtilsSemanticSumTest, SemanticSumLoweringUsesDenseStorage) {
   XLS_ASSERT_OK_AND_ASSIGN(xls::Type * lowered,
                            TypeToIr(&package_, *sum_type_, ParametricEnv{}));
-  EXPECT_EQ(lowered->ToString(), "(bits[1], ())");
+  EXPECT_EQ(lowered->ToString(), "(bits[0], ())");
 }
 
 TEST_F(IrConversionUtilsSemanticSumTest, AggregateContainingSumIsLowered) {
@@ -114,7 +114,7 @@ TEST_F(IrConversionUtilsSemanticSumTest, AggregateContainingSumIsLowered) {
       TupleType::Create2(BitsType::MakeU8(), sum_type_->CloneToUnique());
   XLS_ASSERT_OK_AND_ASSIGN(xls::Type * lowered,
                            TypeToIr(&package_, *aggregate, ParametricEnv{}));
-  EXPECT_EQ(lowered->ToString(), "(bits[8], (bits[1], ()))");
+  EXPECT_EQ(lowered->ToString(), "(bits[8], (bits[0], ()))");
 }
 
 }  // namespace xls::dslx

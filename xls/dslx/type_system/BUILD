@@ -239,6 +239,7 @@ cc_library(
         "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:pos",
         "//xls/ir:bits",
+        "//xls/ir:bits_ops",
         "@abseil-cpp//absl/base:core_headers",
         "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/container:flat_hash_set",

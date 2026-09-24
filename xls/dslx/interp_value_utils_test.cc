@@ -695,7 +695,7 @@ TEST(InterpValueHelpersTest,
       InterpValue::MakeTuple(
           {InterpValue::MakeUBits(1, 1),
            InterpValue::MakeTuple({InterpValue::MakeTuple(
-               {InterpValue::MakeUBits(1, 0), InterpValue::MakeTuple({})})})})
+               {InterpValue::MakeUBits(0, 0), InterpValue::MakeTuple({})})})})
           .Eq(value));
 }
 
@@ -954,9 +954,9 @@ TEST(InterpValueHelpersTest, ValidatesDeeplyNestedSemanticSums) {
   SumDef* current_def = base_def;
   std::vector<SumTypeVariant> base_variants;
   base_variants.push_back(SumTypeVariant::MakeUnit(*unit));
-  auto current =
-      std::make_unique<SumType>(*base_def, std::move(base_variants),
-                                SumType::SelectedZeroVariant{std::cref(*unit)});
+  auto current = std::make_unique<SumType>(
+      *base_def, std::move(base_variants), TypeDim::CreateU32(1),
+      std::vector<InterpValue>{InterpValue::MakeUBits(1, 0)});
   InterpValue value = InterpValue::MakeTuple(
       {InterpValue::MakeUBits(1, 0), InterpValue::MakeTuple({})});
   InterpValue malformed = InterpValue::MakeTuple(
@@ -988,10 +988,10 @@ TEST(InterpValueHelpersTest, ValidatesDeeplyNestedSemanticSums) {
         SumType::SelectedZeroVariant{std::cref(*wrap)});
     current_def = outer_def;
     value =
-        InterpValue::MakeTuple({InterpValue::MakeUBits(1, 0),
+        InterpValue::MakeTuple({InterpValue::MakeUBits(0, 0),
                                 InterpValue::MakeTuple({std::move(value)})});
     malformed = InterpValue::MakeTuple(
-        {InterpValue::MakeUBits(1, 0),
+        {InterpValue::MakeUBits(0, 0),
          InterpValue::MakeTuple({std::move(malformed)})});
   }
 
@@ -1381,7 +1381,7 @@ TEST(InterpValueHelpersTest,
 
   Value raw = Value::Tuple(
       {Value(UBits(1, 1)),
-       Value::Tuple({Value::Tuple({Value(UBits(0, 1)), Value::Tuple({})})})});
+       Value::Tuple({Value::Tuple({Value(UBits(0, 0)), Value::Tuple({})})})});
   const std::vector<InterpValue> no_payload_values;
   XLS_ASSERT_OK_AND_ASSIGN(
       InterpValue expected,
@@ -1504,6 +1504,47 @@ TEST(InterpValueHelpersTest, SharedOperationsRoundTripNestedSum) {
                            GetSumPayloadValues(outer, restored));
   ASSERT_EQ(payload.size(), 1);
   EXPECT_EQ(payload[0], inner_value);
+}
+
+TEST(InterpValueHelpersTest, PositionalCarrierUsesSignedSparseSemanticTags) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumType inherited = MakeMixedPayloadSumType(module);
+  std::vector<SumTypeVariant> variants;
+  for (const SumTypeVariant& variant : inherited.variants()) {
+    variants.push_back(variant.Clone());
+  }
+  SumType semantic(
+      inherited.nominal_type(), std::move(variants), TypeDim::CreateU32(3),
+      {InterpValue::MakeSBits(3, -4), InterpValue::MakeSBits(3, -1),
+       InterpValue::MakeSBits(3, 2)});
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue value,
+      CreateSumValue(semantic, "Byte", {InterpValue::MakeU8(42)}));
+  XLS_ASSERT_OK_AND_ASSIGN(EncodedSumView view, GetEncodedSumView(value));
+  EXPECT_EQ(view.tag, InterpValue::MakeUBits(3, 7));
+  ASSERT_EQ(view.payload_slots.size(), 2);
+  EXPECT_EQ(view.payload_slots[0], InterpValue::MakeU8(42));
+  EXPECT_EQ(view.payload_slots[1], InterpValue::MakeUBits(16, 0));
+  XLS_ASSERT_OK(ValidateInterpValueMatchesType(value, semantic));
+  XLS_ASSERT_OK_AND_ASSIGN(Value raw, value.ConvertToIr());
+  EXPECT_THAT(ValueToInterpValue(raw, &semantic), IsOkAndHolds(value));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      ValueFormatDescriptor descriptor,
+      MakeValueFormatDescriptor(semantic, FormatPreference::kDefault));
+  EXPECT_THAT(value.ToFormattedString(descriptor, /*include_type_prefix=*/true),
+              IsOkAndHolds("Example::Byte(u8:42)"));
+
+  InterpValue gap = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(3, 0),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeU8(0), InterpValue::MakeUBits(16, 0)})});
+  EXPECT_THAT(
+      ValidateInterpValueMatchesType(gap, semantic),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("invalid tag")));
+  EXPECT_THAT(
+      gap.ToFormattedString(descriptor),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("out of bounds")));
 }
 
 }  // namespace

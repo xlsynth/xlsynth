@@ -104,11 +104,15 @@ absl::StatusOr<ValueFormatDescriptor> SumValueFormatBuilder::Build(
   const Phase1SumTypeEncoding encoding(type);
   std::vector<ValueFormatSumVariantDescriptor> variants;
   std::vector<size_t> payload_starts;
+  std::vector<Bits> variant_tag_bits;
   variants.reserve(type.variant_count());
   payload_starts.reserve(type.variant_count());
+  variant_tag_bits.reserve(type.variant_count());
   XLS_RETURN_IF_ERROR(encoding.ForEachVariant(
       [&](const Phase1SumTypeEncoding::VariantInfo& info) -> absl::Status {
         payload_starts.push_back(static_cast<size_t>(info.payload_start));
+        variant_tag_bits.push_back(
+            type.GetDiscriminant(info.variant_index).GetBitsOrDie());
         const SumTypeVariant& variant = *info.variant;
         std::vector<ValueFormatDescriptor> payload_formats;
         payload_formats.reserve(variant.size());
@@ -137,9 +141,9 @@ absl::StatusOr<ValueFormatDescriptor> SumValueFormatBuilder::Build(
         }
         return absl::OkStatus();
       }));
-  return ValueFormatDescriptor::MakeSum(type.nominal_type().identifier(),
-                                        variants, payload_starts,
-                                        encoding.payload_slot_count());
+  return ValueFormatDescriptor::MakeSum(
+      type.nominal_type().identifier(), variants, payload_starts,
+      encoding.payload_slot_count(), variant_tag_bits);
 }
 
 absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(

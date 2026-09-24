@@ -177,10 +177,11 @@ enum E<N: u32 = {u32:8}> { None, Some(uN[N]) }
 const D = E::None;
 fn f() -> E<u32:16> { E::None }
 )"));
-  EXPECT_THAT(TypeInfoToString(result.tm),
-              IsOkAndHolds(AllOf(
-                  HasNodeWithType("D", "E { None | Some(uN[8]) }"),
-                  HasNodeWithType("f", "() -> E { None | Some(uN[16]) }"))));
+  EXPECT_THAT(
+      TypeInfoToString(result.tm),
+      IsOkAndHolds(AllOf(
+          HasNodeWithType("D", "E<u32:8> { None | Some(uN[8]) }"),
+          HasNodeWithType("f", "() -> E<u32:16> { None | Some(uN[16]) }"))));
 
   XLS_ASSERT_OK_AND_ASSIGN(ConstantDef * d,
                            result.tm.module->GetConstantDef("D"));
@@ -600,14 +601,15 @@ enum E<N: u32 = {u32:8}> { V { x: uN[N] } }
 const X = E<u32:16>::V { x: u8:0 };
 )",
               TypecheckFails(HasSubstr("size mismatch")));
-  EXPECT_THAT(R"(#![feature(generics)]
+  EXPECT_THAT(
+      R"(#![feature(generics)]
 enum E<N: u32 = {u32:8}> { V { x: uN[N] } }
 const DEFAULT = E::V { x: u8:0 };
 const EXPLICIT = E<u32:16>::V { x: u16:0 };
 )",
-              TypecheckSucceeds(
-                  AllOf(HasNodeWithType("DEFAULT", "E { V { x: uN[8] } }"),
-                        HasNodeWithType("EXPLICIT", "E { V { x: uN[16] } }"))));
+      TypecheckSucceeds(
+          AllOf(HasNodeWithType("DEFAULT", "E<u32:8> { V { x: uN[8] } }"),
+                HasNodeWithType("EXPLICIT", "E<u32:16> { V { x: uN[16] } }"))));
 }
 
 TEST(TypecheckV2Test, MissingSemanticSumConstructorReturnsUserError) {
@@ -1503,8 +1505,8 @@ const EXPLICIT = Box<u8>::Value(u8:1);
 const INFERRED = Box::Value(u8:2);
 )",
       TypecheckSucceeds(
-          AllOf(HasNodeWithType("EXPLICIT", "Box { Value(uN[8]) }"),
-                HasNodeWithType("INFERRED", "Box { Value(uN[8]) }"))));
+          AllOf(HasNodeWithType("EXPLICIT", "Box<uN[8]> { Value(uN[8]) }"),
+                HasNodeWithType("INFERRED", "Box<uN[8]> { Value(uN[8]) }"))));
 }
 
 TEST(TypecheckV2Test, GenericSemanticSumRejectsMismatchedPayload) {
@@ -1532,7 +1534,7 @@ enum E<N: u32 = {u32:8}> { V(uN[N]) }
 fn f(x: E) -> E { x }
 const X = E::V(u8:1);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { V(uN[8]) }")));
+      TypecheckSucceeds(HasNodeWithType("X", "E<u32:8> { V(uN[8]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumReferenceResolvesTypeDefaultAndOverride) {
@@ -1544,8 +1546,8 @@ const DEFAULT = Box::Value(u8:1);
 const OVERRIDE = Box<u16>::Value(u16:2);
 )",
       TypecheckSucceeds(
-          AllOf(HasNodeWithType("DEFAULT", "Box { Value(uN[8]) }"),
-                HasNodeWithType("OVERRIDE", "Box { Value(uN[16]) }"))));
+          AllOf(HasNodeWithType("DEFAULT", "Box<uN[8]> { Value(uN[8]) }"),
+                HasNodeWithType("OVERRIDE", "Box<uN[16]> { Value(uN[16]) }"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumValueDefaultSubstitutesLiteralType) {
@@ -1698,8 +1700,9 @@ enum E<N: u32 = {8}, V: uN[N] = {0}> { A(uN[N]) }
 const NARROW = E::A(u8:0);
 const WIDE = E<u32:16>::A(u16:0);
 )",
-      TypecheckSucceeds(AllOf(HasNodeWithType("NARROW", "E { A(uN[8]) }"),
-                              HasNodeWithType("WIDE", "E { A(uN[16]) }"))));
+      TypecheckSucceeds(
+          AllOf(HasNodeWithType("NARROW", "E<u32:8, u8:0> { A(uN[8]) }"),
+                HasNodeWithType("WIDE", "E<u32:16, u16:0> { A(uN[16]) }"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumDefaultPreservesConstexprRolloverWarning) {
@@ -1731,7 +1734,8 @@ TEST(TypecheckV2Test, SemanticSumInfersBeforeDependentValueDefault) {
 enum E<N: u32, M: u32 = {N + u32:1}> { V(uN[N], uN[M]) }
 const X = E::V(u8:1, u9:2);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { V(uN[8], uN[9]) }")));
+      TypecheckSucceeds(
+          HasNodeWithType("X", "E<u32:8, u32:9> { V(uN[8], uN[9]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumInfersBeforeValueDependentTypeDefault) {
@@ -1740,7 +1744,8 @@ TEST(TypecheckV2Test, SemanticSumInfersBeforeValueDependentTypeDefault) {
 enum E<N: u32, T: type = uN[N]> { V(uN[N], T) }
 const X = E::V(u8:1, u8:2);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { V(uN[8], uN[8]) }")));
+      TypecheckSucceeds(
+          HasNodeWithType("X", "E<u32:8, uN[8]> { V(uN[8], uN[8]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumInfersBeforeTypeDependentTypeDefault) {
@@ -1749,7 +1754,8 @@ TEST(TypecheckV2Test, SemanticSumInfersBeforeTypeDependentTypeDefault) {
 enum E<T: type, U: type = T> { V(T, U) }
 const X = E::V(u8:1, u8:2);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { V(uN[8], uN[8]) }")));
+      TypecheckSucceeds(
+          HasNodeWithType("X", "E<uN[8], uN[8]> { V(uN[8], uN[8]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumSubstitutesNestedTypeArgumentsInDefault) {
@@ -1759,7 +1765,8 @@ struct W<T: type> { x: T }
 enum E<T: type, U: type = W<T>> { V(T) }
 const X = E::V(u8:1);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { V(uN[8]) }")));
+      TypecheckSucceeds(
+          HasNodeWithType("X", "E<uN[8], W { x: uN[8] }> { V(uN[8]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumKeepsConcreteValueBindingTypeInExpression) {
@@ -1768,7 +1775,8 @@ TEST(TypecheckV2Test, SemanticSumKeepsConcreteValueBindingTypeInExpression) {
 enum E<T: type, V: T> { Value(uN[V + u32:1]) }
 const X = E<u32, u32:7>::Value(u8:1);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { Value(uN[8]) }")));
+      TypecheckSucceeds(
+          HasNodeWithType("X", "E<uN[32], u32:7> { Value(uN[8]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumPartiallyExplicitTupleParametrics) {
@@ -1777,8 +1785,8 @@ TEST(TypecheckV2Test, SemanticSumPartiallyExplicitTupleParametrics) {
 enum TuplePair<N: u32, M: u32> { V(uN[N], uN[M]) }
 const TUPLE = TuplePair<u32:8>::V(u8:1, u16:2);
 )",
-      TypecheckSucceeds(
-          HasNodeWithType("TUPLE", "TuplePair { V(uN[8], uN[16]) }")));
+      TypecheckSucceeds(HasNodeWithType(
+          "TUPLE", "TuplePair<u32:8, u32:16> { V(uN[8], uN[16]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumPartiallyExplicitNamedParametrics) {
@@ -1787,8 +1795,8 @@ TEST(TypecheckV2Test, SemanticSumPartiallyExplicitNamedParametrics) {
 enum NamedPair<N: u32, M: u32> { V { x: uN[N], y: uN[M] } }
 const NAMED = NamedPair<u32:8>::V { y: u16:2, x: u8:1 };
 )",
-      TypecheckSucceeds(
-          HasNodeWithType("NAMED", "NamedPair { V { x: uN[8], y: uN[16] } }")));
+      TypecheckSucceeds(HasNodeWithType(
+          "NAMED", "NamedPair<u32:8, u32:16> { V { x: uN[8], y: uN[16] } }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumAliasArgumentKeepsPayloadInference) {
@@ -1798,7 +1806,8 @@ type U = u32;
 enum E<A: u32, B: u32> { V(uN[A], uN[B]) }
 const X = E<U:8>::V(u8:1, u16:2);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { V(uN[8], uN[16]) }")));
+      TypecheckSucceeds(
+          HasNodeWithType("X", "E<u32:8, u32:16> { V(uN[8], uN[16]) }")));
 }
 
 TEST(TypecheckV2Test, ImportedSemanticSumPartiallyExplicitNamedParametrics) {
@@ -1812,8 +1821,8 @@ const X = imported::E<u32:8>::V { x: u8:1, y: u16:2 };
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK(TypecheckV2(kImported, "imported", &import_data));
   EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
-              IsOkAndHolds(HasTypeInfo(
-                  HasNodeWithType("X", "E { V { x: uN[8], y: uN[16] } }"))));
+              IsOkAndHolds(HasTypeInfo(HasNodeWithType(
+                  "X", "E<u32:8, u32:16> { V { x: uN[8], y: uN[16] } }"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumConstructorInGenericFunction) {
@@ -1827,8 +1836,9 @@ fn f() -> (E<u32:8>, E<u32:16>) {
   (a, b)
 }
 )",
-      TypecheckSucceeds(AllOf(HasNodeWithType("a", "E { V(uN[8]) }"),
-                              HasNodeWithType("b", "E { V(uN[16]) }"))));
+      TypecheckSucceeds(
+          AllOf(HasNodeWithType("a", "E<u32:8> { V(uN[8]) }"),
+                HasNodeWithType("b", "E<u32:16> { V(uN[16]) }"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumConstructorWithImportedTypeArgument) {
@@ -1871,7 +1881,7 @@ TEST(TypecheckV2Test, SemanticSumValueArgumentUsesEarlierExplicitBinding) {
 enum E<N: u32, V: uN[N]> { A(u8) }
 const X = E<u32:8, u8:1>::A(u8:0);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { A(uN[8]) }")));
+      TypecheckSucceeds(HasNodeWithType("X", "E<u32:8, u8:1> { A(uN[8]) }")));
 }
 
 TEST(TypecheckV2Test,
@@ -1881,7 +1891,8 @@ TEST(TypecheckV2Test,
 enum E<N: u32, V: uN[N], M: u32> { A(uN[M]) }
 const X = E<u32:8, u8:1>::A(u16:0);
 )",
-      TypecheckSucceeds(HasNodeWithType("X", "E { A(uN[16]) }")));
+      TypecheckSucceeds(
+          HasNodeWithType("X", "E<u32:8, u8:1, u32:16> { A(uN[16]) }")));
 }
 
 TEST(TypecheckV2Test, SemanticSumValueArgumentRejectsWrongWidth) {
@@ -1970,10 +1981,11 @@ const WIDE = imported::E<u16>::B(u8:1);
 )";
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK(TypecheckV2(kImported, "imported", &import_data));
-  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
-              IsOkAndHolds(HasTypeInfo(AllOf(
-                  HasNodeWithType("NARROW", "E { A(uN[8]) | B(uN[8]) }"),
-                  HasNodeWithType("WIDE", "E { A(uN[8]) | B(uN[8]) }")))));
+  EXPECT_THAT(
+      TypecheckV2(kProgram, "main", &import_data),
+      IsOkAndHolds(HasTypeInfo(AllOf(
+          HasNodeWithType("NARROW", "E<uN[8]> { A(uN[8]) | B(uN[8]) }"),
+          HasNodeWithType("WIDE", "E<uN[16]> { A(uN[8]) | B(uN[8]) }")))));
 }
 
 TEST(TypecheckV2Test, ImportedSemanticSumTypesParametricMapDiscriminantValues) {
@@ -2155,7 +2167,7 @@ fn f(x: Box<bits[8]>) -> Box<u8> { x }
 
 TEST(TypecheckV2Test,
      SemanticSumSharedPayloadInferenceIgnoresConstructorOrder) {
-  constexpr std::string_view kType = "E { None | Some(uN[8]) }";
+  constexpr std::string_view kType = "E<u32:8> { None | Some(uN[8]) }";
   EXPECT_THAT(
       R"(#![feature(generics)]
 enum E<N: u32> { None, Some(uN[N]) }
@@ -2166,15 +2178,16 @@ fn f(b: bool) {
   let array_last = [E::None, E::Some(u8:0)];
 }
 )",
-      TypecheckSucceeds(
-          AllOf(HasNodeWithType("first", kType), HasNodeWithType("last", kType),
-                HasNodeWithType("array_first", "E { None | Some(uN[8]) }[2]"),
-                HasNodeWithType("array_last", "E { None | Some(uN[8]) }[2]"))));
+      TypecheckSucceeds(AllOf(
+          HasNodeWithType("first", kType), HasNodeWithType("last", kType),
+          HasNodeWithType("array_first", "E<u32:8> { None | Some(uN[8]) }[2]"),
+          HasNodeWithType("array_last",
+                          "E<u32:8> { None | Some(uN[8]) }[2]"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumSharedPayloadsJointlyInferParameters) {
   constexpr std::string_view kType =
-      "E { Tuple(uN[8]) | Named { value: uN[16] } }";
+      "E<u32:8, u32:16> { Tuple(uN[8]) | Named { value: uN[16] } }";
   EXPECT_THAT(R"(#![feature(generics)]
 enum E<N: u32, M: u32> { Tuple(uN[N]), Named { value: uN[M] } }
 fn f(b: bool) {
@@ -2333,10 +2346,13 @@ const OVERRIDE = imported::Box<u32:16>::Value(u16:2);
 )";
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK(TypecheckV2(kImported, "imported", &import_data));
-  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
-              IsOkAndHolds(HasTypeInfo(AllOf(
-                  HasNodeWithType("DEFAULT", "Box { Value(uN[8]) }"),
-                  HasNodeWithType("OVERRIDE", "Box { Value(uN[16]) }")))));
+  EXPECT_THAT(
+      TypecheckV2(kProgram, "main", &import_data),
+      IsOkAndHolds(HasTypeInfo(AllOf(
+          HasNodeWithType("DEFAULT",
+                          "Box<u32:8, uN[8], u8:0> { Value(uN[8]) }"),
+          HasNodeWithType("OVERRIDE",
+                          "Box<u32:16, uN[16], u16:0> { Value(uN[16]) }")))));
 }
 
 TEST(TypecheckV2Test, SemanticSumConstructorPreservesShadowedTypeAlias) {
@@ -2449,21 +2465,24 @@ TEST(TypecheckV2Test, SemanticSumPrimitiveMemberPayloadTypeAndControl) {
   // replacing just its dependent width with u8 is the accepting control.
   for (std::string_view payload : {"uN[T::ZERO + u32:8]", "u8"}) {
     SCOPED_TRACE(payload);
-    EXPECT_THAT(absl::Substitute(R"(#![feature(generics)]
+    EXPECT_THAT(
+        absl::Substitute(R"(#![feature(generics)]
 enum E<T: type> { V($0) }
 fn f(x: E<u32>) -> E<u32> { x }
 )",
-                                 payload),
-                TypecheckSucceeds(HasNodeWithType(
-                    "f", "(E { V(uN[8]) }) -> E { V(uN[8]) }")));
+                         payload),
+        TypecheckSucceeds(HasNodeWithType(
+            "f", "(E<uN[32]> { V(uN[8]) }) -> E<uN[32]> { V(uN[8]) }")));
   }
 }
 
 TEST(TypecheckV2Test, SemanticSumPrimitiveMemberConstructorPayloads) {
   constexpr std::string_view k8 =
-      "E { Tuple(uN[8], uN[8]) | Named { width: uN[8], value: uN[8] } }";
+      "E<uN[32], u32:8> { Tuple(uN[8], uN[8]) | Named { width: uN[8], value: "
+      "uN[8] } }";
   constexpr std::string_view k16 =
-      "E { Tuple(uN[16], uN[16]) | Named { width: uN[16], value: uN[16] } }";
+      "E<uN[32], u32:16> { Tuple(uN[16], uN[16]) | Named { width: uN[16], "
+      "value: uN[16] } }";
   // The first payload supplies N in the partial cases. T is always explicit
   // or supplied by context, rather than inferred from its member's value.
   EXPECT_THAT(
@@ -2511,7 +2530,7 @@ const EQUIVALENT: OtherAlias = Alias::Tuple(u8:3);
   ImportData import_data = CreateImportDataForTest(
       std::make_unique<FakeFilesystem>(std::move(files), "/"));
   constexpr std::string_view kType =
-      "E { Tuple(uN[8]) | Named { value: uN[8] } }";
+      "E<uN[32]> { Tuple(uN[8]) | Named { value: uN[8] } }";
   EXPECT_THAT(
       TypecheckV2(kProgram, "main", &import_data),
       IsOkAndHolds(HasTypeInfo(AllOf(HasNodeWithType("TUPLE", kType),
@@ -2529,21 +2548,23 @@ const EXPLICIT = E<uN[3]>::V(u8:0);
 const CONTEXTUAL: E<uN[4]> = E::V(u16:0);
 )",
               TypecheckSucceeds(AllOf(
-                  HasNodeWithType("f", "(E { V(uN[8]) }) -> E { V(uN[8]) }"),
-                  HasNodeWithType("EXPLICIT", "E { V(uN[8]) }"),
-                  HasNodeWithType("CONTEXTUAL", "E { V(uN[16]) }"))));
+                  HasNodeWithType(
+                      "f", "(E<uN[3]> { V(uN[8]) }) -> E<uN[3]> { V(uN[8]) }"),
+                  HasNodeWithType("EXPLICIT", "E<uN[3]> { V(uN[8]) }"),
+                  HasNodeWithType("CONTEXTUAL", "E<uN[4]> { V(uN[16]) }"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumPrimitiveMemberKeepsCallerWidth) {
-  EXPECT_THAT(R"(#![feature(generics)]
+  EXPECT_THAT(
+      R"(#![feature(generics)]
 enum E<T: type> { V(uN[(T::MAX as u32) + u32:1]) }
 fn make<N: u32>(x: uN[u32:1 << N]) -> E<uN[N]> { E<uN[N]>::V(x) }
 fn narrow(x: u8) -> E<uN[3]> { make<u32:3>(x) }
 fn wide(x: u16) -> E<uN[4]> { make<u32:4>(x) }
 )",
-              TypecheckSucceeds(AllOf(
-                  HasNodeWithType("narrow", "(uN[8]) -> E { V(uN[8]) }"),
-                  HasNodeWithType("wide", "(uN[16]) -> E { V(uN[16]) }"))));
+      TypecheckSucceeds(AllOf(
+          HasNodeWithType("narrow", "(uN[8]) -> E<uN[3]> { V(uN[8]) }"),
+          HasNodeWithType("wide", "(uN[16]) -> E<uN[4]> { V(uN[16]) }"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumPrimitiveMemberRejectsUnknownMember) {

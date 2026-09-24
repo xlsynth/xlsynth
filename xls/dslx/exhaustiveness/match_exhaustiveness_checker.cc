@@ -66,6 +66,9 @@ EnumValueDomain MakeEnumValueDomain(const EnumType& enum_type) {
 
 struct FlattenedLeafType {
   const Type* type;
+  // Sum tags use declaration-order coordinates in the interval domain. This
+  // keeps source discriminant gaps out of the matchable region.
+  const SumType* sum_tag_type = nullptr;
   std::optional<int64_t> dense_max_value;
   std::vector<int64_t> excluded_dense_values;
   std::optional<EnumValueDomain> enum_domain;
@@ -171,6 +174,7 @@ void AppendStorageLeafTypes(const Type& type, FlattenedLeafTypes* result) {
       }
       result->flat.push_back(FlattenedLeafType{
           .type = result->owned.back().get(),
+          .sum_tag_type = &type.AsSum(),
           .dense_max_value = type.AsSum().variant_count() - 1,
           .excluded_dense_values = std::move(excluded_dense_values),
           .enum_domain = std::nullopt,
@@ -289,6 +293,15 @@ InterpValueInterval MakePointIntervalForLeafType(
   const Type& type = *leaf_type.type;
   VLOG(5) << "MakePointIntervalForLeafType; type: `" << type.ToString()
           << "` value: `" << value.ToString() << "`";
+  if (leaf_type.sum_tag_type != nullptr) {
+    absl::StatusOr<SumTypeEncoding::VariantInfo> variant =
+        SumTypeEncoding(*leaf_type.sum_tag_type)
+            .GetVariantByTagBits(value.GetBitsOrDie());
+    CHECK_OK(variant.status());
+    InterpValue coordinate = InterpValue::MakeUBits(
+        value.GetBitsOrDie().bit_count(), variant->variant_index);
+    return InterpValueInterval(coordinate, coordinate);
+  }
   if (type.IsEnum()) {
     CHECK(value.IsEnum());
     CHECK_EQ(value.GetEnumData()->def, &type.AsEnum().nominal_type())
@@ -444,8 +457,9 @@ int64_t GetSumVariantIndex(const SumType& sum_type,
 }
 
 InterpValue MakeSumTagValue(const SumType& sum_type, int64_t variant_index) {
-  int64_t bit_count = sum_type.storage_tag_bit_count().GetAsInt64().value();
-  return InterpValue::MakeUBits(bit_count, variant_index);
+  return InterpValue::MakeBits(
+      /*is_signed=*/false,
+      sum_type.GetDiscriminant(variant_index).GetBitsOrDie());
 }
 
 void AppendWildcardLeavesForType(const Type& type,
@@ -525,14 +539,17 @@ SumConstantValue ResolveSumConstantValue(const Expr& expression,
   }
   CHECK(value.has_value()) << "Missing semantic-sum constexpr value for `"
                            << expression.ToString() << "`";
-  absl::StatusOr<EncodedSumView> encoded =
-      GetEncodedSumView(*value);
+  absl::StatusOr<EncodedSumView> encoded = GetEncodedSumView(*value);
   CHECK_OK(encoded.status()) << "Invalid semantic-sum constexpr value for `"
                              << expression.ToString() << "`";
-  int64_t variant_index = encoded->tag.GetBitValueUnsigned().value();
+  absl::StatusOr<SumTypeEncoding::VariantInfo> variant =
+      SumTypeEncoding(sum_type).GetVariantByTagBits(
+          encoded->tag.GetBitsOrDie());
+  CHECK_OK(variant.status()) << "Invalid semantic-sum constexpr tag for `"
+                             << expression.ToString() << "`";
   return SumConstantValue{
       .value = std::move(*value),
-      .variant_index = variant_index,
+      .variant_index = variant->variant_index,
   };
 }
 
@@ -547,16 +564,15 @@ void AppendConstantValueLeaves(const InterpValue& value, const Type& type,
     }
   } else if (type.IsSum()) {
     const SumType& sum_type = type.AsSum();
-    absl::StatusOr<EncodedSumView> encoded =
-        GetEncodedSumView(value);
+    absl::StatusOr<EncodedSumView> encoded = GetEncodedSumView(value);
     CHECK_OK(encoded.status());
-    int64_t variant_index = encoded->tag.GetBitValueUnsigned().value();
-    CHECK_LT(variant_index, sum_type.variants().size());
+    absl::StatusOr<SumTypeEncoding::VariantInfo> decoded_variant =
+        SumTypeEncoding(sum_type).GetVariantByTagBits(
+            encoded->tag.GetBitsOrDie());
+    CHECK_OK(decoded_variant.status());
     const Phase1SumTypeEncoding encoding(sum_type);
     Phase1SumTypeEncoding::VariantInfo variant =
-        encoding
-            .GetVariant(
-                sum_type.variants()[variant_index].variant().identifier())
+        encoding.GetVariant(decoded_variant->variant->variant().identifier())
             .value();
     result->push_back(MakeSumTagValue(sum_type, variant.variant_index));
     std::vector<const InterpValue*> active_payload_values(
@@ -1068,6 +1084,8 @@ std::string FormatSampleForType(
   } else if (type.IsSum()) {
     CHECK_LT(*leaf_index, dimensions.size());
     const SumType& sum_type = type.AsSum();
+    // The interval coordinate is a declaration-order index, not the raw
+    // source discriminant.
     int64_t variant_index =
         dimensions[(*leaf_index)++].min().GetBitValueUnsigned().value();
     CHECK_LT(variant_index, sum_type.variant_count());

@@ -1231,10 +1231,11 @@ absl::Status BytecodeEmitter::HandleSumConstructorInvocation(
 
   Add(Bytecode(node->span(), Bytecode::Op::kCreateTuple,
                Bytecode::NumElements(encoding.payload_slot_count())));
-  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
   Add(Bytecode::MakeLiteral(
       node->span(),
-      InterpValue::MakeUBits(tag_bit_count, variant.variant_index)));
+      InterpValue::MakeBits(
+          /*is_signed=*/false,
+          sum_type.GetDiscriminant(variant.variant_index).GetBitsOrDie())));
   Add(Bytecode(node->span(), Bytecode::Op::kSwap));
   Add(Bytecode(node->span(), Bytecode::Op::kCreateTuple,
                Bytecode::NumElements(2)));
@@ -1350,7 +1351,6 @@ BytecodeEmitter::HandleSumVariantPayloadPattern(
   const Phase1SumTypeEncoding encoding(sum_type);
   XLS_ASSIGN_OR_RETURN(Phase1SumTypeEncoding::VariantInfo variant,
                        encoding.GetVariant(pattern->constructor_ref()->attr()));
-  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
 
   std::vector<Bytecode::MatchArmItem> payload_items(
       encoding.payload_slot_count(), Bytecode::MatchArmItem::MakeWildcard());
@@ -1389,8 +1389,9 @@ BytecodeEmitter::HandleSumVariantPayloadPattern(
   }
 
   return Bytecode::MatchArmItem::MakeTuple(
-      {Bytecode::MatchArmItem::MakeInterpValue(
-           InterpValue::MakeUBits(tag_bit_count, variant.variant_index)),
+      {Bytecode::MatchArmItem::MakeInterpValue(InterpValue::MakeBits(
+           /*is_signed=*/false,
+           sum_type.GetDiscriminant(variant.variant_index).GetBitsOrDie())),
        Bytecode::MatchArmItem::MakeTuple(std::move(payload_items))});
 }
 
@@ -1852,10 +1853,11 @@ absl::Status BytecodeEmitter::HandleSumStructInstance(
 
   Add(Bytecode(node->span(), Bytecode::Op::kCreateTuple,
                Bytecode::NumElements(encoding.payload_slot_count())));
-  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
   Add(Bytecode::MakeLiteral(
       node->span(),
-      InterpValue::MakeUBits(tag_bit_count, variant.variant_index)));
+      InterpValue::MakeBits(
+          /*is_signed=*/false,
+          sum_type.GetDiscriminant(variant.variant_index).GetBitsOrDie())));
   Add(Bytecode::MakeSwap(node->span()));
   Add(Bytecode(node->span(), Bytecode::Op::kCreateTuple,
                Bytecode::NumElements(2)));
@@ -1932,10 +1934,11 @@ absl::Status BytecodeEmitter::HandleSumInstance(const SumInstance* node) {
 
   Add(Bytecode(node->span(), Bytecode::Op::kCreateTuple,
                Bytecode::NumElements(encoding.payload_slot_count())));
-  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
   Add(Bytecode::MakeLiteral(
       node->span(),
-      InterpValue::MakeUBits(tag_bit_count, variant.variant_index)));
+      InterpValue::MakeBits(
+          /*is_signed=*/false,
+          sum_type.GetDiscriminant(variant.variant_index).GetBitsOrDie())));
   Add(Bytecode::MakeSwap(node->span()));
   Add(Bytecode(node->span(), Bytecode::Op::kCreateTuple,
                Bytecode::NumElements(2)));

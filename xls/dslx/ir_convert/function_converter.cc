@@ -173,6 +173,48 @@ bool TypeContainsSum(const Type& type) {
   return false;
 }
 
+// Selects the Boolean belonging to the declared variant with these tag bits.
+// A tag that does not name a declared variant returns false.
+absl::StatusOr<BValue> BuildSumTagPredicate(BuilderBase& builder,
+                                            const SumType& type, BValue tag,
+                                            absl::Span<const BValue> cases,
+                                            const SourceInfo& loc) {
+  XLS_RET_CHECK_EQ(cases.size(), type.variant_count());
+  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count,
+                       type.tag_bit_count().GetAsInt64());
+  bool tags_are_indices = true;
+  for (int64_t i = 0; i < type.variant_count(); ++i) {
+    absl::StatusOr<uint64_t> tag_value =
+        type.GetDiscriminant(i).GetBitsOrDie().ToUint64();
+    if (!tag_value.ok() || *tag_value != static_cast<uint64_t>(i)) {
+      tags_are_indices = false;
+      break;
+    }
+  }
+  if (tags_are_indices) {
+    const bool covers_full_tag_space =
+        tag_bit_count < 63 &&
+        type.variant_count() == (int64_t{1} << tag_bit_count);
+    std::optional<BValue> default_value;
+    if (tag_bit_count == 0) {
+      XLS_RET_CHECK_EQ(cases.size(), 1);
+      return cases.front();
+    } else if (!covers_full_tag_space) {
+      default_value = builder.Literal(UBits(0, 1), loc);
+    }
+    return builder.Select(tag, cases, default_value, loc);
+  } else {
+    BValue result = builder.Literal(UBits(0, 1), loc);
+    for (int64_t i = 0; i < type.variant_count(); ++i) {
+      BValue tag_matches = builder.Eq(
+          tag, builder.Literal(type.GetDiscriminant(i).GetBitsOrDie(), loc),
+          loc);
+      result = builder.Or(result, builder.And(tag_matches, cases[i], loc), loc);
+    }
+    return result;
+  }
+}
+
 }  // namespace
 
 absl::StatusOr<xls::Function*> EmitImplicitTokenEntryWrapper(
@@ -806,7 +848,6 @@ absl::StatusOr<BValue> FunctionConverter::BuildEqByType(const Type& type,
       return function_builder_->Eq(lhs, rhs, loc);
     }
     const Phase1SumTypeEncoding encoding(*sum_type);
-    XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
     BValue lhs_tag = function_builder_->TupleIndex(lhs, 0, loc);
     BValue rhs_tag = function_builder_->TupleIndex(rhs, 0, loc);
     BValue lhs_payload = function_builder_->TupleIndex(lhs, 1, loc);
@@ -837,19 +878,9 @@ absl::StatusOr<BValue> FunctionConverter::BuildEqByType(const Type& type,
           case_payload_eqs.push_back(case_payload_eq);
           return absl::OkStatus();
         }));
-    // TODO: Phase 2 owns malformed-sum equality. Phase 1 only defines equality
-    // for well-formed semantic sums, so invalid tag encodings fall through to a
-    // conservative `false` default instead of reifying malformed-value
-    // comparisons here.
-    const bool covers_full_dense_tag_space =
-        tag_bit_count < 63 &&
-        sum_type->variant_count() == (int64_t{1} << tag_bit_count);
-    std::optional<BValue> default_payload_eq = std::nullopt;
-    if (!covers_full_dense_tag_space) {
-      default_payload_eq = function_builder_->Literal(UBits(0, 1), loc);
-    }
-    BValue payload_eq = function_builder_->Select(lhs_tag, case_payload_eqs,
-                                                  default_payload_eq, loc);
+    XLS_ASSIGN_OR_RETURN(BValue payload_eq,
+                         BuildSumTagPredicate(*function_builder_, *sum_type,
+                                              lhs_tag, case_payload_eqs, loc));
     return function_builder_->And(tag_eq, payload_eq, loc);
   }
   if (!TypeContainsSum(type)) {
@@ -907,7 +938,6 @@ absl::StatusOr<BValue> FunctionConverter::BuildPhase1WellFormedPredicateByType(
       return function_builder_->Literal(UBits(0, 1), loc);
     }
     const Phase1SumTypeEncoding encoding(*sum_type);
-    XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
     BValue tag = function_builder_->TupleIndex(value, 0, loc);
     BValue payload = function_builder_->TupleIndex(value, 1, loc);
     std::vector<BValue> case_payload_checks;
@@ -933,15 +963,8 @@ absl::StatusOr<BValue> FunctionConverter::BuildPhase1WellFormedPredicateByType(
           case_payload_checks.push_back(case_payload_ok);
           return absl::OkStatus();
         }));
-    const bool covers_full_dense_tag_space =
-        tag_bit_count < 63 &&
-        sum_type->variant_count() == (int64_t{1} << tag_bit_count);
-    std::optional<BValue> default_payload_check = std::nullopt;
-    if (!covers_full_dense_tag_space) {
-      default_payload_check = function_builder_->Literal(UBits(0, 1), loc);
-    }
-    return function_builder_->Select(tag, case_payload_checks,
-                                     default_payload_check, loc);
+    return BuildSumTagPredicate(*function_builder_, *sum_type, tag,
+                                case_payload_checks, loc);
   } else if (auto* tuple_type = dynamic_cast<const TupleType*>(&type);
              tuple_type != nullptr) {
     BValue result = function_builder_->Literal(UBits(1, 1), loc);
@@ -2236,15 +2259,15 @@ absl::StatusOr<BValue> FunctionConverter::HandleSumVariantPayloadPattern(
   const Phase1SumTypeEncoding encoding(matched_type);
   XLS_ASSIGN_OR_RETURN(Phase1SumTypeEncoding::VariantInfo variant,
                        encoding.GetVariant(pattern->constructor_ref()->attr()));
-  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
 
   SourceInfo loc = ToSourceInfo(pattern->span());
   BValue tag = function_builder_->TupleIndex(matched_value, 0, loc);
   BValue payload = function_builder_->TupleIndex(matched_value, 1, loc);
   BValue result = function_builder_->Eq(
       tag,
-      function_builder_->Literal(UBits(variant.variant_index, tag_bit_count),
-                                 loc),
+      function_builder_->Literal(
+          matched_type.GetDiscriminant(variant.variant_index).GetBitsOrDie(),
+          loc),
       loc);
 
   auto append_condition = [&](const PatternTree& subpattern,
@@ -3269,14 +3292,13 @@ absl::Status FunctionConverter::HandleSumConstructorInvocation(
         return absl::OkStatus();
       }));
 
-  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
-  Def(node,
-      [this, &payload_slots, variant, tag_bit_count](const SourceInfo& loc) {
-        BValue payload = function_builder_->Tuple(payload_slots, loc);
-        BValue tag = function_builder_->Literal(
-            UBits(variant.variant_index, tag_bit_count), loc);
-        return function_builder_->Tuple({tag, payload}, loc);
-      });
+  const Bits& tag_bits =
+      sum_type.GetDiscriminant(variant.variant_index).GetBitsOrDie();
+  Def(node, [this, &payload_slots, &tag_bits](const SourceInfo& loc) {
+    BValue payload = function_builder_->Tuple(payload_slots, loc);
+    BValue tag = function_builder_->Literal(tag_bits, loc);
+    return function_builder_->Tuple({tag, payload}, loc);
+  });
   return absl::OkStatus();
 }
 
@@ -3326,14 +3348,13 @@ absl::Status FunctionConverter::HandleSumInstance(const SumInstance* node) {
         return absl::OkStatus();
       }));
 
-  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
-  Def(node,
-      [this, &payload_slots, variant, tag_bit_count](const SourceInfo& loc) {
-        BValue payload = function_builder_->Tuple(payload_slots, loc);
-        BValue tag = function_builder_->Literal(
-            UBits(variant.variant_index, tag_bit_count), loc);
-        return function_builder_->Tuple({tag, payload}, loc);
-      });
+  const Bits& tag_bits =
+      sum_type.GetDiscriminant(variant.variant_index).GetBitsOrDie();
+  Def(node, [this, &payload_slots, &tag_bits](const SourceInfo& loc) {
+    BValue payload = function_builder_->Tuple(payload_slots, loc);
+    BValue tag = function_builder_->Literal(tag_bits, loc);
+    return function_builder_->Tuple({tag, payload}, loc);
+  });
   return absl::OkStatus();
 }
 
@@ -5251,14 +5272,13 @@ absl::Status FunctionConverter::HandleSumStructInstance(
         return absl::OkStatus();
       }));
 
-  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
-  Def(node,
-      [this, &payload_slots, variant, tag_bit_count](const SourceInfo& loc) {
-        BValue payload = function_builder_->Tuple(payload_slots, loc);
-        BValue tag = function_builder_->Literal(
-            UBits(variant.variant_index, tag_bit_count), loc);
-        return function_builder_->Tuple({tag, payload}, loc);
-      });
+  const Bits& tag_bits =
+      sum_type.GetDiscriminant(variant.variant_index).GetBitsOrDie();
+  Def(node, [this, &payload_slots, &tag_bits](const SourceInfo& loc) {
+    BValue payload = function_builder_->Tuple(payload_slots, loc);
+    BValue tag = function_builder_->Literal(tag_bits, loc);
+    return function_builder_->Tuple({tag, payload}, loc);
+  });
   return absl::OkStatus();
 }
 

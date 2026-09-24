@@ -14,6 +14,7 @@
 
 #include "xls/dslx/type_system_v2/inference_table_converter_impl.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <iterator>
@@ -124,6 +125,89 @@ bool IsComparisonRequiringImplicitToken(const AstNode* node,
   }
 }
 
+absl::StatusOr<std::pair<TypeDim, std::vector<InterpValue>>>
+GetSemanticSumTagLayout(const SumDef& sum_def, const Type* tag_type,
+                        std::vector<InterpValue> discriminants,
+                        const FileTable& file_table) {
+  const int64_t variant_count = sum_def.variants().size();
+  const bool has_explicit_discriminants = !discriminants.empty();
+  std::optional<int64_t> annotated_tag_bit_count;
+
+  if (tag_type != nullptr) {
+    std::optional<BitsLikeProperties> bits_like = GetBitsLike(*tag_type);
+    XLS_RET_CHECK(bits_like.has_value());
+    XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, bits_like->size.GetAsInt64());
+    annotated_tag_bit_count = tag_bit_count;
+    if (!has_explicit_discriminants) {
+      XLS_ASSIGN_OR_RETURN(bool is_signed, bits_like->is_signed.GetAsBool());
+      if (variant_count > 0) {
+        const int64_t required_tag_bit_count =
+            is_signed ? Bits::MinBitCountSigned(variant_count - 1)
+                      : Bits::MinBitCountUnsigned(variant_count - 1);
+        if (required_tag_bit_count > tag_bit_count) {
+          return TypeInferenceErrorStatusForAnnotation(
+              sum_def.tag_type_annotation()->span(),
+              sum_def.tag_type_annotation(),
+              absl::Substitute(
+                  "Semantic sum `$0` needs at least $1 tag bits for $2 "
+                  "implicit constructors, but tag type `$3` has only $4 "
+                  "bits.",
+                  sum_def.identifier(), required_tag_bit_count, variant_count,
+                  sum_def.tag_type_annotation()->ToString(), tag_bit_count),
+              file_table);
+        }
+      }
+      discriminants.reserve(variant_count);
+      for (int64_t i = 0; i < variant_count; ++i) {
+        discriminants.push_back(
+            InterpValue::MakeBits(is_signed, UBits(i, tag_bit_count)));
+      }
+      return std::make_pair(TypeDim::CreateU32(tag_bit_count),
+                            std::move(discriminants));
+    }
+  }
+
+  if (!has_explicit_discriminants) {
+    const int64_t tag_bit_count =
+        variant_count <= 1 ? 0 : Bits::MinBitCountUnsigned(variant_count - 1);
+    discriminants.reserve(variant_count);
+    for (int64_t i = 0; i < variant_count; ++i) {
+      discriminants.push_back(InterpValue::MakeUBits(tag_bit_count, i));
+    }
+    return std::make_pair(TypeDim::CreateU32(tag_bit_count),
+                          std::move(discriminants));
+  }
+
+  if (annotated_tag_bit_count.has_value()) {
+    return std::make_pair(TypeDim::CreateU32(*annotated_tag_bit_count),
+                          std::move(discriminants));
+  }
+
+  const bool tag_is_signed =
+      absl::c_any_of(discriminants, [](const InterpValue& discriminant) {
+        return discriminant.IsNegative();
+      });
+  int64_t tag_bit_count = 0;
+  for (const InterpValue& discriminant : discriminants) {
+    const Bits& bits = discriminant.GetBitsOrDie();
+    int64_t required_bit_count;
+    if (tag_is_signed) {
+      const int64_t leading_sign_bits = discriminant.IsNegative()
+                                            ? bits.CountLeadingOnes()
+                                            : bits.CountLeadingZeros();
+      required_bit_count = bits.bit_count() - leading_sign_bits + 1;
+    } else {
+      required_bit_count = bits.bit_count() - bits.CountLeadingZeros();
+    }
+    tag_bit_count = std::max(tag_bit_count, required_bit_count);
+  }
+  for (InterpValue& discriminant : discriminants) {
+    discriminant = InterpValue::MakeBits(
+        tag_is_signed, discriminant.GetBitsOrDie().Slice(0, tag_bit_count));
+  }
+  return std::make_pair(TypeDim::CreateU32(tag_bit_count),
+                        std::move(discriminants));
+}
 // RAII guard for a frame on the proc type info stack.
 class ProcTypeInfoFrame {
  public:
@@ -1896,15 +1980,42 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
         XLS_RET_CHECK(sum_ref.has_value());
       }
       absl::flat_hash_map<const NameDef*, ExprOrType> resolved_parametrics;
+      std::vector<SumType::ParametricArgument> concrete_parametrics;
+      concrete_parametrics.reserve(sum_ref->parametrics.size());
       for (int i = 0; i < sum_ref->parametrics.size(); ++i) {
-        resolved_parametrics.emplace(
-            sum_def->parametric_bindings()[i]->name_def(),
-            sum_ref->parametrics[i]);
+        const ParametricBinding* binding = sum_def->parametric_bindings()[i];
+        XLS_ASSIGN_OR_RETURN(
+            ExprOrType parametric,
+            NormalizeParametricArgument(*binding, sum_ref->parametrics[i],
+                                        table_, file_table_));
+        if (std::holds_alternative<Expr*>(parametric)) {
+          // Earlier arguments determine the value binding's type. For example,
+          // E<N: u32, V: uN[N]> uses uN[8] for V when N is 8.
+          XLS_ASSIGN_OR_RETURN(
+              const TypeAnnotation* binding_annotation,
+              GetParametricFreeType(binding->type_annotation(),
+                                    resolved_parametrics,
+                                    /*real_self_type=*/std::nullopt,
+                                    /*clone_if_no_parametrics=*/false));
+          XLS_RETURN_IF_ERROR(ConvertSubtree(binding_annotation,
+                                             /*function=*/std::nullopt,
+                                             parametric_context));
+          XLS_ASSIGN_OR_RETURN(InterpValue value,
+                               evaluator_->Evaluate(ParametricContextScopedExpr(
+                                   parametric_context, binding_annotation,
+                                   std::get<Expr*>(parametric))));
+          concrete_parametrics.emplace_back(std::move(value));
+        } else {
+          XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> concrete_type,
+                               Concretize(std::get<TypeAnnotation*>(parametric),
+                                          parametric_context));
+          concrete_parametrics.emplace_back(std::move(concrete_type));
+        }
+        resolved_parametrics.emplace(binding->name_def(), parametric);
       }
-      XLS_ASSIGN_OR_RETURN(
-          SumType::ZeroSelection zero_selection,
-          ValidateSemanticSumDiscriminants(*sum_def, parametric_context,
-                                           resolved_parametrics));
+      XLS_ASSIGN_OR_RETURN(auto tag_layout, ConcretizeSemanticSumTagLayout(
+                                                *sum_def, parametric_context,
+                                                resolved_parametrics));
       if (!sum_def->IsParametric()) {
         std::unique_ptr<Type> cached_type =
             GetCachedType(sum_def, std::nullopt);
@@ -1964,10 +2075,11 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
               SumTypeVariant::MakeStruct(*variant, std::move(payload_members)));
         }
       }
-      // Preserve `sum_def->variants()` declaration order: `SumType` derives
-      // tag numbering and payload-slot layout from this vector order.
+      // Preserve declaration order for traversal; the semantic tags and their
+      // chosen width are stored separately from the positional payload data.
       std::unique_ptr<Type> type = std::make_unique<SumType>(
-          *sum_def, std::move(variants), zero_selection);
+          *sum_def, std::move(variants), std::move(tag_layout.first),
+          std::move(tag_layout.second), std::move(concrete_parametrics));
       if (!sum_def->IsParametric()) {
         XLS_RETURN_IF_ERROR(AddCachedType(sum_def, std::nullopt, *type));
       }
@@ -2310,7 +2422,7 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
   }
 
   absl::StatusOr<std::vector<Expr*>> CloneParametricSumDiscriminants(
-      const SumDef& sum_def,
+      const SumDef& sum_def, const TypeAnnotation* tag_type_annotation,
       std::optional<const ParametricContext*> parametric_context,
       const absl::flat_hash_map<const NameDef*, ExprOrType>&
           resolved_parametrics) {
@@ -2337,16 +2449,9 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
     std::unique_ptr<PopulateTableVisitor> visitor =
         CreatePopulateTableVisitor(&module_, &table_, &import_data_,
                                    /*typecheck_imported_module=*/nullptr);
-    if (sum_def.tag_type_annotation() != nullptr) {
-      XLS_ASSIGN_OR_RETURN(
-          ExprOrType cloned,
-          CloneParametricExprOrType(sum_def.tag_type_annotation(),
-                                    parametric_context, resolved_parametrics));
-      const auto* tag_type = std::get<TypeAnnotation*>(cloned);
-      table_.SetAnnotationFlag(tag_type, TypeInferenceFlag::kFormalMemberType);
+    if (tag_type_annotation != nullptr) {
       XLS_RETURN_IF_ERROR(
-          table_.SetTypeAnnotation(discriminants.front(), tag_type));
-      XLS_RETURN_IF_ERROR(visitor->PopulateFromTypeAnnotation(tag_type));
+          table_.SetTypeAnnotation(discriminants.front(), tag_type_annotation));
     }
     // As in HandleSumDef, every discriminant contributes to one type variable.
     // Populate all of them before conversion can resolve that variable.
@@ -2356,7 +2461,8 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
     return discriminants;
   }
 
-  absl::StatusOr<SumType::ZeroSelection> ValidateSemanticSumDiscriminants(
+  absl::StatusOr<std::pair<TypeDim, std::vector<InterpValue>>>
+  ConcretizeSemanticSumTagLayout(
       const SumDef& sum_def,
       std::optional<const ParametricContext*> parametric_context,
       const absl::flat_hash_map<const NameDef*, ExprOrType>&
@@ -2367,35 +2473,47 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
         discriminants.push_back(*variant->discriminant());
       }
     }
-    if (discriminants.empty() && sum_def.tag_type_annotation() != nullptr &&
-        !sum_def.variants().empty()) {
-      return TypeInferenceErrorStatusForAnnotation(
-          sum_def.tag_type_annotation()->span(), sum_def.tag_type_annotation(),
-          absl::Substitute(
-              "Semantic sum `$0` may specify a tag type only when every "
-              "variant has an explicit discriminant.",
-              sum_def.identifier()),
-          file_table_);
-    } else if (sum_def.variants().empty()) {
-      return SumType::NoZeroVariant{};
-    } else if (discriminants.empty()) {
-      return SumType::SelectedZeroVariant{
-          std::cref(*sum_def.variants().front())};
+    XLS_RET_CHECK(discriminants.empty() ||
+                  discriminants.size() == sum_def.variants().size());
+    const TypeAnnotation* tag_type_annotation = sum_def.tag_type_annotation();
+    if (sum_def.IsParametric() && tag_type_annotation != nullptr) {
+      XLS_ASSIGN_OR_RETURN(
+          ExprOrType cloned,
+          CloneParametricExprOrType(sum_def.tag_type_annotation(),
+                                    parametric_context, resolved_parametrics));
+      tag_type_annotation = std::get<TypeAnnotation*>(cloned);
+      table_.SetAnnotationFlag(tag_type_annotation,
+                               TypeInferenceFlag::kFormalMemberType);
+      std::unique_ptr<PopulateTableVisitor> visitor =
+          CreatePopulateTableVisitor(&module_, &table_, &import_data_,
+                                     /*typecheck_imported_module=*/nullptr);
+      XLS_RETURN_IF_ERROR(
+          visitor->PopulateFromTypeAnnotation(tag_type_annotation));
     }
-    XLS_RET_CHECK_EQ(discriminants.size(), sum_def.variants().size());
-    if (sum_def.IsParametric()) {
-      XLS_ASSIGN_OR_RETURN(discriminants, CloneParametricSumDiscriminants(
-                                              sum_def, parametric_context,
-                                              resolved_parametrics));
-      for (Expr* discriminant : discriminants) {
-        XLS_RETURN_IF_ERROR(ConvertSubtree(
-            discriminant, /*function=*/std::nullopt, parametric_context));
-      }
+    std::unique_ptr<Type> tag_type;
+    if (tag_type_annotation != nullptr) {
+      XLS_RETURN_IF_ERROR(ConvertSubtree(
+          tag_type_annotation, /*function=*/std::nullopt, parametric_context));
+      XLS_ASSIGN_OR_RETURN(tag_type,
+                           Concretize(tag_type_annotation, parametric_context));
+    }
+    if (sum_def.IsParametric() && !discriminants.empty()) {
+      XLS_ASSIGN_OR_RETURN(discriminants,
+                           CloneParametricSumDiscriminants(
+                               sum_def, tag_type_annotation, parametric_context,
+                               resolved_parametrics));
+    }
+    // Each concrete instance owns fresh tag expressions and constraints. Type
+    // all of its discriminants together before evaluating their wire values.
+    for (Expr* discriminant : discriminants) {
+      XLS_RETURN_IF_ERROR(ConvertSubtree(
+          discriminant, /*function=*/std::nullopt, parametric_context));
     }
 
     XLS_ASSIGN_OR_RETURN(TypeInfo * type_info, GetTypeInfo(parametric_context));
     absl::flat_hash_set<std::string> seen_values;
-    SumType::ZeroSelection zero_selection = SumType::NoZeroVariant{};
+    std::vector<InterpValue> values;
+    values.reserve(discriminants.size());
     for (int i = 0; i < discriminants.size(); ++i) {
       Expr* discriminant = discriminants[i];
       absl::StatusOr<InterpValue> evaluated_value =
@@ -2423,12 +2541,10 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
                 sum_def.identifier(), discriminant->ToString()),
             file_table_);
       }
-      if (bits.IsZero()) {
-        zero_selection =
-            SumType::SelectedZeroVariant{std::cref(*sum_def.variants()[i])};
-      }
+      values.push_back(std::move(*evaluated_value));
     }
-    return zero_selection;
+    return GetSemanticSumTagLayout(sum_def, tag_type.get(), std::move(values),
+                                   file_table_);
   }
 
   // Given an invocation of the `map` builtin, creates a FunctionTypeAnnotation

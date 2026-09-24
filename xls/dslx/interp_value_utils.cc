@@ -492,15 +492,16 @@ absl::Status ValidateSumValue(const InterpValue& value,
                         static_cast<int64_t>(sum_view.payload_slots.size())));
   }
 
-  XLS_ASSIGN_OR_RETURN(uint64_t variant_index,
-                       sum_view.tag.GetBitValueUnsigned());
-  if (variant_index >= sum_type.variant_count()) {
+  absl::StatusOr<SumTypeEncoding::VariantInfo> semantic_variant =
+      SumTypeEncoding(sum_type).GetVariantByTagBits(
+          sum_view.tag.GetBitsOrDie());
+  if (!semantic_variant.ok()) {
     return absl::InvalidArgumentError(absl::StrFormat(
-        "Sum `%s` has invalid tag %d for %d variants.", sum_type.ToString(),
-        static_cast<int64_t>(variant_index), sum_type.variant_count()));
+        "Sum `%s` has invalid tag %s for %d variants.", sum_type.ToString(),
+        sum_view.tag.GetBitsOrDie().ToDebugString(), sum_type.variant_count()));
   }
 
-  const SumTypeVariant& variant_def = sum_type.variants().at(variant_index);
+  const SumTypeVariant& variant_def = *semantic_variant->variant;
   XLS_ASSIGN_OR_RETURN(Phase1SumTypeEncoding::VariantInfo variant,
                        encoding.GetVariant(variant_def.variant().identifier()));
   int64_t slot_index = 0;
@@ -1039,7 +1040,8 @@ absl::StatusOr<InterpValue> CreatePlaceholderForSum(const SumType& type) {
       }));
 
   return CreateEncodedSumTuple(
-      InterpValue::MakeUBits(tag_bit_count, variant.variant_index),
+      InterpValue::MakeUnsigned(
+          type.GetDiscriminant(variant.variant_index).GetBitsOrDie()),
       std::move(payload_slots));
 }
 
@@ -1246,9 +1248,9 @@ absl::StatusOr<InterpValue> AssembleSumValue(
         return absl::OkStatus();
       }));
 
-  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
   return CreateEncodedSumTuple(
-      InterpValue::MakeUBits(tag_bit_count, variant.variant_index),
+      InterpValue::MakeUnsigned(
+          type.GetDiscriminant(variant.variant_index).GetBitsOrDie()),
       std::move(payload_slots));
 }
 
@@ -1460,10 +1462,10 @@ absl::StatusOr<InterpValue> ValueToInterpValueImpl(const Value& v,
     }
     std::vector<bool> active_slots(encoding.payload_slot_count(), false);
     if (tag.IsUBits()) {
-      XLS_ASSIGN_OR_RETURN(uint64_t variant_index, tag.GetBitValueUnsigned());
-      if (variant_index < sum_type.variant_count()) {
-        const SumTypeVariant& variant_def =
-            sum_type.variants().at(variant_index);
+      absl::StatusOr<SumTypeEncoding::VariantInfo> semantic_variant =
+          SumTypeEncoding(sum_type).GetVariantByTagBits(tag.GetBitsOrDie());
+      if (semantic_variant.ok()) {
+        const SumTypeVariant& variant_def = *semantic_variant->variant;
         XLS_ASSIGN_OR_RETURN(
             Phase1SumTypeEncoding::VariantInfo variant,
             encoding.GetVariant(variant_def.variant().identifier()));

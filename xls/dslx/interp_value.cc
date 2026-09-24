@@ -461,11 +461,12 @@ absl::StatusOr<std::string> InterpValue::ToSumString(
   if (!tag_value.HasBits()) {
     return absl::InvalidArgumentError("Expected sum tag to be bits-valued.");
   }
-  XLS_ASSIGN_OR_RETURN(uint64_t variant_index, tag_value.GetBitValueUnsigned());
-  if (variant_index >= fmt_desc.sum_variant_count()) {
+  std::optional<size_t> variant_index =
+      fmt_desc.sum_variant_index_for_tag_bits(tag_value.GetBitsOrDie());
+  if (!variant_index.has_value()) {
     return absl::InvalidArgumentError(absl::StrFormat(
-        "Sum tag %d is out of bounds for `%s` with %d variants",
-        static_cast<int64_t>(variant_index), fmt_desc.sum_name(),
+        "Sum tag %s is out of bounds for `%s` with %d variants",
+        tag_value.GetBitsOrDie().ToDebugString(), fmt_desc.sum_name(),
         static_cast<int64_t>(fmt_desc.sum_variant_count())));
   }
   const size_t payload_slot_count = fmt_desc.sum_payload_slot_count();
@@ -476,7 +477,8 @@ absl::StatusOr<std::string> InterpValue::ToSumString(
         static_cast<int64_t>(sum_view.payload_slots.size())));
   }
 
-  const ValueFormatSumVariantView variant = fmt_desc.sum_variant(variant_index);
+  const ValueFormatSumVariantView variant =
+      fmt_desc.sum_variant(*variant_index);
   const absl::Span<const ValueFormatDescriptor> payload_formats =
       variant.payload_formats();
   const size_t payload_size = variant.payload_slot_count();

@@ -44,6 +44,7 @@ namespace xls::dslx {
 namespace {
 
 using ::absl_testing::StatusIs;
+using ::testing::AllOf;
 using ::testing::HasSubstr;
 
 std::vector<PatternTree> GetPatterns(const Match& match) {
@@ -355,6 +356,76 @@ fn main(x: MaybeU32) -> u32 {
   }
 })";
   CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnSparseSignedSumConstantAndConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Choice : s4 {
+  Positive(u1) = 6,
+  Negative(u1) = -3,
+}
+
+const PICK = Choice::Negative(u1:1);
+
+fn main(x: Choice) -> u32 {
+  match x {
+    PICK => u32:1,
+    Choice::Negative(u1:0) => u32:2,
+    Choice::Positive(_) => u32:3,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest,
+     MatchOnTupleContainingSparseSignedSumSkipsGapsAndUninhabitedVariant) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Never {}
+
+enum Choice : s4 {
+  Impossible(Never) = -7,
+  Positive(u1) = 6,
+  Negative(u1) = -3,
+}
+
+const PICK = Choice::Negative(u1:1);
+
+fn main(x: (Choice, bool)) -> u32 {
+  match x {
+    (Choice::Positive(_), _) => u32:1,
+    (Choice::Negative(u1:0), _) => u32:2,
+    (PICK, true) => u32:3,
+    (Choice::Negative(u1:1), false) => u32:4,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest,
+     NonExhaustiveTupleContainingSparseSignedSumReportsSourceConstructor) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Choice : s4 {
+  Positive(u1) = 6,
+  Negative(u1) = -3,
+}
+
+fn main(x: (Choice, bool)) -> u32 {
+  match x {
+    (Choice::Positive(_), _) => u32:1,
+    (Choice::Negative(u1:0), _) => u32:2,
+    (Choice::Negative(u1:1), false) => u32:3,
+  }
+})";
+  ImportData import_data = CreateImportDataForTest();
+  EXPECT_THAT(
+      ParseAndTypecheck(kMatch, "test.x", "test", &import_data).status(),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               AllOf(HasSubstr("Match patterns are not exhaustive"),
+                     HasSubstr("`(Choice::Negative(u1:1), u1:1)` is "
+                               "not covered"))));
 }
 
 TEST(ExhaustivenessMatchTest,

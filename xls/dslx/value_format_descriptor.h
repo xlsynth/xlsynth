@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -157,6 +158,8 @@ class ValueFormatDescriptor {
     return std::get<SumFormat>(nominal_format_).variants.size();
   }
   ValueFormatSumVariantView sum_variant(size_t i) const;
+  std::optional<size_t> sum_variant_index_for_tag_bits(
+      const Bits& tag_bits) const;
   // Total number of slots in the internal flattened sum payload tuple.
   size_t sum_payload_slot_count() const {
     CHECK(IsSum());
@@ -182,7 +185,8 @@ class ValueFormatDescriptor {
   static ValueFormatDescriptor MakeSum(
       std::string_view sum_name,
       absl::Span<const ValueFormatSumVariantDescriptor> variants,
-      absl::Span<const size_t> payload_starts, size_t payload_slot_count);
+      absl::Span<const size_t> payload_starts, size_t payload_slot_count,
+      absl::Span<const Bits> variant_tag_bits);
 
   struct SumVariantFormat {
     SumVariantFormat(std::string name, ValueFormatSumVariantKind kind,
@@ -215,6 +219,7 @@ class ValueFormatDescriptor {
     std::string name;
     std::vector<SumVariantFormat> variants;
     size_t payload_slot_count = 0;
+    std::vector<Bits> variant_tag_bits;
   };
 
   ValueFormatDescriptorKind kind_;

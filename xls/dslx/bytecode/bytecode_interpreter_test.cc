@@ -3036,6 +3036,74 @@ fn main() -> (u32, u32, bool, bool) {
                           InterpValue::MakeBool(true)));
 }
 
+TEST_F(BytecodeInterpreterTest, SignedSparseSumUsesSemanticTagBits) {
+  constexpr std::string_view kProgram = R"(
+enum Message: s4 {
+  Negative(u8) = -4,
+  Idle = 0,
+  Positive { value: u8 } = 5,
+  Next(u8) = 6,
+}
+
+const SAVED = Message::Negative(u8:7);
+
+fn values(x: u8) -> (Message, Message, Message, Message, Message) {
+  (SAVED, Message::Negative(x), Message::Idle,
+   Message::Positive { value: x }, Message::Next(x))
+}
+
+fn inspect(value: Message) -> u8 {
+  match value {
+    Message::Negative(x) => x + u8:1,
+    Message::Idle => u8:20,
+    Message::Positive { value } => value + u8:2,
+    Message::Next(x) => x + u8:3,
+  }
+}
+
+fn equal(value: Message) -> bool { value == SAVED }
+
+fn check(x: u8) -> (u8, u8, u8, u8, bool, bool) {
+  (inspect(Message::Negative(x)), inspect(Message::Idle),
+   inspect(Message::Positive { value: x }), inspect(Message::Next(x)),
+   Message::Negative(x) == SAVED, Message::Next(x) != SAVED)
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue values,
+      Interpret(kProgram, "values", {InterpValue::MakeU8(7)}));
+  auto storage_tag = [](const InterpValue& value) {
+    return value.GetValuesOrDie()[0];
+  };
+  EXPECT_THAT(values.GetValuesOrDie(), testing::SizeIs(5));
+  EXPECT_EQ(storage_tag(values.GetValuesOrDie()[0]),
+            InterpValue::MakeUBits(4, 12));
+  EXPECT_EQ(storage_tag(values.GetValuesOrDie()[1]),
+            InterpValue::MakeUBits(4, 12));
+  EXPECT_EQ(storage_tag(values.GetValuesOrDie()[2]),
+            InterpValue::MakeUBits(4, 0));
+  EXPECT_EQ(storage_tag(values.GetValuesOrDie()[3]),
+            InterpValue::MakeUBits(4, 5));
+  EXPECT_EQ(storage_tag(values.GetValuesOrDie()[4]),
+            InterpValue::MakeUBits(4, 6));
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue checked,
+      Interpret(kProgram, "check", {InterpValue::MakeU8(7)}));
+  EXPECT_THAT(
+      checked.GetValuesOrDie(),
+      ElementsAre(InterpValue::MakeU8(8), InterpValue::MakeU8(20),
+                  InterpValue::MakeU8(9), InterpValue::MakeU8(10),
+                  InterpValue::MakeBool(true), InterpValue::MakeBool(true)));
+
+  const InterpValue gap = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(4, 1),
+       InterpValue::MakeTuple({InterpValue::MakeU8(7), InterpValue::MakeU8(0),
+                               InterpValue::MakeU8(0)})});
+  EXPECT_FALSE(Interpret(kProgram, "inspect", {gap}).ok());
+  EXPECT_FALSE(Interpret(kProgram, "equal", {gap}).ok());
+}
+
 TEST_F(BytecodeInterpreterTest, FailSemanticSumValueIsOpaqueInPhase1) {
   constexpr std::string_view kProgram = R"(
 enum Option {

@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <memory>
 #include <string_view>
+#include <vector>
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -31,11 +32,14 @@
 #include "xls/dslx/ir_convert/test_utils.h"
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/type_system/parametric_env.h"
+#include "xls/interpreter/function_interpreter.h"
 #include "xls/ir/bits.h"
+#include "xls/ir/events.h"
 #include "xls/ir/nodes.h"
 #include "xls/ir/package.h"
 #include "xls/ir/value.h"
 #include "xls/ir/xls_ir_interface.pb.h"
+#include "xls/jit/function_jit.h"
 
 namespace xls::dslx {
 namespace {
@@ -707,10 +711,104 @@ fn f(x: Option, y: Option) -> bool {
   EXPECT_FALSE(has_direct_param_eq);
 }
 
+TEST(FunctionConverterTest, SignedSparseSumTagsAgreeInIrInterpreterAndJit) {
+  constexpr std::string_view kProgram = R"(
+enum Message: s4 {
+  Negative(u8) = -4,
+  Idle = 0,
+  Positive { value: u8 } = 5,
+  Next(u8) = 6,
+}
+
+const SAVED = Message::Negative(u8:7);
+
+fn f(mode: u2, x: u8, external: Message) -> (Message, Message, bool, u8) {
+  let made = match mode {
+    u2:0 => Message::Negative(x),
+    u2:1 => Message::Idle,
+    u2:2 => Message::Positive { value: x },
+    _ => Message::Next(x),
+  };
+  let matched = match external {
+    Message::Negative(n) => n + u8:1,
+    Message::Idle => u8:20,
+    Message::Positive { value } => value + u8:2,
+    Message::Next(n) => n + u8:3,
+  };
+  (SAVED, made, external == SAVED, matched)
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, tm.module->GetFunction("f"));
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr, /*is_top=*/true);
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      xls::Function * ir_function,
+      package.package->GetFunction("__itok__test_module__f"));
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<FunctionJit> jit,
+                           FunctionJit::Create(ir_function));
+
+  auto u8 = [](uint64_t value) { return Value(UBits(value, 8)); };
+  auto sum = [&](uint64_t tag, uint64_t first, uint64_t second,
+                 uint64_t third) {
+    return Value::Tuple({Value(UBits(tag, 4)),
+                         Value::Tuple({u8(first), u8(second), u8(third)})});
+  };
+  const Value saved = sum(12, 7, 0, 0);
+  struct Case {
+    uint64_t mode;
+    Value external;
+    Value constructed;
+    bool equals_saved;
+    uint64_t matched;
+  };
+  const std::vector<Case> cases = {
+      {0, sum(12, 7, 91, 92), saved, true, 8},
+      {1, sum(0, 91, 92, 93), sum(0, 0, 0, 0), false, 20},
+      {2, sum(5, 91, 7, 92), sum(5, 0, 7, 0), false, 9},
+      {3, sum(6, 91, 92, 7), sum(6, 0, 0, 7), false, 10},
+  };
+  for (const Case& test_case : cases) {
+    const std::vector<Value> args = {Value::Token(), Value(UBits(1, 1)),
+                                     Value(UBits(test_case.mode, 2)), u8(7),
+                                     test_case.external};
+    const Value expected = Value::Tuple(
+        {Value::Token(), Value::Tuple({saved, test_case.constructed,
+                                       Value(UBits(test_case.equals_saved, 1)),
+                                       u8(test_case.matched)})});
+    XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> interpreted,
+                             InterpretFunction(ir_function, args));
+    XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> compiled, jit->Run(args));
+    EXPECT_EQ(interpreted.value, expected);
+    EXPECT_EQ(compiled.value, expected);
+    EXPECT_EQ(interpreted.events.GetAssertMessageCount(), 0);
+    EXPECT_EQ(compiled.events.GetAssertMessageCount(), 0);
+  }
+
+  // Declaration index 1 belongs to Idle, but tag bits 1 name no variant.
+  const std::vector<Value> gap_args = {Value::Token(), Value(UBits(1, 1)),
+                                       Value(UBits(0, 2)), u8(7),
+                                       sum(1, 7, 0, 0)};
+  XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> interpreted,
+                           InterpretFunction(ir_function, gap_args));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> compiled,
+                           jit->Run(gap_args));
+  EXPECT_GT(interpreted.events.GetAssertMessageCount(), 0);
+  EXPECT_GT(compiled.events.GetAssertMessageCount(), 0);
+}
+
 TEST(FunctionConverterTest, SingleVariantSemanticSumEqUsesSparseTagSelect) {
   constexpr std::string_view kProgram = R"(
-enum Box {
-  Wrap(u32),
+enum Box: u1 {
+  Wrap(u32) = 0,
 }
 
 fn f(x: Box, y: Box) -> bool {
@@ -755,8 +853,8 @@ fn f(x: Box, y: Box) -> bool {
 TEST(FunctionConverterTest,
      SingleVariantSemanticSumMatchUsesSparseTagCheck) {
   constexpr std::string_view kProgram = R"(
-enum Box {
-  Wrap(u32),
+enum Box: u1 {
+  Wrap(u32) = 0,
 }
 
 fn f(x: Box) -> u32 {
@@ -798,6 +896,50 @@ fn f(x: Box) -> u32 {
   EXPECT_EQ(tag_select_count, 1);
   EXPECT_THAT(package.DumpIr(), testing::HasSubstr("assert("));
   EXPECT_THAT(package.DumpIr(), testing::HasSubstr("default="));
+}
+
+TEST(FunctionConverterTest, ImplicitSingleVariantSemanticSumUsesZeroTagBits) {
+  constexpr std::string_view kProgram = R"(
+enum Box { Wrap(u8) }
+
+fn f(x: Box, y: Box) -> bool {
+  match x { Box::Wrap(value) => y == Box::Wrap(value) }
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, tm.module->GetFunction("f"));
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr, /*is_top=*/true);
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      xls::Function * ir_function,
+      package.package->GetFunction("__itok__test_module__f"));
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<FunctionJit> jit,
+                           FunctionJit::Create(ir_function));
+  auto box = [](uint64_t value) {
+    return Value::Tuple(
+        {Value(UBits(0, 0)), Value::Tuple({Value(UBits(value, 8))})});
+  };
+  for (uint64_t other : {7, 8}) {
+    const std::vector<Value> args = {Value::Token(), Value(UBits(1, 1)), box(7),
+                                     box(other)};
+    const Value expected =
+        Value::Tuple({Value::Token(), Value(UBits(other == 7, 1))});
+    XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> interpreted,
+                             InterpretFunction(ir_function, args));
+    XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> compiled, jit->Run(args));
+    EXPECT_EQ(interpreted.value, expected);
+    EXPECT_EQ(compiled.value, expected);
+    EXPECT_EQ(interpreted.events.GetAssertMessageCount(), 0);
+    EXPECT_EQ(compiled.events.GetAssertMessageCount(), 0);
+  }
 }
 
 TEST(FunctionConverterTest, RequiresImplicitTokenForPhase1SemanticSumMatch) {
