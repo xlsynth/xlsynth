@@ -1249,8 +1249,8 @@ BytecodeInterpreter::GetMatchSumPayloadValues(
 }
 
 absl::StatusOr<bool> BytecodeInterpreter::MatchArmEqualsInterpValue(
-    Frame* frame, const Bytecode::MatchArmItem& item,
-    const InterpValue& value) {
+    const Bytecode& bytecode, Frame* frame, const Bytecode::MatchArmItem& item,
+    const InterpValue& value, std::vector<int64_t>& path) {
   using Kind = Bytecode::MatchArmItem::Kind;
   switch (item.kind()) {
     case Kind::kInterpValue: {
@@ -1272,6 +1272,40 @@ absl::StatusOr<bool> BytecodeInterpreter::MatchArmEqualsInterpValue(
                << " conjunction: " << conjunction.ToString();
       return conjunction.IsTrue();
     }
+    case Kind::kSum: {
+      XLS_ASSIGN_OR_RETURN(
+          const Bytecode::MatchArmItem::SumMatchData* sum_match,
+          item.sum_match_data());
+      XLS_ASSIGN_OR_RETURN(internal::EncodedSumView sum_view,
+                           internal::GetEncodedSumView(value));
+      // Observe before rejecting a tag: an actually scrutinized nested sum must
+      // retain its malformed-tag and ordinary-payload failures even if a later
+      // arm is a wildcard. Other arms reuse this same successful observation.
+      XLS_ASSIGN_OR_RETURN(
+          const std::vector<InterpValue>* payload_values,
+          GetMatchSumPayloadValues(bytecode, frame, *sum_match->sum_type, value,
+                                   path));
+      if (sum_match->discriminant.Ne(sum_view.tag)) {
+        return false;
+      }
+      XLS_RET_CHECK_EQ(sum_match->payload_items.size(), payload_values->size());
+      for (int64_t i = 0; i < sum_match->payload_items.size(); ++i) {
+        path.push_back(i);
+        XLS_ASSIGN_OR_RETURN(
+            bool equal, MatchArmEqualsInterpValue(
+                            bytecode, frame, sum_match->payload_items.at(i),
+                            payload_values->at(i), path));
+        path.pop_back();
+        if (!equal) {
+          return false;
+        }
+      }
+      return true;
+    }
+    case Kind::kInvalidSum:
+      // Direct sum matches reject undeclared tags before arm dispatch, so
+      // invalid! never matches in the source interpreter.
+      return false;
     case Kind::kLoad: {
       XLS_ASSIGN_OR_RETURN(Bytecode::SlotIndex slot_index, item.slot_index());
       if (frame->slots().size() <= slot_index.value()) {
@@ -1309,9 +1343,11 @@ absl::StatusOr<bool> BytecodeInterpreter::MatchArmEqualsInterpValue(
       // We don't have to deal with rest-of-tuple processing because
       // the matcher will have already handled that.
       for (int i = 0; i < item_elements.size(); i++) {
+        path.push_back(i);
         XLS_ASSIGN_OR_RETURN(bool equal, MatchArmEqualsInterpValue(
-                                             &frames_.back(), item_elements[i],
-                                             value_elements->at(i)));
+                                             bytecode, frame, item_elements[i],
+                                             value_elements->at(i), path));
+        path.pop_back();
         if (!equal) {
           return false;
         }
@@ -1339,8 +1375,10 @@ absl::Status BytecodeInterpreter::EvalMatchArm(const Bytecode& bytecode) {
   XLS_ASSIGN_OR_RETURN(const Bytecode::MatchArmItem* item,
                        bytecode.match_arm_item());
   XLS_ASSIGN_OR_RETURN(InterpValue matchee, Pop());
+  std::vector<int64_t> path;
   XLS_ASSIGN_OR_RETURN(
-      bool equal, MatchArmEqualsInterpValue(&frames_.back(), *item, matchee));
+      bool equal, MatchArmEqualsInterpValue(bytecode, &frames_.back(), *item,
+                                            matchee, path));
   stack_.Push(InterpValue::MakeBool(equal));
   return absl::OkStatus();
 }

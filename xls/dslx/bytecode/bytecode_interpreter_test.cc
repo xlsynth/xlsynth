@@ -283,6 +283,75 @@ TEST_F(BytecodeInterpreterTest,
                        HasSubstr("No variant with tag bits")));
 }
 
+TEST_F(BytecodeInterpreterTest,
+       HandwrittenSumPatternMatchesSparseTagAndSemanticPayload) {
+  using Item = Bytecode::MatchArmItem;
+  Module module("test", /*fs_path=*/std::nullopt, import_data_->file_table());
+  SumType sum_type = MakeSparseBytecodeSumType(module);
+  auto matches = [&](const InterpValue& value, Item item) {
+    std::vector<Bytecode> bytecodes;
+    bytecodes.push_back(Bytecode::MakeLiteral(kFakeSpan, value));
+    bytecodes.emplace_back(kFakeSpan, Bytecode::Op::kBeginMatch);
+    bytecodes.push_back(Bytecode::MakeMatchArm(kFakeSpan, std::move(item)));
+    bytecodes.emplace_back(kFakeSpan, Bytecode::Op::kEndMatch);
+    return InterpretHandwrittenBytecode(*import_data_, std::move(bytecodes));
+  };
+  auto a = [&](uint64_t payload) {
+    return Item::MakeSum(
+        &sum_type, "A", InterpValue::MakeUBits(4, 2),
+        {Item::MakeInterpValue(InterpValue::MakeUBits(8, payload))});
+  };
+  auto b = Item::MakeSum(
+      &sum_type, "B", InterpValue::MakeUBits(4, 9),
+      {Item::MakeInterpValue(InterpValue::MakeUBits(16, 0xcafe))});
+
+  EXPECT_THAT(matches(MakePackedBytecodeSum(2, 0xffa5), a(0xa5)),
+              IsOkAndHolds(InterpValue::MakeBool(true)));
+  EXPECT_THAT(matches(MakePackedBytecodeSum(2, 0xffa5), a(0xa4)),
+              IsOkAndHolds(InterpValue::MakeBool(false)));
+  EXPECT_THAT(matches(MakePackedBytecodeSum(9, 0x00a5), a(0xa5)),
+              IsOkAndHolds(InterpValue::MakeBool(false)));
+  EXPECT_THAT(matches(MakePackedBytecodeSum(9, 0xcafe), std::move(b)),
+              IsOkAndHolds(InterpValue::MakeBool(true)));
+  EXPECT_THAT(matches(MakePackedBytecodeSum(2, 0xa5), Item::MakeInvalidSum()),
+              IsOkAndHolds(InterpValue::MakeBool(false)));
+  EXPECT_THAT(matches(MakePackedBytecodeSum(2, 0xffa5),
+                      Item::MakeInterpValue(MakePackedBytecodeSum(2, 0xa5))),
+              IsOkAndHolds(InterpValue::MakeBool(false)));
+}
+
+TEST_F(BytecodeInterpreterTest,
+       HandwrittenSumPatternOnlyObservesReachedTupleMembers) {
+  using Item = Bytecode::MatchArmItem;
+  Module module("test", /*fs_path=*/std::nullopt, import_data_->file_table());
+  SumType sum_type = MakeSparseBytecodeSumType(module);
+  const InterpValue valid = MakePackedBytecodeSum(2, 0xa5);
+  const InterpValue invalid = MakePackedBytecodeSum(3, 0);
+  auto a = [&] {
+    return Item::MakeSum(&sum_type, "A", InterpValue::MakeUBits(4, 2),
+                         {Item::MakeWildcard()});
+  };
+  auto matches = [&](std::vector<Item> items) {
+    std::vector<Bytecode> bytecodes;
+    bytecodes.push_back(Bytecode::MakeLiteral(
+        kFakeSpan, InterpValue::MakeTuple({valid, invalid})));
+    bytecodes.emplace_back(kFakeSpan, Bytecode::Op::kBeginMatch);
+    bytecodes.push_back(
+        Bytecode::MakeMatchArm(kFakeSpan, Item::MakeTuple(std::move(items))));
+    bytecodes.emplace_back(kFakeSpan, Bytecode::Op::kEndMatch);
+    return InterpretHandwrittenBytecode(*import_data_, std::move(bytecodes));
+  };
+
+  EXPECT_THAT(matches({a(), Item::MakeWildcard()}),
+              IsOkAndHolds(InterpValue::MakeBool(true)));
+  EXPECT_THAT(
+      matches({Item::MakeInterpValue(MakePackedBytecodeSum(9, 0)), a()}),
+      IsOkAndHolds(InterpValue::MakeBool(false)));
+  EXPECT_THAT(matches({a(), a()}),
+              StatusIs(absl::StatusCode::kInternal,
+                       HasSubstr("No variant with tag bits")));
+}
+
 TEST_F(BytecodeInterpreterTest, TraceBitsValueDefaultFormat) {
   constexpr std::string_view kProgram = R"(
 fn main() -> () {
