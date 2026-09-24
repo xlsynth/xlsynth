@@ -3988,6 +3988,32 @@ TEST_F(ParserTest, LadderedConditional) {
        "another_really_long_identifier_so_that_this_is_too_many_chars"});
 }
 
+TEST_F(ParserTest, InvalidPatternRoundTrips) {
+  std::unique_ptr<Module> module = RoundTrip(R"(enum Option {
+    None,
+    Some(u8),
+}
+fn f(x: Option) -> u8 {
+    match x {
+        Option::Some(v) => v,
+        _ => u8:0,
+        invalid!(raw) => raw[0+:u8],
+    }
+})");
+  ASSERT_NE(module, nullptr);
+  std::optional<Function*> function = module->GetFunction("f");
+  ASSERT_TRUE(function.has_value());
+  auto* match = dynamic_cast<Match*>(
+      std::get<Expr*>(function.value()->body()->statements().at(0)->wrapped()));
+  ASSERT_NE(match, nullptr);
+  const PatternTree& pattern = match->arms().at(2)->patterns().at(0);
+  ASSERT_TRUE(std::holds_alternative<InvalidPattern*>(pattern));
+  EXPECT_FALSE(std::holds_alternative<WildcardPattern*>(pattern));
+  const AstNode* invalid_pattern = ToAstNode(pattern);
+  ASSERT_EQ(invalid_pattern->kind(), AstNodeKind::kInvalidPattern);
+  EXPECT_EQ(dynamic_cast<const WildcardPattern*>(invalid_pattern), nullptr);
+}
+
 TEST_F(ParserTest, TernaryWithComparisonTest) {
   RoundTripExpr("if a <= b { u32:42 } else { u32:24 }", {"a", "b"});
 }

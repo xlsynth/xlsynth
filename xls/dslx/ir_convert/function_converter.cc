@@ -423,6 +423,7 @@ class FunctionConverterVisitor : public AstNodeVisitor {
   INVALID(Attribute)
   INVALID(FunctionRef)
   INVALID(FuzzTestFunction)
+  INVALID(InvalidPattern)
   INVALID(MatchArm)
   INVALID(NameDef)
   INVALID(ParametricBinding)
@@ -1632,6 +1633,10 @@ absl::StatusOr<BValue> FunctionConverter::HandleRangedForInductionVariable(
             XLS_ASSIGN_OR_RETURN(xls::Type * ivar_type, ResolveTypeToIr(ivar));
             return body_converter.AddParam("__", ivar_type);
           },
+          [&](InvalidPattern*) -> absl::StatusOr<BValue> {
+            return absl::InternalError(
+                "Induction variable cannot be an invalid pattern");
+          },
           [&](Range*) -> absl::StatusOr<BValue> {
             return absl::InternalError("Induction variable cannot be a range");
           },
@@ -2131,6 +2136,28 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
         Visitor{
             [&](WildcardPattern*) -> absl::StatusOr<BValue> {
               XLS_ASSIGN_OR_RETURN(BValue result, irrefutable_predicate());
+              SetNodeToIr(matcher_node, result);
+              return result;
+            },
+            [&](InvalidPattern* invalid_pattern) -> absl::StatusOr<BValue> {
+              auto* sum_type = dynamic_cast<const SumType*>(&matched_type);
+              XLS_RET_CHECK(sum_type != nullptr)
+                  << "Invalid pattern expected sum type; got: "
+                  << matched_type.ToString();
+              SourceInfo loc = ToSourceInfo(GetPatternSpan(matcher));
+              XLS_ASSIGN_OR_RETURN(BValue tag_is_declared,
+                                   BuildSemanticSumTagIsDeclaredPredicate(
+                                       *sum_type, matched_value, loc));
+              if (invalid_pattern->raw_name_def() != nullptr) {
+                BValue tag =
+                    function_builder_->TupleIndex(matched_value, 0, loc);
+                BValue payload = function_builder_->TupleIndex(
+                    function_builder_->TupleIndex(matched_value, 1, loc), 0,
+                    loc);
+                SetNodeToIr(invalid_pattern->raw_name_def(),
+                            function_builder_->Concat({tag, payload}, loc));
+              }
+              BValue result = function_builder_->Not(tag_is_declared, loc);
               SetNodeToIr(matcher_node, result);
               return result;
             },
