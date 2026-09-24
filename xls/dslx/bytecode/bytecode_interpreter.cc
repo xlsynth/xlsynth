@@ -465,6 +465,20 @@ absl::Status BytecodeInterpreter::EvalNextInstruction() {
       XLS_RETURN_IF_ERROR(EvalAnd(bytecode));
       break;
     }
+    case Bytecode::Op::kAssertWellFormed: {
+      XLS_RETURN_IF_ERROR(EvalAssertWellFormed(bytecode));
+      break;
+    }
+    case Bytecode::Op::kBeginMatch: {
+      XLS_RET_CHECK(!frame->match_observation().has_value());
+      frame->match_observation().emplace();
+      break;
+    }
+    case Bytecode::Op::kEndMatch: {
+      XLS_RET_CHECK(frame->match_observation().has_value());
+      frame->match_observation().reset();
+      break;
+    }
     case Bytecode::Op::kCall: {
       XLS_RETURN_IF_ERROR(EvalCall(bytecode));
       return absl::OkStatus();
@@ -487,6 +501,20 @@ absl::Status BytecodeInterpreter::EvalNextInstruction() {
     }
     case Bytecode::Op::kCreateTuple: {
       XLS_RETURN_IF_ERROR(EvalCreateTuple(bytecode));
+      break;
+    }
+    case Bytecode::Op::kCreateSum: {
+      XLS_ASSIGN_OR_RETURN(const Bytecode::SumConstructionData* sum_data,
+                           bytecode.sum_construction_data());
+      const SumType& sum_type = sum_data->sum_type();
+      XLS_ASSIGN_OR_RETURN(
+          std::vector<InterpValue> payload_values,
+          PopArgsRightToLeft(
+              sum_type.variants().at(sum_data->variant_index()).size()));
+      XLS_ASSIGN_OR_RETURN(
+          InterpValue sum_value,
+          CreateSumValue(sum_type, sum_data->variant_index(), payload_values));
+      stack_.Push(std::move(sum_value));
       break;
     }
     case Bytecode::Op::kDecode: {
@@ -722,6 +750,30 @@ absl::Status BytecodeInterpreter::EvalAnd(const Bytecode& bytecode) {
   return EvalBinop([](const InterpValue& lhs, const InterpValue& rhs) {
     return lhs.BitwiseAnd(rhs);
   });
+}
+
+absl::Status BytecodeInterpreter::CheckSemanticObserverStatus(
+    const Bytecode& bytecode, const absl::Status& status,
+    std::string_view observer) {
+  if (status.ok()) {
+    return absl::OkStatus();
+  } else {
+    return FailureErrorStatus(
+        bytecode.source_span(),
+        absl::StrCat("Semantic sum ", observer,
+                     " received a malformed value: ", status.message()),
+        file_table());
+  }
+}
+
+absl::Status BytecodeInterpreter::EvalAssertWellFormed(
+    const Bytecode& bytecode) {
+  XLS_ASSIGN_OR_RETURN(const Type* type, bytecode.type_data());
+  const auto* sum_type = dynamic_cast<const SumType*>(type);
+  XLS_RET_CHECK(sum_type != nullptr);
+  return GetMatchSumPayloadValues(bytecode, &frames_.back(), *sum_type,
+                                  stack_.PeekOrDie(), {})
+      .status();
 }
 
 absl::StatusOr<BytecodeFunction*> BytecodeInterpreter::GetBytecodeFn(
@@ -1182,6 +1234,18 @@ absl::Status BytecodeInterpreter::EvalLt(const Bytecode& bytecode) {
   return EvalBinop([](const InterpValue& lhs, const InterpValue& rhs) {
     return lhs.Lt(rhs);
   });
+}
+
+absl::StatusOr<const std::vector<InterpValue>*>
+BytecodeInterpreter::GetMatchSumPayloadValues(
+    const Bytecode& bytecode, Frame* frame, const SumType& sum_type,
+    const InterpValue& value, const std::vector<int64_t>& path) {
+  XLS_RET_CHECK(frame->match_observation().has_value());
+  absl::StatusOr<const std::vector<InterpValue>*> payload_values =
+      frame->match_observation()->GetSumPayloadValues(sum_type, value, path);
+  XLS_RETURN_IF_ERROR(CheckSemanticObserverStatus(
+      bytecode, payload_values.status(), "observer"));
+  return *payload_values;
 }
 
 absl::StatusOr<bool> BytecodeInterpreter::MatchArmEqualsInterpValue(

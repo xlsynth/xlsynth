@@ -39,11 +39,13 @@
 #include "xls/dslx/command_line_utils.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/type_system/parametric_env.h"
+#include "xls/dslx/type_system/type.h"
 #include "xls/dslx/virtualizable_file_system.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/format_preference.h"
@@ -131,6 +133,56 @@ static absl::StatusOr<InterpValue> Interpret(
 static const Pos kFakePos(Fileno(0), 0, 0);
 static const Span kFakeSpan = Span(kFakePos, kFakePos);
 
+SumType MakeSparseBytecodeSumType(Module& module) {
+  auto* sum_name = module.Make<NameDef>(kFakeSpan, "Choice", nullptr);
+  auto* tag = module.Make<BuiltinTypeAnnotation>(
+      kFakeSpan, BuiltinType::kU4,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU4));
+  auto make_variant = [&](std::string name, BuiltinType kind,
+                          std::string discriminant) {
+    auto* member = module.Make<BuiltinTypeAnnotation>(
+        kFakeSpan, kind, module.GetOrCreateBuiltinNameDef(kind));
+    return module.Make<SumVariant>(
+        kFakeSpan, module.Make<NameDef>(kFakeSpan, std::move(name), nullptr),
+        SumVariant::PayloadShape::kTuple, std::vector<TypeAnnotation*>{member},
+        std::vector<StructMemberNode*>{},
+        module.Make<Number>(kFakeSpan, std::move(discriminant),
+                            NumberKind::kOther, tag));
+  };
+  SumVariant* a = make_variant("A", BuiltinType::kU8, "2");
+  SumVariant* b = make_variant("B", BuiltinType::kU16, "9");
+  auto* sum_def = module.Make<SumDef>(
+      kFakeSpan, sum_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{a, b}, /*is_public=*/false, tag);
+  sum_name->set_definer(sum_def);
+
+  std::vector<SumTypeVariant> variants;
+  std::vector<std::unique_ptr<Type>> a_members;
+  a_members.push_back(BitsType::MakeU8());
+  variants.push_back(SumTypeVariant::MakeTuple(*a, std::move(a_members)));
+  std::vector<std::unique_ptr<Type>> b_members;
+  b_members.push_back(std::make_unique<BitsType>(/*is_signed=*/false, 16));
+  variants.push_back(SumTypeVariant::MakeTuple(*b, std::move(b_members)));
+  return SumType(*sum_def, std::move(variants), TypeDim::CreateU32(4),
+                 {InterpValue::MakeUBits(4, 2), InterpValue::MakeUBits(4, 9)});
+}
+
+InterpValue MakePackedBytecodeSum(uint64_t tag, uint64_t payload) {
+  return InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(4, tag),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(16, payload)})});
+}
+
+absl::StatusOr<InterpValue> InterpretHandwrittenBytecode(
+    ImportData& import_data, std::vector<Bytecode> bytecodes) {
+  XLS_ASSIGN_OR_RETURN(
+      auto bytecode_function,
+      BytecodeFunction::Create(/*owner=*/nullptr, /*source_fn=*/nullptr,
+                               /*type_info=*/nullptr, std::move(bytecodes)));
+  return BytecodeInterpreter::Interpret(&import_data, bytecode_function.get(),
+                                        {});
+}
+
 TEST_F(BytecodeInterpreterTest, DupLiteral) {
   std::vector<Bytecode> bytecodes;
   bytecodes.emplace_back(kFakeSpan, Bytecode::Op::kLiteral,
@@ -163,6 +215,72 @@ TEST_F(BytecodeInterpreterTest, DupEmptyStack) {
       BytecodeInterpreter::Interpret(&import_data_.value(), bfunc.get(), {}),
       StatusIs(absl::StatusCode::kInternal,
                ::testing::HasSubstr("!stack_.empty()")));
+}
+
+TEST_F(BytecodeInterpreterTest,
+       HandwrittenCreateSumUsesSparseTagAndOnePackedPayloadSlot) {
+  Module module("test", /*fs_path=*/std::nullopt, import_data_->file_table());
+  SumType sum_type = MakeSparseBytecodeSumType(module);
+  std::vector<Bytecode> bytecodes;
+  bytecodes.push_back(
+      Bytecode::MakeLiteral(kFakeSpan, InterpValue::MakeUBits(8, 0xa5)));
+  bytecodes.push_back(Bytecode::MakeCreateSum(
+      kFakeSpan, Bytecode::SumConstructionData(sum_type.CloneToUnique(),
+                                               /*variant_index=*/0)));
+  bytecodes.push_back(
+      Bytecode::MakeLiteral(kFakeSpan, InterpValue::MakeUBits(16, 0xcafe)));
+  bytecodes.push_back(Bytecode::MakeCreateSum(
+      kFakeSpan, Bytecode::SumConstructionData(sum_type.CloneToUnique(),
+                                               /*variant_index=*/1)));
+  bytecodes.emplace_back(kFakeSpan, Bytecode::Op::kCreateTuple,
+                         Bytecode::NumElements(2));
+
+  EXPECT_THAT(
+      InterpretHandwrittenBytecode(*import_data_, std::move(bytecodes)),
+      IsOkAndHolds(InterpValue::MakeTuple({MakePackedBytecodeSum(2, 0x00a5),
+                                           MakePackedBytecodeSum(9, 0xcafe)})));
+}
+
+TEST_F(BytecodeInterpreterTest,
+       HandwrittenSumObservationPreservesDirtyPaddingAndTheStack) {
+  Module module("test", /*fs_path=*/std::nullopt, import_data_->file_table());
+  SumType sum_type = MakeSparseBytecodeSumType(module);
+  const InterpValue value = MakePackedBytecodeSum(2, 0xffa5);
+  std::vector<Bytecode> bytecodes;
+  bytecodes.push_back(Bytecode::MakeLiteral(kFakeSpan, value));
+  bytecodes.emplace_back(kFakeSpan, Bytecode::Op::kBeginMatch);
+  bytecodes.push_back(
+      Bytecode::MakeAssertWellFormed(kFakeSpan, sum_type.CloneToUnique()));
+  bytecodes.push_back(
+      Bytecode::MakeAssertWellFormed(kFakeSpan, sum_type.CloneToUnique()));
+  bytecodes.emplace_back(kFakeSpan, Bytecode::Op::kEndMatch);
+
+  EXPECT_THAT(InterpretHandwrittenBytecode(*import_data_, std::move(bytecodes)),
+              IsOkAndHolds(value));
+}
+
+TEST_F(BytecodeInterpreterTest,
+       HandwrittenSumObservationRejectsAnUndeclaredTagInANewScope) {
+  Module module("test", /*fs_path=*/std::nullopt, import_data_->file_table());
+  SumType sum_type = MakeSparseBytecodeSumType(module);
+  std::vector<Bytecode> bytecodes;
+  bytecodes.push_back(
+      Bytecode::MakeLiteral(kFakeSpan, MakePackedBytecodeSum(2, 0xa5)));
+  bytecodes.emplace_back(kFakeSpan, Bytecode::Op::kBeginMatch);
+  bytecodes.push_back(
+      Bytecode::MakeAssertWellFormed(kFakeSpan, sum_type.CloneToUnique()));
+  bytecodes.emplace_back(kFakeSpan, Bytecode::Op::kEndMatch);
+  bytecodes.push_back(Bytecode::MakePop(kFakeSpan));
+  bytecodes.push_back(
+      Bytecode::MakeLiteral(kFakeSpan, MakePackedBytecodeSum(3, 0)));
+  bytecodes.emplace_back(kFakeSpan, Bytecode::Op::kBeginMatch);
+  bytecodes.push_back(
+      Bytecode::MakeAssertWellFormed(kFakeSpan, sum_type.CloneToUnique()));
+  bytecodes.emplace_back(kFakeSpan, Bytecode::Op::kEndMatch);
+
+  EXPECT_THAT(InterpretHandwrittenBytecode(*import_data_, std::move(bytecodes)),
+              StatusIs(absl::StatusCode::kInternal,
+                       HasSubstr("No variant with tag bits")));
 }
 
 TEST_F(BytecodeInterpreterTest, TraceBitsValueDefaultFormat) {

@@ -319,6 +319,7 @@ class BytecodeInterpreter {
   absl::Status EvalMul(const Bytecode& bytecode, bool is_signed);
 
   absl::Status EvalAnd(const Bytecode& bytecode);
+  absl::Status EvalAssertWellFormed(const Bytecode& bytecode);
   absl::Status EvalCall(const Bytecode& bytecode);
   absl::Status EvalCast(const Bytecode& bytecode, bool is_checked = false);
   absl::Status EvalConcat(const Bytecode& bytecode);
@@ -371,6 +372,11 @@ class BytecodeInterpreter {
   absl::Status EvalWidthSlice(const Bytecode& bytecode);
   absl::Status EvalXor(const Bytecode& bytecode);
 
+  // Adds source context to failures from typed observers without revalidating.
+  absl::Status CheckSemanticObserverStatus(const Bytecode& bytecode,
+                                           const absl::Status& status,
+                                           std::string_view observer);
+
   absl::Status EvalBinop(
       const std::function<absl::StatusOr<InterpValue>(
           const InterpValue& lhs, const InterpValue& rhs)>& op);
@@ -398,6 +404,12 @@ class BytecodeInterpreter {
   absl::StatusOr<bool> MatchArmEqualsInterpValue(
       Frame* frame, const Bytecode::MatchArmItem& item,
       const InterpValue& value);
+
+  // Reuses successful shallow observations in the active match. Payloads remain
+  // valid until kEndMatch; failures keep the observing bytecode's source span.
+  absl::StatusOr<const std::vector<InterpValue>*> GetMatchSumPayloadValues(
+      const Bytecode& bytecode, Frame* frame, const SumType& sum_type,
+      const InterpValue& value, const std::vector<int64_t>& path);
 
   absl::StatusOr<InterpValue> Pop() { return stack_.Pop(); }
 
