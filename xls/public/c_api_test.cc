@@ -3082,8 +3082,10 @@ struct Wrapper<T: type> { value: T }
           EXPECT_THAT(text,
                       HasSubstr(generic ? "Phantom::Only()" : "S::Only()"));
         } else {
+          const int64_t bit_count = generic ? i + 1 : 8;
           EXPECT_EQ(std::string_view(text),
-                    absl::StrFormat("(u%d:0)", generic ? i + 1 : 8));
+                    absl::StrFormat("(u%d:%s)", bit_count,
+                                    bit_count <= 64 ? "0" : "0x0"));
         }
       }
       RecordProperty(absl::StrFormat("%s_%s_%d_comparisons", test_case.name,
