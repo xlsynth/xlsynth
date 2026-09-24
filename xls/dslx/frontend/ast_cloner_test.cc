@@ -3291,5 +3291,39 @@ fn main(p: Point) -> u64 {
   EXPECT_TRUE(cloned_fn->IsCompilerDerived());
 }
 
+TEST(AstClonerTest, CloneModulePreservesInvalidPatternRawDefiner) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u8),
+}
+
+fn extract_raw(x: Option) -> u9 {
+  match x {
+    Option::Some(v) => v as u9,
+    Option::None => u9:0,
+    invalid!(raw) => raw,
+  }
+}
+)";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<Module> module,
+      ParseModule(kProgram, "invalid_pattern.x", "the_module", file_table));
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> clone, CloneModule(*module));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                           clone->GetMemberOrError<Function>("extract_raw"));
+  std::optional<NameRef*> raw_ref = FindFirstNameRefWithId(function, "raw");
+  ASSERT_TRUE(raw_ref.has_value());
+  ASSERT_TRUE(std::holds_alternative<const NameDef*>((*raw_ref)->name_def()));
+  const NameDef* raw_name_def =
+      std::get<const NameDef*>((*raw_ref)->name_def());
+  const auto* invalid_pattern =
+      dynamic_cast<const InvalidPattern*>(raw_name_def->definer());
+  ASSERT_NE(invalid_pattern, nullptr);
+  EXPECT_EQ(invalid_pattern->raw_name_def(), raw_name_def);
+}
+
 }  // namespace
 }  // namespace xls::dslx

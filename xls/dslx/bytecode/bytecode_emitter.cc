@@ -1476,6 +1476,20 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
             [&](WildcardPattern* n) -> absl::StatusOr<Bytecode::MatchArmItem> {
               return Bytecode::MatchArmItem::MakeWildcard();
             },
+            [&](InvalidPattern* invalid_pattern)
+                -> absl::StatusOr<Bytecode::MatchArmItem> {
+              auto* sum_type = dynamic_cast<SumType*>(type);
+              XLS_RET_CHECK(sum_type != nullptr)
+                  << "Invalid pattern expected sum type; got: "
+                  << (type == nullptr ? "<null>" : type->ToString());
+              if (invalid_pattern->raw_name_def() != nullptr) {
+                // Emitting the body still needs the raw binding's slot even
+                // though source bytecode never takes an invalid arm.
+                namedef_to_slot_[invalid_pattern->raw_name_def()] =
+                    next_slotno_++;
+              }
+              return Bytecode::MatchArmItem::MakeInvalidSum();
+            },
             [&](SumVariantPayloadPattern* constructor_pattern)
                 -> absl::StatusOr<Bytecode::MatchArmItem> {
               auto* sum_type = dynamic_cast<SumType*>(type);

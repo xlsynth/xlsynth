@@ -146,6 +146,8 @@ AstNodeKindProto ToProto(AstNodeKind kind) {
       return AST_NODE_KIND_TEST_PROC;
     case AstNodeKind::kWildcardPattern:
       return AST_NODE_KIND_WILDCARD_PATTERN;
+    case AstNodeKind::kInvalidPattern:
+      return AST_NODE_KIND_INVALID_PATTERN;
     case AstNodeKind::kWidthSlice:
       return AST_NODE_KIND_WIDTH_SLICE;
     case AstNodeKind::kMatchArm:
@@ -1549,6 +1551,8 @@ absl::StatusOr<AstNodeKind> FromProto(AstNodeKindProto p) {
       return AstNodeKind::kTestProc;
     case AST_NODE_KIND_WILDCARD_PATTERN:
       return AstNodeKind::kWildcardPattern;
+    case AST_NODE_KIND_INVALID_PATTERN:
+      return AstNodeKind::kInvalidPattern;
     case AST_NODE_KIND_WIDTH_SLICE:
       return AstNodeKind::kWidthSlice;
     case AST_NODE_KIND_MATCH_ARM:

@@ -1505,6 +1505,21 @@ class AstCloner : public AstNodeVisitor {
     return absl::OkStatus();
   }
 
+  absl::Status HandleInvalidPattern(const InvalidPattern* n) override {
+    XLS_RETURN_IF_ERROR(VisitChildren(n));
+    NameDef* new_raw_name_def =
+        n->raw_name_def() == nullptr
+            ? nullptr
+            : absl::down_cast<NameDef*>(old_to_new_.at(n->raw_name_def()));
+    auto* new_pattern =
+        module(n)->Make<InvalidPattern>(n->span(), new_raw_name_def);
+    if (new_raw_name_def != nullptr) {
+      new_raw_name_def->set_definer(new_pattern);
+    }
+    old_to_new_[n] = new_pattern;
+    return absl::OkStatus();
+  }
+
   absl::Status HandleRestOfTuple(const RestOfTuple* n) override {
     old_to_new_[n] = module(n)->Make<RestOfTuple>(n->span());
     return absl::OkStatus();
