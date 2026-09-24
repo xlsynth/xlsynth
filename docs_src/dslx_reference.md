@@ -579,12 +579,13 @@ representation.
 
 Sum equality compares the selected constructor and active payload, not unused
 slot bits. Both operands must have the same nominal sum definition and the same
-instantiated value/type arguments.
+instantiated value/type arguments. Constructor formatting is semantic, for
+example `Message::Request(u8:42)`, instead of exposing its tag/payload tuple.
 Interpreted equality rejects an undeclared constructor tag. In lowered
 hardware, equal undeclared tags are compared using the final constructor's
 payload shape; different tags remain unequal.
 
-Matching and equality do not rewrite the observed value.
+Matching, equality, formatting, and tracing do not rewrite the observed value.
 An outer constructor can wrap an existing malformed inner sum without inspecting
 its tag. Matching `Wrapped(_)`, or binding and returning the inner sum, likewise
 does not inspect the inner constructor; explicitly observing that constructor
@@ -599,6 +600,12 @@ previously bound value uses full semantic equality, even if it holds a unit
 constructor. Source/bytecode equality validates both complete active values before
 returning true or false, including when their outer tags differ. See the
 constructor-versus-constant example under [`match`](#match-expression).
+
+`trace!`, `trace_fmt!`, and `vtrace_fmt!` display semantic constructor names,
+including constructors nested in tuples, structs, and arrays. Requested
+hexadecimal or binary formatting applies recursively to constructor payloads,
+except that numeric enums retain their default formatting.
+Tracing an undeclared constructor tag fails without emitting partial output.
 
 `zero!<Message>()` selects the constructor whose discriminant is zero, whether
 or not that constructor appears first, and recursively initializes its payload

@@ -101,11 +101,9 @@ absl::StatusOr<Bytecode::ChannelData> CreateChannelData(
   XLS_ASSIGN_OR_RETURN(ValueFormatDescriptor struct_fmt_desc,
                        MakeValueFormatDescriptor(*channel_payload_type.get(),
                                                  format_preference));
-  const bool redact_value = TypeContainsSemanticSum(*channel_payload_type);
-
   return Bytecode::ChannelData(absl::StripPrefix(channel->ToString(), "self."),
                                std::move(channel_payload_type),
-                               std::move(struct_fmt_desc), redact_value);
+                               std::move(struct_fmt_desc));
 }
 
 absl::StatusOr<ValueFormatDescriptor> ExprToValueFormatDescriptor(
@@ -772,16 +770,23 @@ absl::Status BytecodeEmitter::HandleBuiltinTrace(const Invocation* node) {
   }
 
   XLS_RETURN_IF_ERROR(node->args().at(0)->AcceptExpr(this));
-  XLS_ASSIGN_OR_RETURN(Type * argument_type,
-                       type_info_->GetItemOrError(node->args().at(0)));
 
   std::vector<FormatStep> steps;
   steps.push_back(absl::StrCat("trace of ", node->args()[0]->ToString(), ": "));
   steps.push_back(options_.format_preference);
-  bytecode_.push_back(
-      Bytecode(node->span(), Bytecode::Op::kTraceArg,
-               Bytecode::TraceData(std::move(steps), {},
-                                   {TypeContainsSemanticSum(*argument_type)})));
+  std::vector<ValueFormatDescriptor> value_fmt_descs;
+  std::optional<Type*> maybe_type = type_info_->GetItem(node->args().at(0));
+  XLS_RET_CHECK(maybe_type.has_value());
+  if (TypeContainsSemanticSum(**maybe_type)) {
+    XLS_ASSIGN_OR_RETURN(
+        ValueFormatDescriptor value_fmt_desc,
+        ExprToValueFormatDescriptor(node->args().at(0), type_info_,
+                                    options_.format_preference));
+    value_fmt_descs.push_back(std::move(value_fmt_desc));
+  }
+  bytecode_.push_back(Bytecode(
+      node->span(), Bytecode::Op::kTraceArg,
+      Bytecode::TraceData(std::move(steps), std::move(value_fmt_descs))));
   return absl::OkStatus();
 }
 

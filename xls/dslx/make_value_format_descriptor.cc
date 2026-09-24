@@ -222,8 +222,9 @@ absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::Build(
                                         t.ToString());
     }
     absl::Status HandleToken(const TokenType& t) override {
-      return absl::InvalidArgumentError("Cannot format a token type; got: " +
-                                        t.ToString());
+      result_ =
+          ValueFormatDescriptor::MakeLeafValue(builder_.field_preference_);
+      return absl::OkStatus();
     }
     absl::Status HandleChannel(const ChannelType& t) override {
       return absl::InvalidArgumentError("Cannot format a channel type; got: " +

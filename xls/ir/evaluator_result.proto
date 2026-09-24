@@ -42,6 +42,9 @@ message TraceStatementProto {
 // the scope of the function call.
 message TraceCallProto {
   string function_name = 1;
+  // DSLX call tracing omits args when any argument contains a semantic sum.
+  // In that case TraceMessageProto.message contains the authoritative
+  // constructor-form argument text; ordinary non-sum and IR traces retain args.
   repeated ValueProto args = 2;
   int64 call_depth = 3;
 }
@@ -51,6 +54,8 @@ message TraceCallProto {
 // TraceCallReturnProto.
 message TraceCallReturnProto {
   string function_name = 1;
+  // DSLX call tracing omits sum-containing return values; the enclosing trace
+  // message contains their semantic constructor-form representation instead.
   ValueProto return_value = 2;
   int64 call_depth = 3;
 }
@@ -64,6 +69,8 @@ message TraceNodeProto {
 
 // A trace message emitted during evaluation.
 message TraceMessageProto {
+  // Authoritative user-visible text, including semantic constructor formatting
+  // when structured call arguments or return values have been omitted.
   string message = 1;
   SourceLocationProto location = 2;
   oneof type {

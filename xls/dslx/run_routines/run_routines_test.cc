@@ -50,11 +50,13 @@
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/virtualizable_file_system.h"
 #include "xls/dslx/warning_kind.h"
+#include "xls/interpreter/function_interpreter.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/events.h"
 #include "xls/ir/ir_parser.h"
 #include "xls/ir/package.h"
 #include "xls/ir/value.h"
+#include "xls/jit/function_jit.h"
 
 namespace xls::dslx {
 namespace {
@@ -775,6 +777,32 @@ fn qc(values: Choice[4]) -> bool {
             repeat_comparator.invocation_args());
 }
 
+TEST_P(RunRoutinesTest, QuickcheckFailureFormatsSemanticSumCounterexample) {
+  constexpr const char* kProgram = R"(
+enum Maybe: u1 {
+  Some(u8) = 1,
+}
+
+#[quickcheck(test_count=1)]
+fn qc(x: Maybe) -> bool {
+  false
+}
+)";
+  RunComparator jit_comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  options.quickcheck_runner = &jit_comparator;
+  options.seed = int64_t{2};
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kSomeFailed, 1, 0, 1));
+  ASSERT_EQ(result.GetFailureMessages().size(), 1);
+  EXPECT_THAT(result.GetFailureMessages().front(),
+              HasSubstr("tests: [Maybe::Some(u8:"));
+}
+
 TEST_P(RunRoutinesTest, QuickcheckCountedGeneratesSumsInStructArrayAndTuple) {
   constexpr const char* kProgram = R"(
 enum Inner: u3 {
@@ -858,7 +886,7 @@ enum Sparse: u4 {
 
 #[quickcheck(test_count=8)]
 fn qc(_t: token, x: Sparse) -> bool {
-  trace_fmt!("{}", u1:0);
+  trace_fmt!("{}", x);
   match x {
     Sparse::Only(_) => true,
     invalid! => false,
@@ -893,7 +921,7 @@ enum Sparse: u4 {
 
 #[quickcheck(exhaustive)]
 fn qc(x: Sparse) -> bool {
-  trace_fmt!("{}", u1:0);
+  trace_fmt!("{}", x);
   match x {
     Sparse::Only(_) => true,
     invalid! => false,
@@ -921,8 +949,8 @@ TEST(QuickcheckTest, ExhaustiveSumInputsWithImplicitToken) {
 enum Sparse: u40 { Only(u1) = 1099511627775 }
 
 #[quickcheck(exhaustive)]
-fn qc(_x: Sparse) -> bool {
-  trace_fmt!("{}", u1:0);
+fn qc(x: Sparse) -> bool {
+  trace_fmt!("{}", x);
   true
 }
 )";
@@ -950,6 +978,57 @@ fn qc(_x: Sparse) -> bool {
     EXPECT_EQ(arguments.at(1), Value::Bool(true));
     EXPECT_EQ(arguments.at(2).element(0),
               Value(UBits((uint64_t{1} << 40) - 1, 40)));
+  }
+}
+
+// Verifies: sum traces print correctly in the IR interpreter and LLVM JIT.
+// Catches: backend-specific escaping, signedness, or constructor formatting.
+TEST(QuickcheckTest, IrBackendsTraceSignedAndStructuredSumPayloads) {
+  constexpr const char* kProgram = R"(
+enum SignedValue { Value(s8) }
+struct Point { a: u8 }
+enum Message { Struct { a: u8 }, Tuple(Point) }
+
+#[quickcheck(test_count=1)]
+fn qc() -> bool {
+  trace_fmt!("{}", SignedValue::Value(s8:-1));
+  trace_fmt!("{}", Point { a: u8:1 });
+  trace_fmt!("{}", Message::Struct { a: u8:1 });
+  trace_fmt!("{}", Message::Tuple(Point { a: u8:1 }));
+  true
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test.x", "test", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto package,
+      ConvertModuleToPackage(tm.module, &import_data, ConvertOptions{}));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
+                           package.package->GetFunction("__itok__test__qc"));
+  const std::vector<Value> arguments = {Value::Token(), Value::Bool(true)};
+  auto expect_trace = [](const InterpreterResult<Value>& result) {
+    EXPECT_EQ(result.value, Value::Tuple({Value::Token(), Value::Bool(true)}));
+    EXPECT_THAT(result.events.GetAssertMessages(), ::testing::IsEmpty());
+    EXPECT_THAT(result.events.GetTraceMessageStrings(),
+                ::testing::ElementsAre("SignedValue::Value(-1)", "Point{a: 1}",
+                                       "Message::Struct {a: 1 }",
+                                       "Message::Tuple(Point{a: 1})"));
+  };
+  {
+    SCOPED_TRACE("IR interpreter");
+    XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> result,
+                             InterpretFunction(ir_function, arguments));
+    expect_trace(result);
+  }
+  {
+    SCOPED_TRACE("LLVM JIT");
+    XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<FunctionJit> jit,
+                             FunctionJit::Create(ir_function));
+    XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> result,
+                             jit->Run(arguments));
+    expect_trace(result);
   }
 }
 
