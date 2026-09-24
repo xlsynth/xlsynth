@@ -326,70 +326,6 @@ absl::Status ValidateEncodedSumShape(const InterpValue& value,
   return absl::OkStatus();
 }
 
-absl::Status ValidateTupleValue(const InterpValue& value,
-                                const TupleType& tuple_type) {
-  if (!value.IsTuple()) {
-    return absl::InvalidArgumentError(
-        absl::StrFormat("Expected tuple-typed value `%s`; got `%s`.",
-                        tuple_type.ToString(), value.ToString()));
-  }
-  const std::vector<InterpValue>& elements = value.GetValuesOrDie();
-  if (elements.size() != tuple_type.size()) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "Value `%s` does not match `%s`: expected %d members; got %d.",
-        value.ToString(), tuple_type.ToString(), tuple_type.size(),
-        static_cast<int64_t>(elements.size())));
-  }
-  for (int64_t i = 0; i < tuple_type.size(); ++i) {
-    XLS_RETURN_IF_ERROR(ValidateInterpValueMatchesType(
-        elements.at(i), tuple_type.GetMemberType(i)));
-  }
-  return absl::OkStatus();
-}
-
-absl::Status ValidateStructValue(const InterpValue& value,
-                                 const StructTypeBase& struct_type) {
-  if (!value.IsTuple()) {
-    return absl::InvalidArgumentError(
-        absl::StrFormat("Expected struct-typed value `%s`; got `%s`.",
-                        struct_type.ToString(), value.ToString()));
-  }
-  const std::vector<InterpValue>& elements = value.GetValuesOrDie();
-  if (elements.size() != struct_type.size()) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "Value `%s` does not match `%s`: expected %d members; got %d.",
-        value.ToString(), struct_type.ToString(), struct_type.size(),
-        static_cast<int64_t>(elements.size())));
-  }
-  for (int64_t i = 0; i < struct_type.size(); ++i) {
-    XLS_RETURN_IF_ERROR(ValidateInterpValueMatchesType(
-        elements.at(i), struct_type.GetMemberType(i)));
-  }
-  return absl::OkStatus();
-}
-
-absl::Status ValidateArrayValue(const InterpValue& value,
-                                const ArrayType& array_type) {
-  if (!value.IsArray()) {
-    return absl::InvalidArgumentError(
-        absl::StrFormat("Expected array-typed value for `%s`; got `%s`.",
-                        array_type.ToString(), value.ToString()));
-  }
-  XLS_ASSIGN_OR_RETURN(int64_t expected_size, array_type.size().GetAsInt64());
-  const std::vector<InterpValue>& elements = value.GetValuesOrDie();
-  if (elements.size() != expected_size) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "Value `%s` does not match `%s`: expected %d elements; got %d.",
-        value.ToString(), array_type.ToString(), expected_size,
-        static_cast<int64_t>(elements.size())));
-  }
-  for (const InterpValue& element : elements) {
-    XLS_RETURN_IF_ERROR(
-        ValidateInterpValueMatchesType(element, array_type.element_type()));
-  }
-  return absl::OkStatus();
-}
-
 absl::StatusOr<InterpValue> DecodeRawSumValue(const SumType& sum_type,
                                               const InterpValue& tag,
                                               const InterpValue& payload_slot) {
@@ -861,29 +797,7 @@ absl::Status ValidateValue(const InterpValue& value, const Type& type,
 
 absl::Status ValidateInterpValueMatchesType(const InterpValue& value,
                                             const Type& type) {
-  if (dynamic_cast<const SumType*>(&type) != nullptr) {
-    return ValidateValue(value, type, SumValidation::kDeclaredConstructors);
-  } else if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
-    return ValidateTupleValue(value, *tuple_type);
-  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type)) {
-    return ValidateStructValue(value, *struct_type);
-  } else if (auto* enum_type = dynamic_cast<const EnumType*>(&type)) {
-    return ValidateEnumValue(value, *enum_type);
-  } else if (std::optional<BitsLikeProperties> bits_like = GetBitsLike(type);
-             bits_like.has_value()) {
-    return ValidateBitsLikeValue(value, type, *bits_like);
-  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type)) {
-    return ValidateArrayValue(value, *array_type);
-  } else if (dynamic_cast<const TokenType*>(&type) != nullptr) {
-    if (!value.IsToken()) {
-      return absl::InvalidArgumentError(absl::StrFormat(
-          "Expected token-typed value; got `%s`.", value.ToString()));
-    }
-    return absl::OkStatus();
-  } else {
-    return absl::UnimplementedError(absl::StrCat(
-        "Cannot validate InterpValue against type: ", type.ToString()));
-  }
+  return ValidateValue(value, type, SumValidation::kDeclaredConstructors);
 }
 
 absl::StatusOr<bool> SemanticValuesEqual(const InterpValue& lhs,
@@ -1328,12 +1242,10 @@ absl::StatusOr<std::vector<InterpValue>> SignConvertArgs(
   return converted;
 }
 
-namespace {
-
 // Nested sums are validated by their outermost owning sum after restoration;
 // validating every intermediate subtree would make a linear chain quadratic.
-absl::StatusOr<InterpValue> ValueToInterpValueImpl(const Value& v,
-                                                   const Type* type) {
+absl::StatusOr<InterpValue> ValueToInterpValue(const Value& v,
+                                               const Type* type) {
   if (type != nullptr && type->IsSum()) {
     const SumType& sum_type = type->AsSum();
     if (v.kind() != ValueKind::kTuple || v.elements().size() != 2 ||
@@ -1351,10 +1263,10 @@ absl::StatusOr<InterpValue> ValueToInterpValueImpl(const Value& v,
           v.elements().at(1).elements().size()));
     }
     XLS_ASSIGN_OR_RETURN(InterpValue tag,
-                         ValueToInterpValueImpl(v.elements().at(0), nullptr));
+                         ValueToInterpValue(v.elements().at(0), nullptr));
     XLS_ASSIGN_OR_RETURN(
         InterpValue payload_slot,
-        ValueToInterpValueImpl(v.elements().at(1).elements().at(0), nullptr));
+        ValueToInterpValue(v.elements().at(1).elements().at(0), nullptr));
     if (!tag.IsUBits() || !payload_slot.IsUBits()) {
       return absl::InvalidArgumentError(
           "Expected raw sum tag and payload slot to be unsigned bits.");
@@ -1441,7 +1353,7 @@ absl::StatusOr<InterpValue> ValueToInterpValueImpl(const Value& v,
       for (int64_t i = 0; i < v.elements().size(); ++i) {
         const Value& e = v.elements()[i];
         XLS_ASSIGN_OR_RETURN(InterpValue iv,
-                             ValueToInterpValueImpl(e, get_type(i)));
+                             ValueToInterpValue(e, get_type(i)));
         members.push_back(iv);
       }
       if (v.kind() == ValueKind::kTuple) {
@@ -1453,13 +1365,6 @@ absl::StatusOr<InterpValue> ValueToInterpValueImpl(const Value& v,
       return absl::InvalidArgumentError(
           "Cannot convert IR value to interpreter value: " + v.ToString());
   }
-}
-
-}  // namespace
-
-absl::StatusOr<InterpValue> ValueToInterpValue(const Value& v,
-                                               const Type* type) {
-  return ValueToInterpValueImpl(v, type);
 }
 
 absl::StatusOr<std::vector<InterpValue>> ParseArgs(std::string_view args_text) {
