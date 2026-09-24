@@ -198,7 +198,9 @@ class RunFuzzMultiprocessTest(test_base.TestCase):
         r'semantic_sum_provider::Option',
     )
     self.assertRegex(
-        generated_program, r'x[0-9]+::x[0-9]+\([^)]*\.fraction as '
+        generated_program,
+        r'let (x[0-9]+): [^\n=]+ = x[0-9]+\.fraction as [^;\n]+;\s*'
+        r'let x[0-9]+: [^\n=]+ = match x[0-9]+::x[0-9]+\(\1\)',
     )
 
     with open(
