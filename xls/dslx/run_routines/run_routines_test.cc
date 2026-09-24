@@ -1607,6 +1607,40 @@ enum Generated: u1 { Active(uN[0], u1[2][3]) = 0 }
   XLS_ASSERT_OK(generator.Generate(bit_gen, ordinary, {}));
 }
 
+TEST(QuickcheckTest, JitNestedConditionalTraceSectionsEmitOneEvent) {
+  Package package("conditional_trace");
+  constexpr std::string_view kIr = R"(
+fn conditional_trace(tkn: token, cond: bits[1], outer: bits[1], inner: bits[1], value: bits[8]) -> token {
+  ret trace.1: token = trace(tkn, cond, format="prefix{?} outer{?} {}{/}{/} suffix", data_operands=[outer, inner, value])
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * function,
+                           Parser::ParseFunction(kIr, &package));
+  RunComparator jit_comparator(CompareMode::kJit);
+  auto run = [&](bool enabled, bool outer, bool inner) {
+    const std::vector<Value> arguments = {
+        Value::Token(), Value(UBits(enabled, 1)), Value(UBits(outer, 1)),
+        Value(UBits(inner, 1)), Value(UBits(42, 8))};
+    return jit_comparator.RunIrFunction("conditional_trace", function,
+                                        arguments);
+  };
+
+  XLS_ASSERT_OK_AND_ASSIGN(auto all_active, run(true, true, true));
+  EXPECT_THAT(all_active.events.GetTraceMessageStrings(),
+              ::testing::ElementsAre("prefix outer 42 suffix"));
+
+  XLS_ASSERT_OK_AND_ASSIGN(auto inner_inactive, run(true, true, false));
+  EXPECT_THAT(inner_inactive.events.GetTraceMessageStrings(),
+              ::testing::ElementsAre("prefix outer suffix"));
+
+  XLS_ASSERT_OK_AND_ASSIGN(auto outer_inactive, run(true, false, true));
+  EXPECT_THAT(outer_inactive.events.GetTraceMessageStrings(),
+              ::testing::ElementsAre("prefix suffix"));
+
+  XLS_ASSERT_OK_AND_ASSIGN(auto disabled, run(false, true, true));
+  EXPECT_TRUE(disabled.events.GetTraceMessageStrings().empty());
+}
+
 // Verifies that the QuickCheck mechanism can find counter-examples for a simple
 // erroneous function.
 TEST(QuickcheckTest, QuickCheckBits) {
