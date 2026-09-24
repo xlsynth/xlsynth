@@ -143,18 +143,17 @@ bool PayloadContainsChannelHandle(const Type& type) {
   }
 }
 
-absl::Status ValidateSemanticSumPayloadType(const SumVariant& variant,
-                                            const TypeAnnotation& annotation,
-                                            const Type& payload_type,
-                                            const FileTable& file_table) {
-  if (payload_type.HasToken()) {
+absl::Status ValidateSemanticSumPayloadProperties(
+    const SumVariant& variant, const TypeAnnotation& annotation, bool has_token,
+    bool contains_channel, const FileTable& file_table) {
+  if (has_token) {
     return TypeInferenceErrorStatusForAnnotation(
         annotation.span(), &annotation,
         absl::Substitute(
             "Semantic sum constructor `$0` cannot contain a token payload.",
             variant.identifier()),
         file_table);
-  } else if (PayloadContainsChannelHandle(payload_type)) {
+  } else if (contains_channel) {
     return TypeInferenceErrorStatusForAnnotation(
         annotation.span(), &annotation,
         absl::Substitute(
@@ -166,6 +165,15 @@ absl::Status ValidateSemanticSumPayloadType(const SumVariant& variant,
   } else {
     return absl::OkStatus();
   }
+}
+
+absl::Status ValidateSemanticSumPayloadType(const SumVariant& variant,
+                                            const TypeAnnotation& annotation,
+                                            const Type& payload_type,
+                                            const FileTable& file_table) {
+  return ValidateSemanticSumPayloadProperties(
+      variant, annotation, payload_type.HasToken(),
+      PayloadContainsChannelHandle(payload_type), file_table);
 }
 
 absl::StatusOr<std::pair<TypeDim, std::vector<InterpValue>>>
@@ -1422,6 +1430,30 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       return absl::OkStatus();
     }
 
+    if (node->kind() == AstNodeKind::kTypeAnnotation &&
+        IsStandaloneGenericTypeArgument(
+            absl::down_cast<const TypeAnnotation*>(node)) &&
+        !(*annotation)->IsAnnotation<GenericTypeAnnotation>() &&
+        !IsToken(*annotation) && !GetSignednessAndBitCount(*annotation).ok()) {
+      // The flattened walk still visits expressions inside the annotation.
+      // Only the optional full Type for the argument syntax is deferred: its
+      // owning nominal use resolves the argument, and an explicit TypeInfo
+      // query or serialization can still materialize the ordinary type.
+      absl::StatusOr<SpecializationTypePtr> identity =
+          BuildSpecializationIdentity(*annotation, parametric_context);
+      if (identity.ok()) {
+        absl::StatusOr<SpecializationTypeShapePtr> shape =
+            BuildSpecializationShape(*identity);
+        if (shape.ok()) {
+          ti->SetLazySpecializationType(node, std::move(*shape),
+                                        NeedsMetaType(table_, node));
+          return absl::OkStatus();
+        }
+      }
+      // Some annotations are best effort or cannot be described here. Keep
+      // their existing concretization and diagnostic behavior.
+    }
+
     absl::StatusOr<std::unique_ptr<Type>> type =
         Concretize(*annotation, parametric_context,
                    /*needs_conversion_before_eval=*/node->kind() !=
@@ -1688,10 +1720,17 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
         value_type_annotation = const_cast<const TypeAnnotation*>(
             std::get<TypeAnnotation*>(resolved_type));
       }
+      if (NeedsParametricValueReference(*binding_type)) {
+        XLS_ASSIGN_OR_RETURN(
+            value_type_annotation,
+            GetParametricFreeType(value_type_annotation, value_exprs,
+                                  /*real_self_type=*/std::nullopt,
+                                  /*clone_if_no_parametrics=*/false));
+      }
       XLS_ASSIGN_OR_RETURN(Expr * value_expr,
-                           MakeTypeCheckedNumberOrEnumValue(
-                               module_, table_, span, *value,
-                               value_type_annotation, *binding_type));
+                           MakeAggregateParametricValueExpr(
+                               module_, span, *value, value_type_annotation,
+                               *binding_type, *ti));
       canonical_parametrics[i] = value_expr;
       value_exprs[binding->name_def()] = value_expr;
     }
@@ -2013,110 +2052,34 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
         XLS_RET_CHECK(sum_ref.has_value());
       }
       absl::flat_hash_map<const NameDef*, ExprOrType> resolved_parametrics;
-      std::vector<SumType::ParametricArgument> concrete_parametrics;
-      concrete_parametrics.reserve(sum_ref->parametrics.size());
-      for (int i = 0; i < sum_ref->parametrics.size(); ++i) {
-        const ParametricBinding* binding = sum_def->parametric_bindings()[i];
-        XLS_ASSIGN_OR_RETURN(
-            ExprOrType parametric,
-            NormalizeParametricArgument(*binding, sum_ref->parametrics[i],
-                                        table_, file_table_));
-        if (std::holds_alternative<Expr*>(parametric)) {
-          // Earlier arguments determine the value binding's type. For example,
-          // E<N: u32, V: uN[N]> uses uN[8] for V when N is 8.
-          XLS_ASSIGN_OR_RETURN(
-              const TypeAnnotation* binding_annotation,
-              GetParametricFreeType(binding->type_annotation(),
-                                    resolved_parametrics,
-                                    /*real_self_type=*/std::nullopt,
-                                    /*clone_if_no_parametrics=*/false));
-          XLS_RETURN_IF_ERROR(ConvertSubtree(binding_annotation,
-                                             /*function=*/std::nullopt,
-                                             parametric_context));
-          XLS_ASSIGN_OR_RETURN(InterpValue value,
-                               evaluator_->Evaluate(ParametricContextScopedExpr(
-                                   parametric_context, binding_annotation,
-                                   std::get<Expr*>(parametric))));
-          concrete_parametrics.emplace_back(std::move(value));
-        } else {
-          XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> concrete_type,
-                               Concretize(std::get<TypeAnnotation*>(parametric),
-                                          parametric_context));
-          concrete_parametrics.emplace_back(std::move(concrete_type));
-        }
-        resolved_parametrics.emplace(binding->name_def(), parametric);
-      }
+      XLS_ASSIGN_OR_RETURN(
+          std::vector<SpecializationArgument> concrete_parametrics,
+          GetSumSpecializationArguments(*sum_ref, parametric_context,
+                                        resolved_parametrics));
       // Resolve all arguments before lookup, but reuse a completed instance
       // before recursively rebuilding its payload types.
       const auto cache_key = std::make_pair(
-          sum_def, SumType::HashParametricArguments(concrete_parametrics));
+          sum_def, SumType::HashSpecializationArguments(concrete_parametrics));
       if (const SumType* cached_type =
               GetCachedSumType(cache_key, concrete_parametrics)) {
         return cached_type->CloneToUnique();
       } else {
-        std::optional<const ParametricContext*> sum_context =
-            parametric_context;
-        absl::flat_hash_map<const NameDef*, ExprOrType> tag_type_parametrics;
-        const bool has_explicit_discriminants =
-            absl::c_any_of(sum_def->variants(), [](const SumVariant* variant) {
-              return variant->discriminant().has_value();
-            });
-        if (sum_def->IsParametric() &&
-            (sum_def->tag_type_annotation() != nullptr ||
-             has_explicit_discriminants)) {
-          XLS_ASSIGN_OR_RETURN(TypeInfo * parent_type_info,
-                               GetTypeInfo(parametric_context));
-          XLS_ASSIGN_OR_RETURN(
-              TypeInfo * sum_type_info,
-              import_data_.type_info_owner().New(
-                  file_table_, absl::StrCat("sum_tag_", sum_def->identifier()),
-                  parent_type_info));
-          absl::flat_hash_map<std::string, InterpValue> values;
-          for (int i = 0; i < concrete_parametrics.size(); ++i) {
-            const ParametricBinding* binding =
-                sum_def->parametric_bindings()[i];
-            if (const auto* value =
-                    std::get_if<InterpValue>(&concrete_parametrics[i])) {
-              // The formal type can depend on earlier arguments, such as
-              // V: uN[N] or V: T. Resolve it in the same outer context used
-              // to evaluate the argument before retaining its concrete type.
-              XLS_ASSIGN_OR_RETURN(
-                  const TypeAnnotation* binding_annotation,
-                  GetParametricFreeType(binding->type_annotation(),
-                                        resolved_parametrics,
-                                        /*real_self_type=*/std::nullopt,
-                                        /*clone_if_no_parametrics=*/false));
-              XLS_ASSIGN_OR_RETURN(
-                  std::unique_ptr<Type> binding_type,
-                  Concretize(binding_annotation, parametric_context));
-              sum_type_info->SetItem(binding->name_def(), *binding_type);
-              sum_type_info->NoteConstExpr(binding->name_def(), *value);
-              values.emplace(binding->identifier(), *value);
-            } else {
-              XLS_ASSIGN_OR_RETURN(
-                  const TypeAnnotation* type,
-                  CleanseGenericTypeArgument(
-                      parametric_context, *parent_type_info,
-                      std::get<TypeAnnotation*>(
-                          resolved_parametrics.at(binding->name_def()))));
-              values.emplace(binding->identifier(),
-                             InterpValue::MakeTypeReference(type));
-              tag_type_parametrics.emplace(binding->name_def(),
-                                           const_cast<TypeAnnotation*>(type));
-            }
+        std::vector<SpecializationTypeShapePtr> argument_shapes;
+        argument_shapes.reserve(concrete_parametrics.size());
+        for (const SpecializationArgument& argument : concrete_parametrics) {
+          if (const auto* identity =
+                  std::get_if<SpecializationTypePtr>(&argument)) {
+            XLS_ASSIGN_OR_RETURN(SpecializationTypeShapePtr shape,
+                                 BuildSpecializationShape(*identity));
+            argument_shapes.push_back(std::move(shape));
+          } else {
+            argument_shapes.push_back(nullptr);
           }
-          XLS_ASSIGN_OR_RETURN(
-              sum_context,
-              table_.AddParametricSumContext(
-                  sum_def, annotation, ParametricEnv(std::move(values)),
-                  sum_type_info, parametric_context));
         }
-        // Keep value references bound to this sum's formals. Splicing an outer
-        // argument such as N + 1 here would evaluate it again with the sum's N.
-        // Generic types cross the context boundary only after cleansing.
         XLS_ASSIGN_OR_RETURN(auto tag_layout,
-                             ConcretizeSemanticSumTagLayout(
-                                 *sum_def, sum_context, tag_type_parametrics));
+                             ConcretizeSpecializedSumTagLayout(
+                                 *sum_def, annotation, parametric_context,
+                                 concrete_parametrics, resolved_parametrics));
 
         std::vector<SumTypeVariant> variants;
         variants.reserve(sum_def->variants().size());
@@ -2170,9 +2133,11 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
         // Preserve declaration order for deterministic traversal and for the
         // implicit-discriminant rule. The chosen tag width and concrete
         // discriminants are carried separately from the variant vector.
-        std::unique_ptr<SumType> type = std::make_unique<SumType>(
-            *sum_def, std::move(variants), std::move(tag_layout.first),
-            std::move(tag_layout.second), std::move(concrete_parametrics));
+        std::unique_ptr<SumType> type =
+            SumType::CreateWithSpecializationArguments(
+                *sum_def, std::move(variants), std::move(tag_layout.first),
+                std::move(tag_layout.second), std::move(concrete_parametrics),
+                std::move(argument_shapes));
         // The tag and widest payload must fit together even if no sum value is
         // constructed or constexpr evaluation of a constructor is best-effort.
         absl::Status bit_count_status = type->GetTotalBitCount().status();
@@ -2180,6 +2145,15 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
           return TypeInferenceErrorStatusForAnnotation(
               annotation->span(), annotation, bit_count_status.message(),
               file_table_);
+        }
+        // A sum reached as both a runtime type and a type argument must share
+        // its immutable backing without building a shape for every runtime sum.
+        XLS_ASSIGN_OR_RETURN(
+            SpecializationTypePtr identity,
+            BuildSpecializationIdentity(annotation, parametric_context));
+        if (auto it = specialization_shape_cache_.find(identity.get());
+            it != specialization_shape_cache_.end()) {
+          type = it->second->ReuseCompletedSum(std::move(type));
         }
         std::unique_ptr<Type> result = type->CloneToUnique();
         sum_type_cache_[cache_key].push_back(std::move(type));
@@ -2214,17 +2188,26 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
             Concretize(parametric_free_member_type, parametric_context));
         member_types.push_back(std::move(concrete_member_type));
       }
+      absl::flat_hash_map<const NameDef*, ExprOrType> resolved_annotations;
+      XLS_ASSIGN_OR_RETURN(
+          std::vector<SpecializationArgument> resolved_parametrics,
+          GetStructSpecializationArguments(*struct_or_proc, parametric_context,
+                                           struct_context,
+                                           resolved_annotations));
       if (struct_def_base->kind() == AstNodeKind::kStructDef) {
-        std::unique_ptr<Type> type = std::make_unique<StructType>(
-            std::move(member_types),
-            *absl::down_cast<const StructDef*>(struct_def_base));
+        std::unique_ptr<Type> type =
+            StructType::CreateWithSpecializationArguments(
+                std::move(member_types),
+                *absl::down_cast<const StructDef*>(struct_def_base),
+                std::move(resolved_parametrics));
         XLS_RETURN_IF_ERROR(
             AddCachedType(struct_def_base, struct_context, *type));
         return type;
       }
-      std::unique_ptr<Type> type = std::make_unique<ProcType>(
+      std::unique_ptr<Type> type = ProcType::CreateWithSpecializationArguments(
           std::move(member_types),
-          *absl::down_cast<const ProcDef*>(struct_def_base));
+          *absl::down_cast<const ProcDef*>(struct_def_base),
+          std::move(resolved_parametrics));
       XLS_RETURN_IF_ERROR(
           AddCachedType(struct_def_base, struct_context, *type));
       return type;
@@ -2265,6 +2248,559 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
   }
 
  private:
+  // A nested structural annotation may itself be an ordinary source type, but
+  // all annotations underneath an actual nominal type argument (or a generic
+  // type default) describe that argument rather than a runtime value.
+  bool IsStandaloneGenericTypeArgument(const TypeAnnotation* annotation) const {
+    const AstNode* child = annotation;
+    for (const AstNode* parent = child->parent(); parent != nullptr;
+         parent = child->parent()) {
+      if (const auto* nominal =
+              dynamic_cast<const TypeRefTypeAnnotation*>(parent)) {
+        for (const ExprOrType& argument : nominal->parametrics()) {
+          if (const auto* type = std::get_if<TypeAnnotation*>(&argument);
+              type != nullptr && *type == child) {
+            return true;
+          }
+        }
+      } else if (const auto* binding =
+                     dynamic_cast<const ParametricBinding*>(parent)) {
+        const auto& argument = binding->default_expr_or_type();
+        if (binding->type_annotation()->IsAnnotation<GenericTypeAnnotation>() &&
+            argument.has_value()) {
+          const auto* type = std::get_if<TypeAnnotation*>(&*argument);
+          return type != nullptr && *type == child;
+        } else {
+          return false;
+        }
+      }
+      if (parent->kind() == AstNodeKind::kTypeAnnotation) {
+        child = parent;
+      } else {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  using SpecializationAnnotationKey =
+      std::pair<const TypeAnnotation*, std::optional<const ParametricContext*>>;
+  using SpecializationIdentityKey = std::pair<const AstNode*, size_t>;
+
+  // Only the converter needs the source recipe. The immutable identity and
+  // shape retain no callbacks or references to this converter.
+  struct SpecializationRecipe {
+    const TypeAnnotation* annotation = nullptr;
+    std::optional<const ParametricContext*> context;
+    std::optional<StructOrProcRef> struct_ref;
+    absl::flat_hash_map<const NameDef*, ExprOrType> resolved_parametrics;
+    std::vector<InterpValue> enum_members;
+  };
+
+  struct SpecializationShapeTraits {
+    bool has_token = false;
+    bool payload_contains_channel = false;
+  };
+
+  SpecializationTypePtr InternSpecialization(SpecializationTypePtr identity,
+                                             SpecializationRecipe recipe) {
+    const SpecializationIdentityKey key(identity->description().nominal,
+                                        identity->hash());
+    auto& bucket = specialization_identity_cache_[key];
+    for (const SpecializationTypePtr& existing : bucket) {
+      if (existing->SemanticEquals(*identity)) {
+        return existing;
+      }
+    }
+    bucket.push_back(identity);
+    specialization_recipes_.emplace(
+        identity.get(),
+        std::make_unique<SpecializationRecipe>(std::move(recipe)));
+    return identity;
+  }
+
+  // Resolve a type argument as semantic identity. In particular, a nominal
+  // type follows its arguments here, never its physical members.
+  absl::StatusOr<SpecializationTypePtr> BuildSpecializationIdentity(
+      const TypeAnnotation* annotation,
+      std::optional<const ParametricContext*> context) {
+    const SpecializationAnnotationKey annotation_key(annotation, context);
+    if (auto it = specialization_annotation_cache_.find(annotation_key);
+        it != specialization_annotation_cache_.end()) {
+      return it->second;
+    }
+    using Kind = SpecializationType::Kind;
+    SpecializationRecipe recipe{.annotation = annotation, .context = context};
+    std::optional<SpecializationType::Description> description;
+    SpecializationTypePtr identity;
+    if (annotation->IsAnnotation<GenericTypeAnnotation>()) {
+      XLS_RET_CHECK(context.has_value());
+      XLS_RET_CHECK(annotation->parent() != nullptr);
+      XLS_RET_CHECK_EQ(annotation->parent()->kind(),
+                       AstNodeKind::kParametricBinding);
+      const auto* binding =
+          absl::down_cast<ParametricBinding*>(annotation->parent());
+      XLS_ASSIGN_OR_RETURN(const TypeAnnotation* resolved,
+                           table_.GetGenericType(context, binding->name_def()));
+      XLS_ASSIGN_OR_RETURN(identity,
+                           BuildSpecializationIdentity(resolved, context));
+    } else if (IsToken(annotation)) {
+      description.emplace(
+          SpecializationType::Description{.kind = Kind::kToken});
+    } else if (annotation->IsAnnotation<TupleTypeAnnotation>()) {
+      description.emplace(
+          SpecializationType::Description{.kind = Kind::kTuple});
+      for (const TypeAnnotation* member :
+           annotation->AsAnnotation<TupleTypeAnnotation>()->members()) {
+        XLS_ASSIGN_OR_RETURN(SpecializationTypePtr child,
+                             BuildSpecializationIdentity(member, context));
+        description->children.push_back(std::move(child));
+      }
+    } else if (const auto* array =
+                   CastToNonBitsArrayTypeAnnotation(annotation)) {
+      XLS_ASSIGN_OR_RETURN(
+          int64_t size, evaluator_->EvaluateU32OrExpr(context, array->dim()));
+      XLS_ASSIGN_OR_RETURN(
+          SpecializationTypePtr child,
+          BuildSpecializationIdentity(array->element_type(), context));
+      description.emplace(SpecializationType::Description{
+          .kind = Kind::kArray,
+          .size = TypeDim(InterpValue::MakeU32(size)),
+          .children = {std::move(child)}});
+    } else if (annotation->IsAnnotation<FunctionTypeAnnotation>()) {
+      const auto* function = annotation->AsAnnotation<FunctionTypeAnnotation>();
+      description.emplace(
+          SpecializationType::Description{.kind = Kind::kFunction});
+      for (const TypeAnnotation* param : function->param_types()) {
+        XLS_ASSIGN_OR_RETURN(SpecializationTypePtr child,
+                             BuildSpecializationIdentity(param, context));
+        description->children.push_back(std::move(child));
+      }
+      XLS_ASSIGN_OR_RETURN(
+          SpecializationTypePtr result,
+          BuildSpecializationIdentity(function->return_type(), context));
+      description->children.push_back(std::move(result));
+    } else if (annotation->IsAnnotation<ChannelTypeAnnotation>()) {
+      const auto* channel = annotation->AsAnnotation<ChannelTypeAnnotation>();
+      XLS_ASSIGN_OR_RETURN(
+          SpecializationTypePtr payload,
+          BuildSpecializationIdentity(channel->payload(), context));
+      identity = InternSpecialization(
+          SpecializationType::Create({.kind = Kind::kChannel,
+                                      .direction = channel->direction(),
+                                      .children = {std::move(payload)}}),
+          recipe);
+      if (channel->dims().has_value()) {
+        for (const Expr* dim : *channel->dims()) {
+          XLS_ASSIGN_OR_RETURN(int64_t size,
+                               evaluator_->EvaluateU32OrExpr(context, dim));
+          identity = InternSpecialization(
+              SpecializationType::Create(
+                  {.kind = Kind::kArray,
+                   .size = TypeDim(InterpValue::MakeU32(size)),
+                   .children = {std::move(identity)}}),
+              recipe);
+        }
+      }
+    } else {
+      XLS_ASSIGN_OR_RETURN(std::optional<const EnumDef*> enum_def,
+                           GetEnumDef(annotation, import_data_));
+      XLS_ASSIGN_OR_RETURN(std::optional<SumRef> sum_ref,
+                           GetSumRef(annotation, import_data_));
+      XLS_ASSIGN_OR_RETURN(std::optional<StructOrProcRef> struct_ref,
+                           GetStructOrProcRef(annotation, import_data_));
+      if (enum_def.has_value()) {
+        // An enum has a fixed underlying bits type and a finite list of values;
+        // the ordinary path cannot expand an aggregate type argument here.
+        XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> type,
+                             Concretize(annotation, context));
+        identity = SpecializationType::FromType(*type);
+        recipe.enum_members = type->AsEnum().members();
+      } else if (sum_ref.has_value()) {
+        const SumDef* def = sum_ref->def;
+        if (def->IsParametric() &&
+            sum_ref->parametrics.size() != def->parametric_bindings().size()) {
+          XLS_ASSIGN_OR_RETURN(
+              annotation,
+              resolver_->ResolveAndUnifyTypeAnnotations(
+                  context, /*node=*/std::nullopt, {annotation},
+                  annotation->span(), TypeAnnotationFilter::None(),
+                  /*require_bits_like=*/false, /*used_error_handler=*/nullptr));
+          XLS_ASSIGN_OR_RETURN(sum_ref, GetSumRef(annotation, import_data_));
+          XLS_RET_CHECK(sum_ref.has_value());
+          recipe.annotation = annotation;
+        }
+        XLS_ASSIGN_OR_RETURN(
+            std::vector<SpecializationArgument> arguments,
+            GetSumSpecializationArguments(*sum_ref, context,
+                                          recipe.resolved_parametrics));
+        description.emplace(
+            SpecializationType::Description{.kind = Kind::kSum,
+                                            .nominal = def,
+                                            .arguments = std::move(arguments)});
+      } else if (struct_ref.has_value()) {
+        const StructDefBase* def = struct_ref->def;
+        std::optional<const ParametricContext*> struct_context;
+        if (def->IsParametric()) {
+          XLS_ASSIGN_OR_RETURN(struct_context,
+                               GetOrCreateParametricStructContext(
+                                   context, *struct_ref, annotation));
+        }
+        XLS_ASSIGN_OR_RETURN(std::vector<SpecializationArgument> arguments,
+                             GetStructSpecializationArguments(
+                                 *struct_ref, context, struct_context,
+                                 recipe.resolved_parametrics));
+        recipe.struct_ref = std::move(struct_ref);
+        description.emplace(SpecializationType::Description{
+            .kind = def->kind() == AstNodeKind::kStructDef ? Kind::kStruct
+                                                           : Kind::kProc,
+            .nominal = def,
+            .arguments = std::move(arguments)});
+      } else if (annotation->IsAnnotation<BuiltinTypeAnnotation>() ||
+                 GetSignednessAndBitCount(annotation).ok()) {
+        // Bits, including evaluated widths and signedness, have no descendants.
+        XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> type,
+                             Concretize(annotation, context));
+        identity = SpecializationType::FromType(*type);
+      } else {
+        XLS_ASSIGN_OR_RETURN(const TypeAnnotation* resolved,
+                             resolver_->ResolveIndirectTypeAnnotations(
+                                 context, /*context_node=*/std::nullopt,
+                                 annotation, TypeAnnotationFilter::None()));
+        if (resolved != annotation) {
+          XLS_ASSIGN_OR_RETURN(identity,
+                               BuildSpecializationIdentity(resolved, context));
+        } else {
+          // Preserve Concretize's existing diagnostic for unresolved or
+          // unsupported annotations. All composite types were handled above.
+          XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> type,
+                               Concretize(annotation, context));
+          identity = SpecializationType::FromType(*type);
+        }
+      }
+    }
+    if (description.has_value()) {
+      identity = SpecializationType::Create(std::move(*description));
+    }
+    identity = InternSpecialization(std::move(identity), std::move(recipe));
+    specialization_annotation_cache_.emplace(annotation_key, identity);
+    return identity;
+  }
+
+  absl::StatusOr<SpecializationTypePtr> GetSpecializationMemberIdentity(
+      const TypeAnnotation* member, const SpecializationRecipe& recipe,
+      std::optional<const TypeAnnotation*> self_type) {
+    if (member->IsAnnotation<TypeVariableTypeAnnotation>()) {
+      const auto* variable = member->AsAnnotation<TypeVariableTypeAnnotation>();
+      const auto name_def = variable->type_variable()->name_def();
+      if (const auto* def = std::get_if<const NameDef*>(&name_def);
+          def != nullptr) {
+        auto it = recipe.resolved_parametrics.find(*def);
+        if (it != recipe.resolved_parametrics.end()) {
+          if (const auto* argument =
+                  std::get_if<TypeAnnotation*>(&it->second)) {
+            return BuildSpecializationIdentity(*argument, recipe.context);
+          }
+        }
+      }
+    }
+    XLS_ASSIGN_OR_RETURN(
+        member,
+        GetParametricFreeType(member, recipe.resolved_parametrics, self_type,
+                              /*clone_if_no_parametrics=*/false));
+    return BuildSpecializationIdentity(member, recipe.context);
+  }
+
+  // Build only the physical edges which a caller can explicitly inspect for a
+  // direct sum argument. Canonical identities ensure that repeated fields share
+  // a single completed shape, instead of expanding into ordinary Type trees.
+  absl::StatusOr<SpecializationTypeShapePtr> BuildSpecializationShape(
+      const SpecializationTypePtr& identity) {
+    if (auto it = specialization_shape_cache_.find(identity.get());
+        it != specialization_shape_cache_.end()) {
+      return it->second;
+    }
+    using Kind = SpecializationType::Kind;
+    const auto& type = identity->description();
+    const SpecializationRecipe& recipe =
+        *specialization_recipes_.at(identity.get());
+    SpecializationTypeShape::Description shape{.identity = identity};
+    if (type.kind == Kind::kStruct || type.kind == Kind::kProc) {
+      const StructOrProcRef& ref = *recipe.struct_ref;
+      for (const StructMemberNode* member : ref.def->members()) {
+        XLS_ASSIGN_OR_RETURN(
+            SpecializationTypePtr child_identity,
+            ref.def->IsParametric()
+                ? GetSpecializationMemberIdentity(member->type(), recipe,
+                                                  recipe.annotation)
+                : BuildSpecializationIdentity(member->type(), recipe.context));
+        XLS_ASSIGN_OR_RETURN(SpecializationTypeShapePtr child,
+                             BuildSpecializationShape(child_identity));
+        shape.children.push_back(std::move(child));
+      }
+    } else if (type.kind == Kind::kSum) {
+      const auto* def = absl::down_cast<const SumDef*>(type.nominal);
+      shape.argument_shapes.reserve(type.arguments.size());
+      for (const SpecializationArgument& argument : type.arguments) {
+        if (const auto* argument_identity =
+                std::get_if<SpecializationTypePtr>(&argument)) {
+          XLS_ASSIGN_OR_RETURN(SpecializationTypeShapePtr argument_shape,
+                               BuildSpecializationShape(*argument_identity));
+          shape.argument_shapes.push_back(std::move(argument_shape));
+        } else {
+          shape.argument_shapes.push_back(nullptr);
+        }
+      }
+      XLS_ASSIGN_OR_RETURN(auto tag_layout,
+                           ConcretizeSpecializedSumTagLayout(
+                               *def, recipe.annotation, recipe.context,
+                               type.arguments, recipe.resolved_parametrics));
+      shape.tag_bit_count = std::move(tag_layout.first);
+      shape.discriminants = std::move(tag_layout.second);
+      for (const SumVariant* variant : def->variants()) {
+        std::vector<const TypeAnnotation*> members;
+        if (variant->is_tuple()) {
+          members.assign(variant->tuple_members().begin(),
+                         variant->tuple_members().end());
+        } else if (variant->is_struct()) {
+          for (const StructMemberNode* member : variant->struct_members()) {
+            members.push_back(member->type());
+          }
+        }
+        for (const TypeAnnotation* member : members) {
+          XLS_ASSIGN_OR_RETURN(
+              SpecializationTypePtr child_identity,
+              def->IsParametric()
+                  ? GetSpecializationMemberIdentity(member, recipe,
+                                                    /*self_type=*/std::nullopt)
+                  : BuildSpecializationIdentity(member, recipe.context));
+          XLS_ASSIGN_OR_RETURN(SpecializationTypeShapePtr child,
+                               BuildSpecializationShape(child_identity));
+          const SpecializationShapeTraits& traits =
+              specialization_shape_traits_.at(child_identity.get());
+          if (traits.has_token || traits.payload_contains_channel) {
+            if (def->IsParametric()) {
+              XLS_ASSIGN_OR_RETURN(
+                  member,
+                  GetParametricFreeType(member, recipe.resolved_parametrics,
+                                        /*real_self_type=*/std::nullopt,
+                                        /*clone_if_no_parametrics=*/false));
+            }
+            return ValidateSemanticSumPayloadProperties(
+                *variant, *member, traits.has_token,
+                traits.payload_contains_channel, file_table_);
+          }
+          shape.children.push_back(std::move(child));
+        }
+      }
+    } else if (type.kind == Kind::kEnum) {
+      shape.enum_members = recipe.enum_members;
+    } else {
+      for (const SpecializationTypePtr& child_identity : type.children) {
+        XLS_ASSIGN_OR_RETURN(SpecializationTypeShapePtr child,
+                             BuildSpecializationShape(child_identity));
+        shape.children.push_back(std::move(child));
+      }
+    }
+
+    SpecializationShapeTraits traits{
+        .has_token = type.kind == Kind::kToken,
+        .payload_contains_channel = type.kind == Kind::kChannel};
+    for (const SpecializationTypeShapePtr& child : shape.children) {
+      const SpecializationShapeTraits& child_traits =
+          specialization_shape_traits_.at(child->description().identity.get());
+      traits.has_token |= child_traits.has_token;
+      if (type.kind == Kind::kArray || type.kind == Kind::kTuple ||
+          type.kind == Kind::kStruct || type.kind == Kind::kProc) {
+        traits.payload_contains_channel |=
+            child_traits.payload_contains_channel;
+      }
+    }
+    SpecializationTypeShapePtr result =
+        SpecializationTypeShape::Create(std::move(shape));
+    if (type.kind == Kind::kSum) {
+      const auto* def = absl::down_cast<const SumDef*>(type.nominal);
+      const auto cache_key = std::make_pair(
+          def, SumType::HashSpecializationArguments(type.arguments));
+      if (const SumType* completed_sum =
+              GetCachedSumType(cache_key, type.arguments)) {
+        result->ReuseCompletedSum(absl::WrapUnique(absl::down_cast<SumType*>(
+            completed_sum->CloneToUnique().release())));
+      }
+    }
+    specialization_shape_traits_.emplace(identity.get(), traits);
+    specialization_shape_cache_.emplace(identity.get(), result);
+    return result;
+  }
+
+  absl::StatusOr<std::vector<SpecializationArgument>>
+  GetStructSpecializationArguments(
+      const StructOrProcRef& ref,
+      std::optional<const ParametricContext*> parent_context,
+      std::optional<const ParametricContext*> struct_context,
+      absl::flat_hash_map<const NameDef*, ExprOrType>& resolved_annotations) {
+    std::vector<SpecializationArgument> result;
+    if (!struct_context.has_value()) {
+      return result;
+    }
+    XLS_ASSIGN_OR_RETURN(resolved_annotations,
+                         GetStructParametricAndConstantMap(struct_context));
+    absl::flat_hash_map<const NameDef*, ExprOrType> earlier_arguments;
+    result.reserve(ref.def->parametric_bindings().size());
+    for (int i = 0; i < ref.def->parametric_bindings().size(); ++i) {
+      const ParametricBinding* binding = ref.def->parametric_bindings()[i];
+      if (binding->type_annotation()->IsAnnotation<GenericTypeAnnotation>()) {
+        const TypeAnnotation* argument = nullptr;
+        std::optional<const ParametricContext*> argument_context =
+            parent_context;
+        const std::optional<ExprOrType> default_argument =
+            binding->default_expr_or_type();
+        if (i < ref.parametrics.size()) {
+          XLS_ASSIGN_OR_RETURN(
+              ExprOrType normalized,
+              NormalizeParametricArgument(*binding, ref.parametrics[i], table_,
+                                          file_table_));
+          if (const auto* type = std::get_if<TypeAnnotation*>(&normalized)) {
+            argument = *type;
+          }
+        }
+        if (argument == nullptr && default_argument.has_value()) {
+          if (const auto* type =
+                  std::get_if<TypeAnnotation*>(&*default_argument)) {
+            XLS_ASSIGN_OR_RETURN(
+                argument,
+                GetParametricFreeType(*type, earlier_arguments,
+                                      /*real_self_type=*/std::nullopt,
+                                      /*clone_if_no_parametrics=*/false));
+          }
+        }
+        if (argument == nullptr) {
+          XLS_ASSIGN_OR_RETURN(
+              argument,
+              table_.GetGenericType(struct_context, binding->name_def()));
+          argument_context = struct_context;
+        }
+        XLS_ASSIGN_OR_RETURN(
+            SpecializationTypePtr identity,
+            BuildSpecializationIdentity(argument, argument_context));
+        result.emplace_back(std::move(identity));
+        resolved_annotations.insert_or_assign(
+            binding->name_def(), const_cast<TypeAnnotation*>(argument));
+      } else {
+        XLS_ASSIGN_OR_RETURN(
+            InterpValue argument,
+            (*struct_context)->type_info()->GetConstExpr(binding->name_def()));
+        result.emplace_back(std::move(argument));
+      }
+      earlier_arguments.emplace(binding->name_def(),
+                                resolved_annotations.at(binding->name_def()));
+    }
+    return result;
+  }
+
+  absl::StatusOr<std::vector<SpecializationArgument>>
+  GetSumSpecializationArguments(
+      const SumRef& ref, std::optional<const ParametricContext*> context,
+      absl::flat_hash_map<const NameDef*, ExprOrType>& resolved_annotations) {
+    std::vector<SpecializationArgument> result;
+    result.reserve(ref.parametrics.size());
+    for (int i = 0; i < ref.parametrics.size(); ++i) {
+      const ParametricBinding* binding = ref.def->parametric_bindings()[i];
+      XLS_ASSIGN_OR_RETURN(
+          ExprOrType parametric,
+          NormalizeParametricArgument(*binding, ref.parametrics[i], table_,
+                                      file_table_));
+      if (const auto* expr = std::get_if<Expr*>(&parametric)) {
+        // Earlier arguments determine the value binding's type. For example,
+        // E<N: u32, V: uN[N]> uses uN[8] for V when N is 8.
+        XLS_ASSIGN_OR_RETURN(
+            const TypeAnnotation* binding_annotation,
+            GetParametricFreeType(binding->type_annotation(),
+                                  resolved_annotations,
+                                  /*real_self_type=*/std::nullopt,
+                                  /*clone_if_no_parametrics=*/false));
+        XLS_RETURN_IF_ERROR(ConvertSubtree(binding_annotation,
+                                           /*function=*/std::nullopt, context));
+        XLS_ASSIGN_OR_RETURN(InterpValue value,
+                             evaluator_->Evaluate(ParametricContextScopedExpr(
+                                 context, binding_annotation, *expr)));
+        result.emplace_back(std::move(value));
+      } else {
+        XLS_ASSIGN_OR_RETURN(
+            SpecializationTypePtr identity,
+            BuildSpecializationIdentity(std::get<TypeAnnotation*>(parametric),
+                                        context));
+        result.emplace_back(std::move(identity));
+      }
+      resolved_annotations.emplace(binding->name_def(), parametric);
+    }
+    return result;
+  }
+
+  absl::StatusOr<std::pair<TypeDim, std::vector<InterpValue>>>
+  ConcretizeSpecializedSumTagLayout(
+      const SumDef& sum_def, const TypeAnnotation* annotation,
+      std::optional<const ParametricContext*> parent_context,
+      absl::Span<const SpecializationArgument> arguments,
+      const absl::flat_hash_map<const NameDef*, ExprOrType>&
+          resolved_annotations) {
+    std::optional<const ParametricContext*> sum_context = parent_context;
+    absl::flat_hash_map<const NameDef*, ExprOrType> tag_type_parametrics;
+    const bool has_explicit_discriminants =
+        absl::c_any_of(sum_def.variants(), [](const SumVariant* variant) {
+          return variant->discriminant().has_value();
+        });
+    if (sum_def.IsParametric() && (sum_def.tag_type_annotation() != nullptr ||
+                                   has_explicit_discriminants)) {
+      XLS_ASSIGN_OR_RETURN(TypeInfo * parent_type_info,
+                           GetTypeInfo(parent_context));
+      XLS_ASSIGN_OR_RETURN(
+          TypeInfo * sum_type_info,
+          import_data_.type_info_owner().New(
+              file_table_, absl::StrCat("sum_tag_", sum_def.identifier()),
+              parent_type_info));
+      absl::flat_hash_map<std::string, InterpValue> values;
+      for (int i = 0; i < arguments.size(); ++i) {
+        const ParametricBinding* binding = sum_def.parametric_bindings()[i];
+        if (const auto* value = std::get_if<InterpValue>(&arguments[i])) {
+          // The formal type can depend on earlier arguments, such as V: uN[N]
+          // or V: T. Resolve it in the same context that evaluated the value.
+          XLS_ASSIGN_OR_RETURN(
+              const TypeAnnotation* binding_annotation,
+              GetParametricFreeType(binding->type_annotation(),
+                                    resolved_annotations,
+                                    /*real_self_type=*/std::nullopt,
+                                    /*clone_if_no_parametrics=*/false));
+          XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> binding_type,
+                               Concretize(binding_annotation, parent_context));
+          sum_type_info->SetItem(binding->name_def(), *binding_type);
+          sum_type_info->NoteConstExpr(binding->name_def(), *value);
+          values.emplace(binding->identifier(), *value);
+        } else {
+          XLS_ASSIGN_OR_RETURN(
+              const TypeAnnotation* type,
+              CleanseGenericTypeArgument(
+                  parent_context, *parent_type_info,
+                  std::get<TypeAnnotation*>(
+                      resolved_annotations.at(binding->name_def()))));
+          values.emplace(binding->identifier(),
+                         InterpValue::MakeTypeReference(type));
+          tag_type_parametrics.emplace(binding->name_def(),
+                                       const_cast<TypeAnnotation*>(type));
+        }
+      }
+      XLS_ASSIGN_OR_RETURN(sum_context, table_.AddParametricSumContext(
+                                            &sum_def, annotation,
+                                            ParametricEnv(std::move(values)),
+                                            sum_type_info, parent_context));
+    }
+    // Keep value references bound to this sum's formals. Splicing an outer
+    // argument such as N + 1 here would evaluate it again with the sum's N.
+    // Generic types cross the context boundary only after cleansing.
+    return ConcretizeSemanticSumTagLayout(sum_def, sum_context,
+                                          tag_type_parametrics);
+  }
+
   // If the invocation is a spawn of an impl-based proc, makes sure it's valid:
   // can only be within a proc, or from within a test function.
   absl::Status ValidateSpawnContext(
@@ -3400,6 +3936,26 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
     return absl::OkStatus();
   }
 
+  static bool NeedsParametricValueReference(const Type& type) {
+    return type.IsTuple() || type.IsStruct() || type.IsSum() ||
+           (type.IsArray() && !GetBitsLike(type).has_value());
+  }
+
+  // Structured bindings use a reference with a parametric-free annotation;
+  // scalar bindings use a type-checked numeric or enum expression.
+  absl::StatusOr<Expr*> MakeAggregateParametricValueExpr(
+      Module& module, const Span& local_span, const InterpValue& value,
+      const TypeAnnotation* value_annotation, const Type& binding_type,
+      TypeInfo& type_info) {
+    if (NeedsParametricValueReference(binding_type)) {
+      return table_.MakeParametricValueReference(
+          module, value_annotation, binding_type, value, type_info);
+    } else {
+      return MakeTypeCheckedNumberOrEnumValue(module, table_, local_span, value,
+                                              value_annotation, binding_type);
+    }
+  }
+
   // Resolves aggregate bindings in the supplied order. Structs resolve generic
   // types before bindings that depend on them; sums use declaration order.
   // Before evaluating a default, infer earlier bindings so both value and type
@@ -3446,25 +4002,14 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
         XLS_RETURN_IF_ERROR(
             ValidateAggregateParametricValue(value, *binding_type, span));
         instance_type_info->SetItem(binding->name_def(), *binding_type);
-        Expr* value_expr;
-        if (binding_type->IsTuple() || binding_type->IsStruct() ||
-            binding_type->IsSum() ||
-            (binding_type->IsArray() &&
-             !GetBitsLike(*binding_type).has_value())) {
-          XLS_ASSIGN_OR_RETURN(
-              value_expr, table_.MakeParametricValueReference(
-                              module, binding_annotation, *binding_type, value,
-                              *instance_type_info));
-        } else {
-          // An annotation being unified may come from another module. New
-          // literals need a span in the module that owns those literals.
-          const Span& local_span =
-              binding->owner() == &module ? binding->span() : module.span();
-          XLS_ASSIGN_OR_RETURN(value_expr,
-                               MakeTypeCheckedNumberOrEnumValue(
-                                   module, table_, local_span, value,
-                                   binding_annotation, *binding_type));
-        }
+        // An annotation being unified may come from another module. New
+        // literals need a span in the module that owns those literals.
+        const Span& local_span =
+            binding->owner() == &module ? binding->span() : module.span();
+        XLS_ASSIGN_OR_RETURN(Expr * value_expr,
+                             MakeAggregateParametricValueExpr(
+                                 module, local_span, value, binding_annotation,
+                                 *binding_type, *instance_type_info));
         resolved_parametrics.emplace(binding->name_def(), value_expr);
       }
       instance_type_info->NoteConstExpr(binding->name_def(), value);
@@ -3843,6 +4388,8 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
         std::get<ParametricStructDetails>((*struct_context)->details())
             .struct_or_proc_def;
     absl::flat_hash_map<const NameDef*, ExprOrType> parametrics_and_constants;
+    std::optional<absl::flat_hash_map<const NameDef*, ExprOrType>>
+        canonical_value_exprs;
     std::vector<ParametricBinding*> bindings =
         struct_or_proc_def->parametric_bindings();
     for (int i = 0; i < bindings.size(); i++) {
@@ -3858,8 +4405,20 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
             (*struct_context)->type_info()->GetConstExpr(binding->name_def()));
         std::optional<Number*> literal =
             ConvertToNumberIfBitsLike(module_, binding->span(), value);
-        XLS_RET_CHECK(literal.has_value());
-        parametrics_and_constants.emplace(binding->name_def(), *literal);
+        if (literal.has_value()) {
+          parametrics_and_constants.emplace(binding->name_def(), *literal);
+        } else {
+          // Structured values cannot be represented by a numeric literal. The
+          // context already created references to their resolved values.
+          if (!canonical_value_exprs.has_value()) {
+            XLS_ASSIGN_OR_RETURN(
+                canonical_value_exprs,
+                table_.GetParametricValueExprs(*struct_context));
+          }
+          auto it = canonical_value_exprs->find(binding->name_def());
+          XLS_RET_CHECK(it != canonical_value_exprs->end());
+          parametrics_and_constants.emplace(binding->name_def(), it->second);
+        }
       }
     }
 
@@ -3947,13 +4506,13 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
   // equality.
   const SumType* GetCachedSumType(
       const SumTypeCacheKey& key,
-      absl::Span<const SumType::ParametricArgument> arguments) const {
+      absl::Span<const SpecializationArgument> arguments) const {
     if (auto entry = sum_type_cache_.find(key);
         entry == sum_type_cache_.end()) {
       return nullptr;
     } else {
       auto instance = absl::c_find_if(entry->second, [&](const auto& type) {
-        return type->HasSameParametricArguments(arguments);
+        return type->HasSameSpecializationArguments(arguments);
       });
       return instance == entry->second.end() ? nullptr : instance->get();
     }
@@ -4354,6 +4913,22 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
   // converter-local, and collisions still use the complete semantic comparison.
   absl::flat_hash_map<SumTypeCacheKey, std::vector<std::unique_ptr<SumType>>>
       sum_type_cache_;
+
+  // Annotation/context is only a front cache. Nominal identity is declaration
+  // plus ordered semantic arguments, with full equality on hash collisions;
+  // inference contexts can equate type references by their printed names.
+  absl::flat_hash_map<SpecializationAnnotationKey, SpecializationTypePtr>
+      specialization_annotation_cache_;
+  absl::flat_hash_map<SpecializationIdentityKey,
+                      std::vector<SpecializationTypePtr>>
+      specialization_identity_cache_;
+  absl::flat_hash_map<const SpecializationType*,
+                      std::unique_ptr<SpecializationRecipe>>
+      specialization_recipes_;
+  absl::flat_hash_map<const SpecializationType*, SpecializationTypeShapePtr>
+      specialization_shape_cache_;
+  absl::flat_hash_map<const SpecializationType*, SpecializationShapeTraits>
+      specialization_shape_traits_;
 
   // The top element in this stack is the proc-level type info for the proc (or
   // child of a proc) currently being converted, if any. There are only multiple
