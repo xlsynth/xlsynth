@@ -4,24 +4,71 @@ package test_pkg;
   //     Some(u32),
   //     Pair { lo: u8, hi: u8 },
   // }
+  typedef enum logic [1:0] {
+    MaybeWord_tag_None = 2'h0,
+    MaybeWord_tag_Some = 2'h1,
+    MaybeWord_tag_Pair = 2'h2
+  } MaybeWord_tag_t;
   typedef struct packed {
-    logic [1:0] tag;
-    logic [31:0] payload;
+    logic [31:0] xls_padding;
+  } MaybeWord_none_view_t;
+  typedef struct packed {
+    logic [31:0] value;
+  } MaybeWord_some_view_t;
+  typedef struct packed {
+    logic [15:0] xls_padding;
+    logic [7:0] lo;
+    logic [7:0] hi;
+  } MaybeWord_pair_view_t;
+  typedef union packed {
+    logic [31:0] bits;
+    MaybeWord_none_view_t as_none;
+    MaybeWord_some_view_t as_some;
+    MaybeWord_pair_view_t as_pair;
+  } MaybeWord_payload_t;
+  typedef struct packed {
+    MaybeWord_tag_t tag;
+    MaybeWord_payload_t payload;
   } MaybeWord;
 
   // DSLX Type: pub enum ExplicitTagWidth : u5 {
   //     None = 0,
   //     Some(u8) = 1,
   // }
+  typedef enum logic [4:0] {
+    ExplicitTagWidth_tag_None = 5'h00,
+    ExplicitTagWidth_tag_Some = 5'h01
+  } ExplicitTagWidth_tag_t;
   typedef struct packed {
-    logic [4:0] tag;
-    logic [7:0] payload;
+    logic [7:0] xls_padding;
+  } ExplicitTagWidth_none_view_t;
+  typedef struct packed {
+    logic [7:0] value;
+  } ExplicitTagWidth_some_view_t;
+  typedef union packed {
+    logic [7:0] bits;
+    ExplicitTagWidth_none_view_t as_none;
+    ExplicitTagWidth_some_view_t as_some;
+  } ExplicitTagWidth_payload_t;
+  typedef struct packed {
+    ExplicitTagWidth_tag_t tag;
+    ExplicitTagWidth_payload_t payload;
   } ExplicitTagWidth;
 
   // DSLX Type: pub enum Singleton {
   //     Only(u16),
   // }
+  typedef enum logic {
+    Singleton_tag_Only = 1'h0
+  } Singleton_tag_t;
   typedef struct packed {
-    logic [15:0] payload;
+    logic [15:0] value;
+  } Singleton_only_view_t;
+  typedef union packed {
+    logic [15:0] bits;
+    Singleton_only_view_t as_only;
+  } Singleton_payload_t;
+  typedef struct packed {
+    Singleton_payload_t payload;
   } Singleton;
 endpackage
