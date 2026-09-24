@@ -47,6 +47,15 @@ namespace xls::dslx {
 
 namespace {
 
+// Transport and outer construction require shape, not observation of nested
+// tags. Source values and equality require every active constructor to be
+// valid.
+enum class SumValidation { kRepresentation, kDeclaredConstructors };
+
+// Shares ordinary type checks while making sum-observation depth explicit.
+absl::Status ValidateValue(const InterpValue& value, const Type& type,
+                           SumValidation sum_validation);
+
 absl::StatusOr<InterpValue> InterpValueFromString(std::string_view s) {
   XLS_ASSIGN_OR_RETURN(Value value, Parser::ParseTypedValue(s));
   return dslx::ValueToInterpValue(value);
@@ -64,10 +73,36 @@ void CollectLeafChannelReferences(const InterpValue& channel_or_array,
   }
 }
 
+absl::Status ValidateBitsLikeValue(const InterpValue& value, const Type& type,
+                                   const BitsLikeProperties& bits_like);
+
+absl::Status ValidateEnumValue(const InterpValue& value,
+                               const EnumType& enum_type);
+
 absl::StatusOr<int64_t> GetFlattenedBitCount(const Type& type) {
   XLS_ASSIGN_OR_RETURN(TypeDim bit_count,
                        internal::GetBitCountWithSharedSumPayload(type));
   return bit_count.GetAsInt64();
+}
+
+absl::StatusOr<Bits> FlattenValueForType(const Type& type,
+                                         const InterpValue& value);
+
+absl::Status ValidateEncodedSumShape(const InterpValue& value,
+                                     const SumType& sum_type);
+
+absl::StatusOr<Bits> FlattenAggregateMembers(
+    absl::Span<const std::unique_ptr<Type>> members,
+    absl::Span<const InterpValue> values) {
+  XLS_RET_CHECK_EQ(members.size(), values.size());
+  std::vector<Bits> flattened_members;
+  flattened_members.reserve(members.size());
+  for (int64_t i = 0; i < members.size(); ++i) {
+    XLS_ASSIGN_OR_RETURN(Bits flattened_member,
+                         FlattenValueForType(*members.at(i), values.at(i)));
+    flattened_members.push_back(std::move(flattened_member));
+  }
+  return bits_ops::Concat(flattened_members);
 }
 
 absl::StatusOr<std::vector<InterpValue>> UnflattenAggregateMembers(
@@ -88,6 +123,205 @@ absl::StatusOr<std::vector<InterpValue>> UnflattenAggregateMembers(
   return values;
 }
 
+absl::StatusOr<Bits> FlattenValueForType(const Type& type,
+                                         const InterpValue& value) {
+  if (dynamic_cast<const SumType*>(&type) != nullptr) {
+    XLS_ASSIGN_OR_RETURN(internal::EncodedSumView sum_view,
+                         internal::GetEncodedSumView(value));
+    if (!sum_view.tag.IsUBits() || !sum_view.payload_slot.IsUBits()) {
+      return absl::InvalidArgumentError(
+          "Expected encoded sum tag and shared payload slot to be unsigned "
+          "bits.");
+    }
+    return bits_ops::Concat(
+        {sum_view.tag.GetBitsOrDie(), sum_view.payload_slot.GetBitsOrDie()});
+  } else if (dynamic_cast<const TokenType*>(&type) != nullptr) {
+    if (!value.IsToken()) {
+      return absl::InvalidArgumentError(
+          "Expected token value while flattening.");
+    }
+    return Bits(/*bit_count=*/0);
+  } else if (std::optional<BitsLikeProperties> bits_like = GetBitsLike(type);
+             bits_like.has_value()) {
+    XLS_RETURN_IF_ERROR(ValidateBitsLikeValue(value, type, *bits_like));
+    return value.GetBitsOrDie();
+  } else if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
+    if (!value.IsTuple()) {
+      return absl::InvalidArgumentError(
+          "Expected tuple value while flattening.");
+    }
+    return FlattenAggregateMembers(tuple_type->members(),
+                                   value.GetValuesOrDie());
+  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type)) {
+    if (!value.IsTuple()) {
+      return absl::InvalidArgumentError(
+          "Expected struct value while flattening.");
+    }
+    return FlattenAggregateMembers(struct_type->members(),
+                                   value.GetValuesOrDie());
+  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type)) {
+    if (!value.IsArray()) {
+      return absl::InvalidArgumentError(
+          "Expected array value while flattening.");
+    }
+    std::vector<Bits> flattened_elements;
+    flattened_elements.reserve(value.GetValuesOrDie().size());
+    for (int64_t i = static_cast<int64_t>(value.GetValuesOrDie().size()) - 1;
+         i >= 0; --i) {
+      XLS_ASSIGN_OR_RETURN(Bits flattened_element,
+                           FlattenValueForType(array_type->element_type(),
+                                               value.GetValuesOrDie().at(i)));
+      flattened_elements.push_back(std::move(flattened_element));
+    }
+    return bits_ops::Concat(flattened_elements);
+  } else if (auto* enum_type = dynamic_cast<const EnumType*>(&type)) {
+    XLS_RETURN_IF_ERROR(ValidateEnumValue(value, *enum_type));
+    return value.GetBitsOrDie();
+  } else {
+    return absl::UnimplementedError(
+        absl::StrCat("Cannot flatten InterpValue for type: ", type.ToString()));
+  }
+}
+
+}  // namespace
+
+namespace internal {
+
+absl::StatusOr<InterpValue> UnflattenValueForType(const Type& type,
+                                                  const Bits& bits) {
+  XLS_ASSIGN_OR_RETURN(int64_t expected_bit_count, GetFlattenedBitCount(type));
+  if (bits.bit_count() != expected_bit_count) {
+    return absl::InvalidArgumentError(
+        absl::StrFormat("Cannot unflatten `%s`: expected %d bits; got %d.",
+                        type.ToString(), expected_bit_count, bits.bit_count()));
+  }
+
+  if (auto* sum_type = dynamic_cast<const SumType*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(TypeDim payload_bit_count,
+                         sum_type->GetMaxPayloadBitCount());
+    XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                         payload_bit_count.GetAsInt64());
+    XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count,
+                         sum_type->tag_bit_count().GetAsInt64());
+    // Extracting a payload transports an existing nested image. Its tag is
+    // checked only by an observer or an explicit source-domain validator.
+    return internal::CreateEncodedSumTuple(
+        InterpValue::MakeUnsigned(
+            bits.Slice(payload_slot_bit_count, tag_bit_count)),
+        InterpValue::MakeUnsigned(bits.Slice(0, payload_slot_bit_count)));
+  } else if (dynamic_cast<const TokenType*>(&type) != nullptr) {
+    return InterpValue::MakeToken();
+  } else if (std::optional<BitsLikeProperties> bits_like = GetBitsLike(type);
+             bits_like.has_value()) {
+    XLS_ASSIGN_OR_RETURN(bool is_signed, bits_like->is_signed.GetAsBool());
+    return InterpValue::MakeBits(is_signed, bits);
+  } else if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(
+        std::vector<InterpValue> members,
+        UnflattenAggregateMembers(tuple_type->members(), bits));
+    return InterpValue::MakeTuple(std::move(members));
+  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(
+        std::vector<InterpValue> members,
+        UnflattenAggregateMembers(struct_type->members(), bits));
+    return InterpValue::MakeTuple(std::move(members));
+  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(int64_t array_size, array_type->size().GetAsInt64());
+    XLS_ASSIGN_OR_RETURN(int64_t element_bit_count,
+                         GetFlattenedBitCount(array_type->element_type()));
+    std::vector<InterpValue> elements;
+    elements.reserve(array_size);
+    for (int64_t i = 0; i < array_size; ++i) {
+      XLS_ASSIGN_OR_RETURN(
+          InterpValue element,
+          UnflattenValueForType(
+              array_type->element_type(),
+              bits.Slice(i * element_bit_count, element_bit_count)));
+      elements.push_back(std::move(element));
+    }
+    return InterpValue::MakeArray(std::move(elements));
+  } else if (auto* enum_type = dynamic_cast<const EnumType*>(&type)) {
+    return InterpValue::MakeEnum(bits, enum_type->is_signed(),
+                                 &enum_type->nominal_type());
+  } else {
+    return absl::UnimplementedError(absl::StrCat(
+        "Cannot unflatten InterpValue for type: ", type.ToString()));
+  }
+}
+
+}  // namespace internal
+
+namespace {
+
+absl::StatusOr<std::vector<InterpValue>> DecodeVariantPayloadValues(
+    const SumTypeEncoding::VariantInfo& variant,
+    const InterpValue& payload_slot) {
+  if (!payload_slot.IsUBits()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Expected shared sum payload slot to be unsigned bits; got `%s`.",
+        payload_slot.ToString()));
+  }
+  XLS_ASSIGN_OR_RETURN(int64_t active_payload_bit_count,
+                       variant.payload_bit_count());
+  Bits active_payload_bits =
+      payload_slot.GetBitsOrDie().Slice(0, active_payload_bit_count);
+  std::vector<InterpValue> payload_values;
+  payload_values.reserve(variant.payload_size());
+  int64_t bit_offset = active_payload_bit_count;
+  for (int64_t active_index = 0; active_index < variant.payload_size();
+       ++active_index) {
+    const Type& member_type = variant.variant->GetMemberType(active_index);
+    XLS_ASSIGN_OR_RETURN(int64_t member_bit_count,
+                         GetFlattenedBitCount(member_type));
+    bit_offset -= member_bit_count;
+    XLS_ASSIGN_OR_RETURN(InterpValue payload_value,
+                         internal::UnflattenValueForType(
+                             member_type, active_payload_bits.Slice(
+                                              bit_offset, member_bit_count)));
+    payload_values.push_back(std::move(payload_value));
+  }
+  return payload_values;
+}
+
+absl::Status ValidateEncodedSumShape(const InterpValue& value,
+                                     const SumType& sum_type) {
+  XLS_ASSIGN_OR_RETURN(internal::EncodedSumView sum_view,
+                       internal::GetEncodedSumView(value));
+
+  if (!sum_view.tag.IsUBits()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Expected sum tag for `%s` to be unsigned bits; got `%s`.",
+        sum_type.ToString(), sum_view.tag.ToString()));
+  }
+  XLS_ASSIGN_OR_RETURN(int64_t expected_tag_bit_count,
+                       sum_type.tag_bit_count().GetAsInt64());
+  XLS_ASSIGN_OR_RETURN(int64_t actual_tag_bit_count,
+                       sum_view.tag.GetBitCount());
+  if (actual_tag_bit_count != expected_tag_bit_count) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Sum `%s` expected a %d-bit tag; got %d bits.", sum_type.ToString(),
+        expected_tag_bit_count, actual_tag_bit_count));
+  }
+
+  if (!sum_view.payload_slot.IsUBits()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Expected sum payload slot for `%s` to be unsigned bits; got `%s`.",
+        sum_type.ToString(), sum_view.payload_slot.ToString()));
+  }
+  XLS_ASSIGN_OR_RETURN(TypeDim payload_width, sum_type.GetMaxPayloadBitCount());
+  XLS_ASSIGN_OR_RETURN(int64_t expected_payload_bit_count,
+                       payload_width.GetAsInt64());
+  XLS_ASSIGN_OR_RETURN(int64_t actual_payload_bit_count,
+                       sum_view.payload_slot.GetBitCount());
+  if (actual_payload_bit_count != expected_payload_bit_count) {
+    return absl::InvalidArgumentError(
+        absl::StrFormat("Sum `%s` expected a %d-bit payload slot; got %d bits.",
+                        sum_type.ToString(), expected_payload_bit_count,
+                        actual_payload_bit_count));
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<bool> IsCanonicalPlaceholderValue(const InterpValue& actual,
                                                  const InterpValue& expected,
                                                  const Type& type) {
@@ -97,75 +331,6 @@ absl::StatusOr<bool> IsCanonicalPlaceholderValue(const InterpValue& actual,
   XLS_ASSIGN_OR_RETURN(Value actual_value, actual.ConvertToIr());
   XLS_ASSIGN_OR_RETURN(Value expected_value, expected.ConvertToIr());
   return actual_value == expected_value;
-}
-
-absl::Status ValidateBitsLikeValue(const InterpValue& value, const Type& type,
-                                   const BitsLikeProperties& bits_like) {
-  if (!value.IsBits()) {
-    return absl::InvalidArgumentError(
-        absl::StrFormat("Expected bits-typed value for `%s`; got `%s`.",
-                        type.ToString(), value.ToString()));
-  }
-  XLS_ASSIGN_OR_RETURN(int64_t expected_bit_count, bits_like.size.GetAsInt64());
-  XLS_ASSIGN_OR_RETURN(int64_t actual_bit_count, value.GetBitCount());
-  if (actual_bit_count != expected_bit_count) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "Value `%s` does not match `%s`: expected %d bits; got %d.",
-        value.ToString(), type.ToString(), expected_bit_count,
-        actual_bit_count));
-  }
-  XLS_ASSIGN_OR_RETURN(bool expected_signed, bits_like.is_signed.GetAsBool());
-  if (value.IsSigned() != expected_signed) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "Value `%s` does not match `%s`: expected %s bits.", value.ToString(),
-        type.ToString(), expected_signed ? "signed" : "unsigned"));
-  }
-  return absl::OkStatus();
-}
-
-absl::Status ValidateEnumIdentity(const InterpValue& value,
-                                  const EnumType& enum_type) {
-  if (!value.IsEnum()) {
-    return absl::InvalidArgumentError(
-        absl::StrFormat("Expected enum-typed value for `%s`; got `%s`.",
-                        enum_type.ToString(), value.ToString()));
-  }
-  InterpValue::EnumData enum_data = value.GetEnumData().value();
-  if (enum_data.def != &enum_type.nominal_type()) {
-    return absl::InvalidArgumentError(
-        absl::StrFormat("Value `%s` does not match enum `%s`.",
-                        value.ToString(), enum_type.ToString()));
-  }
-  XLS_ASSIGN_OR_RETURN(int64_t expected_bit_count,
-                       enum_type.size().GetAsInt64());
-  if (enum_data.value.bit_count() != expected_bit_count) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "Value `%s` does not match enum `%s`: expected %d bits; got %d.",
-        value.ToString(), enum_type.ToString(), expected_bit_count,
-        enum_data.value.bit_count()));
-  }
-  if (enum_data.is_signed != enum_type.is_signed()) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "Value `%s` does not match enum `%s`: expected %s enum value.",
-        value.ToString(), enum_type.ToString(),
-        enum_type.is_signed() ? "signed" : "unsigned"));
-  }
-  return absl::OkStatus();
-}
-
-absl::Status ValidateEnumValue(const InterpValue& value,
-                               const EnumType& enum_type) {
-  XLS_RETURN_IF_ERROR(ValidateEnumIdentity(value, enum_type));
-  const InterpValue::EnumData enum_data = value.GetEnumData().value();
-  const Bits& value_bits = enum_data.value;
-  for (const InterpValue& member : enum_type.members()) {
-    if (value_bits == member.GetBitsOrDie()) {
-      return absl::OkStatus();
-    }
-  }
-  return absl::InvalidArgumentError(absl::StrFormat(
-      "Value `%s` does not match enum `%s`: expected a declared member.",
-      value.ToString(), enum_type.ToString()));
 }
 
 absl::Status ValidateTupleValue(const InterpValue& value,
@@ -298,252 +463,73 @@ absl::Status ValidateSumValue(const InterpValue& value,
   return absl::OkStatus();
 }
 
-}  // namespace
-
-namespace internal {
-
-absl::StatusOr<InterpValue> UnflattenValueForType(const Type& type,
-                                                  const Bits& bits) {
-  XLS_ASSIGN_OR_RETURN(int64_t expected_bit_count, GetFlattenedBitCount(type));
-  if (bits.bit_count() != expected_bit_count) {
+absl::Status ValidateBitsLikeValue(const InterpValue& value, const Type& type,
+                                   const BitsLikeProperties& bits_like) {
+  if (!value.IsBits()) {
     return absl::InvalidArgumentError(
-        absl::StrFormat("Cannot unflatten `%s`: expected %d bits; got %d.",
-                        type.ToString(), expected_bit_count, bits.bit_count()));
+        absl::StrFormat("Expected bits-typed value for `%s`; got `%s`.",
+                        type.ToString(), value.ToString()));
   }
-
-  if (auto* sum_type = dynamic_cast<const SumType*>(&type)) {
-    XLS_ASSIGN_OR_RETURN(TypeDim payload_bit_count,
-                         sum_type->GetMaxPayloadBitCount());
-    XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
-                         payload_bit_count.GetAsInt64());
-    XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count,
-                         sum_type->tag_bit_count().GetAsInt64());
-    // Extracting a payload transports an existing nested image. Its tag is
-    // checked only by an observer or an explicit source-domain validator.
-    return internal::CreateEncodedSumTuple(
-        InterpValue::MakeUnsigned(
-            bits.Slice(payload_slot_bit_count, tag_bit_count)),
-        InterpValue::MakeUnsigned(bits.Slice(0, payload_slot_bit_count)));
-  } else if (dynamic_cast<const TokenType*>(&type) != nullptr) {
-    return InterpValue::MakeToken();
-  } else if (std::optional<BitsLikeProperties> bits_like = GetBitsLike(type);
-             bits_like.has_value()) {
-    XLS_ASSIGN_OR_RETURN(bool is_signed, bits_like->is_signed.GetAsBool());
-    return InterpValue::MakeBits(is_signed, bits);
-  } else if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
-    XLS_ASSIGN_OR_RETURN(
-        std::vector<InterpValue> members,
-        UnflattenAggregateMembers(tuple_type->members(), bits));
-    return InterpValue::MakeTuple(std::move(members));
-  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type)) {
-    XLS_ASSIGN_OR_RETURN(
-        std::vector<InterpValue> members,
-        UnflattenAggregateMembers(struct_type->members(), bits));
-    return InterpValue::MakeTuple(std::move(members));
-  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type)) {
-    XLS_ASSIGN_OR_RETURN(int64_t array_size, array_type->size().GetAsInt64());
-    XLS_ASSIGN_OR_RETURN(int64_t element_bit_count,
-                         GetFlattenedBitCount(array_type->element_type()));
-    std::vector<InterpValue> elements;
-    elements.reserve(array_size);
-    for (int64_t i = 0; i < array_size; ++i) {
-      XLS_ASSIGN_OR_RETURN(
-          InterpValue element,
-          UnflattenValueForType(
-              array_type->element_type(),
-              bits.Slice(i * element_bit_count, element_bit_count)));
-      elements.push_back(std::move(element));
-    }
-    return InterpValue::MakeArray(std::move(elements));
-  } else if (auto* enum_type = dynamic_cast<const EnumType*>(&type)) {
-    return InterpValue::MakeEnum(bits, enum_type->is_signed(),
-                                 &enum_type->nominal_type());
-  } else {
-    return absl::UnimplementedError(absl::StrCat(
-        "Cannot unflatten InterpValue for type: ", type.ToString()));
-  }
-}
-
-}  // namespace internal
-
-absl::Status ValidateInterpValueMatchesType(const InterpValue& value,
-                                            const Type& type) {
-  if (auto* sum_type = dynamic_cast<const SumType*>(&type)) {
-    return ValidateSumValue(value, *sum_type);
-  } else if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
-    return ValidateTupleValue(value, *tuple_type);
-  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type)) {
-    return ValidateStructValue(value, *struct_type);
-  } else if (auto* enum_type = dynamic_cast<const EnumType*>(&type)) {
-    return ValidateEnumValue(value, *enum_type);
-  } else if (std::optional<BitsLikeProperties> bits_like = GetBitsLike(type);
-             bits_like.has_value()) {
-    return ValidateBitsLikeValue(value, type, *bits_like);
-  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type)) {
-    return ValidateArrayValue(value, *array_type);
-  } else if (dynamic_cast<const TokenType*>(&type) != nullptr) {
-    if (!value.IsToken()) {
-      return absl::InvalidArgumentError(absl::StrFormat(
-          "Expected token-typed value; got `%s`.", value.ToString()));
-    }
-    return absl::OkStatus();
-  } else {
-    return absl::UnimplementedError(absl::StrCat(
-        "Cannot validate InterpValue against type: ", type.ToString()));
-  }
-}
-
-namespace {
-
-// Transport and outer construction require shape, not observation of nested
-// tags. Source values and equality require every active constructor to be
-// valid.
-enum class SumValidation { kRepresentation, kDeclaredConstructors };
-
-absl::StatusOr<Bits> FlattenValueForType(const Type& type,
-                                         const InterpValue& value);
-
-absl::StatusOr<Bits> FlattenAggregateMembers(
-    absl::Span<const std::unique_ptr<Type>> members,
-    absl::Span<const InterpValue> values) {
-  XLS_RET_CHECK_EQ(members.size(), values.size());
-  std::vector<Bits> flattened_members;
-  flattened_members.reserve(members.size());
-  for (int64_t i = 0; i < members.size(); ++i) {
-    XLS_ASSIGN_OR_RETURN(Bits flattened_member,
-                         FlattenValueForType(*members.at(i), values.at(i)));
-    flattened_members.push_back(std::move(flattened_member));
-  }
-  return bits_ops::Concat(flattened_members);
-}
-
-absl::StatusOr<Bits> FlattenValueForType(const Type& type,
-                                         const InterpValue& value) {
-  if (dynamic_cast<const SumType*>(&type) != nullptr) {
-    XLS_ASSIGN_OR_RETURN(internal::EncodedSumView sum_view,
-                         internal::GetEncodedSumView(value));
-    if (!sum_view.tag.IsUBits() || !sum_view.payload_slot.IsUBits()) {
-      return absl::InvalidArgumentError(
-          "Expected encoded sum tag and shared payload slot to be unsigned "
-          "bits.");
-    }
-    return bits_ops::Concat(
-        {sum_view.tag.GetBitsOrDie(), sum_view.payload_slot.GetBitsOrDie()});
-  } else if (dynamic_cast<const TokenType*>(&type) != nullptr) {
-    if (!value.IsToken()) {
-      return absl::InvalidArgumentError(
-          "Expected token value while flattening.");
-    }
-    return Bits(/*bit_count=*/0);
-  } else if (std::optional<BitsLikeProperties> bits_like = GetBitsLike(type);
-             bits_like.has_value()) {
-    XLS_RETURN_IF_ERROR(ValidateBitsLikeValue(value, type, *bits_like));
-    return value.GetBitsOrDie();
-  } else if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
-    if (!value.IsTuple()) {
-      return absl::InvalidArgumentError(
-          "Expected tuple value while flattening.");
-    }
-    return FlattenAggregateMembers(tuple_type->members(),
-                                   value.GetValuesOrDie());
-  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type)) {
-    if (!value.IsTuple()) {
-      return absl::InvalidArgumentError(
-          "Expected struct value while flattening.");
-    }
-    return FlattenAggregateMembers(struct_type->members(),
-                                   value.GetValuesOrDie());
-  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type)) {
-    if (!value.IsArray()) {
-      return absl::InvalidArgumentError(
-          "Expected array value while flattening.");
-    }
-    std::vector<Bits> flattened_elements;
-    flattened_elements.reserve(value.GetValuesOrDie().size());
-    for (int64_t i = static_cast<int64_t>(value.GetValuesOrDie().size()) - 1;
-         i >= 0; --i) {
-      XLS_ASSIGN_OR_RETURN(Bits flattened_element,
-                           FlattenValueForType(array_type->element_type(),
-                                               value.GetValuesOrDie().at(i)));
-      flattened_elements.push_back(std::move(flattened_element));
-    }
-    return bits_ops::Concat(flattened_elements);
-  } else if (auto* enum_type = dynamic_cast<const EnumType*>(&type)) {
-    XLS_RETURN_IF_ERROR(ValidateEnumValue(value, *enum_type));
-    return value.GetBitsOrDie();
-  } else {
-    return absl::UnimplementedError(
-        absl::StrCat("Cannot flatten InterpValue for type: ", type.ToString()));
-  }
-}
-
-absl::StatusOr<std::vector<InterpValue>> DecodeVariantPayloadValues(
-    const SumTypeEncoding::VariantInfo& variant,
-    const InterpValue& payload_slot) {
-  if (!payload_slot.IsUBits()) {
+  XLS_ASSIGN_OR_RETURN(int64_t expected_bit_count, bits_like.size.GetAsInt64());
+  XLS_ASSIGN_OR_RETURN(int64_t actual_bit_count, value.GetBitCount());
+  if (actual_bit_count != expected_bit_count) {
     return absl::InvalidArgumentError(absl::StrFormat(
-        "Expected shared sum payload slot to be unsigned bits; got `%s`.",
-        payload_slot.ToString()));
+        "Value `%s` does not match `%s`: expected %d bits; got %d.",
+        value.ToString(), type.ToString(), expected_bit_count,
+        actual_bit_count));
   }
-  XLS_ASSIGN_OR_RETURN(int64_t active_payload_bit_count,
-                       variant.payload_bit_count());
-  Bits active_payload_bits =
-      payload_slot.GetBitsOrDie().Slice(0, active_payload_bit_count);
-  std::vector<InterpValue> payload_values;
-  payload_values.reserve(variant.payload_size());
-  int64_t bit_offset = active_payload_bit_count;
-  for (int64_t active_index = 0; active_index < variant.payload_size();
-       ++active_index) {
-    const Type& member_type = variant.variant->GetMemberType(active_index);
-    XLS_ASSIGN_OR_RETURN(int64_t member_bit_count,
-                         GetFlattenedBitCount(member_type));
-    bit_offset -= member_bit_count;
-    XLS_ASSIGN_OR_RETURN(InterpValue payload_value,
-                         internal::UnflattenValueForType(
-                             member_type, active_payload_bits.Slice(
-                                              bit_offset, member_bit_count)));
-    payload_values.push_back(std::move(payload_value));
-  }
-  return payload_values;
-}
-
-absl::Status ValidateEncodedSumShape(const InterpValue& value,
-                                     const SumType& sum_type) {
-  XLS_ASSIGN_OR_RETURN(internal::EncodedSumView sum_view,
-                       internal::GetEncodedSumView(value));
-
-  if (!sum_view.tag.IsUBits()) {
+  XLS_ASSIGN_OR_RETURN(bool expected_signed, bits_like.is_signed.GetAsBool());
+  if (value.IsSigned() != expected_signed) {
     return absl::InvalidArgumentError(absl::StrFormat(
-        "Expected sum tag for `%s` to be unsigned bits; got `%s`.",
-        sum_type.ToString(), sum_view.tag.ToString()));
-  }
-  XLS_ASSIGN_OR_RETURN(int64_t expected_tag_bit_count,
-                       sum_type.tag_bit_count().GetAsInt64());
-  XLS_ASSIGN_OR_RETURN(int64_t actual_tag_bit_count,
-                       sum_view.tag.GetBitCount());
-  if (actual_tag_bit_count != expected_tag_bit_count) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "Sum `%s` expected a %d-bit tag; got %d bits.", sum_type.ToString(),
-        expected_tag_bit_count, actual_tag_bit_count));
-  }
-
-  if (!sum_view.payload_slot.IsUBits()) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "Expected sum payload slot for `%s` to be unsigned bits; got `%s`.",
-        sum_type.ToString(), sum_view.payload_slot.ToString()));
-  }
-  XLS_ASSIGN_OR_RETURN(TypeDim payload_width, sum_type.GetMaxPayloadBitCount());
-  XLS_ASSIGN_OR_RETURN(int64_t expected_payload_bit_count,
-                       payload_width.GetAsInt64());
-  XLS_ASSIGN_OR_RETURN(int64_t actual_payload_bit_count,
-                       sum_view.payload_slot.GetBitCount());
-  if (actual_payload_bit_count != expected_payload_bit_count) {
-    return absl::InvalidArgumentError(
-        absl::StrFormat("Sum `%s` expected a %d-bit payload slot; got %d bits.",
-                        sum_type.ToString(), expected_payload_bit_count,
-                        actual_payload_bit_count));
+        "Value `%s` does not match `%s`: expected %s bits.", value.ToString(),
+        type.ToString(), expected_signed ? "signed" : "unsigned"));
   }
   return absl::OkStatus();
+}
+
+absl::Status ValidateEnumIdentity(const InterpValue& value,
+                                  const EnumType& enum_type) {
+  if (!value.IsEnum()) {
+    return absl::InvalidArgumentError(
+        absl::StrFormat("Expected enum-typed value for `%s`; got `%s`.",
+                        enum_type.ToString(), value.ToString()));
+  }
+  InterpValue::EnumData enum_data = value.GetEnumData().value();
+  if (enum_data.def != &enum_type.nominal_type()) {
+    return absl::InvalidArgumentError(
+        absl::StrFormat("Value `%s` does not match enum `%s`.",
+                        value.ToString(), enum_type.ToString()));
+  }
+  XLS_ASSIGN_OR_RETURN(int64_t expected_bit_count,
+                       enum_type.size().GetAsInt64());
+  if (enum_data.value.bit_count() != expected_bit_count) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Value `%s` does not match enum `%s`: expected %d bits; got %d.",
+        value.ToString(), enum_type.ToString(), expected_bit_count,
+        enum_data.value.bit_count()));
+  }
+  if (enum_data.is_signed != enum_type.is_signed()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Value `%s` does not match enum `%s`: expected %s enum value.",
+        value.ToString(), enum_type.ToString(),
+        enum_type.is_signed() ? "signed" : "unsigned"));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status ValidateEnumValue(const InterpValue& value,
+                               const EnumType& enum_type) {
+  XLS_RETURN_IF_ERROR(ValidateEnumIdentity(value, enum_type));
+  const InterpValue::EnumData enum_data = value.GetEnumData().value();
+  const Bits& value_bits = enum_data.value;
+  for (const InterpValue& member : enum_type.members()) {
+    if (value_bits == member.GetBitsOrDie()) {
+      return absl::OkStatus();
+    }
+  }
+  return absl::InvalidArgumentError(absl::StrFormat(
+      "Value `%s` does not match enum `%s`: expected a declared member.",
+      value.ToString(), enum_type.ToString()));
 }
 
 }  // namespace
@@ -823,6 +809,33 @@ absl::Status ValidateValue(const InterpValue& value, const Type& type,
 }
 
 }  // namespace
+
+absl::Status ValidateInterpValueMatchesType(const InterpValue& value,
+                                            const Type& type) {
+  if (auto* sum_type = dynamic_cast<const SumType*>(&type)) {
+    return ValidateSumValue(value, *sum_type);
+  } else if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
+    return ValidateTupleValue(value, *tuple_type);
+  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type)) {
+    return ValidateStructValue(value, *struct_type);
+  } else if (auto* enum_type = dynamic_cast<const EnumType*>(&type)) {
+    return ValidateEnumValue(value, *enum_type);
+  } else if (std::optional<BitsLikeProperties> bits_like = GetBitsLike(type);
+             bits_like.has_value()) {
+    return ValidateBitsLikeValue(value, type, *bits_like);
+  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type)) {
+    return ValidateArrayValue(value, *array_type);
+  } else if (dynamic_cast<const TokenType*>(&type) != nullptr) {
+    if (!value.IsToken()) {
+      return absl::InvalidArgumentError(absl::StrFormat(
+          "Expected token-typed value; got `%s`.", value.ToString()));
+    }
+    return absl::OkStatus();
+  } else {
+    return absl::UnimplementedError(absl::StrCat(
+        "Cannot validate InterpValue against type: ", type.ToString()));
+  }
+}
 
 absl::StatusOr<InterpValue> CastBitsToArray(const InterpValue& bits_value,
                                             const ArrayType& array_type) {
