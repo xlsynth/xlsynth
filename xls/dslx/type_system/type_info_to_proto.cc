@@ -583,20 +583,6 @@ Bits FromProto(const BitsValueProto& proto) {
   return Bits::FromBytes(bytes, proto.bit_count());
 }
 
-absl::StatusOr<InterpValue> FromPackedProto(const BitsValueProto& proto,
-                                            const Type& type) {
-  if (!proto.has_bit_count() || proto.bit_count() < 0 || proto.is_signed()) {
-    return absl::InvalidArgumentError(
-        "Packed sum parametric value requires an unsigned bit count.");
-  } else if (proto.data().size() !=
-             (static_cast<int64_t>(proto.bit_count()) + 7) / 8) {
-    return absl::InvalidArgumentError(
-        "Packed sum parametric value data does not match its bit count.");
-  } else {
-    return internal::UnflattenValueForType(type, FromProto(proto));
-  }
-}
-
 absl::StatusOr<InterpValue> FromProto(const InterpValueProto& ivp) {
   switch (ivp.value_oneof_case()) {
     case InterpValueProto::ValueOneofCase::kBits: {
@@ -1128,21 +1114,13 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
               sum_def->identifier(), argument_index,
               expects_type ? "type" : "value"));
         }
-        if (argument.has_value() || argument.has_packed_value()) {
+        if (argument.has_value()) {
           XLS_ASSIGN_OR_RETURN(
               Type * annotation_type,
               root_type_info->GetItemOrError(binding->type_annotation()));
           XLS_ASSIGN_OR_RETURN(const Type* binding_type,
                                UnwrapMetaType(*annotation_type));
-          XLS_ASSIGN_OR_RETURN(InterpValue value,
-                               [&]() -> absl::StatusOr<InterpValue> {
-                                 if (argument.has_value()) {
-                                   return FromProto(argument.value());
-                                 } else {
-                                   return FromPackedProto(
-                                       argument.packed_value(), *binding_type);
-                                 }
-                               }());
+          XLS_ASSIGN_OR_RETURN(InterpValue value, FromProto(argument.value()));
           if (absl::Status status =
                   ValidateInterpValueMatchesType(value, *binding_type);
               !status.ok()) {
