@@ -3391,6 +3391,7 @@ fn unwrap_if(c: bool, x: Option, y: u8) -> u8 {
   std::optional<NameDef*> pattern_def =
       FindFirstNameDefWithId(ToAstNode(match->arms()[0]->patterns()[0]), "v");
   ASSERT_TRUE(pattern_def.has_value());
+  EXPECT_EQ((*pattern_def)->definer(), match->arms()[0]);
   std::optional<NameRef*> value_ref =
       FindFirstNameRefWithId(match->arms()[0]->expr(), "v");
   ASSERT_TRUE(value_ref.has_value());
