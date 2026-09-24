@@ -68,6 +68,7 @@
 #include "xls/dslx/ir_convert/convert_options.h"
 #include "xls/dslx/ir_convert/function_converter.h"
 #include "xls/dslx/ir_convert/ir_converter.h"
+#include "xls/dslx/make_value_format_descriptor.h"
 #include "xls/dslx/mangle.h"
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/run_routines/test_xml.h"
@@ -886,10 +887,24 @@ static absl::Status RunQuickCheck(AbstractRunComparator* quickcheck_runner,
       *qc_results.falsifying_dslx_arg_set;
   XLS_RET_CHECK_EQ(dslx_argset.size(), dslx_params.size());
 
-  std::string dslx_argset_str = absl::StrJoin(
-      dslx_argset, ", ", [](std::string* out, const InterpValue& v) {
-        absl::StrAppend(out, v.ToString());
-      });
+  std::vector<std::string> formatted_args;
+  formatted_args.reserve(dslx_argset.size());
+  for (int64_t i = 0; i < dslx_argset.size(); ++i) {
+    const Type& arg_type = *dslx_params.at(i);
+    if (TypeContainsSemanticSum(arg_type)) {
+      XLS_ASSIGN_OR_RETURN(
+          ValueFormatDescriptor descriptor,
+          MakeValueFormatDescriptor(arg_type, FormatPreference::kDefault));
+      XLS_ASSIGN_OR_RETURN(
+          std::string formatted,
+          dslx_argset.at(i).ToFormattedString(descriptor,
+                                              /*include_type_prefix=*/true));
+      formatted_args.push_back(std::move(formatted));
+    } else {
+      formatted_args.push_back(dslx_argset.at(i).ToString());
+    }
+  }
+  std::string dslx_argset_str = absl::StrJoin(formatted_args, ", ");
   return FailureErrorStatus(
       dslx_fn->span(),
       absl::StrFormat("Found falsifying example after %d tests: [%s]",
