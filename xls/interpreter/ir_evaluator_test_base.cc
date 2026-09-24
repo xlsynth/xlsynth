@@ -4221,6 +4221,25 @@ TEST_P(IrEvaluatorTestBase, EmptyTraceTest) {
               ElementsAre(""));
 }
 
+TEST_P(IrEvaluatorTestBase, TraceEscapedBraces) {
+  Package package("escaped_trace_test");
+  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                           ParseAndGetFunction(&package, R"(
+fn f(tkn: token, cond: bits[1], value: bits[32]) -> token {
+  ret trace.1: token = trace(tkn, cond, format="{{}} {{{{}}}} {{{}}}", data_operands=[value])
+}
+)"));
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpreterResult<Value> result,
+      RunWithEvents(function,
+                    {Value::Token(), Value(UBits(1, 1)), Value(UBits(7, 32))}));
+  EXPECT_EQ(result.value, Value::Token());
+  EXPECT_THAT(result.events.GetAssertMessages(), ElementsAre());
+  EXPECT_THAT(result.events.GetTraceMessageStrings(),
+              ElementsAre("{} {{}} {7}"));
+}
+
 TEST_P(IrEvaluatorTestBase, NestedConditionalTraceSectionsEmitOneEvent) {
   Package package("conditional_trace_test");
   XLS_ASSERT_OK_AND_ASSIGN(Function * function,
