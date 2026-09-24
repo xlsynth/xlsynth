@@ -20,6 +20,7 @@
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -156,17 +157,43 @@ absl::StatusOr<uint32_t> ComputeMaxSumPayloadBitCount(
 size_t HashSumArgumentValue(const InterpValue& value) {
   if (value.HasBits()) {
     return absl::HashOf(value.GetBitsOrDie());
-  } else if (value.IsArray() || value.IsTuple()) {
+  } else if (value.IsArray()) {
     const int64_t length = value.GetLength().value();
-    size_t hash = absl::HashOf(value.tag(), length);
-    if (value.is_range()) {
-      for (int64_t i = 0; i < length; ++i) {
-        hash = absl::HashOf(hash, HashSumArgumentValue(value.Index(i).value()));
-      }
+    if (length == 0) {
+      return absl::HashOf(value.tag(), length);
+    } else if (const auto range = value.GetRangeData(); range.has_value()) {
+      // Consecutive arrays have the same identity regardless of storage. The
+      // symbolic form provides its first value and length without expansion.
+      return absl::HashOf(value.tag(), length, true,
+                          (*range)->start.GetBitsOrDie());
     } else {
-      for (const InterpValue& member : value.GetValuesOrDie()) {
+      const auto& members = value.GetValuesOrDie();
+      if (members.front().HasBits()) {
+        Bits expected = members.front().GetBitsOrDie();
+        bool consecutive = true;
+        for (const InterpValue& member : members) {
+          if (!member.HasBits() || member.GetBitsOrDie() != expected) {
+            consecutive = false;
+            break;
+          }
+          expected = bits_ops::Increment(expected);
+        }
+        if (consecutive) {
+          return absl::HashOf(value.tag(), length, true,
+                              members.front().GetBitsOrDie());
+        }
+      }
+      size_t hash = absl::HashOf(value.tag(), length, false);
+      for (const InterpValue& member : members) {
         hash = absl::HashOf(hash, HashSumArgumentValue(member));
       }
+      return hash;
+    }
+  } else if (value.IsTuple()) {
+    const auto& members = value.GetValuesOrDie();
+    size_t hash = absl::HashOf(value.tag(), members.size());
+    for (const InterpValue& member : members) {
+      hash = absl::HashOf(hash, HashSumArgumentValue(member));
     }
     return hash;
   } else {
@@ -176,9 +203,180 @@ size_t HashSumArgumentValue(const InterpValue& value) {
   }
 }
 
+// Sum specializations depend on array elements, not the bounds or storage form
+// used by the interpreter to represent them, including inside record tuples.
+bool SameSumArgumentValue(const InterpValue& lhs, const InterpValue& rhs) {
+  if (lhs.IsArray() || lhs.IsTuple()) {
+    if (lhs.tag() != rhs.tag()) {
+      return false;
+    } else {
+      const int64_t length = lhs.GetLength().value();
+      const auto lhs_range = lhs.GetRangeData();
+      const auto rhs_range = rhs.GetRangeData();
+      if (length != rhs.GetLength().value()) {
+        return false;
+      } else if (lhs_range.has_value() && rhs_range.has_value()) {
+        // A symbolic range advances by one from its first element. Equal
+        // lengths and first elements therefore describe the same sequence,
+        // independent of whether the upper bounds were inclusive.
+        return length == 0 || (*lhs_range)->start == (*rhs_range)->start;
+      } else if (!lhs_range.has_value() && !rhs_range.has_value()) {
+        return absl::c_equal(lhs.GetValuesOrDie(), rhs.GetValuesOrDie(),
+                             SameSumArgumentValue);
+      } else {
+        for (int64_t i = 0; i < length; ++i) {
+          if (!SameSumArgumentValue(lhs.Index(i).value(),
+                                    rhs.Index(i).value())) {
+            return false;
+          }
+        }
+        return true;
+      }
+    }
+  } else {
+    return lhs == rhs;
+  }
+}
+
 // Hashes concrete argument structure while treating a completed child sum as
 // one cached hash, rather than visiting both its arguments and its payloads.
 size_t HashSumArgumentType(const Type& type);
+
+bool SameSumArgumentType(const Type& lhs, const Type& rhs);
+
+bool SameSumArguments(absl::Span<const NominalParametricArgument> lhs,
+                      absl::Span<const NominalParametricArgument> rhs) {
+  return absl::c_equal(
+      lhs, rhs,
+      [](const NominalParametricArgument& a,
+         const NominalParametricArgument& b) {
+        if (a.index() != b.index()) {
+          return false;
+        } else if (const auto* value = std::get_if<InterpValue>(&a)) {
+          return SameSumArgumentValue(*value, std::get<InterpValue>(b));
+        } else {
+          return SameSumArgumentType(*std::get<std::unique_ptr<const Type>>(a),
+                                     *std::get<std::unique_ptr<const Type>>(b));
+        }
+      });
+}
+
+bool SameSumArgumentTypes(absl::Span<const std::unique_ptr<Type>> lhs,
+                          absl::Span<const std::unique_ptr<Type>> rhs) {
+  return absl::c_equal(lhs, rhs, [](const auto& a, const auto& b) {
+    return SameSumArgumentType(*a, *b);
+  });
+}
+
+// Clones share immutable argument data. Retain successful pairs while comparing
+// distinct descriptions so repeated shared record and proc graphs are visited
+// once. Physical record members also participate; proc members do not.
+bool SameKnownNominalSumArguments(const StructTypeBase& lhs,
+                                  const StructTypeBase& rhs,
+                                  bool compare_members) {
+  using Arguments = std::vector<SpecializationArgument>;
+  using EqualPairs =
+      absl::flat_hash_set<std::pair<const Arguments*, const Arguments*>>;
+  static thread_local EqualPairs* current_equal_pairs = nullptr;
+  const Arguments& a = *lhs.specialization_arguments();
+  const Arguments& b = *rhs.specialization_arguments();
+  if (&a == &b) {
+    return true;
+  } else {
+    auto compare_contents = [&] {
+      const auto& lhs_full = lhs.resolved_parametric_arguments();
+      const auto& rhs_full = rhs.resolved_parametric_arguments();
+      const bool equal_arguments =
+          lhs_full.has_value() && rhs_full.has_value()
+              ? SameSumArguments(*lhs_full, *rhs_full)
+              : absl::c_equal(a, b, [](const auto& x, const auto& y) {
+                  if (x.index() != y.index()) {
+                    return false;
+                  } else if (const auto* value = std::get_if<InterpValue>(&x)) {
+                    return SameSumArgumentValue(*value,
+                                                std::get<InterpValue>(y));
+                  } else {
+                    return std::get<SpecializationTypePtr>(x)->SemanticEquals(
+                        *std::get<SpecializationTypePtr>(y));
+                  }
+                });
+      return equal_arguments &&
+             (!compare_members ||
+              SameSumArgumentTypes(lhs.members(), rhs.members()));
+    };
+    if (current_equal_pairs == nullptr) {
+      EqualPairs equal_pairs;
+      current_equal_pairs = &equal_pairs;
+      absl::Cleanup reset_context([&] { current_equal_pairs = nullptr; });
+      return compare_contents();
+    } else {
+      const auto pair = std::make_pair(&a, &b);
+      if (current_equal_pairs->contains(pair)) {
+        return true;
+      } else if (compare_contents()) {
+        current_equal_pairs->insert(pair);
+        return true;
+      } else {
+        return false;
+      }
+    }
+  }
+}
+
+// StructType's general equality intentionally only considers members and the
+// nominal declaration. Sum arguments additionally need bindings that do not
+// appear in its members, and may use opaque proc declarations as arguments.
+bool SameSumArgumentType(const Type& lhs, const Type& rhs) {
+  if (const auto* a = dynamic_cast<const ProcType*>(&lhs)) {
+    const auto* b = dynamic_cast<const ProcType*>(&rhs);
+    if (b == nullptr || &a->nominal_type() != &b->nominal_type()) {
+      return false;
+    } else {
+      const auto* a_arguments = a->specialization_arguments();
+      const auto* b_arguments = b->specialization_arguments();
+      if (a_arguments == nullptr || b_arguments == nullptr) {
+        return !a->nominal_type().IsParametric() || a_arguments == b_arguments;
+      } else {
+        return SameKnownNominalSumArguments(*a, *b, /*compare_members=*/false);
+      }
+    }
+  } else if (const auto* a = dynamic_cast<const StructType*>(&lhs)) {
+    const auto* b = dynamic_cast<const StructType*>(&rhs);
+    if (b == nullptr || &a->nominal_type() != &b->nominal_type()) {
+      return false;
+    } else {
+      const auto* a_arguments = a->specialization_arguments();
+      const auto* b_arguments = b->specialization_arguments();
+      if (a_arguments == nullptr || b_arguments == nullptr) {
+        return (!a->nominal_type().IsParametric() ||
+                a_arguments == b_arguments) &&
+               SameSumArgumentTypes(a->members(), b->members());
+      } else {
+        return SameKnownNominalSumArguments(*a, *b, /*compare_members=*/true);
+      }
+    }
+  } else if (const auto* a = dynamic_cast<const TupleType*>(&lhs)) {
+    const auto* b = dynamic_cast<const TupleType*>(&rhs);
+    return b != nullptr && SameSumArgumentTypes(a->members(), b->members());
+  } else if (const auto* a = dynamic_cast<const ArrayType*>(&lhs);
+             a != nullptr && !GetBitsLike(lhs).has_value()) {
+    const auto* b = dynamic_cast<const ArrayType*>(&rhs);
+    return b != nullptr && a->size() == b->size() &&
+           SameSumArgumentType(a->element_type(), b->element_type());
+  } else if (const auto* a = dynamic_cast<const FunctionType*>(&lhs)) {
+    const auto* b = dynamic_cast<const FunctionType*>(&rhs);
+    return b != nullptr && SameSumArgumentTypes(a->params(), b->params()) &&
+           SameSumArgumentType(a->return_type(), b->return_type());
+  } else if (const auto* a = dynamic_cast<const ChannelType*>(&lhs)) {
+    const auto* b = dynamic_cast<const ChannelType*>(&rhs);
+    return b != nullptr && a->direction() == b->direction() &&
+           SameSumArgumentType(a->payload_type(), b->payload_type());
+  } else {
+    // Nested sums perform their own precise argument comparison, and bits-like
+    // types keep the general equality's normalization of xN array notation.
+    return lhs == rhs;
+  }
+}
 
 // Preserves member order and arity in aggregate type arguments.
 size_t HashSumArgumentTypes(absl::Span<const std::unique_ptr<Type>> types) {
@@ -203,7 +401,7 @@ size_t HashSumArgumentType(const Type& type) {
                         HashSumArgumentType(array->element_type()));
   } else if (const auto* structure =
                  dynamic_cast<const StructTypeBase*>(&type)) {
-    // Nominal dimensions are deliberately omitted, as in StructType equality.
+    // Ordinary struct equality ignores nominal dimensions and unused arguments.
     return absl::HashOf(&structure->struct_def_base(),
                         HashSumArgumentTypes(structure->members()));
   } else if (const auto* enumeration = dynamic_cast<const EnumType*>(&type)) {
@@ -227,6 +425,426 @@ size_t HashSumArgumentType(const Type& type) {
 
 size_t HashTypeForSumCache(const Type& type) {
   return HashSumArgumentType(type);
+}
+
+size_t HashTypeForSumSpecialization(const Type& type) {
+  return SpecializationType::FromType(type)->hash();
+}
+
+namespace {
+
+bool SameSpecializationArguments(absl::Span<const SpecializationArgument> lhs,
+                                 absl::Span<const SpecializationArgument> rhs) {
+  return absl::c_equal(lhs, rhs, [](const auto& a, const auto& b) {
+    if (a.index() != b.index()) {
+      return false;
+    } else if (const auto* value = std::get_if<InterpValue>(&a)) {
+      return SameSumArgumentValue(*value, std::get<InterpValue>(b));
+    } else {
+      const auto& x = std::get<SpecializationTypePtr>(a);
+      const auto& y = std::get<SpecializationTypePtr>(b);
+      return x == y || x->SemanticEquals(*y);
+    }
+  });
+}
+
+std::vector<SpecializationArgument> CompactArguments(
+    absl::Span<const NominalParametricArgument> arguments) {
+  std::vector<SpecializationArgument> result;
+  result.reserve(arguments.size());
+  for (const auto& argument : arguments) {
+    if (const auto* value = std::get_if<InterpValue>(&argument)) {
+      result.push_back(*value);
+    } else {
+      result.push_back(SpecializationType::FromType(
+          *std::get<std::unique_ptr<const Type>>(argument)));
+    }
+  }
+  return result;
+}
+
+size_t HashSpecializationDim(const std::optional<TypeDim>& dim) {
+  return dim.has_value()
+             ? absl::HashOf(true, HashSumArgumentValue(dim->value()))
+             : absl::HashOf(false);
+}
+
+bool SameSpecializationDim(const std::optional<TypeDim>& lhs,
+                           const std::optional<TypeDim>& rhs) {
+  return lhs.has_value() == rhs.has_value() &&
+         (!lhs.has_value() || SameSumArgumentValue(lhs->value(), rhs->value()));
+}
+
+size_t HashSpecializationDescriptionArguments(
+    const SpecializationType::Description& description) {
+  using Kind = SpecializationType::Kind;
+  const auto* record = dynamic_cast<const StructDefBase*>(description.nominal);
+  if ((description.kind == Kind::kStruct || description.kind == Kind::kProc) &&
+      record != nullptr && !record->IsParametric()) {
+    // Older manually created nonparametric records may supply extraneous
+    // arguments. When compared with an argument-less record their historical
+    // equality ignores these, so the process-local hash must permit a match.
+    return SumType::HashSpecializationArguments({});
+  } else {
+    return SumType::HashSpecializationArguments(description.arguments);
+  }
+}
+
+}  // namespace
+
+SpecializationType::SpecializationType(Description description)
+    : description_(std::move(description)),
+      hash_(absl::HashOf(description_.kind, description_.nominal,
+                         HashSpecializationDim(description_.size),
+                         HashSpecializationDim(description_.signedness),
+                         description_.direction,
+                         description_.nominal_arguments_known,
+                         HashSpecializationDescriptionArguments(description_),
+                         description_.children.size())) {
+  for (const auto& child : description_.children) {
+    CHECK(child != nullptr);
+    // Explicit full arguments historically use ordinary MetaType equality,
+    // which can equate different nominal specializations of its child.
+    if (description_.kind != Kind::kMeta) {
+      hash_ = absl::HashOf(hash_, child->hash());
+    }
+  }
+}
+
+/* static */ SpecializationTypePtr SpecializationType::Create(
+    Description description) {
+  return absl::WrapUnique(new SpecializationType(std::move(description)));
+}
+
+bool SpecializationType::SemanticEquals(const SpecializationType& other) const {
+  using Pair = std::pair<const SpecializationType*, const SpecializationType*>;
+  absl::flat_hash_set<Pair> equal_pairs;
+  auto compare = [&](auto&& self, const SpecializationType& lhs,
+                     const SpecializationType& rhs) -> bool {
+    if (&lhs == &rhs) {
+      return true;
+    } else if (lhs.hash_ != rhs.hash_) {
+      return false;
+    } else if (equal_pairs.contains({&lhs, &rhs})) {
+      return true;
+    } else {
+      const auto& a = lhs.description_;
+      const auto& b = rhs.description_;
+      if (a.kind != b.kind || a.nominal != b.nominal ||
+          !SameSpecializationDim(a.size, b.size) ||
+          !SameSpecializationDim(a.signedness, b.signedness) ||
+          a.direction != b.direction ||
+          a.nominal_arguments_known != b.nominal_arguments_known ||
+          a.arguments.size() != b.arguments.size() ||
+          a.children.size() != b.children.size()) {
+        return false;
+      } else {
+        for (int64_t i = 0; i < a.arguments.size(); ++i) {
+          const auto& x = a.arguments[i];
+          const auto& y = b.arguments[i];
+          if (x.index() != y.index()) {
+            return false;
+          } else if (const auto* value = std::get_if<InterpValue>(&x)) {
+            if (!SameSumArgumentValue(*value, std::get<InterpValue>(y))) {
+              return false;
+            }
+          } else if (!self(self, *std::get<SpecializationTypePtr>(x),
+                           *std::get<SpecializationTypePtr>(y))) {
+            return false;
+          }
+        }
+        for (int64_t i = 0; i < a.children.size(); ++i) {
+          if (!self(self, *a.children[i], *b.children[i])) {
+            return false;
+          }
+        }
+        equal_pairs.insert({&lhs, &rhs});
+        return true;
+      }
+    }
+  };
+  return compare(compare, *this, other);
+}
+
+/* static */ SpecializationTypePtr SpecializationType::FromType(
+    const Type& type) {
+  Description result{.kind = Kind::kToken};
+  auto children = [&](absl::Span<const std::unique_ptr<Type>> types) {
+    for (const auto& child : types) {
+      result.children.push_back(FromType(*child));
+    }
+  };
+  if (std::optional<BitsLikeProperties> bits = GetBitsLike(type)) {
+    result.kind = Kind::kBits;
+    result.size = bits->size.Clone();
+    result.signedness = bits->is_signed.Clone();
+  } else if (const auto* sum = dynamic_cast<const SumType*>(&type)) {
+    return sum->specialization_type();
+  } else if (const auto* record = dynamic_cast<const StructTypeBase*>(&type)) {
+    return record->specialization_type();
+  } else if (const auto* enumeration = dynamic_cast<const EnumType*>(&type)) {
+    result.kind = Kind::kEnum;
+    result.nominal = &enumeration->nominal_type();
+    result.size = enumeration->size().Clone();
+    result.signedness = TypeDim::CreateBool(enumeration->is_signed());
+  } else if (const auto* tuple = dynamic_cast<const TupleType*>(&type)) {
+    result.kind = Kind::kTuple;
+    children(tuple->members());
+  } else if (const auto* array = dynamic_cast<const ArrayType*>(&type)) {
+    result.kind = Kind::kArray;
+    result.size = array->size().Clone();
+    result.children.push_back(FromType(array->element_type()));
+  } else if (const auto* function = dynamic_cast<const FunctionType*>(&type)) {
+    result.kind = Kind::kFunction;
+    children(function->params());
+    result.children.push_back(FromType(function->return_type()));
+  } else if (const auto* channel = dynamic_cast<const ChannelType*>(&type)) {
+    result.kind = Kind::kChannel;
+    result.direction = channel->direction();
+    result.children.push_back(FromType(channel->payload_type()));
+  } else if (const auto* meta = dynamic_cast<const MetaType*>(&type)) {
+    result.kind = Kind::kMeta;
+    result.children.push_back(FromType(*meta->wrapped()));
+  } else if (const auto* constructor =
+                 dynamic_cast<const BitsConstructorType*>(&type)) {
+    result.kind = Kind::kBitsConstructor;
+    result.signedness = constructor->is_signed().Clone();
+  } else {
+    CHECK(type.IsToken()) << "not a specialization type: " << type;
+  }
+  return Create(std::move(result));
+}
+
+/* static */ SpecializationTypeShapePtr SpecializationTypeShape::Create(
+    Description description) {
+  CHECK(description.identity != nullptr);
+  return absl::WrapUnique(new SpecializationTypeShape(std::move(description)));
+}
+
+/* static */ SpecializationTypeShapePtr SpecializationTypeShape::FromType(
+    const Type& type) {
+  Description result{.identity = SpecializationType::FromType(type)};
+  auto children = [&](absl::Span<const std::unique_ptr<Type>> types) {
+    for (const auto& child : types) {
+      result.children.push_back(FromType(*child));
+    }
+  };
+  if (const auto* sum = dynamic_cast<const SumType*>(&type)) {
+    result.tag_bit_count = sum->tag_bit_count();
+    result.argument_shapes = sum->specialization_argument_shapes();
+    for (int64_t i = 0; i < sum->variant_count(); ++i) {
+      result.discriminants.push_back(sum->GetDiscriminant(i));
+      const SumTypeVariant& variant = sum->variants()[i];
+      for (int64_t j = 0; j < variant.size(); ++j) {
+        result.children.push_back(FromType(variant.GetMemberType(j)));
+      }
+    }
+  } else if (const auto* record = dynamic_cast<const StructTypeBase*>(&type)) {
+    children(record->members());
+  } else if (const auto* enumeration = dynamic_cast<const EnumType*>(&type)) {
+    result.enum_members = enumeration->members();
+  } else if (const auto* tuple = dynamic_cast<const TupleType*>(&type)) {
+    children(tuple->members());
+  } else if (const auto* array = dynamic_cast<const ArrayType*>(&type);
+             array != nullptr && !GetBitsLike(type).has_value()) {
+    result.children.push_back(FromType(array->element_type()));
+  } else if (const auto* function = dynamic_cast<const FunctionType*>(&type)) {
+    children(function->params());
+    result.children.push_back(FromType(function->return_type()));
+  } else if (const auto* channel = dynamic_cast<const ChannelType*>(&type)) {
+    result.children.push_back(FromType(channel->payload_type()));
+  } else if (const auto* meta = dynamic_cast<const MetaType*>(&type)) {
+    result.children.push_back(FromType(*meta->wrapped()));
+  }
+  return Create(std::move(result));
+}
+
+std::unique_ptr<SumType> SpecializationTypeShape::ReuseCompletedSum(
+    std::unique_ptr<SumType> candidate) const {
+  CHECK(description_.identity->description().kind ==
+        SpecializationType::Kind::kSum);
+  CHECK(candidate != nullptr);
+  DCHECK_EQ(description_.identity->description().nominal,
+            &candidate->nominal_type());
+  std::lock_guard<std::mutex> lock(completed_sum_mutex_);
+  if (completed_sum_ == nullptr) {
+    completed_sum_ = std::move(candidate);
+  }
+  return CloneToUniqueInternal(*completed_sum_);
+}
+
+std::unique_ptr<Type> SpecializationTypeShape::Materialize() const {
+  using Kind = SpecializationType::Kind;
+  const auto& identity = description_.identity->description();
+  auto children = [&] {
+    std::vector<std::unique_ptr<Type>> result;
+    result.reserve(description_.children.size());
+    for (const auto& child : description_.children) {
+      result.push_back(child->Materialize());
+    }
+    return result;
+  };
+  switch (identity.kind) {
+    case Kind::kBits: {
+      absl::StatusOr<bool> is_signed = identity.signedness->GetAsBool();
+      if (is_signed.ok()) {
+        return std::make_unique<BitsType>(*is_signed, *identity.size);
+      } else {
+        return std::make_unique<ArrayType>(
+            std::make_unique<BitsConstructorType>(*identity.signedness),
+            *identity.size);
+      }
+    }
+    case Kind::kToken:
+      return std::make_unique<TokenType>();
+    case Kind::kEnum: {
+      const auto* def = dynamic_cast<const EnumDef*>(identity.nominal);
+      CHECK(def != nullptr);
+      return std::make_unique<EnumType>(
+          *def, *identity.size, identity.signedness->GetAsBool().value(),
+          description_.enum_members);
+    }
+    case Kind::kStruct: {
+      const auto* def = dynamic_cast<const StructDef*>(identity.nominal);
+      CHECK(def != nullptr);
+      if (identity.nominal_arguments_known) {
+        return StructType::CreateWithSpecializationArguments(
+            children(), *def, identity.arguments);
+      } else {
+        return std::make_unique<StructType>(children(), *def);
+      }
+    }
+    case Kind::kProc: {
+      const auto* def = dynamic_cast<const ProcDef*>(identity.nominal);
+      CHECK(def != nullptr);
+      if (identity.nominal_arguments_known) {
+        return ProcType::CreateWithSpecializationArguments(children(), *def,
+                                                           identity.arguments);
+      } else {
+        return std::make_unique<ProcType>(children(), *def);
+      }
+    }
+    case Kind::kSum: {
+      {
+        std::lock_guard<std::mutex> lock(completed_sum_mutex_);
+        if (completed_sum_ != nullptr) {
+          return completed_sum_->CloneToUnique();
+        }
+      }
+      // Materialize child shapes without holding the lock; the first completed
+      // candidate still wins if another caller finishes in the meantime.
+      const auto* def = dynamic_cast<const SumDef*>(identity.nominal);
+      CHECK(def != nullptr);
+      std::vector<SumTypeVariant> variants;
+      int64_t child_index = 0;
+      for (const SumVariant* variant : def->variants()) {
+        std::vector<std::unique_ptr<Type>> members;
+        for (int64_t i = 0; i < variant->payload_member_count(); ++i) {
+          members.push_back(
+              description_.children.at(child_index++)->Materialize());
+        }
+        if (variant->is_unit()) {
+          variants.push_back(SumTypeVariant::MakeUnit(*variant));
+        } else if (variant->is_tuple()) {
+          variants.push_back(
+              SumTypeVariant::MakeTuple(*variant, std::move(members)));
+        } else {
+          variants.push_back(
+              SumTypeVariant::MakeStruct(*variant, std::move(members)));
+        }
+      }
+      CHECK_EQ(child_index, description_.children.size());
+      return ReuseCompletedSum(SumType::CreateWithSpecializationArguments(
+          *def, std::move(variants), description_.tag_bit_count,
+          description_.discriminants, identity.arguments,
+          description_.argument_shapes));
+    }
+    case Kind::kTuple:
+      return std::make_unique<TupleType>(children());
+    case Kind::kArray:
+      return std::make_unique<ArrayType>(
+          description_.children.at(0)->Materialize(), *identity.size);
+    case Kind::kFunction: {
+      auto params = children();
+      CHECK(!params.empty());
+      std::unique_ptr<Type> result = std::move(params.back());
+      params.pop_back();
+      return std::make_unique<FunctionType>(std::move(params),
+                                            std::move(result));
+    }
+    case Kind::kChannel:
+      return std::make_unique<ChannelType>(
+          description_.children.at(0)->Materialize(), *identity.direction);
+    case Kind::kMeta:
+      return std::make_unique<MetaType>(
+          description_.children.at(0)->Materialize());
+    case Kind::kBitsConstructor:
+      return std::make_unique<BitsConstructorType>(*identity.signedness);
+  }
+  LOG(FATAL) << "invalid specialization kind";
+}
+
+SpecializationArguments::SpecializationArguments(
+    std::vector<NominalParametricArgument> full_arguments)
+    : arguments_(CompactArguments(full_arguments)),
+      has_full_input_(true),
+      full_arguments_(std::move(full_arguments)) {}
+
+SpecializationArguments::SpecializationArguments(
+    std::vector<SpecializationArgument> arguments,
+    std::vector<SpecializationTypeShapePtr> argument_shapes)
+    : arguments_(std::move(arguments)),
+      has_full_input_(false),
+      argument_shapes_(std::move(argument_shapes)) {
+  if (argument_shapes_.empty()) {
+    argument_shapes_.resize(arguments_.size());
+  }
+  CHECK_EQ(argument_shapes_.size(), arguments_.size());
+}
+
+const std::vector<SpecializationTypeShapePtr>&
+SpecializationArguments::argument_shapes() const {
+  std::call_once(shapes_once_, [&] {
+    if (has_full_input_) {
+      argument_shapes_.reserve(arguments_.size());
+      for (const auto& argument : *full_arguments_) {
+        if (const auto* type =
+                std::get_if<std::unique_ptr<const Type>>(&argument)) {
+          argument_shapes_.push_back(SpecializationTypeShape::FromType(**type));
+        } else {
+          argument_shapes_.push_back(nullptr);
+        }
+      }
+    }
+  });
+  return argument_shapes_;
+}
+
+const std::vector<NominalParametricArgument>&
+SpecializationArguments::full_arguments() const {
+  std::call_once(full_once_, [&] {
+    if (!has_full_input_) {
+      full_arguments_.emplace();
+      full_arguments_->reserve(arguments_.size());
+      for (int64_t i = 0; i < arguments_.size(); ++i) {
+        const auto& argument = arguments_[i];
+        if (const auto* value = std::get_if<InterpValue>(&argument)) {
+          full_arguments_->emplace_back(*value);
+        } else {
+          CHECK(argument_shapes_[i] != nullptr)
+              << "full specialization argument shape is unavailable";
+          full_arguments_->emplace_back(argument_shapes_[i]->Materialize());
+        }
+      }
+    }
+  });
+  return *full_arguments_;
+}
+
+const std::optional<std::vector<NominalParametricArgument>>&
+SpecializationArguments::full_arguments_optional() const {
+  (void)full_arguments();
+  return full_arguments_;
 }
 
 Type::~Type() = default;
@@ -645,11 +1263,31 @@ std::unique_ptr<BitsType> BitsType::ToUBits() const {
 
 StructTypeBase::StructTypeBase(
     std::vector<std::unique_ptr<Type>> members, const StructDefBase& struct_def,
-    absl::flat_hash_map<std::string, TypeDim> nominal_type_dims_by_identifier)
+    absl::flat_hash_map<std::string, TypeDim> nominal_type_dims_by_identifier,
+    std::optional<std::vector<NominalParametricArgument>>
+        resolved_parametric_arguments)
+    : StructTypeBase(
+          std::move(members), struct_def,
+          std::move(nominal_type_dims_by_identifier),
+          resolved_parametric_arguments.has_value()
+              ? std::make_shared<const ResolvedParametricData>(
+                    std::move(resolved_parametric_arguments))
+              : [] {
+                  static const auto unknown =
+                      std::make_shared<const ResolvedParametricData>(
+                          std::nullopt);
+                  return unknown;
+                }()) {}
+
+StructTypeBase::StructTypeBase(
+    std::vector<std::unique_ptr<Type>> members, const StructDefBase& struct_def,
+    absl::flat_hash_map<std::string, TypeDim> nominal_type_dims_by_identifier,
+    std::shared_ptr<const ResolvedParametricData> resolved_data)
     : members_(std::move(members)),
       struct_def_base_(struct_def),
       nominal_type_dims_by_identifier_(
-          std::move(nominal_type_dims_by_identifier)) {
+          std::move(nominal_type_dims_by_identifier)),
+      resolved_parametric_data_(std::move(resolved_data)) {
   CHECK_EQ(members_.size(), struct_def_base_.members().size());
   for (const std::unique_ptr<Type>& member_type : members_) {
     CHECK(!member_type->IsMeta()) << *member_type;
@@ -768,6 +1406,117 @@ bool StructTypeBase::operator==(const Type& other) const {
   return false;
 }
 
+StructTypeBase::ResolvedParametricData::ResolvedParametricData(
+    std::optional<std::vector<NominalParametricArgument>> arguments)
+    : full(arguments.has_value()
+               ? std::make_shared<const SpecializationArguments>(
+                     std::move(*arguments))
+               : nullptr) {}
+
+StructTypeBase::ResolvedParametricData::ResolvedParametricData(
+    std::vector<SpecializationArgument> arguments,
+    std::vector<SpecializationTypeShapePtr> argument_shapes)
+    : full(std::make_shared<const SpecializationArguments>(
+          std::move(arguments), std::move(argument_shapes))) {}
+
+const std::optional<std::vector<NominalParametricArgument>>&
+StructTypeBase::resolved_parametric_arguments() const {
+  static const auto* const unavailable =
+      new std::optional<std::vector<NominalParametricArgument>>;
+  const auto& full = resolved_parametric_data_->full;
+  if (full != nullptr && full->has_full_input()) {
+    return full->full_arguments_optional();
+  } else {
+    return *unavailable;
+  }
+}
+
+std::shared_ptr<const std::vector<NominalParametricArgument>>
+StructTypeBase::shared_resolved_parametric_arguments() const {
+  const auto& arguments = resolved_parametric_arguments();
+  if (arguments.has_value()) {
+    return std::shared_ptr<const std::vector<NominalParametricArgument>>(
+        resolved_parametric_data_, &*arguments);
+  } else {
+    return nullptr;
+  }
+}
+
+std::shared_ptr<const std::vector<SpecializationArgument>>
+StructTypeBase::shared_specialization_arguments() const {
+  const auto* arguments = specialization_arguments();
+  if (arguments != nullptr) {
+    return std::shared_ptr<const std::vector<SpecializationArgument>>(
+        resolved_parametric_data_, arguments);
+  } else {
+    return nullptr;
+  }
+}
+
+SpecializationTypePtr StructTypeBase::specialization_type() const {
+  auto build = [&] {
+    using Kind = SpecializationType::Kind;
+    SpecializationType::Description description{
+        .kind = dynamic_cast<const ProcType*>(this) != nullptr ? Kind::kProc
+                                                               : Kind::kStruct,
+        .nominal = &struct_def_base()};
+    if (specialization_arguments() != nullptr) {
+      description.arguments = *specialization_arguments();
+    } else if (struct_def_base().IsParametric()) {
+      description.nominal_arguments_known = false;
+    }
+    return SpecializationType::Create(std::move(description));
+  };
+  if (specialization_arguments() != nullptr) {
+    std::call_once(resolved_parametric_data_->identity_once,
+                   [&] { resolved_parametric_data_->identity = build(); });
+    return resolved_parametric_data_->identity;
+  } else {
+    // Unknown records share one global empty argument owner across
+    // declarations.
+    return build();
+  }
+}
+
+const std::vector<SpecializationTypeShapePtr>&
+StructTypeBase::specialization_argument_shapes() const {
+  static const auto* const unavailable =
+      new std::vector<SpecializationTypeShapePtr>;
+  const auto& full = resolved_parametric_data_->full;
+  return full == nullptr ? *unavailable : full->argument_shapes();
+}
+
+StructType::StructType(
+    std::vector<std::unique_ptr<Type>> members, const StructDef& struct_def,
+    absl::flat_hash_map<std::string, TypeDim> nominal_type_dims_by_identifier,
+    std::optional<std::vector<NominalParametricArgument>>
+        resolved_parametric_arguments)
+    : StructTypeBase(std::move(members), struct_def,
+                     std::move(nominal_type_dims_by_identifier),
+                     std::move(resolved_parametric_arguments)) {}
+
+/* static */ std::unique_ptr<StructType>
+StructType::CreateWithSpecializationArguments(
+    std::vector<std::unique_ptr<Type>> members, const StructDef& struct_def,
+    std::vector<SpecializationArgument> arguments,
+    std::vector<SpecializationTypeShapePtr> argument_shapes) {
+  return absl::WrapUnique(
+      new StructType(std::move(members), struct_def, {},
+                     std::make_shared<const ResolvedParametricData>(
+                         std::move(arguments), std::move(argument_shapes))));
+}
+
+/* static */ std::unique_ptr<ProcType>
+ProcType::CreateWithSpecializationArguments(
+    std::vector<std::unique_ptr<Type>> members, const ProcDef& proc_def,
+    std::vector<SpecializationArgument> arguments,
+    std::vector<SpecializationTypeShapePtr> argument_shapes) {
+  return absl::WrapUnique(
+      new ProcType(std::move(members), proc_def, {},
+                   std::make_shared<const ResolvedParametricData>(
+                       std::move(arguments), std::move(argument_shapes))));
+}
+
 // -- SumTypeVariant
 
 /* static */ SumTypeVariant SumTypeVariant::MakeUnit(
@@ -875,10 +1624,11 @@ bool SumTypeVariant::HasToken() const {
 
 // -- SumType
 
-SumType::Data::Data(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
-                    std::optional<TypeDim> tag_bit_count,
-                    std::vector<InterpValue> discriminants,
-                    std::vector<ParametricArgument> parametric_arguments)
+SumType::Data::Data(
+    const SumDef& sum_def, std::vector<SumTypeVariant> variants,
+    std::optional<TypeDim> tag_bit_count,
+    std::vector<InterpValue> discriminants,
+    std::shared_ptr<const SpecializationArguments> parametric_arguments)
     : sum_def(sum_def),
       variants(std::move(variants)),
       max_payload_bit_count(ComputeMaxSumPayloadBitCount(this->variants)),
@@ -888,8 +1638,8 @@ SumType::Data::Data(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
               : Bits::MinBitCountUnsigned(this->variants.size() - 1)))),
       discriminants(std::move(discriminants)),
       parametric_arguments(std::move(parametric_arguments)),
-      parametric_arguments_hash(
-          SumType::HashParametricArguments(this->parametric_arguments)),
+      parametric_arguments_hash(SumType::HashSpecializationArguments(
+          this->parametric_arguments->arguments())),
       has_token(absl::c_any_of(
           this->variants,
           [](const SumTypeVariant& variant) { return variant.HasToken(); })) {
@@ -913,7 +1663,33 @@ SumType::SumType(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
                  std::vector<ParametricArgument> parametric_arguments)
     : data_(std::make_shared<const Data>(
           sum_def, std::move(variants), std::move(tag_bit_count),
-          std::move(discriminants), std::move(parametric_arguments))) {}
+          std::move(discriminants),
+          std::make_shared<const SpecializationArguments>(
+              std::move(parametric_arguments)))) {}
+
+/* static */ std::unique_ptr<SumType>
+SumType::CreateWithSpecializationArguments(
+    const SumDef& sum_def, std::vector<SumTypeVariant> variants,
+    std::optional<TypeDim> tag_bit_count,
+    std::vector<InterpValue> discriminants,
+    std::vector<SpecializationArgument> arguments,
+    std::vector<SpecializationTypeShapePtr> argument_shapes) {
+  return absl::WrapUnique(new SumType(std::make_shared<const Data>(
+      sum_def, std::move(variants), std::move(tag_bit_count),
+      std::move(discriminants),
+      std::make_shared<const SpecializationArguments>(
+          std::move(arguments), std::move(argument_shapes)))));
+}
+
+SpecializationTypePtr SumType::specialization_type() const {
+  std::call_once(data_->identity_once, [&] {
+    data_->identity =
+        SpecializationType::Create({.kind = SpecializationType::Kind::kSum,
+                                    .nominal = &nominal_type(),
+                                    .arguments = specialization_arguments()});
+  });
+  return data_->identity;
+}
 
 bool SumType::operator==(const Type& other) const {
   if (const auto* t = dynamic_cast<const SumType*>(&other); t == nullptr) {
@@ -932,8 +1708,17 @@ bool SumType::operator==(const Type& other) const {
     using EqualPairs = absl::flat_hash_set<std::pair<const Data*, const Data*>>;
     static thread_local EqualPairs* current_equal_pairs = nullptr;
     auto compare_contents = [&] {
-      return HasSameParametricArguments(t->parametric_arguments()) &&
-             absl::c_equal(variants(), t->variants());
+      if (data_->parametric_arguments->has_full_input() ||
+          t->data_->parametric_arguments->has_full_input()) {
+        // Explicitly constructed Types can have inconsistent nominal members;
+        // their historical full comparison remains authoritative.
+        return parametric_arguments_hash() == t->parametric_arguments_hash() &&
+               HasSameParametricArguments(t->parametric_arguments()) &&
+               absl::c_equal(variants(), t->variants());
+      } else {
+        return HasSameSpecializationArguments(t->specialization_arguments()) &&
+               absl::c_equal(variants(), t->variants());
+      }
     };
     if (current_equal_pairs == nullptr) {
       EqualPairs equal_pairs;
@@ -958,31 +1743,29 @@ bool SumType::operator==(const Type& other) const {
 
 bool SumType::HasSameParametricArguments(
     absl::Span<const ParametricArgument> arguments) const {
-  return absl::c_equal(
-      parametric_arguments(), arguments,
-      [](const ParametricArgument& lhs, const ParametricArgument& rhs) {
-        if (lhs.index() != rhs.index()) {
-          return false;
-        } else if (const auto* value = std::get_if<InterpValue>(&lhs)) {
-          return *value == std::get<InterpValue>(rhs);
-        } else {
-          return *std::get<std::unique_ptr<const Type>>(lhs) ==
-                 *std::get<std::unique_ptr<const Type>>(rhs);
-        }
-      });
+  return SameSumArguments(parametric_arguments(), arguments);
 }
 
 /* static */ size_t SumType::HashParametricArguments(
     absl::Span<const ParametricArgument> arguments) {
+  return HashSpecializationArguments(CompactArguments(arguments));
+}
+
+bool SumType::HasSameSpecializationArguments(
+    absl::Span<const SpecializationArgument> arguments) const {
+  return SameSpecializationArguments(specialization_arguments(), arguments);
+}
+
+/* static */ size_t SumType::HashSpecializationArguments(
+    absl::Span<const SpecializationArgument> arguments) {
   size_t hash = absl::HashOf(arguments.size());
-  for (const ParametricArgument& argument : arguments) {
+  for (const SpecializationArgument& argument : arguments) {
     if (const auto* value = std::get_if<InterpValue>(&argument)) {
       hash = absl::HashOf(hash, argument.index(), HashSumArgumentValue(*value));
     } else {
-      hash =
-          absl::HashOf(hash, argument.index(),
-                       HashSumArgumentType(
-                           *std::get<std::unique_ptr<const Type>>(argument)));
+      const auto& type = std::get<SpecializationTypePtr>(argument);
+      CHECK(type != nullptr);
+      hash = absl::HashOf(hash, argument.index(), type->hash());
     }
   }
   return hash;

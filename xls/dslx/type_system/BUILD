@@ -314,6 +314,7 @@ cc_test(
     srcs = ["type_info_test.cc"],
     deps = [
         ":parametric_env",
+        ":type",
         ":type_info",
         ":typecheck_test_utils",
         "//xls/common:xls_gunit_main",
