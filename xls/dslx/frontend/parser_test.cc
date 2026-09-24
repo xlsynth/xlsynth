@@ -3069,15 +3069,21 @@ TEST_F(ParserTest, SemanticSumRejectsMixedDiscriminants) {
                                  "discriminants")));
 }
 
-TEST_F(ParserTest, SemanticSumRejectsImplicitDiscriminantsWithTagAnnotation) {
-  constexpr std::string_view kProgram = R"(enum Option : u1 {
+TEST_F(ParserTest, SemanticSumSupportsImplicitDiscriminantsWithTagAnnotation) {
+  std::unique_ptr<Module> module = RoundTrip(R"(enum Option : u1 {
     None(),
     Some(u8),
-})";
-  EXPECT_THAT(Parse(kProgram),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("with a tag type annotation requires explicit "
-                                 "discriminants on every variant")));
+})");
+  std::optional<ModuleMember*> maybe_member =
+      module->FindMemberWithName("Option");
+  ASSERT_TRUE(maybe_member.has_value());
+  ASSERT_TRUE(std::holds_alternative<SumDef*>(*maybe_member.value()));
+  const auto* sum_def = std::get<SumDef*>(*maybe_member.value());
+  EXPECT_EQ(sum_def->tag_type_annotation()->ToString(), "u1");
+  ASSERT_TRUE(sum_def->GetVariant("None").has_value());
+  ASSERT_TRUE(sum_def->GetVariant("Some").has_value());
+  EXPECT_FALSE((*sum_def->GetVariant("None"))->discriminant().has_value());
+  EXPECT_FALSE((*sum_def->GetVariant("Some"))->discriminant().has_value());
 }
 
 TEST_F(ParserTest, BareUnitEnumWithoutValuesIsStillRejected) {
@@ -3147,13 +3153,13 @@ TEST_F(ParserTest, SumRemainsValidIdentifierOutsideTypeDeclarations) {
   EXPECT_TRUE(module->GetFunction("f").has_value());
 }
 
-TEST_F(ParserTest, EmptyEnumWithTagAnnotationIsNumericEnum) {
+TEST_F(ParserTest, EmptyEnumWithTagAnnotationIsSemanticSum) {
   std::unique_ptr<Module> module = RoundTrip(R"(enum Never : u3 {
 })");
   std::optional<ModuleMember*> maybe_member =
       module->FindMemberWithName("Never");
   ASSERT_TRUE(maybe_member.has_value());
-  EXPECT_TRUE(std::holds_alternative<EnumDef*>(*maybe_member.value()));
+  EXPECT_TRUE(std::holds_alternative<SumDef*>(*maybe_member.value()));
 }
 
 TEST_F(ParserTest, EmptyEnumWithoutTagAnnotationIsSemanticSum) {
