@@ -1229,6 +1229,9 @@ class AstCloner : public AstNodeVisitor {
                           consequent->span().limit());
       MatchArm* first_arm = module(n)->Make<MatchArm>(
           first_arm_span, std::vector<PatternTree>{pattern}, consequent);
+      for (NameDef* name_def : GetPatternNameDefs(pattern)) {
+        name_def->set_definer(first_arm);
+      }
 
       Span wildcard_span(alternate->span().start(), alternate->span().start());
       WildcardPattern* wildcard =
