@@ -499,8 +499,8 @@ void NestedRawInputBatchesRespectObservation(
   dslx::FunctionConverter converter(
       package_data, tm.module, &import_data, dslx::ConvertOptions(),
       /*proc_data=*/nullptr, /*channel_scope=*/nullptr, /*is_top=*/true);
-  XLS_ASSERT_OK(converter.HandleFunction(function, tm.type_info,
-                                         /*parametric_env=*/nullptr));
+  XLS_ASSERT_OK(
+      converter.HandleFunction(function, tm.type_info, dslx::ParametricEnv{}));
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
                            package.package->GetFunction("__nested_raw__main"));
   XLS_ASSERT_OK_AND_ASSIGN(auto jit, FunctionJit::Create(ir_function));
