@@ -14,9 +14,13 @@
 
 #include "xls/dslx/translators/dslx_to_verilog.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -34,9 +38,11 @@
 #include "xls/common/status/status_macros.h"
 #include "xls/common/visitor.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/translators/verilog_sum_naming.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/ir/bits.h"
@@ -46,6 +52,13 @@
 namespace xls::dslx {
 
 namespace {
+
+using verilog_sum::EnumCompanionKey;
+using verilog_sum::EscapeName;
+using verilog_sum::FamilyNameRequests;
+using verilog_sum::SignedArrayCompanionKey;
+using verilog_sum::SourceName;
+using verilog_sum::StructCompanionKey;
 
 const Type* UnboxMetaTypes(const Type* type) {
   while (type->IsMeta()) {
@@ -120,7 +133,707 @@ std::optional<std::string_view> TypeDefinitionIdentifier(
       resolved_type_definition.definition);
 }
 
+std::string TypeDefinitionName(const TypeDefinition& definition) {
+  return absl::visit([](const auto* name) { return name->identifier(); },
+                     TypeDefinitionGetNameDef(definition));
+}
+
+// Returns the packed width of a concrete type; unresolved dimensions fail.
+absl::StatusOr<int64_t> BitCount(const Type& type) {
+  XLS_ASSIGN_OR_RETURN(TypeDim bits, type.GetTotalBitCount());
+  return bits.GetAsInt64();
+}
+
+std::string AllocateSumName(std::string_view identifier, NameUniquer& uniquer,
+                            const std::set<std::string>& ordinary_source_names,
+                            std::set<std::string>& allocated) {
+  std::string base = verilog::SanitizeVerilogIdentifier(identifier);
+  std::string candidate = base;
+  int64_t suffix = 0;
+  while (true) {
+    if (!ordinary_source_names.contains(candidate) &&
+        !allocated.contains(candidate)) {
+      std::string unique = uniquer.GetSanitizedUniqueName(candidate);
+      if (!ordinary_source_names.contains(unique) &&
+          !allocated.contains(unique)) {
+        allocated.insert(unique);
+        return unique;
+      } else {
+        CHECK_OK(uniquer.ReleaseIdentifier(unique));
+      }
+    }
+    candidate = absl::StrCat(base, "__", ++suffix);
+  }
+}
+
+std::string AllocateOrdinaryTypeName(std::string_view identifier,
+                                     bool already_converted,
+                                     NameUniquer& uniquer,
+                                     std::set<std::string>& allocated) {
+  std::string name = uniquer.GetSanitizedUniqueName(identifier);
+  if (!already_converted) {
+    allocated.insert(name);
+  }
+  return name;
+}
+
+absl::Status OrdinaryTypeNameConflict(std::string_view name) {
+  return absl::InvalidArgumentError(absl::StrFormat(
+      "SystemVerilog type `%s` conflicts with an existing package symbol",
+      name));
+}
+
+// Reports whether an ordinary exported type would make a signed payload field
+// unsigned in a generated variant view. Zero-width aggregate fields are
+// ignored.
+absl::StatusOr<bool> NeedsSemanticProjection(const Type& type) {
+  if (std::optional<BitsLikeProperties> bits = GetBitsLike(type);
+      bits.has_value()) {
+    return bits->is_signed.GetAsBool();
+  } else if (type.IsEnum()) {
+    return type.AsEnum().is_signed();
+  } else if (type.IsArray()) {
+    return NeedsSemanticProjection(type.AsArray().element_type());
+  } else if (type.IsStruct() || type.IsTuple()) {
+    int64_t count =
+        type.IsStruct() ? type.AsStruct().size() : type.AsTuple().size();
+    for (int64_t i = 0; i < count; ++i) {
+      const Type& member = type.IsStruct() ? type.AsStruct().GetMemberType(i)
+                                           : type.AsTuple().GetMemberType(i);
+      XLS_ASSIGN_OR_RETURN(int64_t width, BitCount(member));
+      if (width > 0) {
+        XLS_ASSIGN_OR_RETURN(bool needs_projection,
+                             NeedsSemanticProjection(member));
+        if (needs_projection) {
+          return true;
+        }
+      }
+    }
+  }
+  // Nested sums already use their own canonical family in either export mode.
+  return false;
+}
+
+// Only fixed, unsigned records can reuse the ordinary declaration unchanged in
+// a sum view. Other records use a family-owned semantic companion instead.
+absl::StatusOr<bool> UsesOrdinaryStructInSum(const StructType& record) {
+  XLS_ASSIGN_OR_RETURN(bool needs_projection, NeedsSemanticProjection(record));
+  return !needs_projection &&
+         record.nominal_type().parametric_bindings().empty();
+}
+
+absl::Status SumAliasConflict(std::string_view alias,
+                              std::string_view family_name) {
+  return absl::InvalidArgumentError(absl::StrFormat(
+      "SystemVerilog alias `%s` for sum family `%s` conflicts with an "
+      "existing package symbol",
+      alias, family_name));
+}
+
+struct OrdinaryEnumMember {
+  const EnumDef* definition;
+  int64_t index;
+};
+
+using OrdinaryEnumMemberGroups =
+    std::map<std::string, std::vector<OrdinaryEnumMember>>;
+
+void AddOrdinaryEnumMembers(OrdinaryEnumMemberGroups& groups,
+                            const EnumDef& definition, bool projected) {
+  for (int64_t i = 0; i < definition.values().size(); ++i) {
+    const std::string& original = definition.GetMemberName(i);
+    groups[projected ? verilog::SanitizeVerilogIdentifier(original) : original]
+        .push_back({&definition, i});
+  }
+}
+
+// Uses the same source ordering and disambiguation for the potential ordinary
+// enum names reserved before generating sums and the names actually emitted.
+// Each caller supplies the declarations and occupied package names for its own
+// scope: a private, un-emitted enum cannot qualify an emitted enum's literals.
+template <typename GetStem, typename IsOccupied>
+std::vector<std::pair<OrdinaryEnumMember, std::string>>
+AllocateOrdinaryEnumNames(OrdinaryEnumMemberGroups& groups, GetStem stem,
+                          IsOccupied is_occupied) {
+  std::set<std::string> occupied;
+  std::set<std::string> preserved;
+  for (const auto& [name, members] : groups) {
+    if (members.size() == 1 && !is_occupied(name)) {
+      occupied.insert(name);
+      preserved.insert(name);
+    }
+  }
+  std::vector<std::pair<OrdinaryEnumMember, std::string>> result;
+  for (auto& [name, members] : groups) {
+    std::sort(members.begin(), members.end(),
+              [](const OrdinaryEnumMember& a, const OrdinaryEnumMember& b) {
+                return std::make_pair(SourceName(*a.definition,
+                                                 a.definition->identifier()),
+                                      a.definition->GetMemberName(a.index)) <
+                       std::make_pair(SourceName(*b.definition,
+                                                 b.definition->identifier()),
+                                      b.definition->GetMemberName(b.index));
+              });
+    for (const OrdinaryEnumMember& member : members) {
+      std::string unique = name;
+      if (!preserved.contains(name)) {
+        std::string base = verilog::SanitizeVerilogIdentifier(
+            absl::StrCat(stem(member.definition), "_",
+                         member.definition->GetMemberName(member.index)));
+        unique = base;
+        for (int64_t suffix = 1;
+             occupied.contains(unique) || is_occupied(unique); ++suffix) {
+          unique = absl::StrCat(base, "__", suffix);
+        }
+        occupied.insert(unique);
+      }
+      result.emplace_back(member, std::move(unique));
+    }
+  }
+  return result;
+}
+
 }  // namespace
+
+void DslxTypeToVerilogManager::PrepareSumNames(Module* module,
+                                               TypeInfo* type_info) {
+  if (!prepared_sum_modules_.contains(module)) {
+    const std::pair<Module*, TypeInfo*> input{module, type_info};
+    PrepareForModules(
+        absl::Span<const std::pair<Module*, TypeInfo*>>(&input, 1));
+  }
+}
+
+void DslxTypeToVerilogManager::PrepareForModules(
+    absl::Span<const std::pair<Module*, TypeInfo*>> modules) {
+  std::map<std::string, std::vector<AstNode*>> definitions;
+  std::map<std::string, std::set<std::string>> module_qualifiers;
+  std::vector<SumDef*> sums;
+  std::map<const SumDef*, const SumType*> concrete_sums;
+  OrdinaryEnumMemberGroups enum_members;
+  std::set<const Module*> visited;
+  std::vector<std::pair<Module*, TypeInfo*>> pending(modules.begin(),
+                                                     modules.end());
+  while (!pending.empty()) {
+    auto [current, current_info] = pending.back();
+    pending.pop_back();
+    if (!visited.insert(current).second ||
+        prepared_sum_modules_.contains(current)) {
+      continue;
+    }
+    prepared_sum_modules_.insert(current);
+    module_qualifiers[verilog::SanitizeVerilogIdentifier(current->name())]
+        .insert(current->name());
+    for (const TypeDefinition& definition : current->GetTypeDefinitions()) {
+      AstNode* node = TypeDefinitionToAstNode(definition);
+      AnyNameDef name = TypeDefinitionGetNameDef(definition);
+      std::string identifier = absl::visit(
+          [](const auto* value) { return value->identifier(); }, name);
+      std::string sanitized = verilog::SanitizeVerilogIdentifier(identifier);
+      definitions[sanitized].push_back(node);
+      if (auto* sum = dynamic_cast<SumDef*>(node)) {
+        sums.push_back(sum);
+        std::optional<Type*> type = current_info->GetItem(sum);
+        if (type.has_value() && UnboxMetaTypes(*type)->IsSum()) {
+          concrete_sums.emplace(sum, &UnboxMetaTypes(*type)->AsSum());
+        }
+      } else {
+        legacy_name_owners_[sanitized].push_back(node);
+        // Function signatures infer this unqualified source spelling even
+        // when nominal declarations in multiple modules share the name.
+        legacy_package_names_.insert(sanitized);
+      }
+      if (auto* ordinary_enum = dynamic_cast<EnumDef*>(node)) {
+        AddOrdinaryEnumMembers(enum_members, *ordinary_enum,
+                               /*projected=*/true);
+      }
+    }
+    for (const auto& [subject, imported] : current_info->GetRootImports()) {
+      pending.emplace_back(imported.module, imported.type_info);
+    }
+  }
+  for (auto& [name, nodes] : definitions) {
+    std::sort(nodes.begin(), nodes.end(),
+              [](const AstNode* a, const AstNode* b) {
+                return a->owner()->name() < b->owner()->name();
+              });
+    for (AstNode* node : nodes) {
+      std::string module =
+          verilog::SanitizeVerilogIdentifier(node->owner()->name());
+      if (module_qualifiers.at(module).size() != 1) {
+        module = EscapeName(node->owner()->name());
+      }
+      std::string nominal = nodes.size() == 1
+                                ? name
+                                : verilog::SanitizeVerilogIdentifier(
+                                      absl::StrCat(module, "_", name));
+      nominal_names_.emplace(node, nominal);
+      if (dynamic_cast<SumDef*>(node) == nullptr) {
+        legacy_package_names_.insert(nominal);
+      }
+    }
+  }
+
+  // Keep generated sum names clear of the possible ordinary enum spellings.
+  // Only actually emitted ordinary declarations determine which enum-member
+  // names appear in the package.
+  auto potential_names = AllocateOrdinaryEnumNames(
+      enum_members,
+      [&](const EnumDef* definition) -> const std::string& {
+        return nominal_names_.at(definition);
+      },
+      [&](const std::string& name) {
+        return legacy_package_names_.contains(name);
+      });
+  for (const auto& [member, name] : potential_names) {
+    legacy_package_names_.insert(name);
+  }
+  for (const auto& [name, members] : enum_members) {
+    for (const auto& [definition, index] : members) {
+      const std::string& original = definition->GetMemberName(index);
+      legacy_package_names_.insert(original);
+      legacy_package_names_.insert(name);
+      legacy_package_names_.insert(verilog::SanitizeVerilogIdentifier(
+          absl::StrCat(nominal_names_.at(definition), "_", original)));
+      legacy_package_names_.insert(verilog::SanitizeVerilogIdentifier(
+          absl::StrCat(definition->identifier(), "_", original)));
+    }
+  }
+
+  std::sort(sums.begin(), sums.end(), [](const SumDef* a, const SumDef* b) {
+    return SourceName(*a, a->identifier()) < SourceName(*b, b->identifier());
+  });
+  for (SumDef* sum : sums) {
+    nominal_sum_names_.emplace(sum, NewSumName(nominal_names_.at(sum)));
+  }
+  // Reserve every nonparametric family's public names in source identity order
+  // before emitting any family. For example, A's getter and A_get's constructor
+  // cannot exchange names when the export requests are reversed.
+  for (SumDef* sum : sums) {
+    if (sum->parametric_bindings().empty()) {
+      auto type = concrete_sums.find(sum);
+      bool has_payload = true;
+      if (type != concrete_sums.end()) {
+        auto payload_width = type->second->GetMaxPayloadBitCount();
+        if (payload_width.ok()) {
+          auto width = payload_width->GetAsInt64();
+          if (width.ok()) {
+            has_payload = *width > 0;
+          }
+        }
+      }
+      auto requests =
+          FamilyNameRequests(*sum, nominal_sum_names_.at(sum), has_payload);
+      if (type != concrete_sums.end()) {
+        auto companions =
+            CompanionNameRequests(*type->second, nominal_sum_names_.at(sum));
+        if (companions.ok()) {
+          requests.merge(*companions);
+        }
+      }
+      for (auto& [key, name] : requests) {
+        name = NewSumName(name);
+      }
+      nominal_sum_symbols_.emplace(sum, std::move(requests));
+    }
+  }
+}
+
+std::string DslxTypeToVerilogManager::NominalName(
+    const AstNode& node, std::string_view identifier) const {
+  auto known = nominal_names_.find(&node);
+  return known == nominal_names_.end()
+             ? verilog::SanitizeVerilogIdentifier(identifier)
+             : known->second;
+}
+
+absl::StatusOr<std::map<std::string, std::string>>
+DslxTypeToVerilogManager::CompanionNameRequests(const SumType& sum,
+                                                std::string_view family) {
+  std::map<std::string, std::string> names;
+  std::set<std::string> visited_structs;
+  std::function<absl::Status(const Type&)> visit;
+  visit = [&](const Type& type) -> absl::Status {
+    if (type.IsSum()) {
+      // Nested sums own and allocate their own companion families.
+      return absl::OkStatus();
+    } else if (type.IsEnum()) {
+      const EnumType& enumeration = type.AsEnum();
+      if (enumeration.is_signed()) {
+        const EnumDef& definition = enumeration.nominal_type();
+        std::string key = EnumCompanionKey(definition);
+        std::string stem = absl::StrCat(
+            family, "_", NominalName(definition, definition.identifier()));
+        names.emplace(absl::StrCat(key, ":type"),
+                      absl::StrCat(stem, "_value_t"));
+        for (int64_t i = 0; i < definition.values().size(); ++i) {
+          std::string_view member = definition.GetMemberName(i);
+          names.emplace(absl::StrCat(key, ":literal:", member),
+                        absl::StrCat(stem, "_enum_", member));
+        }
+      }
+    } else if (type.IsArray() && !GetBitsLike(type).has_value()) {
+      const Type& element = type.AsArray().element_type();
+      if (std::optional<BitsLikeProperties> bits = GetBitsLike(element);
+          bits.has_value()) {
+        XLS_ASSIGN_OR_RETURN(bool is_signed, bits->is_signed.GetAsBool());
+        if (is_signed) {
+          XLS_ASSIGN_OR_RETURN(int64_t width, bits->size.GetAsInt64());
+          names.emplace(SignedArrayCompanionKey(width),
+                        absl::StrCat(family, "_s", width, "_value_t"));
+        }
+      } else {
+        XLS_RETURN_IF_ERROR(visit(element));
+      }
+    } else if (type.IsStruct()) {
+      const StructType& record = type.AsStruct();
+      XLS_ASSIGN_OR_RETURN(std::string identity,
+                           sum_identities_.TypeIdentity(type));
+      if (visited_structs.insert(identity).second) {
+        XLS_ASSIGN_OR_RETURN(bool uses_ordinary,
+                             UsesOrdinaryStructInSum(record));
+        if (!uses_ordinary) {
+          XLS_ASSIGN_OR_RETURN(
+              std::string specialization,
+              sum_identities_.StructSpecializationName(record));
+          names.emplace(
+              StructCompanionKey(identity),
+              absl::StrCat(family, "_",
+                           NominalName(record.nominal_type(),
+                                       record.nominal_type().identifier()),
+                           specialization, "_value_t"));
+        }
+        for (const std::unique_ptr<Type>& member : record.members()) {
+          XLS_ASSIGN_OR_RETURN(int64_t width, BitCount(*member));
+          if (width > 0) {
+            XLS_RETURN_IF_ERROR(visit(*member));
+          }
+        }
+      }
+    } else if (type.IsTuple()) {
+      for (const std::unique_ptr<Type>& member : type.AsTuple().members()) {
+        XLS_ASSIGN_OR_RETURN(int64_t width, BitCount(*member));
+        if (width > 0) {
+          XLS_RETURN_IF_ERROR(visit(*member));
+        }
+      }
+    }
+    return absl::OkStatus();
+  };
+  for (const SumTypeVariant& variant : sum.variants()) {
+    for (int64_t i = 0; i < variant.size(); ++i) {
+      const Type& member = variant.GetMemberType(i);
+      XLS_ASSIGN_OR_RETURN(int64_t width, BitCount(member));
+      if (width > 0) {
+        XLS_RETURN_IF_ERROR(visit(member));
+      }
+    }
+  }
+  return names;
+}
+
+std::string DslxTypeToVerilogManager::NewSumName(std::string_view identifier) {
+  return AllocateSumName(identifier, *typedef_name_uniquer_,
+                         legacy_package_names_, allocated_package_names_);
+}
+
+verilog::Def* DslxTypeToVerilogManager::MakeMember(std::string_view identifier,
+                                                   verilog::DataType* type) {
+  return file_->Make<verilog::Def>(SourceInfo(), identifier,
+                                   type->IsUserDefined()
+                                       ? verilog::DataKind::kUser
+                                       : verilog::DataKind::kLogic,
+                                   type);
+}
+
+verilog::DataType* DslxTypeToVerilogManager::AddNamedType(
+    std::string_view identifier, verilog::DataType* type) {
+  verilog::Typedef* type_def = top_pkg_->Add<verilog::Typedef>(
+      SourceInfo(), MakeMember(identifier, type));
+  return file_->Make<verilog::TypedefType>(SourceInfo(), type_def);
+}
+
+bool DslxTypeToVerilogManager::IsOrdinaryEnumMemberName(
+    std::string_view name, const AstNode* excluded_owner) const {
+  auto owners = legacy_name_owners_.find(name);
+  return owners != legacy_name_owners_.end() &&
+         std::any_of(
+             owners->second.begin(), owners->second.end(),
+             [&](const AstNode* owner) {
+               const auto* definition = dynamic_cast<const EnumDef*>(owner);
+               auto names = legacy_enum_member_names_.find(definition);
+               return owner != excluded_owner &&
+                      names != legacy_enum_member_names_.end() &&
+                      std::find(names->second.begin(), names->second.end(),
+                                name) != names->second.end();
+             });
+}
+
+absl::Status DslxTypeToVerilogManager::CheckOrdinaryNameAgainstSumAliases(
+    std::string_view name) const {
+  auto alias = sum_aliases_.find(name);
+  if (alias == sum_aliases_.end()) {
+    return absl::OkStatus();
+  } else {
+    auto* declaration = static_cast<verilog::TypedefType*>(alias->second);
+    auto* canonical = static_cast<verilog::TypedefType*>(
+        declaration->type_def()->data_type());
+    return SumAliasConflict(name, canonical->type_def()->GetName());
+  }
+}
+
+absl::Status DslxTypeToVerilogManager::PlanSumFamilyNames(
+    const SumType& sum, std::string_view specialization, int64_t payload_width,
+    SumFamily& family,
+    const std::function<std::string(std::string_view)>& allocate) {
+  if (!specialization.empty()) {
+    family.name = allocate(absl::StrCat(family.name, specialization));
+  }
+  auto static_symbols = nominal_sum_symbols_.find(&sum.nominal_type());
+  XLS_ASSIGN_OR_RETURN(auto companions,
+                       CompanionNameRequests(sum, family.name));
+  if (static_symbols != nominal_sum_symbols_.end()) {
+    family.symbols = static_symbols->second;
+    for (const auto& [key, name] : companions) {
+      if (!family.symbols.contains(key)) {
+        family.symbols.emplace(key, allocate(name));
+      }
+    }
+  } else {
+    family.symbols =
+        FamilyNameRequests(sum.nominal_type(), family.name, payload_width > 0);
+    family.symbols.merge(companions);
+    for (auto& [key, name] : family.symbols) {
+      name = allocate(name);
+    }
+  }
+  return absl::OkStatus();
+}
+
+const DslxTypeToVerilogManager::SumFamily*
+DslxTypeToVerilogManager::FindSumFamily(const SumType& sum) const {
+  auto families = sum_families_.find(&sum.nominal_type());
+  if (families != sum_families_.end()) {
+    for (const auto& family : families->second) {
+      if (family->type->AsSum().HasSameSpecializationArguments(
+              sum.specialization_arguments())) {
+        return family.get();
+      }
+    }
+  }
+  return nullptr;
+}
+
+absl::Status DslxTypeToVerilogManager::CheckOrdinaryTypeName(
+    std::string_view identifier) {
+  std::string name(identifier);
+  XLS_RETURN_IF_ERROR(CheckOrdinaryNameAgainstSumAliases(name));
+  // A generic nominal's stem stays allocated to stabilize its specializations,
+  // but the stem itself is not a declaration. Actual family symbols still win.
+  auto is_only_generic_stem = [&] {
+    bool is_generic_stem = false;
+    for (const auto& [definition, stem] : nominal_sum_names_) {
+      if (stem == name) {
+        if (definition->parametric_bindings().empty()) {
+          return false;
+        } else {
+          is_generic_stem = true;
+        }
+      }
+    }
+    if (!is_generic_stem) {
+      return false;
+    }
+    auto contains_name = [&](const auto& symbols) {
+      return std::any_of(
+          symbols.begin(), symbols.end(),
+          [&](const auto& entry) { return entry.second == name; });
+    };
+    for (const auto& [definition, symbols] : nominal_sum_symbols_) {
+      if (contains_name(symbols)) {
+        return false;
+      }
+    }
+    for (const auto& [definition, families] : sum_families_) {
+      for (const auto& family : families) {
+        if (family->name == name || contains_name(family->symbols)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+  if (emitted_sum_names_.contains(name) ||
+      (allocated_package_names_.contains(name) &&
+       !emitted_ordinary_type_names_.contains(name) &&
+       !is_only_generic_stem())) {
+    return OrdinaryTypeNameConflict(name);
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<verilog::DataType*> DslxTypeToVerilogManager::SumToVastType(
+    const SumType& sum, ImportData* import_data,
+    std::optional<std::string_view> requested_alias) {
+  if (const SumFamily* existing = FindSumFamily(sum); existing != nullptr) {
+    XLS_RET_CHECK(existing->envelope != nullptr)
+        << "Recursive SystemVerilog sum: " << sum.nominal_type().identifier();
+    return existing->envelope;
+  }
+  auto& nominal_families = sum_families_[&sum.nominal_type()];
+  XLS_ASSIGN_OR_RETURN(int64_t width, BitCount(sum));
+  XLS_RET_CHECK_GT(width, 0);
+  XLS_ASSIGN_OR_RETURN(int64_t tag_width, sum.tag_bit_count().GetAsInt64());
+  XLS_ASSIGN_OR_RETURN(TypeDim payload_dim, sum.GetMaxPayloadBitCount());
+  XLS_ASSIGN_OR_RETURN(int64_t payload_width, payload_dim.GetAsInt64());
+
+  auto owner = std::make_unique<SumFamily>();
+  owner->type = sum.CloneToUnique();
+  std::vector<std::string> newly_allocated;
+  std::optional<std::string> claimed_specialization;
+  bool newly_named_nominal = false;
+  auto allocate = [&](std::string_view requested) {
+    std::string name = NewSumName(requested);
+    newly_allocated.push_back(name);
+    return name;
+  };
+  auto prepare = [&]() -> absl::Status {
+    auto nominal = nominal_sum_names_.find(&sum.nominal_type());
+    if (nominal == nominal_sum_names_.end()) {
+      owner->name = allocate(sum.nominal_type().identifier());
+      nominal_sum_names_.emplace(&sum.nominal_type(), owner->name);
+      newly_named_nominal = true;
+    } else {
+      owner->name = nominal->second;
+    }
+    std::string specialization;
+    if (!sum.specialization_arguments().empty()) {
+      XLS_ASSIGN_OR_RETURN(specialization,
+                           sum_identities_.SpecializationName(sum));
+      XLS_ASSIGN_OR_RETURN(std::string identity,
+                           sum_identities_.TypeIdentity(sum));
+      auto& owners = sum_specialization_owners_[&sum.nominal_type()];
+      auto [existing, inserted] = owners.emplace(specialization, identity);
+      if (inserted) {
+        claimed_specialization = specialization;
+      } else if (existing->second != identity) {
+        return absl::InvalidArgumentError(absl::StrFormat(
+            "Different specializations of DSLX sum `%s` have the same "
+            "SystemVerilog spelling `%s%s`",
+            sum.nominal_type().identifier(), owner->name, specialization));
+      }
+    }
+    XLS_RETURN_IF_ERROR(PlanSumFamilyNames(sum, specialization, payload_width,
+                                           *owner, allocate));
+
+    // Reject fixed alias collisions before this new family changes the package.
+    std::optional<std::string_view> pending_alias;
+    if (requested_alias.has_value() && *requested_alias != owner->name) {
+      pending_alias = requested_alias;
+      if (sum_aliases_.contains(*requested_alias)) {
+        return absl::InvalidArgumentError(absl::StrFormat(
+            "SystemVerilog alias `%s` already names a different sum family; "
+            "cannot use it for `%s`",
+            *requested_alias, owner->name));
+      } else if (allocated_package_names_.contains(
+                     std::string(*requested_alias)) &&
+                 !emitted_ordinary_type_names_.contains(
+                     std::string(*requested_alias))) {
+        return SumAliasConflict(*requested_alias, owner->name);
+      }
+    }
+
+    // Generated roles are reserved for a family's dependencies, but the raw
+    // declaration only emits the family name. Reservations must not rename or
+    // displace ordinary declarations whose names remain visible in the package.
+    if (pending_alias.has_value() &&
+        (emitted_ordinary_type_names_.contains(std::string(*pending_alias)) ||
+         IsOrdinaryEnumMemberName(*pending_alias))) {
+      return SumAliasConflict(*pending_alias, owner->name);
+    }
+    return absl::OkStatus();
+  };
+  absl::Status prepared = prepare();
+  if (!prepared.ok()) {
+    if (newly_named_nominal) {
+      nominal_sum_names_.erase(&sum.nominal_type());
+    }
+    if (claimed_specialization.has_value()) {
+      sum_specialization_owners_.at(&sum.nominal_type())
+          .erase(*claimed_specialization);
+    }
+    for (const std::string& name : newly_allocated) {
+      allocated_package_names_.erase(name);
+      XLS_RETURN_IF_ERROR(typedef_name_uniquer_->ReleaseIdentifier(name));
+    }
+    return prepared;
+  }
+  SumFamily& family = *owner;
+  nominal_families.push_back(std::move(owner));
+
+  std::vector<verilog::Def*> members;
+  if (tag_width > 0) {
+    members.push_back(
+        MakeMember("tag", file_->BitVectorType(tag_width, SourceInfo())));
+  }
+  if (payload_width > 0) {
+    members.push_back(MakeMember(
+        "payload", file_->BitVectorType(payload_width, SourceInfo())));
+  }
+  top_pkg_->Add<verilog::BlankLine>(SourceInfo());
+  top_pkg_->Add<verilog::Comment>(
+      SourceInfo(),
+      absl::StrFormat("DSLX Type: %s", sum.nominal_type().ToString()));
+  family.envelope = AddNamedType(
+      family.name, file_->Make<verilog::Struct>(SourceInfo(), members));
+  emitted_sum_names_.insert(family.name);
+  return family.envelope;
+}
+
+absl::StatusOr<verilog::DataType*> DslxTypeToVerilogManager::AddSumAlias(
+    const SumType& sum, std::string_view identifier, ImportData* import_data,
+    const TypeAlias* source_alias) {
+  std::string requested = verilog::SanitizeVerilogIdentifier(identifier);
+  XLS_ASSIGN_OR_RETURN(verilog::DataType * canonical,
+                       SumToVastType(sum, import_data, requested));
+  std::string canonical_name =
+      static_cast<verilog::TypedefType*>(canonical)->type_def()->GetName();
+  auto known = sum_aliases_.find(requested);
+  if (requested == canonical_name) {
+    return canonical;
+  } else if (known != sum_aliases_.end() &&
+             static_cast<verilog::TypedefType*>(known->second)
+                     ->type_def()
+                     ->data_type() == canonical) {
+    return known->second;
+  } else if (known != sum_aliases_.end()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "SystemVerilog alias `%s` already names a different sum family; "
+        "cannot use it for `%s`",
+        requested, canonical_name));
+  } else {
+    if (allocated_package_names_.contains(requested) ||
+        emitted_ordinary_type_names_.contains(requested) ||
+        IsOrdinaryEnumMemberName(requested, source_alias)) {
+      return SumAliasConflict(requested, canonical_name);
+    }
+    std::string reserved =
+        typedef_name_uniquer_->GetSanitizedUniqueName(requested);
+    if (reserved != requested) {
+      CHECK_OK(typedef_name_uniquer_->ReleaseIdentifier(reserved));
+      return SumAliasConflict(requested, canonical_name);
+    }
+    allocated_package_names_.insert(requested);
+    top_pkg_->Add<verilog::BlankLine>(SourceInfo());
+    top_pkg_->Add<verilog::Comment>(
+        SourceInfo(),
+        absl::StrCat("DSLX Type: ", sum.ToString(),
+                     "; SystemVerilog sum family: ", canonical_name));
+    verilog::DataType* alias = AddNamedType(requested, canonical);
+    sum_aliases_.emplace(requested, alias);
+    return alias;
+  }
+}
 
 absl::StatusOr<std::pair<std::vector<int64_t>, verilog::DataType*>>
 DslxTypeToVerilogManager::GetArrayDimsAndBaseType(
@@ -186,6 +899,10 @@ DslxTypeToVerilogManager::TypeAnnotationToVastType(
   VLOG(3) << "Converting TypeAnnotation " << type_annotation->ToString()
           << " with concrete Type to Verilog: " << *type;
 
+  if (const Type* concrete = UnboxMetaTypes(type); concrete->IsSum()) {
+    return SumToVastType(concrete->AsSum(), import_data);
+  }
+
   if (auto ta = dynamic_cast<const BuiltinTypeAnnotation*>(type_annotation)) {
     int64_t size = ta->GetBitCount();
 
@@ -248,16 +965,9 @@ DslxTypeToVerilogManager::TypeAnnotationToVastType(
   }
 
   if (auto ta = dynamic_cast<const TypeRefTypeAnnotation*>(type_annotation)) {
-    AnyNameDef name_def =
-        TypeDefinitionGetNameDef(ta->type_ref()->type_definition());
-    std::string identifier = absl::visit(
-        Visitor{[](const NameDef* name_def) { return name_def->identifier(); },
-                [](const BuiltinNameDef* name_def) {
-                  return name_def->identifier();
-                }},
-        name_def);
-    return TypeDefinitionToVastType(ta->type_ref()->type_definition(),
-                                    import_data, identifier);
+    const TypeDefinition& definition = ta->type_ref()->type_definition();
+    return TypeDefinitionToVastType(definition, import_data,
+                                    TypeDefinitionName(definition));
   }
 
   return absl::InternalError(absl::StrFormat(
@@ -268,7 +978,7 @@ DslxTypeToVerilogManager::TypeAnnotationToVastType(
 absl::StatusOr<verilog::DataType*>
 DslxTypeToVerilogManager::TypeDefinitionToVastType(
     const TypeDefinition& type_definition, ImportData* import_data,
-    std::optional<std::string_view> identifier) {
+    std::optional<std::string_view> identifier, TypeNameOrigin name_origin) {
   AstNode* type_definition_node = TypeDefinitionToAstNode(type_definition);
   XLS_ASSIGN_OR_RETURN(
       TypeInfo * type_info,
@@ -279,6 +989,29 @@ DslxTypeToVerilogManager::TypeDefinitionToVastType(
       const TypeInfo::TypeSource resolved_type_definition_source,
       type_info->ResolveTypeDefinition(type_definition));
 
+  if (const Type* concrete = UnboxMetaTypes(type); concrete->IsSum()) {
+    const SumType& sum = concrete->AsSum();
+    bool is_nominal = std::holds_alternative<SumDef*>(
+        resolved_type_definition_source.definition);
+    verilog::DataType* result;
+    if (is_nominal && name_origin == TypeNameOrigin::kInferred &&
+        (!identifier.has_value() ||
+         *identifier == sum.nominal_type().identifier())) {
+      XLS_ASSIGN_OR_RETURN(result, SumToVastType(sum, import_data));
+    } else {
+      std::optional<std::string_view> requested =
+          identifier.has_value()
+              ? identifier
+              : TypeDefinitionIdentifier(resolved_type_definition_source);
+      XLS_RET_CHECK(requested.has_value());
+      XLS_ASSIGN_OR_RETURN(
+          result, AddSumAlias(sum, *requested, import_data,
+                              dynamic_cast<TypeAlias*>(type_definition_node)));
+    }
+    converted_types_.insert({type_definition_node, result});
+    return result;
+  }
+
   std::optional<std::string_view> type_definition_name =
       TypeDefinitionIdentifier(resolved_type_definition_source);
   if (!identifier.has_value()) {
@@ -286,157 +1019,152 @@ DslxTypeToVerilogManager::TypeDefinitionToVastType(
   }
   XLS_RET_CHECK(identifier.has_value());
 
-  std::string typedef_identifier =
-      typedef_name_uniquer_->GetSanitizedUniqueName(*identifier);
-
   auto iter = converted_types_.find(type_definition_node);
   if (type_definition_name.has_value() && iter != converted_types_.end()) {
+    // Ordinary exports historically advance the typedef name even when the
+    // declaration was already emitted; sum families keep their own identity.
+    AllocateOrdinaryTypeName(*identifier, /*already_converted=*/true,
+                             *typedef_name_uniquer_, allocated_package_names_);
     return iter->second;
   }
+
+  NameUniquer unoccupied("__");
+  XLS_RETURN_IF_ERROR(CheckOrdinaryNameAgainstSumAliases(
+      unoccupied.GetSanitizedUniqueName(*identifier)));
+  std::string typedef_identifier = AllocateOrdinaryTypeName(
+      *identifier, /*already_converted=*/false, *typedef_name_uniquer_,
+      allocated_package_names_);
+  emitted_ordinary_type_names_.insert(typedef_identifier);
 
   VLOG(3) << "Converting TypeDefinition " << type_definition_node->ToString()
           << " with concrete Type to Verilog: " << *type;
 
-  XLS_ASSIGN_OR_RETURN(
-      verilog::DataType * data_type,
-      absl::visit(
-          Visitor{
-              [&](TypeAlias* alias) -> absl::StatusOr<verilog::DataType*> {
-                XLS_ASSIGN_OR_RETURN(
-                    TypeInfo * alias_type_info,
-                    import_data->GetRootTypeInfoForNode(alias));
-                std::optional<Type*> alias_type =
-                    alias_type_info->GetItem(alias);
-                XLS_RET_CHECK(alias_type.has_value()) << absl::StrFormat(
-                    "Unable to locate concrete type for alias %s in %s",
-                    alias->name_def().identifier(),
-                    alias->GetSpan()
-                        .value_or(FakeSpan())
-                        .ToString(import_data->file_table()));
-                return TypeAnnotationToVastType(
-                    *alias_type, &alias->type_annotation(), import_data);
-              },
-              [&](StructDef* struct_def) -> absl::StatusOr<verilog::DataType*> {
-                std::vector<verilog::Def*> vast_struct_members;
-
-                XLS_RET_CHECK(type->IsStruct());
-                const StructType& struct_type = type->AsStruct();
-
-                VLOG(3) << "Converting struct type to Verilog: " << struct_type
-                        << " size " << struct_type.size();
-
-                for (int64_t i = 0; i < struct_type.size(); ++i) {
-                  std::string_view member_name = struct_type.GetMemberName(i);
-                  const TypeAnnotation* member_type_annotation =
-                      struct_def->members().at(i)->type();
-                  const Type& member_type = struct_type.GetMemberType(i);
-                  XLS_ASSIGN_OR_RETURN(TypeDim member_bit_count,
-                                       member_type.GetTotalBitCount());
-                  XLS_ASSIGN_OR_RETURN(int64_t concrete_member_bit_count,
-                                       member_bit_count.GetAsInt64());
-                  if (concrete_member_bit_count == 0) {
-                    continue;
-                  }
-
-                  XLS_ASSIGN_OR_RETURN(
-                      verilog::DataType * element_data_type,
-                      TypeAnnotationToVastType(
-                          &member_type, member_type_annotation, import_data));
-
-                  vast_struct_members.push_back(file_->Make<verilog::Def>(
-                      SourceInfo(), member_name,
-                      element_data_type->IsUserDefined()
-                          ? verilog::DataKind::kUser
-                          : verilog::DataKind::kLogic,
-                      element_data_type));
-                }
-
-                return file_->Make<verilog::Struct>(SourceInfo(),
-                                                    vast_struct_members);
-              },
-              [&](ProcDef* proc_def) -> absl::StatusOr<verilog::DataType*> {
-                return absl::InternalError(absl::StrFormat(
-                    "TypeAnnotation ProcDef %s not supported by "
-                    "DslxTypeToVerilogManager",
-                    proc_def->ToString()));
-              },
-              [&](UseTreeEntry* use_tree_entry)
-                  -> absl::StatusOr<verilog::DataType*> {
-                return absl::UnimplementedError(absl::StrFormat(
-                    "TypeAnnotation UseTreeEntry %s not supported by "
-                    "DslxTypeToVerilogManager",
-                    use_tree_entry->ToString()));
-              },
-              [&](EnumDef* enum_def) -> absl::StatusOr<verilog::DataType*> {
-                XLS_RET_CHECK(type->IsEnum());
-                const EnumType& enum_type = type->AsEnum();
-                auto it = converted_types_.find(&enum_type.nominal_type());
-                if (it != converted_types_.end()) {
-                  return it->second;
-                }
-
-                XLS_ASSIGN_OR_RETURN(TypeDim dim, enum_type.GetTotalBitCount());
-                XLS_ASSIGN_OR_RETURN(int64_t size, dim.GetAsInt64());
-
-                verilog::DataType* vast_enum_data_type;
-                if (size == 1) {
-                  vast_enum_data_type =
-                      file_->Make<verilog::ScalarType>(SourceInfo());
-                } else {
-                  vast_enum_data_type = file_->Make<verilog::BitVectorType>(
-                      SourceInfo(), size, false);
-                }
-
-                verilog::Enum* vast_enum_def = file_->Make<verilog::Enum>(
-                    SourceInfo(), verilog::DataKind::kLogic,
-                    vast_enum_data_type);
-
-                for (int64_t i = 0; i < enum_def->values().size(); ++i) {
-                  const std::string& member_name = enum_def->GetMemberName(i);
-                  const InterpValue& member_val = enum_type.members().at(i);
-
-                  XLS_ASSIGN_OR_RETURN(Bits member_val_as_bits,
-                                       member_val.GetBits());
-                  verilog::Literal* vast_literal =
-                      file_->Literal(member_val_as_bits, SourceInfo());
-                  vast_enum_def->AddMember(member_name, vast_literal,
-                                           SourceInfo());
-                }
-
-                return vast_enum_def;
-              },
-              [&](SumDef* sum_def) -> absl::StatusOr<verilog::DataType*> {
-                XLS_RET_CHECK(type->IsSum());
-                const SumType& sum_type = type->AsSum();
-
-                std::vector<verilog::Def*> vast_struct_members;
-                XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count,
-                                     sum_type.tag_bit_count().GetAsInt64());
-                if (tag_bit_count > 0) {
-                  verilog::DataType* tag_type =
-                      file_->BitVectorType(tag_bit_count, SourceInfo());
-                  vast_struct_members.push_back(file_->Make<verilog::Def>(
-                      SourceInfo(), "tag", verilog::DataKind::kLogic,
-                      tag_type));
-                }
-
-                XLS_ASSIGN_OR_RETURN(TypeDim max_payload_bit_count_dim,
-                                     sum_type.GetMaxPayloadBitCount());
-                XLS_ASSIGN_OR_RETURN(int64_t max_payload_bit_count,
-                                     max_payload_bit_count_dim.GetAsInt64());
-                if (max_payload_bit_count > 0) {
-                  verilog::DataType* payload_type =
-                      file_->BitVectorType(max_payload_bit_count, SourceInfo());
-                  vast_struct_members.push_back(file_->Make<verilog::Def>(
-                      SourceInfo(), "payload", verilog::DataKind::kLogic,
-                      payload_type));
-                }
-
-                return file_->Make<verilog::Struct>(SourceInfo(),
-                                                    vast_struct_members);
-              },
+  absl::StatusOr<verilog::DataType*> data_type_or = absl::visit(
+      Visitor{
+          [&](TypeAlias* alias) -> absl::StatusOr<verilog::DataType*> {
+            XLS_ASSIGN_OR_RETURN(TypeInfo * alias_type_info,
+                                 import_data->GetRootTypeInfoForNode(alias));
+            std::optional<Type*> alias_type = alias_type_info->GetItem(alias);
+            XLS_RET_CHECK(alias_type.has_value()) << absl::StrFormat(
+                "Unable to locate concrete type for alias %s in %s",
+                alias->name_def().identifier(),
+                alias->GetSpan()
+                    .value_or(FakeSpan())
+                    .ToString(import_data->file_table()));
+            return TypeAnnotationToVastType(
+                *alias_type, &alias->type_annotation(), import_data);
           },
-          resolved_type_definition_source.definition));
+          [&](StructDef* struct_def) -> absl::StatusOr<verilog::DataType*> {
+            std::vector<verilog::Def*> vast_struct_members;
+
+            XLS_RET_CHECK(type->IsStruct());
+            const StructType& struct_type = type->AsStruct();
+
+            VLOG(3) << "Converting struct type to Verilog: " << struct_type
+                    << " size " << struct_type.size();
+
+            for (int64_t i = 0; i < struct_type.size(); ++i) {
+              std::string_view member_name = struct_type.GetMemberName(i);
+              const TypeAnnotation* member_type_annotation =
+                  struct_def->members().at(i)->type();
+              const Type& member_type = struct_type.GetMemberType(i);
+              XLS_ASSIGN_OR_RETURN(TypeDim member_bit_count,
+                                   member_type.GetTotalBitCount());
+              XLS_ASSIGN_OR_RETURN(int64_t concrete_member_bit_count,
+                                   member_bit_count.GetAsInt64());
+              if (concrete_member_bit_count == 0) {
+                continue;
+              }
+
+              XLS_ASSIGN_OR_RETURN(
+                  verilog::DataType * element_data_type,
+                  TypeAnnotationToVastType(&member_type, member_type_annotation,
+                                           import_data));
+
+              vast_struct_members.push_back(
+                  file_->Make<verilog::Def>(SourceInfo(), member_name,
+                                            element_data_type->IsUserDefined()
+                                                ? verilog::DataKind::kUser
+                                                : verilog::DataKind::kLogic,
+                                            element_data_type));
+            }
+
+            return file_->Make<verilog::Struct>(SourceInfo(),
+                                                vast_struct_members);
+          },
+          [&](ProcDef* proc_def) -> absl::StatusOr<verilog::DataType*> {
+            return absl::InternalError(
+                absl::StrFormat("TypeAnnotation ProcDef %s not supported by "
+                                "DslxTypeToVerilogManager",
+                                proc_def->ToString()));
+          },
+          [&](UseTreeEntry* use_tree_entry)
+              -> absl::StatusOr<verilog::DataType*> {
+            return absl::UnimplementedError(absl::StrFormat(
+                "TypeAnnotation UseTreeEntry %s not supported by "
+                "DslxTypeToVerilogManager",
+                use_tree_entry->ToString()));
+          },
+          [&](EnumDef* enum_def) -> absl::StatusOr<verilog::DataType*> {
+            XLS_RET_CHECK(type->IsEnum());
+            const EnumType& enum_type = type->AsEnum();
+            auto it = converted_types_.find(&enum_type.nominal_type());
+            if (it != converted_types_.end()) {
+              return it->second;
+            }
+
+            XLS_ASSIGN_OR_RETURN(TypeDim dim, enum_type.GetTotalBitCount());
+            XLS_ASSIGN_OR_RETURN(int64_t size, dim.GetAsInt64());
+
+            std::vector<std::string> names;
+            for (int64_t i = 0; i < enum_def->values().size(); ++i) {
+              const std::string& name = enum_def->GetMemberName(i);
+              XLS_RETURN_IF_ERROR(CheckOrdinaryNameAgainstSumAliases(name));
+              names.push_back(name);
+            }
+            for (const std::string& name : names) {
+              legacy_name_owners_[name].push_back(enum_def);
+            }
+            legacy_enum_member_names_.emplace(enum_def, std::move(names));
+
+            verilog::DataType* vast_enum_data_type;
+            if (size == 1) {
+              vast_enum_data_type =
+                  file_->Make<verilog::ScalarType>(SourceInfo());
+            } else {
+              vast_enum_data_type = file_->Make<verilog::BitVectorType>(
+                  SourceInfo(), size, false);
+            }
+
+            verilog::Enum* vast_enum_def = file_->Make<verilog::Enum>(
+                SourceInfo(), verilog::DataKind::kLogic, vast_enum_data_type);
+
+            for (int64_t i = 0; i < enum_def->values().size(); ++i) {
+              const std::string& member_name = enum_def->GetMemberName(i);
+              const InterpValue& member_val = enum_type.members().at(i);
+
+              XLS_ASSIGN_OR_RETURN(Bits member_val_as_bits,
+                                   member_val.GetBits());
+              verilog::Literal* vast_literal =
+                  file_->Literal(member_val_as_bits, SourceInfo());
+              vast_enum_def->AddMember(member_name, vast_literal, SourceInfo());
+            }
+
+            return vast_enum_def;
+          },
+          [&](SumDef*) -> absl::StatusOr<verilog::DataType*> {
+            return absl::InternalError("Sum type was not resolved as a sum");
+          },
+      },
+      resolved_type_definition_source.definition);
+  if (!data_type_or.ok()) {
+    emitted_ordinary_type_names_.erase(typedef_identifier);
+    allocated_package_names_.erase(typedef_identifier);
+    XLS_RETURN_IF_ERROR(
+        typedef_name_uniquer_->ReleaseIdentifier(typedef_identifier));
+    return data_type_or.status();
+  }
+  verilog::DataType* data_type = *data_type_or;
 
   // Add typedef to the verilog file.
   top_pkg_->Add<verilog::BlankLine>(SourceInfo());
@@ -478,6 +1206,8 @@ absl::Status DslxTypeToVerilogManager::AddTypeForFunctionParam(
   XLS_ASSIGN_OR_RETURN(TypeInfo * func_type_info,
                        import_data->GetRootTypeInfoForNode(func));
 
+  PrepareSumNames(func->owner(), func_type_info);
+
   XLS_ASSIGN_OR_RETURN(Param * param, func->GetParamByName(param_name));
 
   TypeAnnotation* type_annotation = param->type_annotation();
@@ -490,8 +1220,10 @@ absl::Status DslxTypeToVerilogManager::AddTypeForFunctionParam(
           : GetVerilogTypedefIdentifier(type_annotation, func->identifier(),
                                         param->identifier());
 
-  return AddTypeToVerilogPackage(type, type_annotation, func_type_info,
-                                 import_data, typedef_identifier);
+  return AddTypeToVerilogPackage(
+      type, type_annotation, func_type_info, import_data, typedef_identifier,
+      verilog_type_name.has_value() ? TypeNameOrigin::kExplicit
+                                    : TypeNameOrigin::kInferred);
 }
 
 absl::Status DslxTypeToVerilogManager::AddTypeForFunctionOutput(
@@ -505,6 +1237,8 @@ absl::Status DslxTypeToVerilogManager::AddTypeForFunctionOutput(
 
   XLS_ASSIGN_OR_RETURN(TypeInfo * func_type_info,
                        import_data->GetRootTypeInfoForNode(func));
+
+  PrepareSumNames(func->owner(), func_type_info);
 
   // Create a typedef for the return type, named
   //  1. <function_name>_out_t for anonymous types.
@@ -520,9 +1254,11 @@ absl::Status DslxTypeToVerilogManager::AddTypeForFunctionOutput(
           : GetVerilogTypedefIdentifier(return_type_annotation,
                                         func->identifier(), "out");
 
-  return AddTypeToVerilogPackage(return_type, return_type_annotation,
-                                 func_type_info, import_data,
-                                 typedef_identifier);
+  return AddTypeToVerilogPackage(
+      return_type, return_type_annotation, func_type_info, import_data,
+      typedef_identifier,
+      verilog_type_name.has_value() ? TypeNameOrigin::kExplicit
+                                    : TypeNameOrigin::kInferred);
 }
 
 absl::Status DslxTypeToVerilogManager::AddTypeForTypeDefinition(
@@ -531,8 +1267,11 @@ absl::Status DslxTypeToVerilogManager::AddTypeForTypeDefinition(
   AstNode* node = TypeDefinitionToAstNode(def);
   XLS_ASSIGN_OR_RETURN(TypeInfo * type_info,
                        import_data->GetRootTypeInfoForNode(node));
+  PrepareSumNames(node->owner(), type_info);
+  XLS_ASSIGN_OR_RETURN(Type * tpe, GetActualType(node, type_info, import_data));
   std::string identifier = std::string(verilog_type_name.value_or(""));
-  if (identifier.empty()) {
+  if (identifier.empty() &&
+      (!verilog_type_name.has_value() || !UnboxMetaTypes(tpe)->IsSum())) {
     AnyNameDef name_def = TypeDefinitionGetNameDef(def);
     identifier = absl::visit(
         Visitor{[](const NameDef* name_def) { return name_def->identifier(); },
@@ -541,13 +1280,15 @@ absl::Status DslxTypeToVerilogManager::AddTypeForTypeDefinition(
                 }},
         name_def);
   }
-  XLS_ASSIGN_OR_RETURN(Type * tpe, GetActualType(node, type_info, import_data));
-  return AddTypeToVerilogPackage(tpe, def, import_data, identifier);
+  return AddTypeToVerilogPackage(tpe, def, import_data, identifier,
+                                 verilog_type_name.has_value()
+                                     ? TypeNameOrigin::kExplicit
+                                     : TypeNameOrigin::kInferred);
 }
 
 absl::Status DslxTypeToVerilogManager::AddTypeToVerilogPackage(
     Type* type, const TypeDefinition& type_definition, ImportData* import_data,
-    std::string_view typedef_identifier) {
+    std::string_view typedef_identifier, TypeNameOrigin name_origin) {
   // Filter out unsupported interface types.
   if (type->HasToken()) {
     return absl::UnimplementedError(
@@ -563,13 +1304,14 @@ absl::Status DslxTypeToVerilogManager::AddTypeToVerilogPackage(
   }
 
   return TypeDefinitionToVastType(type_definition, import_data,
-                                  typedef_identifier)
+                                  typedef_identifier, name_origin)
       .status();
 }
 
 absl::Status DslxTypeToVerilogManager::AddTypeToVerilogPackage(
     Type* type, TypeAnnotation* type_annotation, TypeInfo* type_info,
-    ImportData* import_data, std::string_view typedef_identifier) {
+    ImportData* import_data, std::string_view typedef_identifier,
+    TypeNameOrigin name_origin) {
   // Filter out unsupported interface types.
   if (type->HasToken()) {
     return absl::UnimplementedError(
@@ -583,6 +1325,24 @@ absl::Status DslxTypeToVerilogManager::AddTypeToVerilogPackage(
     return absl::UnimplementedError(absl::StrFormat(
         "Zero sized interface type %s not supported.", type->ToString()));
   }
+
+  if (type->IsSum()) {
+    std::optional<AstNode*> definition = GetTypeDefinition(type_annotation);
+    bool is_source_name = typedef_identifier == type_annotation->ToString();
+    TypeAlias* source_alias = definition.has_value()
+                                  ? dynamic_cast<TypeAlias*>(*definition)
+                                  : nullptr;
+    if (name_origin == TypeNameOrigin::kInferred && is_source_name &&
+        source_alias == nullptr) {
+      return SumToVastType(type->AsSum(), import_data).status();
+    } else {
+      return AddSumAlias(type->AsSum(), typedef_identifier, import_data,
+                         source_alias)
+          .status();
+    }
+  }
+
+  XLS_RETURN_IF_ERROR(CheckOrdinaryTypeName(typedef_identifier));
 
   // Add typedef to the verilog file.
   XLS_ASSIGN_OR_RETURN(
@@ -604,6 +1364,12 @@ absl::Status DslxTypeToVerilogManager::AddTypeToVerilogPackage(
       return absl::OkStatus();
     }
   }
+
+  // Keep ordinary function aliases visible to sums without changing the
+  // existing behavior of ordinary aliases that repeat a package name.
+  std::string name(typedef_identifier);
+  emitted_ordinary_type_names_.insert(name);
+  allocated_package_names_.insert(name);
 
   top_pkg_->Add<verilog::BlankLine>(SourceInfo());
   top_pkg_->Add<verilog::Comment>(
