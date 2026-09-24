@@ -398,13 +398,27 @@ std::string BytecodesToString(absl::Span<const Bytecode> bytecodes,
                       RangeData{std::move(start), std::move(limit)});
 }
 
+/* static */ Bytecode::MatchArmItem Bytecode::MatchArmItem::MakeSum(
+    const SumType* sum_type, std::string variant_name, InterpValue discriminant,
+    std::vector<MatchArmItem> payload_items) {
+  return MatchArmItem(Kind::kSum,
+                      SumMatchData{.sum_type = sum_type,
+                                   .variant_name = std::move(variant_name),
+                                   .discriminant = std::move(discriminant),
+                                   .payload_items = std::move(payload_items)});
+}
+
+/* static */ Bytecode::MatchArmItem Bytecode::MatchArmItem::MakeInvalidSum() {
+  return MatchArmItem(Kind::kInvalidSum);
+}
+
 Bytecode::MatchArmItem::MatchArmItem(Kind kind)
     : kind_(kind), data_(std::nullopt) {}
 
 Bytecode::MatchArmItem::MatchArmItem(
-    Kind kind,
-    std::variant<InterpValue, SlotIndex, RangeData, std::vector<MatchArmItem>>
-        data)
+    Kind kind, std::variant<InterpValue, SlotIndex, RangeData, SumMatchData,
+                            std::vector<MatchArmItem>>
+                   data)
     : kind_(kind), data_(std::move(data)) {}
 
 absl::StatusOr<InterpValue> Bytecode::MatchArmItem::interp_value() const {
@@ -428,6 +442,18 @@ Bytecode::MatchArmItem::range() const {
   }
 
   return std::get<RangeData>(data_.value());
+}
+
+absl::StatusOr<const Bytecode::MatchArmItem::SumMatchData*>
+Bytecode::MatchArmItem::sum_match_data() const {
+  if (!data_.has_value()) {
+    return absl::InvalidArgumentError("MatchArmItem does not hold data.");
+  }
+  if (!std::holds_alternative<SumMatchData>(data_.value())) {
+    return absl::InvalidArgumentError("Bytecode data is not SumMatchData.");
+  }
+
+  return &std::get<SumMatchData>(data_.value());
 }
 
 absl::StatusOr<Bytecode::SlotIndex> Bytecode::MatchArmItem::slot_index() const {
@@ -467,6 +493,19 @@ std::string Bytecode::MatchArmItem::ToString() const {
       return absl::StrCat("load:", std::get<SlotIndex>(data_.value()).value());
     case Kind::kStore:
       return absl::StrCat("store:", std::get<SlotIndex>(data_.value()).value());
+    case Kind::kSum: {
+      const auto& sum_data = std::get<SumMatchData>(data_.value());
+      std::vector<std::string> pieces;
+      pieces.reserve(sum_data.payload_items.size());
+      for (const MatchArmItem& item : sum_data.payload_items) {
+        pieces.push_back(item.ToString());
+      }
+      return absl::StrCat("sum: ", sum_data.sum_type->ToString(),
+                          "::", sum_data.variant_name, "(",
+                          absl::StrJoin(pieces, ", "), ")");
+    }
+    case Kind::kInvalidSum:
+      return "invalid_sum";
     case Kind::kTuple: {
       std::vector<MatchArmItem> elements =
           std::get<std::vector<MatchArmItem>>(data_.value());
