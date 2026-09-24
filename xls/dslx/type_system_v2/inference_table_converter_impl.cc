@@ -94,6 +94,20 @@
 namespace xls::dslx {
 namespace {
 
+const AstNode* GetParametricBindingOwner(
+    std::optional<const ParametricContext*> context) {
+  if (!context.has_value()) {
+    return nullptr;
+  } else if ((*context)->is_invocation()) {
+    return std::get<ParametricInvocationDetails>((*context)->details()).callee;
+  } else if ((*context)->is_struct()) {
+    return std::get<ParametricStructDetails>((*context)->details())
+        .struct_or_proc_def;
+  } else {
+    return std::get<ParametricSumDetails>((*context)->details()).sum_def;
+  }
+}
+
 // Returns whether the type for the given node should be a `MetaType`, i.e. the
 // node represents a type itself rather than an object of the type.
 bool NeedsMetaType(const InferenceTable& table, const AstNode* node) {
@@ -449,7 +463,8 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
         *invocation, data.callee,
         data.caller.has_value() ? *data.caller : nullptr, parent_env,
         callee_env,
-        IsBuiltin(data.callee) ? nullptr : parametric_context->type_info()));
+        IsBuiltin(data.callee) ? nullptr : parametric_context->type_info(),
+        GetParametricBindingOwner(parametric_context->parent_context())));
     return absl::OkStatus();
   }
 
@@ -744,17 +759,19 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
           std::get<ParametricInvocationDetails>((*caller_context)->details());
       XLS_RETURN_IF_ERROR(caller_ti->AddInvocationTypeInfo(
           *invocation, function, caller_details.callee,
-          table_.GetParametricEnv(caller_context), ParametricEnv{}, caller_ti));
+          table_.GetParametricEnv(caller_context), ParametricEnv{}, caller_ti,
+          GetParametricBindingOwner(caller_context)));
     } else {
       XLS_RETURN_IF_ERROR(caller_ti->AddInvocation(
           *invocation, function, caller.has_value() ? *caller : nullptr,
-          caller_ti));
+          caller_ti, GetParametricBindingOwner(caller_context)));
     }
 
     if (invocation->originating_invocation().has_value()) {
       XLS_RETURN_IF_ERROR(caller_ti->AddInvocation(
           **invocation->originating_invocation(), function,
-          caller.has_value() ? *caller : nullptr, caller_ti));
+          caller.has_value() ? *caller : nullptr, caller_ti,
+          GetParametricBindingOwner(caller_context)));
     }
     XLS_RETURN_IF_ERROR(NoteIfRequiresImplicitToken(
         caller, function_and_target_object.function, invocation->callee()));
@@ -2037,9 +2054,69 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
               GetCachedSumType(cache_key, concrete_parametrics)) {
         return cached_type->CloneToUnique();
       } else {
-        XLS_ASSIGN_OR_RETURN(auto tag_layout, ConcretizeSemanticSumTagLayout(
-                                                  *sum_def, parametric_context,
-                                                  resolved_parametrics));
+        std::optional<const ParametricContext*> sum_context =
+            parametric_context;
+        absl::flat_hash_map<const NameDef*, ExprOrType> tag_type_parametrics;
+        const bool has_explicit_discriminants =
+            absl::c_any_of(sum_def->variants(), [](const SumVariant* variant) {
+              return variant->discriminant().has_value();
+            });
+        if (sum_def->IsParametric() &&
+            (sum_def->tag_type_annotation() != nullptr ||
+             has_explicit_discriminants)) {
+          XLS_ASSIGN_OR_RETURN(TypeInfo * parent_type_info,
+                               GetTypeInfo(parametric_context));
+          XLS_ASSIGN_OR_RETURN(
+              TypeInfo * sum_type_info,
+              import_data_.type_info_owner().New(
+                  file_table_, absl::StrCat("sum_tag_", sum_def->identifier()),
+                  parent_type_info));
+          absl::flat_hash_map<std::string, InterpValue> values;
+          for (int i = 0; i < concrete_parametrics.size(); ++i) {
+            const ParametricBinding* binding =
+                sum_def->parametric_bindings()[i];
+            if (const auto* value =
+                    std::get_if<InterpValue>(&concrete_parametrics[i])) {
+              // The formal type can depend on earlier arguments, such as
+              // V: uN[N] or V: T. Resolve it in the same outer context used
+              // to evaluate the argument before retaining its concrete type.
+              XLS_ASSIGN_OR_RETURN(
+                  const TypeAnnotation* binding_annotation,
+                  GetParametricFreeType(binding->type_annotation(),
+                                        resolved_parametrics,
+                                        /*real_self_type=*/std::nullopt,
+                                        /*clone_if_no_parametrics=*/false));
+              XLS_ASSIGN_OR_RETURN(
+                  std::unique_ptr<Type> binding_type,
+                  Concretize(binding_annotation, parametric_context));
+              sum_type_info->SetItem(binding->name_def(), *binding_type);
+              sum_type_info->NoteConstExpr(binding->name_def(), *value);
+              values.emplace(binding->identifier(), *value);
+            } else {
+              XLS_ASSIGN_OR_RETURN(
+                  const TypeAnnotation* type,
+                  CleanseGenericTypeArgument(
+                      parametric_context, *parent_type_info,
+                      std::get<TypeAnnotation*>(
+                          resolved_parametrics.at(binding->name_def()))));
+              values.emplace(binding->identifier(),
+                             InterpValue::MakeTypeReference(type));
+              tag_type_parametrics.emplace(binding->name_def(),
+                                           const_cast<TypeAnnotation*>(type));
+            }
+          }
+          XLS_ASSIGN_OR_RETURN(
+              sum_context,
+              table_.AddParametricSumContext(
+                  sum_def, annotation, ParametricEnv(std::move(values)),
+                  sum_type_info, parametric_context));
+        }
+        // Keep value references bound to this sum's formals. Splicing an outer
+        // argument such as N + 1 here would evaluate it again with the sum's N.
+        // Generic types cross the context boundary only after cleansing.
+        XLS_ASSIGN_OR_RETURN(auto tag_layout,
+                             ConcretizeSemanticSumTagLayout(
+                                 *sum_def, sum_context, tag_type_parametrics));
 
         std::vector<SumTypeVariant> variants;
         variants.reserve(sum_def->variants().size());
