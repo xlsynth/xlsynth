@@ -843,6 +843,325 @@ fn f(x: S) -> u32 {
       TypecheckSucceeds(::testing::_));
 }
 
+TEST(TypecheckV2Test, InvalidPatternBindsRawRepresentationBits) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u9 {
+  match x {
+    Option::Some(_) => u9:0,
+    _ => u9:0,
+    invalid!(raw) => raw,
+  }
+}
+)",
+              TypecheckSucceeds(::testing::A<std::string>()));
+}
+
+TEST(TypecheckV2Test, InvalidPatternBindsGenericSumRawRepresentationBits) {
+  EXPECT_THAT(R"(
+#![feature(generics)]
+enum E<N: u32>: u2 { A(uN[N]) = 0, B = 1 }
+fn f(x: E<u32:8>) -> u10 {
+  match x {
+    E<u32:8>::A(_) => u10:0,
+    E<u32:8>::B => u10:0,
+    invalid!(raw) => raw,
+  }
+}
+)",
+              TypecheckSucceeds(HasNodeWithType("raw", "uN[10]")));
+}
+
+TEST(TypecheckV2Test, InvalidPatternRequiresSumScrutinee) {
+  EXPECT_THAT(R"(
+fn f(x: u8) -> u8 {
+  match x {
+    _ => x,
+    invalid! => u8:0,
+  }
+}
+)",
+              TypecheckFails(
+                  HasSubstr("`invalid!` is only valid when matching on a sum "
+                            "type.")));
+}
+
+TEST(TypecheckV2Test, InvalidPatternMustBeFinalArm) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    invalid! => u8:0,
+    _ => u8:1,
+  }
+}
+)",
+              TypecheckFails(
+                  HasSubstr("`invalid!` must be the final arm in a match.")));
+}
+
+TEST(TypecheckV2Test, WildcardMayOnlyBeFollowedByInvalidPattern) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    _ => u8:0,
+    Option::Some(v) => v,
+    invalid! => u8:1,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "A wildcard arm may only be followed by a final `invalid!` "
+                  "arm.")));
+}
+
+TEST(TypecheckV2Test, WildcardMayBeFollowedByFinalInvalidPattern) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    _ => u8:0,
+    invalid! => u8:1,
+  }
+}
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test, WildcardWithoutInvalidPatternCannotPrecedeSumArm) {
+  for (const std::string pattern : {"_", "_ | Option::None"}) {
+    SCOPED_TRACE(pattern);
+    EXPECT_THAT(
+        R"(
+enum Option { None, Some(u8) }
+fn f(x: Option) -> u8 {
+  match x {
+    )" + pattern +
+            R"( => u8:0,
+    Option::Some(v) => v,
+  }
+}
+)",
+        TypecheckFails(HasSubstr(
+            "A wildcard arm may only be followed by a final `invalid!` arm.")));
+  }
+}
+
+TEST(TypecheckV2Test, WildcardAlternativeMayBeFollowedByFinalInvalidPattern) {
+  EXPECT_THAT(R"(
+enum Option { None, Some(u8) }
+fn f(x: Option) -> u8 {
+  match x {
+    _ | Option::None => u8:0,
+    invalid! => u8:1,
+  }
+}
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test, DeeplyNestedSumCatchAll) {
+  // Each level shares its inner type between two alternatives. A catch-all
+  // needs no payload coverage dimensions, with or without a final invalid!.
+  std::string program = "enum S0 { Leaf(u1) }\n";
+  for (int depth = 1; depth <= 12; ++depth) {
+    const std::string inner = "S" + std::to_string(depth - 1);
+    program += "enum S" + std::to_string(depth) + " { L(" + inner + "), R(" +
+               inner + ") }\n";
+  }
+  program += R"(
+fn wildcard(x: S12) -> bool { match x { _ => true } }
+fn explicit_invalid(x: S12) -> bool {
+  match x { _ => true, invalid! => false }
+}
+fn binding(x: S12) -> bool {
+  match x { _whole => true, invalid! => false }
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(program));
+  EXPECT_TRUE(result.tm.warnings.warnings().empty());
+}
+
+TEST(TypecheckV2Test, EmptySumCatchAllPreservesExhaustiveWarning) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+enum Never {}
+enum Empty { Left(Never), Right(Never) }
+fn wildcard(x: Empty) -> bool { match x { _ => true } }
+fn explicit_invalid(x: Empty) -> bool {
+  match x { _ => true, invalid! => false }
+}
+)"));
+  ASSERT_EQ(result.tm.warnings.warnings().size(), 2);
+  for (const auto& warning : result.tm.warnings.warnings()) {
+    EXPECT_EQ(warning.message,
+              "Match is already exhaustive before this pattern");
+  }
+}
+
+TEST(TypecheckV2Test, SumCatchAllPreservesFallbackAndCoverageRejections) {
+  const std::string declaration = "enum Choice { Left(u1), Right(u1) }\n";
+  EXPECT_THAT(declaration + R"(
+fn f(x: Choice) -> bool { match x { _whole => true } }
+)",
+              TypecheckFails(HasSubstr("A sum match without `invalid!`")));
+  EXPECT_THAT(declaration + R"(
+fn f(x: Choice) -> bool { match x { invalid! => false } }
+)",
+              TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+  EXPECT_THAT(declaration + R"(
+fn f(x: Choice) -> bool { match x { Choice::Left(_) => true } }
+)",
+              TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+}
+
+TEST(TypecheckV2Test,
+     SumMatchWithoutInvalidPatternRejectsRefutableFinalConstructorPayload) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    Option::None => u8:0,
+    Option::Some(u8:7) => u8:7,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "A sum match without `invalid!` must end with `_` or one "
+                  "constructor pattern whose payload subpatterns are "
+                  "irrefutable.")));
+}
+
+TEST(TypecheckV2Test,
+     SumMatchWithoutInvalidPatternAcceptsIrrefutableFinalConstructorPayload) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    Option::None => u8:0,
+    Option::Some(v) => v,
+  }
+}
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test,
+     SumMatchWithoutInvalidPatternAcceptsPayloadlessFinalConstructor) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    Option::Some(v) => v,
+    Option::None => u8:0,
+  }
+}
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test, SumMatchRejectsQualifiedValueConstantAsFinalFallback) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(TypecheckV2(R"(
+pub enum E: u2 { A = 0, B(bool) = 1 }
+pub const A = E::B(false);
+)",
+                            "other", &import_data));
+  EXPECT_THAT(TypecheckV2(R"(
+import other;
+fn f(x: other::E) -> u8 {
+  match x {
+    other::E::A => u8:0,
+    other::E::B(true) => u8:1,
+    other::A => u8:2,
+  }
+}
+)",
+                          "main", &import_data),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("A sum match without `invalid!` must end "
+                                 "with `_` or one constructor pattern")));
+}
+
+TEST(TypecheckV2Test, SumMatchQualifiedValueConstantWithInvalidArm) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(TypecheckV2(R"(
+pub enum E: u2 { A() = 0, B(bool) = 1 }
+pub const LAST = E::B(false);
+)",
+                            "other", &import_data));
+  XLS_EXPECT_OK(TypecheckV2(R"(
+import other;
+fn f(x: other::E) -> u8 {
+  match x {
+    other::E::A() => u8:0,
+    other::E::B(true) => u8:1,
+    other::LAST => u8:2,
+    invalid! => u8:3,
+  }
+}
+)",
+                            "main", &import_data));
+}
+
+TEST(TypecheckV2Test, SumMatchQualifiedUnitConstructorAsFinalFallback) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(TypecheckV2(R"(
+pub enum E: u2 { A = 0, B(bool) = 1 }
+pub type Alias = E;
+)",
+                            "other", &import_data));
+  XLS_EXPECT_OK(TypecheckV2(R"(
+import other;
+fn f(x: other::E) -> u8 {
+  match x {
+    other::E::B(_) => u8:1,
+    other::Alias::A => u8:0,
+  }
+}
+)",
+                            "main", &import_data));
+}
+
+TEST(TypecheckV2Test, InvalidPatternMustBeTopLevel) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  match x {
+    Option::Some(invalid!) => u8:0,
+    _ => u8:1,
+  }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "`invalid!` is only allowed as a top-level match arm "
+                  "pattern.")));
+}
+
 TEST(TypecheckV2Test, MatchWithSemanticSumConstructors) {
   EXPECT_THAT(
       R"(
@@ -1270,8 +1589,8 @@ fn f(x: Option) -> u32 {
                            HasSubstr("bound: v"))));
 }
 
-TEST(TypecheckV2Test, MatchWithSemanticSumConstructorsAlreadyExhaustive) {
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+TEST(TypecheckV2Test, WildcardAfterSumConstructorCannotPrecedeAnotherArm) {
+  EXPECT_THAT(R"(
 enum Option {
   None,
   Some(u32),
@@ -1285,10 +1604,10 @@ fn unwrap_or_zero(x: Option) -> u32 {
     Option::None => u32:1,
   }
 }
-)"));
-  ASSERT_THAT(result.tm.warnings.warnings().size(), 1);
-  EXPECT_EQ(result.tm.warnings.warnings()[0].message,
-            "Match is already exhaustive before this pattern");
+)",
+              TypecheckFails(HasSubstr(
+                  "A wildcard arm may only be followed by a final `invalid!` "
+                  "arm.")));
 }
 
 TEST(TypecheckV2Test, ZeroMacroImplicitSemanticSumUsesFirstVariant) {

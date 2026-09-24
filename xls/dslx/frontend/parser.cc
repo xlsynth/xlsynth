@@ -2304,6 +2304,24 @@ absl::StatusOr<PatternTree> Parser::ParsePattern(Bindings& bindings,
   XLS_ASSIGN_OR_RETURN(const Token* peek, PeekToken());
   if (peek->kind() == TokenKind::kIdentifier) {
     XLS_ASSIGN_OR_RETURN(Token tok, PopTokenOrError(TokenKind::kIdentifier));
+    if (*tok.GetValue() == "invalid!") {
+      XLS_ASSIGN_OR_RETURN(bool peek_is_oparen,
+                           PeekTokenIs(TokenKind::kOParen));
+      if (!peek_is_oparen) {
+        auto* pattern = module_->Make<InvalidPattern>(tok.span(), nullptr);
+        return pattern;
+      }
+      XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kOParen));
+      XLS_ASSIGN_OR_RETURN(Token raw_tok,
+                           PopTokenOrError(TokenKind::kIdentifier));
+      XLS_ASSIGN_OR_RETURN(NameDef * raw_name_def, TokenToNameDef(raw_tok));
+      bindings.Add(raw_name_def->identifier(), raw_name_def);
+      XLS_ASSIGN_OR_RETURN(Token cparen, PopTokenOrError(TokenKind::kCParen));
+      Span span(tok.span().start(), cparen.span().limit());
+      auto* pattern = module_->Make<InvalidPattern>(span, raw_name_def);
+      raw_name_def->set_definer(pattern);
+      return pattern;
+    }
     if (*tok.GetValue() == "_") {
       return module_->Make<WildcardPattern>(tok.span());
     }
