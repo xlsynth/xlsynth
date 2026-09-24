@@ -865,11 +865,16 @@ class ReturnTypeAnnotation : public TypeAnnotation {
 // either a `FunctionTypeAnnotation` or something that expands into to one.
 class ParamTypeAnnotation : public TypeAnnotation {
  public:
+  // Argument constraints can depend on the callee's unresolved parametrics;
+  // pattern bindings instead obtain their types from an existing matched value.
+  enum class InferenceRole { kArgument, kPatternBinding };
+
   static constexpr TypeAnnotationKind kAnnotationKind =
       TypeAnnotationKind::kParam;
 
   ParamTypeAnnotation(Module* owner, TypeAnnotation* function_type,
-                      int param_index);
+                      int param_index,
+                      InferenceRole role = InferenceRole::kArgument);
 
   absl::Status Accept(AstNodeVisitor* v) const override {
     return v->HandleParamTypeAnnotation(this);
@@ -881,6 +886,7 @@ class ParamTypeAnnotation : public TypeAnnotation {
 
   TypeAnnotation* function_type() const { return function_type_; }
   int param_index() const { return param_index_; }
+  InferenceRole inference_role() const { return inference_role_; }
 
   std::vector<AstNode*> GetChildren(bool want_types) const override {
     return {function_type_};
@@ -891,6 +897,7 @@ class ParamTypeAnnotation : public TypeAnnotation {
  private:
   TypeAnnotation* function_type_;
   int param_index_;
+  InferenceRole inference_role_;
 };
 
 // Used internally in type inference to indicate an unknown type that is
