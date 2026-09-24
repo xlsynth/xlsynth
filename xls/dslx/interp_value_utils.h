@@ -29,6 +29,7 @@
 #include "xls/dslx/frontend/ast_node.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/type.h"
+#include "xls/ir/bits.h"
 #include "xls/ir/format_preference.h"
 #include "xls/ir/value.h"
 
@@ -50,6 +51,17 @@ absl::StatusOr<InterpValue> CreateZeroValue(const InterpValue& value);
 // type without reconstructing a nominal type from its storage representation.
 absl::Status ValidateInterpValueMatchesType(const InterpValue& value,
                                             const Type& type);
+
+namespace internal {
+
+// Restores structure, signedness and enum identity from a packed image.
+// Tuple/struct members are MSB-first; array element zero is LSB-first. Checks
+// the width but preserves raw sum tags and padding; it does not validate source
+// values.
+absl::StatusOr<InterpValue> UnflattenValueForType(const Type& type,
+                                                  const Bits& bits);
+
+}  // namespace internal
 
 // Creates a canonical zero-like InterpValue from the given Type for
 // interpreter/support-code internals. Semantic sums are rejected because their
