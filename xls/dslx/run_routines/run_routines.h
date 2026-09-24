@@ -286,12 +286,14 @@ absl::StatusOr<ParseAndProveResult> ParseAndProve(
 
 struct QuickCheckResults {
   std::vector<std::vector<Value>> arg_sets;
+  std::optional<std::vector<InterpValue>> falsifying_dslx_arg_set;
   std::vector<Value> results;
 };
 
 // JIT-compiles the given xls_function and invokes it with num_tests randomly
-// generated arguments -- returns `([argset, ...], [results, ...])` (i.e. in
-// structure-of-array style).
+// generated arguments. The lowered argument sets and their results are returned
+// in parallel vectors. Original source-language values are retained only for a
+// falsifying argument set, when one exists.
 //
 // xls_function is a predicate we're trying to find evidence to falsify, so if
 // this finds an example that falsifies the predicate, we early-return (i.e. the
