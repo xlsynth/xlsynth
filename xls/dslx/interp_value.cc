@@ -1601,4 +1601,44 @@ absl::StatusOr<EncodedSumView> GetEncodedSumView(const InterpValue& value) {
   };
 }
 
+namespace internal {
+
+absl::StatusOr<EncodedSumView> GetEncodedSumView(const InterpValue& value) {
+  if (!value.IsTuple()) {
+    return absl::InvalidArgumentError(
+        "Expected encoded sum value to be tuple-valued.");
+  }
+  const std::vector<InterpValue>& sum_elements = value.GetValuesOrDie();
+  if (sum_elements.size() != 2) {
+    return absl::InvalidArgumentError(
+        absl::StrFormat("Expected encoded sum value to have 2 elements; got %d",
+                        static_cast<int64_t>(sum_elements.size())));
+  }
+
+  const InterpValue& payload_tuple = sum_elements[1];
+  if (!payload_tuple.IsTuple()) {
+    return absl::InvalidArgumentError(
+        "Expected encoded sum payload slot tuple to be tuple-valued.");
+  }
+  const std::vector<InterpValue>& payload_elements =
+      payload_tuple.GetValuesOrDie();
+  if (payload_elements.size() != 1) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Expected encoded sum payload slot tuple to have 1 element; got %d",
+        static_cast<int64_t>(payload_elements.size())));
+  }
+
+  return EncodedSumView{
+      .tag = sum_elements[0],
+      .payload_slot = payload_elements[0],
+  };
+}
+
+InterpValue CreateEncodedSumTuple(InterpValue tag, InterpValue payload_slot) {
+  return InterpValue::MakeTuple(
+      {std::move(tag), InterpValue::MakeTuple({std::move(payload_slot)})});
+}
+
+}  // namespace internal
+
 }  // namespace xls::dslx

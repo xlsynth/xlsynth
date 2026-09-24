@@ -19,9 +19,9 @@
 #include <string>
 #include <string_view>
 
+#include "absl/strings/str_format.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "absl/strings/str_format.h"
 #include "re2/re2.h"
 #include "xls/common/golden_files.h"
 #include "xls/common/status/matchers.h"
@@ -403,13 +403,54 @@ fn f(x: bool) -> Option {
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        SemanticSumSchemaStoresOnlyConcreteTypeFacts) {
-  EXPECT_EQ(SumTypeProto::descriptor()->field_count(), 2);
-  EXPECT_EQ(SumTypeVariantProto::descriptor()->field_count(), 1);
+  EXPECT_EQ(SumTypeProto::descriptor()->field_count(), 5);
+  EXPECT_EQ(SumTypeVariantProto::descriptor()->field_count(), 2);
   EXPECT_EQ(SumTypeProto::kSumDefSpanFieldNumber, 1);
   EXPECT_EQ(SumTypeProto::kVariantsFieldNumber, 2);
+  EXPECT_EQ(SumTypeProto::kTagBitCountFieldNumber, 3);
+  EXPECT_EQ(SumTypeProto::kParametricArgumentsFieldNumber, 4);
+  EXPECT_EQ(SumTypeProto::kDefinitionIdFieldNumber, 5);
   EXPECT_EQ(SumTypeVariantProto::kPayloadMembersFieldNumber, 1);
+  EXPECT_EQ(SumTypeVariantProto::kDiscriminantFieldNumber, 2);
   EXPECT_EQ(TypeProto::kSumTypeFieldNumber, 13);
   EXPECT_EQ(EnumTypeProto::kMembersFieldNumber, 4);
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       SharedLayoutReaderAcceptsPreparedSchemaWhileWriterRemainsExpanded) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck("enum E { A, B(u8) } fn f() -> E { E::A }", "fake.x",
+                        "fake", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto proto,
+                           TypeInfoToProto(*tm.type_info, tm.module));
+  const AstNodeTypeInfoProto* node =
+      FindSumTypeInfoNode(proto, "E", import_data);
+  ASSERT_NE(node, nullptr);
+  const SumTypeProto& old = node->type().sum_type();
+  ASSERT_EQ(old.variants_size(), 2);
+  EXPECT_FALSE(old.has_tag_bit_count());
+  EXPECT_FALSE(old.variants(0).has_discriminant());
+  EXPECT_FALSE(old.variants(1).has_discriminant());
+  XLS_ASSERT_OK(ToHumanString(*node, import_data, import_data.file_table()));
+
+  AstNodeTypeInfoProto with_layout = *node;
+  SumTypeProto* sum = with_layout.mutable_type()->mutable_sum_type();
+  BitsValueProto* width =
+      sum->mutable_tag_bit_count()->mutable_interp_value()->mutable_bits();
+  width->set_bit_count(32);
+  width->set_is_signed(false);
+  width->set_data(std::string("\0\0\0\1", 4));
+  for (int variant = 0; variant < 2; ++variant) {
+    BitsValueProto* discriminant =
+        sum->mutable_variants(variant)->mutable_discriminant()->mutable_bits();
+    discriminant->set_bit_count(1);
+    discriminant->set_is_signed(false);
+    discriminant->set_data(std::string(1, static_cast<char>(variant)));
+  }
+  XLS_ASSERT_OK(
+      ToHumanString(with_layout, import_data, import_data.file_table()));
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,

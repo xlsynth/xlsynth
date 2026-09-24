@@ -21,11 +21,11 @@
 #include <utility>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/channel_direction.h"
 #include "xls/dslx/frontend/ast.h"
@@ -1420,6 +1420,90 @@ TEST(InterpValueHelpersTest,
   EXPECT_THAT(ValueToInterpValue(raw, &sum_type),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        HasSubstr("noncanonical inactive payload slot")));
+}
+
+TEST(InterpValueHelpersTest, SharedOperationsPreserveRawBitsAndIgnorePadding) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumType inherited = MakeMixedPayloadSumType(module);
+  std::vector<SumTypeVariant> variants;
+  for (const SumTypeVariant& variant : inherited.variants()) {
+    variants.push_back(variant.Clone());
+  }
+  SumType semantic(
+      inherited.nominal_type(), std::move(variants), TypeDim::CreateU32(3),
+      {InterpValue::MakeSBits(3, -4), InterpValue::MakeSBits(3, -1),
+       InterpValue::MakeSBits(3, 2)});
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue constructed,
+      CreateSumValue(semantic, 1, {InterpValue::MakeU8(42)}));
+  XLS_ASSERT_OK_AND_ASSIGN(internal::EncodedSumView canonical_view,
+                           internal::GetEncodedSumView(constructed));
+  EXPECT_EQ(canonical_view.tag, InterpValue::MakeUBits(3, 7));
+  EXPECT_EQ(canonical_view.payload_slot, InterpValue::MakeUBits(16, 42));
+
+  InterpValue padded = internal::CreateEncodedSumTuple(
+      InterpValue::MakeUBits(3, 7), InterpValue::MakeUBits(16, 0xab2a));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue decoded,
+      internal::UnflattenValueForType(semantic, UBits((7 << 16) | 0xab2a, 19)));
+  EXPECT_EQ(decoded, padded);
+  EXPECT_NE(constructed, padded);
+  EXPECT_THAT(SemanticValuesEqual(constructed, padded, semantic),
+              IsOkAndHolds(true));
+  XLS_ASSERT_OK_AND_ASSIGN(std::vector<InterpValue> payload,
+                           GetSumPayloadValues(semantic, padded));
+  ASSERT_EQ(payload.size(), 1);
+  EXPECT_EQ(payload[0], InterpValue::MakeU8(42));
+
+  InterpValue malformed = internal::CreateEncodedSumTuple(
+      InterpValue::MakeUBits(3, 0), InterpValue::MakeUBits(16, 42));
+  EXPECT_THAT(SemanticValuesEqual(malformed, malformed, semantic),
+              StatusIs(absl::StatusCode::kNotFound));
+  EXPECT_THAT(internal::UnflattenValueForType(semantic, UBits(42, 18)),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(InterpValueHelpersTest, SharedOperationsRoundTripNestedSum) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumType inherited = MakeMixedPayloadSumType(module);
+  std::vector<SumTypeVariant> inner_variants;
+  for (const SumTypeVariant& variant : inherited.variants()) {
+    inner_variants.push_back(variant.Clone());
+  }
+  auto inner = std::make_unique<SumType>(inherited.nominal_type(),
+                                         std::move(inner_variants));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue inner_value,
+      CreateSumValue(*inner, 1, {InterpValue::MakeU8(42)}));
+  auto* annotation = module.Make<TypeRefTypeAnnotation>(
+      Span::Fake(),
+      module.Make<TypeRef>(Span::Fake(),
+                           const_cast<SumDef*>(&inner->nominal_type())),
+      std::vector<ExprOrType>{});
+  SumType old_outer =
+      MakeOptionalPayloadSumType(module, annotation, std::move(inner));
+  std::vector<SumTypeVariant> outer_variants;
+  for (const SumTypeVariant& variant : old_outer.variants()) {
+    outer_variants.push_back(variant.Clone());
+  }
+  SumType outer(old_outer.nominal_type(), std::move(outer_variants));
+  EXPECT_THAT(outer.GetMaxPayloadBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(18)));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue outer_value,
+                           CreateSumValue(outer, 1, {inner_value}));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue restored,
+                           internal::UnflattenValueForType(
+                               outer, UBits((1 << 18) | (1 << 16) | 42, 19)));
+  EXPECT_EQ(restored, outer_value);
+  EXPECT_THAT(SemanticValuesEqual(restored, outer_value, outer),
+              IsOkAndHolds(true));
+  XLS_ASSERT_OK_AND_ASSIGN(std::vector<InterpValue> payload,
+                           GetSumPayloadValues(outer, restored));
+  ASSERT_EQ(payload.size(), 1);
+  EXPECT_EQ(payload[0], inner_value);
 }
 
 }  // namespace
