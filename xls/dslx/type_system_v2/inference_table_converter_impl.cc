@@ -403,13 +403,13 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
         XLS_RETURN_IF_ERROR(
             converter->ConvertSubtree(node, std::nullopt, parametric_context));
       } else {
-        XLS_RETURN_IF_ERROR(
-            GenerateTypeInfo(parametric_context, node,
-                             /*pre_unified_type=*/
-                             std::nullopt,
-                             filter_param_type_annotations
-                                 ? TypeAnnotationFilter::FilterParamTypes()
-                                 : TypeAnnotationFilter::None()));
+        XLS_RETURN_IF_ERROR(GenerateTypeInfo(
+            parametric_context, node,
+            /*pre_unified_type=*/
+            std::nullopt,
+            filter_param_type_annotations
+                ? TypeAnnotationFilter::FilterArgumentParamTypes()
+                : TypeAnnotationFilter::None()));
       }
     }
     return absl::OkStatus();
@@ -3028,7 +3028,7 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       // just the independent annotations(s) for the purposes of solving for the
       // variable.
       TypeAnnotationFilter filter =
-          TypeAnnotationFilter::FilterParamTypes().Chain(
+          TypeAnnotationFilter::FilterArgumentParamTypes().Chain(
               TypeAnnotationFilter::FilterRefsToUnknownParametrics(
                   actual_arg_ti)
                   .Chain(
