@@ -22,6 +22,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -292,8 +293,9 @@ TEST(TypeTest, FrozenDiscriminantsPreserveClonedIdentityAndFormatting) {
   std::vector<SumTypeVariant> variants;
   variants.push_back(SumTypeVariant::MakeUnit(*a));
   variants.push_back(SumTypeVariant::MakeUnit(*b));
-  SumType original(*def, std::move(variants), TypeDim::CreateU32(1),
-                   {InterpValue::MakeUBits(1, 1), InterpValue::MakeUBits(1, 0)});
+  SumType original(
+      *def, std::move(variants), TypeDim::CreateU32(1),
+      {InterpValue::MakeUBits(1, 1), InterpValue::MakeUBits(1, 0)});
   std::unique_ptr<Type> clone = original.CloneToUnique();
   EXPECT_EQ(original, *clone);
   EXPECT_EQ(original.ToString(), "E { A | B }");
@@ -761,6 +763,225 @@ TEST(TypeTest, SumEqualityPreservesNominalPhantomAndDiscriminantIdentity) {
   EXPECT_NE(*sum, *BitsType::MakeU1());
 }
 
+TEST(TypeTest, OrdinaryStructClonesKeepPhysicalMembersIndependent) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  const StructType declared = CreateSimpleStruct(module);
+  std::vector<std::unique_ptr<Type>> members;
+  members.push_back(TupleType::Create2(
+      std::make_unique<MetaType>(BitsType::MakeU1()), BitsType::MakeU8()));
+  members.push_back(BitsType::MakeU1());
+  StructType original(std::move(members), declared.nominal_type());
+  const std::unique_ptr<Type> clone = original.CloneToUnique();
+
+  EXPECT_EQ(original.IndexOf(original.GetMemberType(0)), 0);
+  EXPECT_EQ(original.IndexOf(clone->AsStruct().GetMemberType(0)), std::nullopt);
+  auto* tuple = dynamic_cast<TupleType*>(original.members().front().get());
+  ASSERT_NE(tuple, nullptr);
+  auto* meta = dynamic_cast<MetaType*>(&tuple->GetMemberType(0));
+  ASSERT_NE(meta, nullptr);
+  meta->wrapped() = BitsType::MakeU8();
+
+  EXPECT_EQ(
+      *original.GetMemberType(0).AsTuple().GetMemberType(0).AsMeta().wrapped(),
+      *BitsType::MakeU8());
+  EXPECT_EQ(*clone->AsStruct()
+                 .GetMemberType(0)
+                 .AsTuple()
+                 .GetMemberType(0)
+                 .AsMeta()
+                 .wrapped(),
+            *BitsType::MakeU1());
+}
+
+TEST(TypeTest, SumArgumentsDistinguishResolvedAndUnknownStructIdentity) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  auto* binding = module.Make<ParametricBinding>(
+      module.Make<NameDef>(kFakeSpan, "N", nullptr),
+      module.Make<BuiltinTypeAnnotation>(
+          kFakeSpan, BuiltinType::kU32,
+          module.GetOrCreateBuiltinNameDef(BuiltinType::kU32)),
+      std::nullopt);
+  auto* struct_def = module.Make<StructDef>(
+      kFakeSpan, module.Make<NameDef>(kFakeSpan, "Phantom", nullptr),
+      std::vector<ParametricBinding*>{binding},
+      std::vector<StructMemberNode*>{},
+      /*is_public=*/false);
+  std::shared_ptr<const std::vector<NominalParametricArgument>> owner;
+  {
+    std::vector<NominalParametricArgument> arguments;
+    arguments.emplace_back(InterpValue::MakeU32(1));
+    StructType structure({}, *struct_def, {}, std::move(arguments));
+    owner = structure.shared_resolved_parametric_arguments();
+    ASSERT_NE(owner, nullptr);
+    EXPECT_EQ(owner.get(), &*structure.resolved_parametric_arguments());
+    const auto clone = structure.CloneToUnique();
+    const auto clone_owner = static_cast<const StructType&>(*clone)
+                                 .shared_resolved_parametric_arguments();
+    EXPECT_EQ(owner, clone_owner);
+    EXPECT_FALSE(owner.owner_before(clone_owner));
+    EXPECT_FALSE(clone_owner.owner_before(owner));
+  }
+  ASSERT_EQ(owner->size(), 1);
+  EXPECT_EQ(std::get<InterpValue>(owner->front()), InterpValue::MakeU32(1));
+  EXPECT_EQ(StructType({}, *struct_def).shared_resolved_parametric_arguments(),
+            nullptr);
+  auto* nonparametric_def = module.Make<StructDef>(
+      kFakeSpan, module.Make<NameDef>(kFakeSpan, "Plain", nullptr),
+      std::vector<ParametricBinding*>{}, std::vector<StructMemberNode*>{},
+      /*is_public=*/false);
+  EXPECT_EQ(
+      StructType({}, *nonparametric_def).shared_resolved_parametric_arguments(),
+      nullptr);
+  StructType known_plain({}, *nonparametric_def, {},
+                         std::vector<NominalParametricArgument>{});
+  const auto known_empty = known_plain.shared_resolved_parametric_arguments();
+  ASSERT_NE(known_empty, nullptr);
+  EXPECT_TRUE(known_empty->empty());
+
+  SumDef* sum_def = CreateTupleSumDef(module, {0});
+  auto make_sum = [&](std::optional<uint32_t> argument) {
+    std::optional<std::vector<NominalParametricArgument>> arguments;
+    if (argument.has_value()) {
+      arguments.emplace();
+      arguments->emplace_back(InterpValue::MakeU32(*argument));
+    }
+    StructType structure(std::vector<std::unique_ptr<Type>>{}, *struct_def, {},
+                         std::move(arguments));
+    std::vector<SumType::ParametricArgument> sum_arguments;
+    sum_arguments.emplace_back(std::make_unique<ArrayType>(
+        TupleType::Create2(structure.CloneToUnique(), BitsType::MakeU1()),
+        TypeDim::CreateU32(2)));
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(SumTypeVariant::MakeTuple(*sum_def->variants()[0], {}));
+    return std::make_unique<SumType>(*sum_def, std::move(variants),
+                                     std::nullopt, std::vector<InterpValue>{},
+                                     std::move(sum_arguments));
+  };
+  auto one = make_sum(1);
+  auto equal = make_sum(1);
+  auto two = make_sum(2);
+  auto unknown = make_sum(std::nullopt);
+  EXPECT_EQ(*one, *equal);
+  EXPECT_EQ(one->parametric_arguments_hash(),
+            equal->parametric_arguments_hash());
+  EXPECT_EQ(HashTypeForSumCache(*one),
+            HashTypeForSumCache(*one->CloneToUnique()));
+  EXPECT_NE(*one, *two);
+  EXPECT_NE(*one, *unknown);
+  EXPECT_EQ(*unknown, *make_sum(std::nullopt));
+}
+
+TEST(TypeTest, SumArgumentsCompareNestedArrayValuesByElements) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumDef* sum_def = CreateTupleSumDef(module, {0});
+  auto make_sum = [&](InterpValue array) {
+    std::vector<SumType::ParametricArgument> arguments;
+    // Nominal record values are represented by their fields in a tuple.
+    arguments.emplace_back(
+        InterpValue::MakeTuple({std::move(array), InterpValue::MakeU32(7)}));
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(SumTypeVariant::MakeTuple(*sum_def->variants()[0], {}));
+    return std::make_unique<SumType>(*sum_def, std::move(variants),
+                                     std::nullopt, std::vector<InterpValue>{},
+                                     std::move(arguments));
+  };
+
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue empty, InterpValue::MakeArray({}));
+  auto eager = make_sum(std::move(empty));
+  auto equal_bounds = make_sum(InterpValue::MakeSymbolicRange(
+      InterpValue::MakeU32(0), InterpValue::MakeU32(0)));
+  auto reversed_bounds = make_sum(InterpValue::MakeSymbolicRange(
+      InterpValue::MakeU32(9), InterpValue::MakeU32(2)));
+  EXPECT_EQ(*eager, *equal_bounds);
+  EXPECT_EQ(*eager, *reversed_bounds);
+  EXPECT_EQ(*equal_bounds, *reversed_bounds);
+  EXPECT_EQ(*reversed_bounds, *equal_bounds);
+  EXPECT_EQ(eager->parametric_arguments_hash(),
+            equal_bounds->parametric_arguments_hash());
+  EXPECT_EQ(eager->parametric_arguments_hash(),
+            reversed_bounds->parametric_arguments_hash());
+  EXPECT_EQ(HashTypeForSumCache(*equal_bounds),
+            HashTypeForSumCache(*reversed_bounds));
+  EXPECT_NE(*eager, *make_sum(InterpValue::MakeTuple({})));
+
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue values,
+                           InterpValue::MakeArray({InterpValue::MakeU32(2),
+                                                   InterpValue::MakeU32(1)}));
+  auto descending = make_sum(std::move(values));
+  auto ascending = make_sum(InterpValue::MakeSymbolicRange(
+      InterpValue::MakeU32(1), InterpValue::MakeU32(3)));
+  auto ascending_inclusive = make_sum(InterpValue::MakeSymbolicRange(
+      InterpValue::MakeU32(1), InterpValue::MakeU32(2), /*inclusive=*/true));
+  auto shifted = make_sum(InterpValue::MakeSymbolicRange(
+      InterpValue::MakeU32(2), InterpValue::MakeU32(4)));
+  InterpValue expanded_range = InterpValue::MakeSymbolicRange(
+      InterpValue::MakeU32(1), InterpValue::MakeU32(3));
+  ASSERT_EQ(expanded_range.GetValuesOrDie().size(), 2);
+  ASSERT_TRUE(expanded_range.is_range());
+  ASSERT_FALSE(expanded_range.GetRangeData().has_value());
+  auto expanded = make_sum(expanded_range);
+  auto expanded_again = make_sum(std::move(expanded_range));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue equivalent_values,
+                           InterpValue::MakeArray({InterpValue::MakeU32(1),
+                                                   InterpValue::MakeU32(2)}));
+  auto eager_ascending = make_sum(std::move(equivalent_values));
+  EXPECT_NE(*eager, *ascending);
+  EXPECT_NE(*descending, *ascending);
+  EXPECT_NE(*ascending, *shifted);
+  EXPECT_EQ(*ascending, *ascending_inclusive);
+  EXPECT_EQ(*ascending, *expanded);
+  EXPECT_EQ(*expanded, *ascending);
+  EXPECT_EQ(*expanded, *expanded_again);
+  EXPECT_EQ(*eager_ascending, *ascending);
+  EXPECT_EQ(ascending->parametric_arguments_hash(),
+            ascending_inclusive->parametric_arguments_hash());
+  EXPECT_EQ(ascending->parametric_arguments_hash(),
+            expanded->parametric_arguments_hash());
+  EXPECT_EQ(eager_ascending->parametric_arguments_hash(),
+            ascending->parametric_arguments_hash());
+
+  // Element equality compares raw bits even across signed and unsigned forms.
+  // A signed range can cross the raw-bit wrap where an unsigned one would end.
+  auto signed_crossing = make_sum(InterpValue::MakeSymbolicRange(
+      InterpValue::MakeSBits(8, -1), InterpValue::MakeSBits(8, 1)));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue crossing_values,
+      InterpValue::MakeArray(
+          {InterpValue::MakeUBits(8, 255), InterpValue::MakeUBits(8, 0)}));
+  auto eager_crossing = make_sum(std::move(crossing_values));
+  EXPECT_EQ(*signed_crossing, *eager_crossing);
+  EXPECT_EQ(signed_crossing->parametric_arguments_hash(),
+            eager_crossing->parametric_arguments_hash());
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue nonconsecutive_values,
+      InterpValue::MakeArray({InterpValue::MakeU32(1), InterpValue::MakeU32(3),
+                              InterpValue::MakeU32(4)}));
+  auto nonconsecutive = make_sum(nonconsecutive_values);
+  auto equal_nonconsecutive = make_sum(std::move(nonconsecutive_values));
+  EXPECT_EQ(*nonconsecutive, *equal_nonconsecutive);
+  EXPECT_EQ(nonconsecutive->parametric_arguments_hash(),
+            equal_nonconsecutive->parametric_arguments_hash());
+}
+
+// Compiler cache hashing must use the compact symbolic sequence, even before
+// package naming has had a chance to reuse that sequence's public digest.
+TEST(TypeTest, SumArgumentHashDoesNotExpandLargeSymbolicRange) {
+  constexpr uint32_t kLength = 100'000'000;
+  InterpValue range = InterpValue::MakeSymbolicRange(
+      InterpValue::MakeU32(0), InterpValue::MakeU32(kLength));
+  std::vector<SpecializationArgument> arguments;
+  arguments.emplace_back(InterpValue::MakeU32(7));
+  arguments.emplace_back(InterpValue::MakeTuple({range}));
+  ASSERT_TRUE(range.GetRangeData().has_value());
+  const size_t hash = SumType::HashSpecializationArguments(arguments);
+  EXPECT_EQ(hash, SumType::HashSpecializationArguments(arguments));
+  EXPECT_TRUE(range.GetRangeData().has_value());
+}
+
 // Two concrete instances of the same nominal sum can have different payload
 // domains. Reusing an answer must follow the description, not the declaration.
 TEST(TypeTest, SumInhabitanceDistinguishesConcreteDescriptions) {
@@ -1127,8 +1348,8 @@ TEST(TypeTest, SumArgumentHashUsesSemanticBitEquality) {
             SumType::HashParametricArguments(rhs));
 }
 
-// Struct cache keys follow member equality, including normalized bit types, and
-// ignore nominal dimensions that do not participate in StructType equality.
+// Nonparametric structs follow member equality, including normalized bit types,
+// without taking the legacy nominal-dimensions field as resolved identity.
 TEST(TypeTest, SumCacheStructHashUsesSemanticMemberEquality) {
   FileTable file_table;
   Module module("test", std::nullopt, file_table);

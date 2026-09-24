@@ -77,7 +77,7 @@ class ZipTypeVisitor : public TypeVisitor {
     auto* rhs = dynamic_cast<const SumType*>(&rhs_);
     if (rhs == nullptr || &lhs.nominal_type() != &rhs->nominal_type() ||
         lhs.tag_bit_count() != rhs->tag_bit_count() ||
-        !lhs.HasSameParametricArguments(rhs->parametric_arguments())) {
+        !lhs.HasSameSpecializationArguments(rhs->specialization_arguments())) {
       return callbacks_.NoteTypeMismatch(lhs, lhs_parent_, rhs_, rhs_parent_);
     } else {
       AggregatePair aggregates = std::make_pair(&lhs, rhs);
