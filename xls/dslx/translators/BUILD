@@ -43,7 +43,6 @@ cc_library(
         "//xls/common/status:status_macros",
         "//xls/dslx:import_data",
         "//xls/dslx:interp_value",
-        "//xls/dslx:sum_type_encoding",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:pos",
         "//xls/dslx/type_system:type",
