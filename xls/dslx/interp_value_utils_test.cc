@@ -46,7 +46,8 @@ using ::absl_testing::StatusIs;
 using ::testing::Eq;
 using ::testing::HasSubstr;
 
-SumType MakeMixedPayloadSumType(Module& module) {
+SumType MakeMixedPayloadSumType(Module& module,
+                                SumDef** sum_def_out = nullptr) {
   const Span kFakeSpan = Span::Fake();
 
   auto* sum_name = module.Make<NameDef>(kFakeSpan, "Example", nullptr);
@@ -74,6 +75,9 @@ SumType MakeMixedPayloadSumType(Module& module) {
       kFakeSpan, sum_name, std::vector<ParametricBinding*>{},
       std::vector<SumVariant*>{none, byte, wide}, /*is_public=*/false);
   sum_name->set_definer(sum_def);
+  if (sum_def_out != nullptr) {
+    *sum_def_out = sum_def;
+  }
 
   std::vector<SumTypeVariant> variants;
   variants.push_back(SumTypeVariant::MakeUnit(*none));
@@ -504,6 +508,106 @@ TEST(InterpValueHelpersTest, CreatesSumWithBitsConstructorPayload) {
       result.GetValuesOrDie().at(1).GetValuesOrDie();
   ASSERT_EQ(slots.size(), 1);
   EXPECT_EQ(slots.at(0).GetBitValueUnsigned().value(), 7);
+}
+
+TEST(InterpValueHelpersTest, ConstructsIndexedPackedSumAndIgnoresOnlyPadding) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const SumType sum_type = MakeMixedPayloadSumType(module);
+  auto packed = [](uint64_t tag, uint64_t payload) {
+    return InterpValue::MakeTuple(
+        {InterpValue::MakeUBits(2, tag),
+         InterpValue::MakeTuple({InterpValue::MakeUBits(16, payload)})});
+  };
+
+  EXPECT_THAT(CreateSumValue(sum_type, 0, {}), IsOkAndHolds(packed(0, 0)));
+  EXPECT_THAT(CreateSumValue(sum_type, 1, {InterpValue::MakeU8(0x5a)}),
+              IsOkAndHolds(packed(1, 0x5a)));
+  EXPECT_THAT(CreateSumValue(sum_type, 2, {InterpValue::MakeUBits(16, 0xbeef)}),
+              IsOkAndHolds(packed(2, 0xbeef)));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, packed(1, 0xff5a)),
+              IsOkAndHolds(testing::ElementsAre(InterpValue::MakeU8(0x5a))));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, packed(0, 0xffff)),
+              IsOkAndHolds(testing::IsEmpty()));
+  EXPECT_THAT(
+      CreateSumValue(sum_type, 1, {InterpValue::MakeUBits(16, 7)}),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("expected 8")));
+  EXPECT_THAT(CreateSumValue(sum_type, 0, {InterpValue::MakeU8(7)}),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("expected 0 payload values")));
+  EXPECT_THAT(CreateSumValue(sum_type, 3, {}),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("no constructor at index 3")));
+}
+
+TEST(InterpValueHelpersTest, ShallowPackedObservationChecksShapeAndOuterTag) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const SumType sum_type = MakeMixedPayloadSumType(module);
+  auto packed = [](const InterpValue& tag, const InterpValue& payload) {
+    return InterpValue::MakeTuple({tag, InterpValue::MakeTuple({payload})});
+  };
+
+  EXPECT_THAT(
+      GetSumPayloadValues(sum_type, packed(InterpValue::MakeU8(1),
+                                           InterpValue::MakeUBits(16, 0))),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("2-bit tag")));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, packed(InterpValue::MakeUBits(2, 1),
+                                                   InterpValue::MakeU8(0))),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("16-bit payload slot")));
+  EXPECT_THAT(
+      GetSumPayloadValues(sum_type, packed(InterpValue::MakeSBits(2, 1),
+                                           InterpValue::MakeUBits(16, 0))),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("to be unsigned bits")));
+  EXPECT_THAT(
+      GetSumPayloadValues(sum_type, packed(InterpValue::MakeUBits(2, 3),
+                                           InterpValue::MakeUBits(16, 0))),
+      StatusIs(absl::StatusCode::kNotFound, HasSubstr("No variant")));
+
+  EnumDef* enum_def = nullptr;
+  const SumType enum_sum = MakeEnumPayloadSumType(module, &enum_def);
+  EXPECT_THAT(
+      GetSumPayloadValues(enum_sum, packed(InterpValue::MakeUBits(1, 0),
+                                           InterpValue::MakeUBits(2, 2))),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("expected a declared member")));
+}
+
+TEST(InterpValueHelpersTest, MatchObservationPreservesUnobservedNestedTag) {
+  const Span span = Span::Fake();
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumDef* inner_def = nullptr;
+  const SumType inner_type = MakeMixedPayloadSumType(module, &inner_def);
+  auto* annotation = module.Make<TypeRefTypeAnnotation>(
+      span, module.Make<TypeRef>(span, inner_def), std::vector<ExprOrType>{});
+  const SumType outer_type = MakeOptionalPayloadSumType(
+      module, annotation, inner_type.CloneToUnique());
+  const InterpValue invalid_inner = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(2, 3),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(16, 0xff5a)})});
+  const InterpValue outer = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(1, 1),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(18, 0x3ff5a)})});
+  EXPECT_THAT(CreateSumValue(outer_type, 1, {invalid_inner}),
+              IsOkAndHolds(outer));
+  EXPECT_THAT(GetSumPayloadValues(outer_type, outer),
+              IsOkAndHolds(testing::ElementsAre(invalid_inner)));
+
+  internal::MatchValueObservation observation;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      const std::vector<InterpValue>* first,
+      observation.GetSumPayloadValues(outer_type, outer, {}));
+  EXPECT_THAT(*first, testing::ElementsAre(invalid_inner));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      const std::vector<InterpValue>* again,
+      observation.GetSumPayloadValues(outer_type, outer, {}));
+  EXPECT_EQ(first, again);
+  EXPECT_THAT(observation.GetSumPayloadValues(inner_type, first->at(0), {0}),
+              StatusIs(absl::StatusCode::kNotFound, HasSubstr("No variant")));
+  EXPECT_THAT(*first, testing::ElementsAre(invalid_inner));
 }
 
 TEST(InterpValueHelpersTest, CreatesActiveAndInactiveTokenSumPayloads) {
