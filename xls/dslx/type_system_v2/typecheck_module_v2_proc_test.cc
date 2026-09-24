@@ -444,19 +444,23 @@ impl P {
 
   XLS_ASSERT_OK_AND_ASSIGN(Module * builtins,
                            result.import_data->GetBuiltinStubsModule());
-  XLS_ASSERT_OK_AND_ASSIGN(StructDef * state_struct_def,
-                           builtins->GetMemberOrError<StructDef>("State"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      StructDef * state_struct_def,
+      builtins->GetMemberOrError<StructDef>(kBuiltinProcStateStructName));
   XLS_ASSERT_OK_AND_ASSIGN(ProcDef * proc,
                            result.tm.module->GetMemberOrError<ProcDef>("P"));
   ASSERT_EQ(proc->members().size(), 1);
   StructMemberNode* state_member = proc->members()[0];
+  EXPECT_EQ(state_member->owner(), result.tm.module);
   auto* state_type = dynamic_cast<TypeRefTypeAnnotation*>(state_member->type());
   ASSERT_NE(state_type, nullptr);
+  EXPECT_EQ(state_type->owner(), result.tm.module);
   ASSERT_TRUE(std::holds_alternative<StructDef*>(
       state_type->type_ref()->type_definition()));
   EXPECT_EQ(std::get<StructDef*>(state_type->type_ref()->type_definition()),
             state_struct_def);
   EXPECT_NE(state_member->non_state_wrapped_type(), state_member->type());
+  EXPECT_EQ(state_member->non_state_wrapped_type()->owner(), result.tm.module);
   EXPECT_EQ(state_member->non_state_wrapped_type()->ToString(), "u32");
 }
 
