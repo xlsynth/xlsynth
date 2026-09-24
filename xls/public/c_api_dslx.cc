@@ -259,9 +259,7 @@ class ImportDataHandle {
 
   struct StructTypeHash {
     using is_transparent = void;
-    size_t operator()(const xls::dslx::Type& type) const {
-      return xls::dslx::HashTypeForSumCache(type);
-    }
+    size_t operator()(const xls::dslx::Type&) const { return 0; }
     size_t operator()(const StructTypeEntry& entry) const {
       return (*this)(*entry.type);
     }
