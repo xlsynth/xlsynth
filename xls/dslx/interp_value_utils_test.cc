@@ -540,6 +540,101 @@ TEST(InterpValueHelpersTest, ConstructsIndexedPackedSumAndIgnoresOnlyPadding) {
                        HasSubstr("no constructor at index 3")));
 }
 
+TEST(InterpValueHelpersTest, IndexedPackedSumUsesSparseSemanticTags) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const SumType implicit = MakeMixedPayloadSumType(module);
+  std::vector<SumTypeVariant> variants;
+  for (const SumTypeVariant& variant : implicit.variants()) {
+    variants.push_back(variant.Clone());
+  }
+  const SumType sum_type(
+      implicit.nominal_type(), std::move(variants), TypeDim::CreateU32(3),
+      {InterpValue::MakeUBits(3, 5), InterpValue::MakeUBits(3, 1),
+       InterpValue::MakeUBits(3, 7)});
+  auto packed = [](uint64_t tag, uint64_t payload) {
+    return InterpValue::MakeTuple(
+        {InterpValue::MakeUBits(3, tag),
+         InterpValue::MakeTuple({InterpValue::MakeUBits(16, payload)})});
+  };
+
+  EXPECT_THAT(CreateSumValue(sum_type, 0, {}), IsOkAndHolds(packed(5, 0)));
+  EXPECT_THAT(CreateSumValue(sum_type, 1, {InterpValue::MakeU8(0xa6)}),
+              IsOkAndHolds(packed(1, 0xa6)));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, packed(5, 0)),
+              IsOkAndHolds(testing::IsEmpty()));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, packed(1, 0xa6)),
+              IsOkAndHolds(testing::ElementsAre(InterpValue::MakeU8(0xa6))));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, packed(0, 0)),
+              StatusIs(absl::StatusCode::kNotFound, HasSubstr("No variant")));
+}
+
+TEST(InterpValueHelpersTest, IndexedPackedSumEncodesNestedPayloadOrder) {
+  const Span span = Span::Fake();
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  auto* u4 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU4,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU4));
+  auto* u32 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU32,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU32));
+  auto* dimension = module.Make<Number>(span, "2", NumberKind::kOther, u32);
+  auto* array_annotation =
+      module.Make<ArrayTypeAnnotation>(span, u4, dimension);
+  auto* tuple_annotation = module.Make<TupleTypeAnnotation>(
+      span, std::vector<TypeAnnotation*>{u4, array_annotation});
+  auto* sum_name = module.Make<NameDef>(span, "Example", nullptr);
+  auto* none = module.Make<SumVariant>(
+      span, module.Make<NameDef>(span, "None", nullptr),
+      SumVariant::PayloadShape::kUnit, std::vector<TypeAnnotation*>{},
+      std::vector<StructMemberNode*>{});
+  auto* some = module.Make<SumVariant>(
+      span, module.Make<NameDef>(span, "Some", nullptr),
+      SumVariant::PayloadShape::kTuple,
+      std::vector<TypeAnnotation*>{u4, tuple_annotation, u4},
+      std::vector<StructMemberNode*>{});
+  auto* sum_def = module.Make<SumDef>(
+      span, sum_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{none, some}, /*is_public=*/false);
+  sum_name->set_definer(sum_def);
+
+  const BitsType nibble_type(/*is_signed=*/false, 4);
+  std::vector<std::unique_ptr<Type>> tuple_members;
+  tuple_members.push_back(nibble_type.CloneToUnique());
+  tuple_members.push_back(std::make_unique<ArrayType>(
+      nibble_type.CloneToUnique(), TypeDim::CreateU32(2)));
+  std::vector<std::unique_ptr<Type>> payload_members;
+  payload_members.push_back(nibble_type.CloneToUnique());
+  payload_members.push_back(
+      std::make_unique<TupleType>(std::move(tuple_members)));
+  payload_members.push_back(nibble_type.CloneToUnique());
+  std::vector<SumTypeVariant> variants;
+  variants.push_back(SumTypeVariant::MakeUnit(*none));
+  variants.push_back(
+      SumTypeVariant::MakeTuple(*some, std::move(payload_members)));
+  const SumType sum_type(*sum_def, std::move(variants));
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue array,
+      InterpValue::MakeArray(
+          {InterpValue::MakeUBits(4, 3), InterpValue::MakeUBits(4, 4)}));
+  const std::vector<InterpValue> payload = {
+      InterpValue::MakeUBits(4, 1),
+      InterpValue::MakeTuple({InterpValue::MakeUBits(4, 2), array}),
+      InterpValue::MakeUBits(4, 5)};
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue encoded,
+                           CreateSumValue(sum_type, 1, payload));
+
+  // Variant and tuple members are MSB first; array element zero is LSB first.
+  EXPECT_EQ(
+      encoded,
+      InterpValue::MakeTuple(
+          {InterpValue::MakeUBits(1, 1),
+           InterpValue::MakeTuple({InterpValue::MakeUBits(20, 0x12435)})}));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, encoded), IsOkAndHolds(payload));
+}
+
 TEST(InterpValueHelpersTest, ShallowPackedObservationChecksShapeAndOuterTag) {
   FileTable file_table;
   Module module("test", /*fs_path=*/std::nullopt, file_table);
