@@ -742,15 +742,25 @@ NameDef::~NameDef() = default;
 Conditional::Conditional(Module* owner, Span span, Expr* test,
                          StatementBlock* consequent,
                          std::variant<StatementBlock*, Conditional*> alternate,
+                         std::optional<PatternTree> if_let_pattern,
                          bool in_parens, bool has_else, bool is_const)
     : Expr(owner, std::move(span), in_parens),
       test_(test),
       consequent_(consequent),
       alternate_(alternate),
+      if_let_pattern_(std::move(if_let_pattern)),
       has_else_(has_else),
       is_const_(is_const) {}
 
 Conditional::~Conditional() = default;
+
+std::vector<AstNode*> Conditional::GetChildren(bool want_types) const {
+  if (!if_let_pattern_.has_value()) {
+    return {test_, consequent_, ToAstNode(alternate_)};
+  }
+  return {ToAstNode(*if_let_pattern_), test_, consequent_,
+          ToAstNode(alternate_)};
+}
 
 std::vector<StatementBlock*> Conditional::GatherBlocks() {
   std::vector<StatementBlock*> blocks;
@@ -788,6 +798,10 @@ std::string Conditional::ToStringInternal() const {
   auto make_string = [&](std::string (AstNode::*to_str_fn)()
                              const) -> std::string {
     std::string test_str = (test_->*to_str_fn)();
+    if (IsIfLet()) {
+      test_str = absl::StrFormat("let %s = %s",
+                                 PatternToString(*if_let_pattern_), test_str);
+    }
     std::string then_str = (consequent_->*to_str_fn)();
     std::string else_str = "";
     if (has_else_) {
@@ -1444,11 +1458,13 @@ std::vector<AstNode*> MatchArm::GetChildren(bool want_types) const {
 // -- class Match
 
 Match::Match(Module* owner, Span span, Expr* matched,
-             std::vector<MatchArm*> arms, bool in_parens, bool is_const)
+             std::vector<MatchArm*> arms, bool in_parens, bool is_const,
+             Origin origin)
     : Expr(owner, std::move(span), in_parens),
       matched_(matched),
       arms_(std::move(arms)),
-      is_const_(is_const) {}
+      is_const_(is_const),
+      origin_(origin) {}
 
 Match::~Match() = default;
 

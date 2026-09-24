@@ -502,6 +502,48 @@ class PreTypecheckPass : public AstNodeRecursiveVisitor {
   bool in_legacy_proc_ = false;
 };
 
+class ContainsIfLetVisitor : public AstNodeVisitorWithDefault {
+ public:
+  bool contains_if_let() const { return contains_if_let_; }
+
+  absl::Status HandleConditional(const Conditional* node) override {
+    if (node->IsIfLet()) {
+      contains_if_let_ = true;
+      return absl::OkStatus();
+    }
+    return DefaultHandler(node);
+  }
+
+  absl::Status DefaultHandler(const AstNode* node) override {
+    for (const AstNode* child : node->GetChildren(/*want_types=*/true)) {
+      XLS_RETURN_IF_ERROR(child->Accept(this));
+      if (contains_if_let_) {
+        break;
+      }
+    }
+    return absl::OkStatus();
+  }
+
+ private:
+  bool contains_if_let_ = false;
+};
+
+absl::StatusOr<std::unique_ptr<Module>> NormalizeIfLets(
+    std::unique_ptr<Module> module) {
+  ContainsIfLetVisitor contains_if_let;
+  XLS_RETURN_IF_ERROR(module->Accept(&contains_if_let));
+  if (!contains_if_let.contains_if_let()) {
+    return module;
+  }
+
+  XLS_ASSIGN_OR_RETURN(std::unique_ptr<Module> normalized,
+                       CloneModuleWithIfLetsLowered(*module));
+  ContainsIfLetVisitor verify_no_if_let;
+  XLS_RETURN_IF_ERROR(normalized->Accept(&verify_no_if_let));
+  XLS_RET_CHECK(!verify_no_if_let.contains_if_let());
+  return normalized;
+}
+
 class CollectUseDef : public AstNodeRecursiveVisitor {
  public:
   CollectUseDef() : AstNodeRecursiveVisitor(/*want_types=*/true) {}
@@ -709,19 +751,24 @@ class ProcDefTrivialNextGenerator : public AstNodeRecursiveVisitor {
 SemanticsAnalysis::SemanticsAnalysis(bool suppress_warnings)
     : suppress_warnings_(suppress_warnings) {}
 
-absl::Status SemanticsAnalysis::RunPreTypeCheckPass(
-    Module& module, WarningCollector& warning_collector,
+absl::StatusOr<std::unique_ptr<Module>> SemanticsAnalysis::RunPreTypeCheckPass(
+    std::unique_ptr<Module> module, WarningCollector& warning_collector,
     ImportData& import_data,
     const TypecheckModuleFn& typecheck_imported_module) {
   if (!suppress_warnings_) {
     PreTypecheckPass pass(warning_collector, import_data.file_table());
-    XLS_RETURN_IF_ERROR(module.Accept(&pass));
+    XLS_RETURN_IF_ERROR(module->Accept(&pass));
   }
 
-  ProcDefTrivialNextGenerator next_generator;
-  XLS_RETURN_IF_ERROR(module.Accept(&next_generator));
+  // Normalize while the AST is still source-shaped. Later semantic
+  // transformations attach state that this source-to-source clone should not
+  // need to preserve.
+  XLS_ASSIGN_OR_RETURN(module, NormalizeIfLets(std::move(module)));
 
-  if (module.attributes().contains(ModuleAttribute::kExplicitStateAccess)) {
+  ProcDefTrivialNextGenerator next_generator;
+  XLS_RETURN_IF_ERROR(module->Accept(&next_generator));
+
+  if (module->attributes().contains(ModuleAttribute::kExplicitStateAccess)) {
     XLS_ASSIGN_OR_RETURN(Module * builtins,
                          import_data.GetBuiltinStubsModule());
     XLS_ASSIGN_OR_RETURN(
@@ -729,16 +776,16 @@ absl::Status SemanticsAnalysis::RunPreTypeCheckPass(
         builtins->GetMemberOrError<StructDef>(kBuiltinProcStateStructName));
     ProcStateVisitor state_visitor(import_data, state_struct_def,
                                    typecheck_imported_module);
-    XLS_RETURN_IF_ERROR(module.Accept(&state_visitor));
+    XLS_RETURN_IF_ERROR(module->Accept(&state_visitor));
   }
-  XLS_RETURN_IF_ERROR(RewriteLambdas(module, import_data));
-  XLS_RETURN_IF_ERROR(RewriteDomainStructs(module, import_data));
+  XLS_RETURN_IF_ERROR(RewriteLambdas(*module, import_data));
+  XLS_RETURN_IF_ERROR(RewriteDomainStructs(*module, import_data));
 
   AddSpawnTraitToProcDefs add_spawn_trait;
-  XLS_RETURN_IF_ERROR(module.Accept(&add_spawn_trait));
+  XLS_RETURN_IF_ERROR(module->Accept(&add_spawn_trait));
 
   if (!suppress_warnings_) {
-    for (const ModuleMember& top : module.top()) {
+    for (const ModuleMember& top : module->top()) {
       if (const Function* const* func = std::get_if<Function*>(&top)) {
         CollectUseDef visitor;
         XLS_RETURN_IF_ERROR((*func)->body()->Accept(&visitor));
@@ -758,7 +805,7 @@ absl::Status SemanticsAnalysis::RunPreTypeCheckPass(
     }
   }
 
-  return absl::OkStatus();
+  return module;
 }
 
 // If a possibly unused def is concretized to a non-token type at any possible
