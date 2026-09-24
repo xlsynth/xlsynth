@@ -81,6 +81,59 @@ StructType CreateSimpleStruct(Module& module) {
   return StructType(std::move(members), *struct_def);
 }
 
+// Retain the counter in payload clones so reconstructing a description cannot
+// silently drop the repeated-work oracle.
+class WidthCountingBitsType : public BitsType {
+ public:
+  WidthCountingBitsType(TypeDim size, int64_t& query_count)
+      : BitsType(false, std::move(size)), query_count_(query_count) {}
+
+  absl::StatusOr<TypeDim> GetTotalBitCount() const override {
+    ++query_count_;
+    return BitsType::GetTotalBitCount();
+  }
+
+  std::unique_ptr<Type> CloneToUnique() const override {
+    return std::make_unique<WidthCountingBitsType>(size().Clone(),
+                                                   query_count_);
+  }
+
+ private:
+  int64_t& query_count_;
+};
+
+// Count actual predicate and rendering calls at a shared graph's leaves.
+class DescriptionCountingBitsType : public BitsType {
+ public:
+  DescriptionCountingBitsType(int64_t& token_queries, int64_t& render_queries)
+      : BitsType(false, 8),
+        token_queries_(token_queries),
+        render_queries_(render_queries) {}
+
+  bool HasToken() const override {
+    ++token_queries_;
+    return false;
+  }
+
+  void AppendToStringInternal(FullyQualify fully_qualify,
+                              const FileTable* file_table,
+                              TypeStringContext& context,
+                              std::string& output) const override {
+    ++render_queries_;
+    BitsType::AppendToStringInternal(fully_qualify, file_table, context,
+                                     output);
+  }
+
+  std::unique_ptr<Type> CloneToUnique() const override {
+    return std::make_unique<DescriptionCountingBitsType>(token_queries_,
+                                                         render_queries_);
+  }
+
+ private:
+  int64_t& token_queries_;
+  int64_t& render_queries_;
+};
+
 // Count leaf comparisons through clones of independently built sum graphs.
 class EqualityCountingBitsType : public BitsType {
  public:
@@ -98,24 +151,6 @@ class EqualityCountingBitsType : public BitsType {
 
  private:
   int64_t& comparison_count_;
-};
-
-class WidthCountingBitsType : public BitsType {
- public:
-  explicit WidthCountingBitsType(int64_t& width_queries)
-      : BitsType(false, 1), width_queries_(width_queries) {}
-
-  absl::StatusOr<TypeDim> GetTotalBitCount() const override {
-    ++width_queries_;
-    return BitsType::GetTotalBitCount();
-  }
-
-  std::unique_ptr<Type> CloneToUnique() const override {
-    return std::make_unique<WidthCountingBitsType>(width_queries_);
-  }
-
- private:
-  int64_t& width_queries_;
 };
 
 // Creates tuple constructors whose members are u8. Concrete payload Types are
@@ -349,6 +384,93 @@ TEST(TypeTest, EmptyStructTypeIsNotUnit) {
   EXPECT_EQ(s.ToStringFullyQualified(file_table), "relpath/to/test.x:S {}");
 }
 
+// Verifies one eager payload walk per immutable description, not per query or
+// cloned wrapper. The widest constructor is last and has two payload members.
+TEST(TypeTest, SumWidthQueriesReuseSharedDescription) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumDef* sum_def = CreateTupleSumDef(module, {0, 1, 2});
+  int64_t query_count = 0;
+  std::vector<SumTypeVariant> variants;
+  for (const SumVariant* variant : sum_def->variants()) {
+    std::vector<std::unique_ptr<Type>> members;
+    for (int64_t i = 0; i < variant->payload_member_count(); ++i) {
+      members.push_back(std::make_unique<WidthCountingBitsType>(
+          TypeDim::CreateU32(8), query_count));
+    }
+    variants.push_back(SumTypeVariant::MakeTuple(*variant, std::move(members)));
+  }
+  SumType sum(*sum_def, std::move(variants));
+  EXPECT_EQ(query_count, 3);
+  std::unique_ptr<Type> clone = sum.CloneToUnique();
+  for (int64_t i = 0; i < 3; ++i) {
+    EXPECT_THAT(sum.GetMaxPayloadBitCount(),
+                IsOkAndHolds(TypeDim::CreateU32(16)));
+    EXPECT_THAT(sum.GetTotalBitCount(), IsOkAndHolds(TypeDim::CreateU32(18)));
+    EXPECT_THAT(clone->AsSum().GetMaxPayloadBitCount(),
+                IsOkAndHolds(TypeDim::CreateU32(16)));
+    EXPECT_THAT(clone->GetTotalBitCount(),
+                IsOkAndHolds(TypeDim::CreateU32(18)));
+  }
+  EXPECT_EQ(query_count, 3);
+
+  std::vector<SumTypeVariant> reconstructed_variants;
+  for (const SumTypeVariant& variant : sum.variants()) {
+    reconstructed_variants.push_back(variant.Clone());
+  }
+  SumType reconstructed(*sum_def, std::move(reconstructed_variants));
+  EXPECT_EQ(query_count, 6);
+  EXPECT_THAT(reconstructed.GetMaxPayloadBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(16)));
+  EXPECT_THAT(reconstructed.GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(18)));
+  EXPECT_EQ(query_count, 6);
+}
+
+// The retained graph grows by one description per level, not one per branch.
+// Counts catch repeated traversal without relying on machine-dependent timing.
+TEST(TypeTest, SharedSumTokenQueriesAndPrintingStayBounded) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumDef* sum_def = CreateTupleSumDef(module, {1, 1});
+  for (int64_t depth : {4, 8}) {
+    int64_t token_queries = 0;
+    int64_t render_queries = 0;
+    std::unique_ptr<Type> type = std::make_unique<DescriptionCountingBitsType>(
+        token_queries, render_queries);
+    for (int64_t level = 0; level < depth; ++level) {
+      std::vector<SumTypeVariant> variants;
+      for (const SumVariant* variant : sum_def->variants()) {
+        std::vector<std::unique_ptr<Type>> members;
+        members.push_back(type->CloneToUnique());
+        variants.push_back(
+            SumTypeVariant::MakeTuple(*variant, std::move(members)));
+      }
+      type = std::make_unique<SumType>(*sum_def, std::move(variants));
+    }
+    EXPECT_EQ(token_queries, 2);
+    std::unique_ptr<Type> clone = type->CloneToUnique();
+    EXPECT_EQ(&type->AsSum().variants(), &clone->AsSum().variants());
+    ArrayType array(clone->CloneToUnique(), TypeDim::CreateU32(2));
+    for (int64_t i = 0; i < 10; ++i) {
+      EXPECT_FALSE(type->HasToken());
+      EXPECT_FALSE(clone->HasToken());
+      EXPECT_FALSE(array.HasToken());
+    }
+    EXPECT_EQ(token_queries, 2);
+    const std::string rendered = type->ToString();
+    EXPECT_EQ(render_queries, 2);
+    EXPECT_LT(rendered.size(), 70 * depth);
+    EXPECT_THAT(rendered, HasSubstr("@1="));
+    EXPECT_EQ(clone->ToString(), rendered);
+    EXPECT_EQ(render_queries, 4);
+    EXPECT_EQ(array.ToString(), rendered + "[2]");
+    EXPECT_EQ(render_queries, 6);
+    EXPECT_THAT(type->GetTotalBitCount(),
+                IsOkAndHolds(TypeDim::CreateU32(8 + depth)));
+  }
+}
+
 TEST(TypeTest, SharedSumPayloadWidthUsesMaximumRecursively) {
   FileTable file_table;
   Module module("test", std::nullopt, file_table);
@@ -478,8 +600,8 @@ TEST(TypeTest, SharedSumPayloadWidthReusesDescriptionsAndPreservesErrors) {
   };
 
   int64_t width_queries = 0;
-  std::unique_ptr<Type> current =
-      std::make_unique<WidthCountingBitsType>(width_queries);
+  std::unique_ptr<Type> current = std::make_unique<WidthCountingBitsType>(
+      TypeDim::CreateU32(1), width_queries);
   for (int64_t depth = 0; depth < 12; ++depth) {
     current = wrap(*current);
   }
@@ -806,6 +928,39 @@ TEST(TypeTest, SumTextReferencesRespectSharingAndNominalArguments) {
   EXPECT_EQ(function.ToStringFullyQualified(file_table),
             "((@1=S<u32:1> { Case0() }, @1)) -> "
             "<no-file>:S<u32:1> { Case0() }");
+}
+
+// A failed payload-width calculation must remain a query result. Construction
+// and cloning are still permitted, and repeated errors must not retry the walk.
+TEST(TypeTest, SumWidthErrorIsStoredWithoutRejectingConstruction) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumDef* sum_def = CreateTupleSumDef(module, {1});
+  TypeDim invalid_width(InterpValue::MakeUBits(64, 8));
+  absl::Status expected_error =
+      TypeDim::CreateU32(0).Add(invalid_width).status();
+  ASSERT_FALSE(expected_error.ok());
+  int64_t query_count = 0;
+  std::vector<std::unique_ptr<Type>> members;
+  members.push_back(std::make_unique<WidthCountingBitsType>(
+      invalid_width.Clone(), query_count));
+  std::vector<SumTypeVariant> variants;
+  variants.push_back(
+      SumTypeVariant::MakeTuple(*sum_def->variants()[0], std::move(members)));
+  SumType sum(*sum_def, std::move(variants));
+  EXPECT_EQ(query_count, 1);
+  std::unique_ptr<Type> clone = sum.CloneToUnique();
+  for (int64_t i = 0; i < 3; ++i) {
+    EXPECT_THAT(sum.GetMaxPayloadBitCount(),
+                StatusIs(expected_error.code(), expected_error.message()));
+    EXPECT_THAT(sum.GetTotalBitCount(),
+                StatusIs(expected_error.code(), expected_error.message()));
+    EXPECT_THAT(clone->AsSum().GetMaxPayloadBitCount(),
+                StatusIs(expected_error.code(), expected_error.message()));
+    EXPECT_THAT(clone->GetTotalBitCount(),
+                StatusIs(expected_error.code(), expected_error.message()));
+  }
+  EXPECT_EQ(query_count, 1);
 }
 
 // A successful payload width must not hide a later error adding the tag width.
