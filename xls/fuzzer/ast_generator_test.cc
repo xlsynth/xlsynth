@@ -37,10 +37,15 @@
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/command_line_utils.h"
 #include "xls/dslx/create_import_data.h"
+#include "xls/dslx/exhaustiveness/match_exhaustiveness_checker.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/pos.h"
+#include "xls/dslx/interp_value.h"
 #include "xls/dslx/parse_and_typecheck.h"
+#include "xls/dslx/type_system/type.h"
+#include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/virtualizable_file_system.h"
+#include "xls/ir/bits.h"
 
 namespace xls::dslx {
 namespace {
@@ -128,6 +133,120 @@ TEST_F(AstGeneratorTest, GeneratesParametricBindings) {
     }
   }
   EXPECT_TRUE(found_match);
+}
+
+TEST_F(AstGeneratorTest, MatchPatternsRequireNewCoverage) {
+  g_.module_ =
+      std::make_unique<Module>("test_module", std::nullopt, file_table_);
+  TypeAnnotation* u4 =
+      g_.MakeTypeAnnotation(/*is_signed=*/false, 4, /*use_xn=*/false);
+  TypeInfoOwner type_info_owner;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypeInfo * type_info,
+      type_info_owner.New(file_table_, g_.module_->name()));
+  std::unique_ptr<Type> unsigned_type = g_.MakeMatchType(u4);
+  MatchExhaustivenessChecker unsigned_coverage(FakeSpan(), *type_info,
+                                               *unsigned_type);
+  auto number = [&](int64_t value, TypeAnnotation* type, bool is_signed) {
+    Number* node = g_.MakeNumber(value, type);
+    type_info->NoteConstExpr(
+        node, InterpValue::MakeBits(
+                  is_signed, is_signed ? SBits(value, 4) : UBits(value, 4)));
+    return node;
+  };
+  struct TestCase {
+    int64_t start;
+    int64_t end;
+    bool inclusive_end;
+    bool useful;
+  };
+  for (const TestCase& test : std::vector<TestCase>{
+           {0, 3, false, true},
+           {2, 4, false, true},   // Partially overlaps; adds 3.
+           {1, 2, false, false},  // Covered by the first pattern.
+           {0, 4, false, false},  // Covered only by the union of both patterns.
+           {5, 5, false, false},  // Empty exclusive range.
+           {5, 4, true, false},   // Empty reversed range.
+           {5, 5, true, true},    // Inclusive singleton.
+           {3, 6, false, true},   // Fills the gap at 4.
+           {15, 15, true, true},  // Maximum value must not overflow.
+       }) {
+    PatternTree pattern = g_.module_->Make<Range>(
+        FakeSpan(), number(test.start, u4, false), test.inclusive_end,
+        number(test.end, u4, false));
+    SCOPED_TRACE(PatternToString(pattern));
+    EXPECT_EQ(g_.AddMatchPatternIfUseful(pattern, unsigned_coverage),
+              test.useful);
+  }
+
+  TypeAnnotation* s4 =
+      g_.MakeTypeAnnotation(/*is_signed=*/true, 4, /*use_xn=*/false);
+  std::unique_ptr<Type> signed_type = g_.MakeMatchType(s4);
+  MatchExhaustivenessChecker signed_coverage(FakeSpan(), *type_info,
+                                             *signed_type);
+  for (const TestCase& test : std::vector<TestCase>{
+           {-3, -1, false, true},
+           {-2, 1, false, true},
+           {-3, 1, false, false},
+       }) {
+    PatternTree pattern =
+        g_.module_->Make<Range>(FakeSpan(), number(test.start, s4, true),
+                                test.inclusive_end, number(test.end, s4, true));
+    SCOPED_TRACE(PatternToString(pattern));
+    EXPECT_EQ(g_.AddMatchPatternIfUseful(pattern, signed_coverage),
+              test.useful);
+  }
+}
+
+TEST_F(AstGeneratorTest, MatchPatternsTrackNestedTupleWildcards) {
+  g_.module_ =
+      std::make_unique<Module>("test_module", std::nullopt, file_table_);
+  TypeAnnotation* u2 =
+      g_.MakeTypeAnnotation(/*is_signed=*/false, 2, /*use_xn=*/false);
+  auto* pair_type = g_.module_->Make<TupleTypeAnnotation>(
+      FakeSpan(), std::vector<TypeAnnotation*>{u2, u2});
+  auto* type = g_.module_->Make<TupleTypeAnnotation>(
+      FakeSpan(), std::vector<TypeAnnotation*>{pair_type, u2, u2});
+  TypeInfoOwner type_info_owner;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypeInfo * type_info,
+      type_info_owner.New(file_table_, g_.module_->name()));
+  std::unique_ptr<Type> matched_type = g_.MakeMatchType(type);
+  MatchExhaustivenessChecker coverage_checker(FakeSpan(), *type_info,
+                                              *matched_type);
+  auto tuple = [&](std::vector<PatternTree> members) -> PatternTree {
+    return g_.module_->Make<TuplePattern>(FakeSpan(), members);
+  };
+  auto wildcard = [&]() -> PatternTree {
+    return g_.module_->Make<WildcardPattern>(FakeSpan());
+  };
+  auto rest = [&]() -> PatternTree {
+    return g_.module_->Make<RestOfTuple>(FakeSpan());
+  };
+  auto number = [&](int64_t value) -> PatternTree {
+    Number* node = g_.MakeNumber(value, u2);
+    type_info->NoteConstExpr(node, InterpValue::MakeUBits(2, value));
+    return node;
+  };
+  // ((0, _), ..) covers the nested tuple's first coordinate at 0.
+  EXPECT_TRUE(g_.AddMatchPatternIfUseful(
+      tuple({tuple({number(0), wildcard()}), rest()}), coverage_checker));
+  EXPECT_FALSE(g_.AddMatchPatternIfUseful(
+      tuple({tuple({number(0), number(1)}), number(1), wildcard()}),
+      coverage_checker));
+  // ((_, 1), ..) overlaps but adds points with a nonzero first coordinate.
+  EXPECT_TRUE(g_.AddMatchPatternIfUseful(
+      tuple({tuple({wildcard(), number(1)}), rest()}), coverage_checker));
+  EXPECT_FALSE(g_.AddMatchPatternIfUseful(
+      tuple({tuple({number(2), number(1)}), wildcard(), wildcard()}),
+      coverage_checker));
+  EXPECT_TRUE(g_.AddMatchPatternIfUseful(
+      tuple({tuple({number(2), number(2)}), rest()}), coverage_checker));
+  // Leave catch-all coverage to GenerateMatch's final wildcard arm.
+  EXPECT_FALSE(g_.AddMatchPatternIfUseful(tuple({rest()}), coverage_checker));
+  EXPECT_FALSE(coverage_checker.IsExhaustive());
+  EXPECT_TRUE(coverage_checker.AddPattern(wildcard()).adds_coverage());
+  EXPECT_TRUE(coverage_checker.IsExhaustive());
 }
 
 namespace {
