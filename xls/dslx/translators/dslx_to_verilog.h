@@ -52,9 +52,8 @@ namespace xls::dslx {
 // identifier sanitization. Fixed aliases for ordinary function parameters and
 // outputs can also conflict with names planned for actual SystemVerilog sum
 // declarations or their generated companions, even before they are emitted.
-// A fixed name already planned or emitted for a sum is rejected before
-// converting the requested ordinary type. Ordinary types otherwise retain
-// their existing naming and alias behavior.
+// A fixed-name conflict returns an error without changing the emitted package.
+// Ordinary types otherwise retain their existing naming and alias behavior.
 class DslxTypeToVerilogManager {
  public:
   // Creates an instance of this manager.
@@ -79,8 +78,8 @@ class DslxTypeToVerilogManager {
   // <function_name>_<parameter_name>_t and type references normally use their
   // DSLX name. A supplied name is fixed even for an ordinary type. If it
   // conflicts with a name planned for an actual SystemVerilog sum declaration
-  // or its generated companion, the call rejects it before converting the
-  // requested type. See the class comment for sum naming.
+  // or its generated companion, the call returns an error without changing the
+  // emitted package. See the class comment for sum naming.
   //
   // Note: func should already be type-checked and type information should be
   // contained in import_data.
@@ -96,8 +95,8 @@ class DslxTypeToVerilogManager {
   // and type references normally use their DSLX name. A supplied name is fixed
   // even for an ordinary type. If it conflicts with a name planned for an
   // actual SystemVerilog sum declaration or its generated companion, the call
-  // rejects it before converting the requested type. See the class comment
-  // for sum naming.
+  // returns an error without changing the emitted package. See the class
+  // comment for sum naming.
   //
   // Note: func should already be type-checked and type information should
   // be contained in import_data.
@@ -193,14 +192,19 @@ class DslxTypeToVerilogManager {
     std::map<std::string, std::string> symbols;
     verilog::DataType* envelope = nullptr;
   };
+  enum class SumNameState { kNoSums, kAllEmitted, kHasUnemitted };
 
   void PrepareSumNames(Module* module, TypeInfo* type_info);
   const SumFamily* FindSumFamily(const SumType& sum) const;
+  SumNameState GetSumNameState(const Type& type) const;
   absl::Status PlanSumFamilyNames(
       const SumType& sum, std::string_view specialization,
       int64_t payload_width, SumFamily& family,
       const std::function<std::string(std::string_view)>& allocate);
-  absl::Status CheckOrdinaryTypeName(std::string_view name);
+  absl::Status CheckOrdinaryTypeName(const Type& type,
+                                     const TypeAnnotation* annotation,
+                                     ImportData* import_data,
+                                     std::string_view name);
   absl::StatusOr<verilog::DataType*> SumToVastType(
       const SumType& sum, ImportData* import_data,
       std::optional<std::string_view> requested_alias = std::nullopt);
