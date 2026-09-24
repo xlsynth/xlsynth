@@ -1945,6 +1945,384 @@ fn alias(value: Phantom<ByteAlias>) -> Phantom<ByteAlias> {
             *first_type->params()[0]->CloneToUnique());
 }
 
+std::string DeeplyNestedPairType() {
+  std::string nested_type = "u1";
+  for (int depth = 0; depth < 24; ++depth) {
+    nested_type = absl::Substitute("Pair<$0>", nested_type);
+  }
+  return nested_type;
+}
+
+std::string DeeplyNestedPairPhantomDeclarations() {
+  // Each Pair doubles the physical type hidden in Phantom's unused default,
+  // but Phantom itself always contains one bit. This catches hidden physical
+  // expansion during type checking; it is not a performance benchmark. The
+  // tests call ParseAndTypecheck directly because the general TypecheckV2 test
+  // helper also explicitly serializes the complete physical type-info graph.
+  return absl::Substitute(R"(
+#![feature(type_inference_v2)]
+#![feature(generics)]
+struct Pair<T: type> { a: T, b: T }
+struct Phantom<U: type = $0> { bit: u1 }
+)",
+                          DeeplyNestedPairType());
+}
+
+TEST(TypecheckV2Test, OrdinaryPhantomDoesNotExpandHiddenPhysicalType) {
+  ImportData import_data = CreateImportDataForTest();
+  const std::string program = DeeplyNestedPairPhantomDeclarations() + R"(
+fn consume(p: Phantom) -> u1 { p.bit }
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule result,
+      ParseAndTypecheck(program, "deep.x", "deep", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Function * function,
+      result.module->GetMemberOrError<Function>("consume"));
+  XLS_ASSERT_OK_AND_ASSIGN(FunctionType * type,
+                           result.type_info->GetItemAs<FunctionType>(function));
+  ASSERT_EQ(type->params().size(), 1);
+  EXPECT_THAT(type->params()[0]->GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(1)));
+  EXPECT_EQ(type->return_type(), *BitsType::MakeU1());
+}
+
+TEST(TypecheckV2Test, SemanticSumPhantomDoesNotExpandHiddenPhysicalType) {
+  ImportData import_data = CreateImportDataForTest();
+  const std::string program = DeeplyNestedPairPhantomDeclarations() + R"(
+type DefaultedPhantom = Phantom;
+enum Marker<T: type> { Empty, Only(u1) }
+fn consume(p: Marker<DefaultedPhantom>) { () }
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule result,
+      ParseAndTypecheck(program, "deep.x", "deep", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Function * function,
+      result.module->GetMemberOrError<Function>("consume"));
+  XLS_ASSERT_OK_AND_ASSIGN(FunctionType * type,
+                           result.type_info->GetItemAs<FunctionType>(function));
+  ASSERT_EQ(type->params().size(), 1);
+  const SumType& sum = type->params()[0]->AsSum();
+  ASSERT_EQ(sum.variants().size(), 2);
+  EXPECT_TRUE(sum.variants()[0].is_unit());
+  ASSERT_EQ(sum.variants()[1].size(), 1);
+  EXPECT_EQ(sum.variants()[1].GetMemberType(0), *BitsType::MakeU1());
+  ASSERT_EQ(sum.parametric_arguments().size(), 1);
+  const Type& phantom =
+      *std::get<std::unique_ptr<const Type>>(sum.parametric_arguments()[0]);
+  EXPECT_THAT(phantom.GetTotalBitCount(), IsOkAndHolds(TypeDim::CreateU32(1)));
+}
+
+TEST(TypecheckV2Test, SemanticSumDoesNotExpandItsDirectPhantomTypeArgument) {
+  ImportData import_data = CreateImportDataForTest();
+  const std::string program = absl::Substitute(R"(
+#![feature(type_inference_v2)]
+#![feature(generics)]
+struct Pair<T: type> { a: T, b: T }
+enum Marker<T: type> { Empty, Only(u1) }
+fn consume(p: Marker<$0>) { () }
+)",
+                                               DeeplyNestedPairType());
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule result,
+      ParseAndTypecheck(program, "deep.x", "deep", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Function * function,
+      result.module->GetMemberOrError<Function>("consume"));
+  XLS_ASSERT_OK_AND_ASSIGN(FunctionType * type,
+                           result.type_info->GetItemAs<FunctionType>(function));
+  ASSERT_EQ(type->params().size(), 1);
+  const SumType& sum = type->params()[0]->AsSum();
+  ASSERT_EQ(sum.variants().size(), 2);
+  EXPECT_TRUE(sum.variants()[0].is_unit());
+  ASSERT_EQ(sum.variants()[1].size(), 1);
+  EXPECT_EQ(sum.variants()[1].GetMemberType(0), *BitsType::MakeU1());
+}
+
+TEST(TypecheckV2Test,
+     SemanticSumPhantomIdentityIgnoresOrdinaryResolutionOrder) {
+  constexpr std::string_view kProgram = R"(
+#![feature(generics)]
+struct Phantom<N: u32> { bit: u1 }
+enum Box<T: type> { Empty, Item(T) }
+$0
+$1
+)";
+  constexpr std::string_view kOrdinary = R"(
+fn ordinary(first: Phantom<u32:1>, second: Phantom<u32:2>) -> (u1, u1) {
+  (first.bit, second.bit)
+}
+)";
+  constexpr std::string_view kSums = R"(
+fn sums(first: Box<Phantom<u32:1>>, second: Box<Phantom<u32:2>>) { () }
+)";
+  for (bool ordinary_first : {true, false}) {
+    SCOPED_TRACE(ordinary_first);
+    XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result,
+                             TypecheckV2(absl::Substitute(
+                                 kProgram, ordinary_first ? kOrdinary : kSums,
+                                 ordinary_first ? kSums : kOrdinary)));
+    XLS_ASSERT_OK_AND_ASSIGN(
+        Function * ordinary,
+        result.tm.module->GetMemberOrError<Function>("ordinary"));
+    XLS_ASSERT_OK_AND_ASSIGN(
+        FunctionType * ordinary_type,
+        result.tm.type_info->GetItemAs<FunctionType>(ordinary));
+    ASSERT_EQ(ordinary_type->params().size(), 2);
+    EXPECT_EQ(*ordinary_type->params()[0], *ordinary_type->params()[1]);
+
+    XLS_ASSERT_OK_AND_ASSIGN(
+        Function * sums, result.tm.module->GetMemberOrError<Function>("sums"));
+    XLS_ASSERT_OK_AND_ASSIGN(
+        FunctionType * sum_type,
+        result.tm.type_info->GetItemAs<FunctionType>(sums));
+    ASSERT_EQ(sum_type->params().size(), 2);
+    EXPECT_NE(sum_type->params()[0]->AsSum(), sum_type->params()[1]->AsSum());
+  }
+}
+
+TEST(TypecheckV2Test, SemanticSumTypeArgumentsPreservePhantomStructBindings) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(generics)]
+struct Phantom<N: u32 = {u32:1}, T: type = u8> { bit: u1 }
+struct Container<T: type> { field: T }
+enum Box<T: type> { Empty, Item(T) }
+type Alias = Phantom<u32:1, u8>;
+
+fn first(x: Box<Phantom<u32:1, u8>>) { () }
+fn other_value(x: Box<Phantom<u32:2, u8>>) { () }
+fn other_type(x: Box<Phantom<u32:1, u16>>) { () }
+fn defaulted(x: Box<Phantom>) { () }
+fn aliased(x: Box<Alias>) { () }
+fn nested_first(x: Box<Container<(Phantom<u32:1, u8>[2],)>>) { () }
+fn nested_second(x: Box<Container<(Phantom<u32:2, u8>[2],)>>) { () }
+)"));
+  auto get_sum =
+      [&](std::string_view function_name) -> absl::StatusOr<const SumType*> {
+    XLS_ASSIGN_OR_RETURN(
+        Function * function,
+        result.tm.module->GetMemberOrError<Function>(function_name));
+    XLS_ASSIGN_OR_RETURN(
+        FunctionType * type,
+        result.tm.type_info->GetItemAs<FunctionType>(function));
+    return &type->params().at(0)->AsSum();
+  };
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* first, get_sum("first"));
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* other_value, get_sum("other_value"));
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* other_type, get_sum("other_type"));
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* defaulted, get_sum("defaulted"));
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* aliased, get_sum("aliased"));
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* nested_first,
+                           get_sum("nested_first"));
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* nested_second,
+                           get_sum("nested_second"));
+
+  EXPECT_NE(*first, *other_value);
+  EXPECT_NE(*first, *other_type);
+  EXPECT_NE(*nested_first, *nested_second);
+  EXPECT_EQ(*first, *defaulted);
+  EXPECT_EQ(*first, *aliased);
+  EXPECT_EQ(first->parametric_arguments_hash(),
+            defaulted->parametric_arguments_hash());
+  EXPECT_EQ(first->parametric_arguments_hash(),
+            aliased->parametric_arguments_hash());
+  EXPECT_EQ(*first, *first->CloneToUnique());
+
+  const auto& structure =
+      std::get<std::unique_ptr<const Type>>(first->parametric_arguments()[0])
+          ->AsStruct();
+  const auto& other_structure = std::get<std::unique_ptr<const Type>>(
+                                    other_value->parametric_arguments()[0])
+                                    ->AsStruct();
+  // General struct equality remains structural; sum arguments are stricter.
+  EXPECT_EQ(structure, other_structure);
+  EXPECT_EQ(HashTypeForSumCache(structure),
+            HashTypeForSumCache(other_structure));
+  EXPECT_NE(HashTypeForSumSpecialization(structure),
+            HashTypeForSumSpecialization(other_structure));
+  ASSERT_NE(structure.specialization_arguments(), nullptr);
+  const auto& arguments = *structure.specialization_arguments();
+  ASSERT_EQ(arguments.size(), 2);
+  EXPECT_EQ(std::get<InterpValue>(arguments[0]), InterpValue::MakeU32(1));
+  EXPECT_TRUE(
+      std::get<SpecializationTypePtr>(arguments[1])
+          ->SemanticEquals(*SpecializationType::FromType(*BitsType::MakeU8())));
+  std::unique_ptr<Type> clone = structure.CloneToUnique();
+  EXPECT_EQ(&arguments,
+            clone->AsStruct().shared_specialization_arguments().get());
+}
+
+TEST(TypecheckV2Test, SemanticSumTypeArgumentsPreserveSumValuedStructBindings) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(generics)]
+enum Choice { None, Some(u8) }
+fn derive<V: Choice>() -> u32 { u32:1 }
+struct Phantom<V: Choice, N: u32 = {derive<V>()}> { bit: u1 }
+enum Marker<T: type> { Only() }
+enum ValueMarker<V: Choice> { Only() }
+struct Uses<V: Choice> { field: ValueMarker<V> }
+type None = Phantom<{Choice::None}>;
+type Three = Phantom<{Choice::Some(u8:3)}>;
+type AlsoThree = Phantom<{Choice::Some(u8:3)}>;
+
+fn records(none: Marker<None>, three: Marker<Three>,
+           also_three: Marker<AlsoThree>) { () }
+fn substitution(x: Uses<{Choice::Some(u8:3)}>,
+                expected: ValueMarker<{Choice::Some(u8:3)}>) { () }
+)"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Function * records,
+      result.tm.module->GetMemberOrError<Function>("records"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * record_type,
+      result.tm.type_info->GetItemAs<FunctionType>(records));
+  ASSERT_EQ(record_type->params().size(), 3);
+  const SumType& none = record_type->params()[0]->AsSum();
+  const SumType& three = record_type->params()[1]->AsSum();
+  const SumType& also_three = record_type->params()[2]->AsSum();
+  EXPECT_NE(none, three);
+  EXPECT_EQ(three, also_three);
+  EXPECT_EQ(three.parametric_arguments_hash(),
+            also_three.parametric_arguments_hash());
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Function * substitution,
+      result.tm.module->GetMemberOrError<Function>("substitution"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * substitution_type,
+      result.tm.type_info->GetItemAs<FunctionType>(substitution));
+  ASSERT_EQ(substitution_type->params().size(), 2);
+  const StructType& uses = substitution_type->params()[0]->AsStruct();
+  ASSERT_EQ(uses.members().size(), 1);
+  EXPECT_EQ(uses.members()[0]->AsSum(),
+            substitution_type->params()[1]->AsSum());
+}
+
+TEST(TypecheckV2Test, SemanticSumTypeArgumentsUseOpaqueProcIdentity) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(explicit_state_access)]
+#![feature(generics)]
+proc P {}
+proc Other {}
+type FirstProc = P;
+type RepeatedProc = P;
+type ProcAlias = FirstProc;
+type OtherProc = Other;
+enum Marker<T: type> { Empty, Only(u1) }
+
+fn first(x: Marker<FirstProc>) { () }
+fn repeated(x: Marker<RepeatedProc>) { () }
+fn aliased(x: Marker<ProcAlias>) { () }
+fn other(x: Marker<OtherProc>) { () }
+)"));
+  auto get_sum =
+      [&](std::string_view function_name) -> absl::StatusOr<const SumType*> {
+    XLS_ASSIGN_OR_RETURN(
+        Function * function,
+        result.tm.module->GetMemberOrError<Function>(function_name));
+    XLS_ASSIGN_OR_RETURN(
+        FunctionType * type,
+        result.tm.type_info->GetItemAs<FunctionType>(function));
+    return &type->params().at(0)->AsSum();
+  };
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* first, get_sum("first"));
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* repeated, get_sum("repeated"));
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* aliased, get_sum("aliased"));
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* other, get_sum("other"));
+
+  EXPECT_EQ(*first, *repeated);
+  EXPECT_EQ(*first, *aliased);
+  EXPECT_EQ(first->parametric_arguments_hash(),
+            repeated->parametric_arguments_hash());
+  EXPECT_EQ(first->parametric_arguments_hash(),
+            aliased->parametric_arguments_hash());
+  EXPECT_NE(*first, *other);
+  EXPECT_EQ(*first, *first->CloneToUnique());
+
+  const ProcType& proc =
+      std::get<std::unique_ptr<const Type>>(first->parametric_arguments()[0])
+          ->AsProc();
+  const ProcType& other_proc =
+      std::get<std::unique_ptr<const Type>>(other->parametric_arguments()[0])
+          ->AsProc();
+  EXPECT_NE(&proc.nominal_type(), &other_proc.nominal_type());
+  ASSERT_NE(proc.specialization_arguments(), nullptr);
+  EXPECT_TRUE(proc.specialization_arguments()->empty());
+  const auto retained_arguments = proc.shared_specialization_arguments();
+  ASSERT_NE(retained_arguments, nullptr);
+  std::unique_ptr<Type> clone = proc.CloneToUnique();
+  EXPECT_EQ(retained_arguments.get(),
+            clone->AsProc().shared_specialization_arguments().get());
+  clone.reset();
+  EXPECT_TRUE(retained_arguments->empty());
+
+  std::vector<NominalParametricArgument> unknown_arguments;
+  unknown_arguments.emplace_back(std::make_unique<ProcType>(
+      std::vector<std::unique_ptr<Type>>{}, proc.nominal_type()));
+  EXPECT_TRUE(first->HasSameParametricArguments(unknown_arguments));
+  EXPECT_EQ(first->parametric_arguments_hash(),
+            SumType::HashParametricArguments(unknown_arguments));
+}
+
+TEST(TypecheckV2Test, SemanticSumTypeArgumentsPreservePhantomProcBindings) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(explicit_state_access)]
+#![feature(generics)]
+proc Phantom<N: u32 = {u32:1}, T: type = u8> {}
+type FirstProc = Phantom<u32:1, u8>;
+type OtherValueProc = Phantom<u32:2, u8>;
+type OtherTypeProc = Phantom<u32:1, u16>;
+type DefaultedProc = Phantom;
+type ProcAlias = FirstProc;
+enum Marker<T: type> { Empty, Only(u1) }
+
+fn first(x: Marker<FirstProc>) { () }
+fn other_value(x: Marker<OtherValueProc>) { () }
+fn other_type(x: Marker<OtherTypeProc>) { () }
+fn defaulted(x: Marker<DefaultedProc>) { () }
+fn aliased(x: Marker<ProcAlias>) { () }
+)"));
+  auto get_sum =
+      [&](std::string_view function_name) -> absl::StatusOr<const SumType*> {
+    XLS_ASSIGN_OR_RETURN(
+        Function * function,
+        result.tm.module->GetMemberOrError<Function>(function_name));
+    XLS_ASSIGN_OR_RETURN(
+        FunctionType * type,
+        result.tm.type_info->GetItemAs<FunctionType>(function));
+    return &type->params().at(0)->AsSum();
+  };
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* first, get_sum("first"));
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* other_value, get_sum("other_value"));
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* other_type, get_sum("other_type"));
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* defaulted, get_sum("defaulted"));
+  XLS_ASSERT_OK_AND_ASSIGN(const SumType* aliased, get_sum("aliased"));
+
+  EXPECT_NE(*first, *other_value);
+  EXPECT_NE(*first, *other_type);
+  EXPECT_EQ(*first, *defaulted);
+  EXPECT_EQ(*first, *aliased);
+  EXPECT_EQ(first->parametric_arguments_hash(),
+            defaulted->parametric_arguments_hash());
+  EXPECT_EQ(first->parametric_arguments_hash(),
+            aliased->parametric_arguments_hash());
+
+  const ProcType& proc =
+      std::get<std::unique_ptr<const Type>>(first->parametric_arguments()[0])
+          ->AsProc();
+  ASSERT_NE(proc.specialization_arguments(), nullptr);
+  const auto& arguments = *proc.specialization_arguments();
+  ASSERT_EQ(arguments.size(), 2);
+  EXPECT_EQ(std::get<InterpValue>(arguments[0]), InterpValue::MakeU32(1));
+  EXPECT_TRUE(
+      std::get<SpecializationTypePtr>(arguments[1])
+          ->SemanticEquals(*SpecializationType::FromType(*BitsType::MakeU8())));
+  std::unique_ptr<Type> clone = proc.CloneToUnique();
+  EXPECT_EQ(&arguments,
+            clone->AsProc().shared_specialization_arguments().get());
+}
+
 TEST(TypecheckV2Test, TaggedSemanticSumWithUnusedTypeBinding) {
   XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
 #![feature(generics)]

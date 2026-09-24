@@ -1265,6 +1265,51 @@ TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
   EXPECT_EQ(EnumTypeProto::kMembersFieldNumber, 4);
 }
 
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       PhantomTypeArgumentsStillSerializeCompleteStructMembers) {
+  constexpr std::string_view kProgram = R"(#![feature(generics)]
+struct Pair<T: type> { a: T, b: T }
+enum Marker<T: type> { Only(u1) }
+fn identity(value: Marker<Pair<Pair<u8>>>) -> Marker<Pair<Pair<u8>>> { value }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "fake.x", "fake", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto proto,
+                           TypeInfoToProto(*tm.type_info, tm.module));
+  const AstNodeTypeInfoProto* parameter = FindParameterNode(proto);
+  ASSERT_NE(parameter, nullptr);
+  ASSERT_TRUE(parameter->type().has_sum_type());
+  ASSERT_EQ(parameter->type().sum_type().parametric_arguments_size(), 1);
+  const TypeProto& argument =
+      parameter->type().sum_type().parametric_arguments(0).type();
+  ASSERT_TRUE(argument.has_struct_type());
+  ASSERT_EQ(argument.struct_type().members_size(), 2);
+  for (const TypeProto& inner : argument.struct_type().members()) {
+    ASSERT_TRUE(inner.has_struct_type());
+    ASSERT_EQ(inner.struct_type().members_size(), 2);
+    for (const TypeProto& leaf : inner.struct_type().members()) {
+      EXPECT_TRUE(leaf.has_bits_type());
+    }
+  }
+  XLS_ASSERT_OK(
+      ToHumanString(*parameter, import_data, import_data.file_table()));
+
+  AstNodeTypeInfoProto truncated = *parameter;
+  truncated.mutable_type()
+      ->mutable_sum_type()
+      ->mutable_parametric_arguments(0)
+      ->mutable_type()
+      ->mutable_struct_type()
+      ->mutable_members(0)
+      ->mutable_struct_type()
+      ->mutable_members()
+      ->RemoveLast();
+  EXPECT_FALSE(
+      ToHumanString(truncated, import_data, import_data.file_table()).ok());
+}
+
 // These are legal source types with 8 (unary) or 8+depth (binary) packed bits.
 // The non-generic outer case also invokes source-backed payload comparisons in
 // the reader, which must preserve sharing as well as decoding each ID once.
