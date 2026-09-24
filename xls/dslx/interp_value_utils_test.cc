@@ -1264,6 +1264,107 @@ TEST(InterpValueHelpersTest, ValueToInterpValueEnum) {
                   UBits(3, 32), /*is_signed=*/false, &enum_def))));
 }
 
+TEST(InterpValueHelpersTest, UnflattenUsesOneSumPayloadAndPreservesRawBits) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumType sum_type = MakeMixedPayloadSumType(module);
+
+  const auto packed_sum = [](int64_t tag, int64_t payload) {
+    return internal::CreateEncodedSumTuple(InterpValue::MakeUBits(2, tag),
+                                           InterpValue::MakeUBits(16, payload));
+  };
+  EXPECT_THAT(internal::UnflattenValueForType(sum_type, UBits(0, 18)),
+              IsOkAndHolds(packed_sum(/*tag=*/0, /*payload=*/0)));
+  // The Byte constructor uses only eight bits; its existing padding survives.
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue byte, internal::UnflattenValueForType(
+                                                 sum_type, UBits(0x1ab5a, 18)));
+  EXPECT_EQ(byte, packed_sum(/*tag=*/1, /*payload=*/0xab5a));
+  XLS_ASSERT_OK_AND_ASSIGN(internal::EncodedSumView byte_view,
+                           internal::GetEncodedSumView(byte));
+  EXPECT_TRUE(byte_view.tag.IsUBits());
+  EXPECT_TRUE(byte_view.payload_slot.IsUBits());
+  EXPECT_THAT(internal::UnflattenValueForType(sum_type, UBits(0x2beef, 18)),
+              IsOkAndHolds(packed_sum(/*tag=*/2, /*payload=*/0xbeef)));
+  // Decoding also transports undeclared tags without observing them.
+  EXPECT_THAT(internal::UnflattenValueForType(sum_type, UBits(0x3ffff, 18)),
+              IsOkAndHolds(packed_sum(/*tag=*/3, /*payload=*/0xffff)));
+  EXPECT_THAT(internal::UnflattenValueForType(sum_type, UBits(0, 17)),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("expected 18 bits; got 17")));
+  EXPECT_THAT(internal::UnflattenValueForType(sum_type, UBits(0, 19)),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("expected 18 bits; got 19")));
+}
+
+TEST(InterpValueHelpersTest, UnflattenNestedSumTupleIsMostSignificantFirst) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumType sum_type = MakeMixedPayloadSumType(module);
+  std::vector<std::unique_ptr<Type>> members;
+  members.push_back(std::make_unique<BitsType>(/*is_signed=*/true, 4));
+  members.push_back(sum_type.CloneToUnique());
+  members.push_back(std::make_unique<BitsType>(/*is_signed=*/false, 1));
+  TupleType tuple(std::move(members));
+
+  // The tuple stores [s4, tag2, payload16, u1], from MSB to LSB.
+  const Bits bits = UBits((0xdu << 19) | (1u << 17) | (0xa5u << 1) | 1u, 23);
+  InterpValue expected = InterpValue::MakeTuple(
+      {InterpValue::MakeSBits(4, -3),
+       internal::CreateEncodedSumTuple(InterpValue::MakeUBits(2, 1),
+                                       InterpValue::MakeUBits(16, 0xa5)),
+       InterpValue::MakeBool(true)});
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue actual,
+                           internal::UnflattenValueForType(tuple, bits));
+  EXPECT_EQ(actual, expected);
+  EXPECT_TRUE(actual.GetValuesOrDie().front().IsSBits());
+}
+
+TEST(InterpValueHelpersTest, UnflattenNestedSumArrayIsLeastSignificantFirst) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumType sum_type = MakeMixedPayloadSumType(module);
+  ArrayType array(sum_type.CloneToUnique(), TypeDim::CreateU32(2));
+
+  // Each element is [tag2, payload16]; element zero occupies the low 18 bits.
+  const Bits bits = UBits((uint64_t{2} << 34) | (uint64_t{0xbeef} << 18) |
+                              (uint64_t{1} << 16) | 0x5a,
+                          36);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue expected,
+      InterpValue::MakeArray(
+          {internal::CreateEncodedSumTuple(InterpValue::MakeUBits(2, 1),
+                                           InterpValue::MakeUBits(16, 0x5a)),
+           internal::CreateEncodedSumTuple(
+               InterpValue::MakeUBits(2, 2),
+               InterpValue::MakeUBits(16, 0xbeef))}));
+  EXPECT_THAT(internal::UnflattenValueForType(array, bits),
+              IsOkAndHolds(expected));
+}
+
+TEST(InterpValueHelpersTest, UnflattenOrdinaryLeavesPreservesTheirType) {
+  const InterpValue unsigned_value = InterpValue::MakeUBits(8, 0x5a);
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue flat, unsigned_value.Flatten());
+  EXPECT_THAT(
+      internal::UnflattenValueForType(*BitsType::MakeU8(), flat.GetBitsOrDie()),
+      IsOkAndHolds(unsigned_value));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue token, internal::UnflattenValueForType(TokenType(), Bits(0)));
+  EXPECT_TRUE(token.IsToken());
+
+  EnumDef enum_def(/*owner=*/nullptr, /*span=*/Span::Fake(),
+                   /*name_def=*/nullptr, /*type=*/{}, /*values=*/{},
+                   /*is_public=*/false);
+  EnumType enum_type(enum_def, TypeDim::CreateU32(2), /*is_signed=*/true, {});
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue enum_value,
+      internal::UnflattenValueForType(enum_type, UBits(3, 2)));
+  std::optional<InterpValue::EnumData> enum_data = enum_value.GetEnumData();
+  ASSERT_TRUE(enum_data.has_value());
+  EXPECT_EQ(enum_data->value, UBits(3, 2));
+  EXPECT_TRUE(enum_data->is_signed);
+  EXPECT_EQ(enum_data->def, &enum_def);
+}
+
 TEST(InterpValueHelpersTest, GetLeafChannelReferences) {
   InterpValue ch0 = InterpValue::MakeChannelReference(ChannelDirection::kIn, 0);
   InterpValue ch1 = InterpValue::MakeChannelReference(ChannelDirection::kIn, 1);
