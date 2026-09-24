@@ -642,6 +642,26 @@ fn f(value: Message) -> Message {
   EXPECT_THAT(sum_type->GetDiscriminant(1).GetBitCount(), IsOkAndHolds(1));
 }
 
+TEST(TypecheckV2Test, UntaggedSemanticSumUsesUnsignedTagForNonnegativeValues) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+enum Message {
+  Idle() = s32:0,
+  Ready() = s32:1,
+}
+fn f(value: Message) -> Message { value }
+)"));
+  Function* function = result.tm.module->GetFunction("f").value();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  const auto* sum_type =
+      dynamic_cast<const SumType*>(function_type->params().at(0).get());
+  ASSERT_NE(sum_type, nullptr);
+  EXPECT_THAT(sum_type->tag_bit_count().GetAsInt64(), IsOkAndHolds(1));
+  EXPECT_FALSE(sum_type->GetDiscriminant(1).IsSigned());
+  EXPECT_THAT(sum_type->GetDiscriminant(1).GetBitCount(), IsOkAndHolds(1));
+}
+
 TEST(TypecheckV2Test, UntaggedSemanticSumInfersMinimumSignedDiscriminantWidth) {
   XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
 enum Message {
@@ -830,9 +850,38 @@ enum InvalidPayload {
           "Semantic sum constructor `Token` cannot contain a token payload.")));
 }
 
+TEST(TypecheckV2Test, SemanticSumRejectsNestedTokenPayload) {
+  EXPECT_THAT(
+      R"(
+struct TokenHolder {
+  item: token,
+}
+
+enum InvalidPayload {
+  None,
+  Nested(TokenHolder),
+}
+)",
+      TypecheckFails(HasSubstr("Semantic sum constructor `Nested` cannot "
+                               "contain a token payload.")));
+}
+
 TEST(TypecheckV2Test, SemanticSumRejectsChannelHandlePayloadBeforeMatching) {
   EXPECT_THAT(R"(
 enum E { Carry(chan<u8> in) }
+fn f(x: E) -> bool {
+  match x { E::Carry(_) => true }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "Semantic sum constructor `Carry` cannot contain a channel "
+                  "handle payload.")));
+}
+
+TEST(TypecheckV2Test, SemanticSumRejectsNestedChannelHandlePayload) {
+  EXPECT_THAT(R"(
+struct Handles { outputs: chan<u8>[2] out }
+enum E { Carry((u8, Handles)) }
 fn f(x: E) -> bool {
   match x { E::Carry(_) => true }
 }
