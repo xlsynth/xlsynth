@@ -36,6 +36,7 @@
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
 #include "gtest/gtest_prod.h"
+#include "xls/dslx/channel_direction.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
@@ -160,6 +161,23 @@ class AstGenerator {
                                            const std::string& module_name);
 
  private:
+  struct RequiredSumType {
+    SumDef* sum_def;
+    SumVariant* unit_variant;
+    SumVariant* active_variant;
+    std::optional<TypeAnnotation*> active_payload_type;
+  };
+
+  enum class RequiredProcSumBoundary : uint8_t {
+    kState,
+    kOutputChannel,
+  };
+
+  struct RequiredProcSumInput {
+    TypedExpr token;
+    TypedExpr payload;
+  };
+
   // We include RNG helper functions to help simplify circumstances where the
   // Abseil Random library does not provide native interfaces (e.g., choosing a
   // random item from a list of choices, or picking a random integer from a
@@ -628,6 +646,15 @@ class AstGenerator {
   // scalar expectations for constructor equality and payload extraction.
   absl::StatusOr<TypedExpr> GenerateRequiredSumResult(
       Context* ctx, std::vector<Statement*>* statements);
+  RequiredSumType& GetOrCreateRequiredSumType();
+  TypeRefTypeAnnotation* MakeRequiredSumTypeAnnotation();
+  absl::StatusOr<NameRef*> GenerateProcChannel(ChannelDirection direction,
+                                               TypeAnnotation* payload_type);
+  absl::StatusOr<RequiredProcSumInput> GenerateRequiredProcSumInput(
+      Context* ctx, std::vector<Statement*>* statements);
+  absl::Status GenerateRequiredProcSumOutput(
+      Context* ctx, std::vector<Statement*>* statements, const TypedExpr& token,
+      const TypedExpr& payload);
 
   TypeRefTypeAnnotation* MakeImportedSumTypeAnnotation();
 
@@ -822,6 +849,8 @@ class AstGenerator {
   absl::flat_hash_map<std::string, int64_t> type_bit_counts_;
 
   bool generated_required_sum_ = false;
+  std::optional<RequiredSumType> required_sum_type_;
+  std::optional<RequiredProcSumBoundary> required_proc_sum_boundary_;
 
   // Set of constants defined during module generation.
   absl::btree_map<std::string, ConstantDef*> constants_;
