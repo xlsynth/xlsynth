@@ -134,6 +134,40 @@ void ValidateSumTypeVariantPayload(
   }
 }
 
+absl::StatusOr<TypeDim> ComputeSharedSumPayloadMemberBitCount(
+    absl::Span<const std::unique_ptr<Type>> members) {
+  TypeDim bit_count = TypeDim::CreateU32(0);
+  for (const auto& member : members) {
+    XLS_ASSIGN_OR_RETURN(TypeDim member_bit_count,
+                         internal::GetBitCountWithSharedSumPayload(*member));
+    XLS_ASSIGN_OR_RETURN(bit_count, bit_count.Add(member_bit_count));
+  }
+  return bit_count;
+}
+
+absl::StatusOr<uint32_t> ComputeMaxSumPayloadBitCount(
+    absl::Span<const SumTypeVariant> variants) {
+  TypeDim payload_bit_count = TypeDim::CreateU32(0);
+  for (const SumTypeVariant& variant : variants) {
+    TypeDim variant_bits = TypeDim::CreateU32(0);
+    for (int64_t i = 0; i < variant.size(); ++i) {
+      XLS_ASSIGN_OR_RETURN(
+          TypeDim member_bits,
+          internal::GetBitCountWithSharedSumPayload(variant.GetMemberType(i)));
+      XLS_ASSIGN_OR_RETURN(variant_bits, variant_bits.Add(member_bits));
+    }
+    XLS_ASSIGN_OR_RETURN(InterpValue variant_is_wider,
+                         variant_bits.value().Gt(payload_bit_count.value()));
+    if (variant_is_wider.IsTrue()) {
+      payload_bit_count = std::move(variant_bits);
+    }
+  }
+  // Variant widths accumulate as u32 TypeDims, so the successful maximum is
+  // losslessly representable without retaining a full InterpValue.
+  XLS_ASSIGN_OR_RETURN(int64_t bit_count, payload_bit_count.GetAsInt64());
+  return static_cast<uint32_t>(bit_count);
+}
+
 // These hashes only narrow the sum cache's semantic comparisons. In particular,
 // InterpValue equality compares bit patterns across bits and enum value tags.
 size_t HashSumArgumentValue(const InterpValue& value) {
@@ -860,6 +894,7 @@ SumType::Data::Data(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
                     std::vector<ParametricArgument> parametric_arguments)
     : sum_def(sum_def),
       variants(std::move(variants)),
+      max_payload_bit_count(ComputeMaxSumPayloadBitCount(this->variants)),
       tag_bit_count(tag_bit_count.value_or(TypeDim::CreateU32(
           this->variants.size() <= 1
               ? 0
@@ -1083,6 +1118,12 @@ std::vector<TypeDim> SumType::GetAllDims() const {
     }
   }
   return results;
+}
+
+absl::StatusOr<TypeDim> SumType::GetMaxPayloadBitCount() const {
+  XLS_ASSIGN_OR_RETURN(uint32_t payload_bit_count,
+                       data_->max_payload_bit_count);
+  return TypeDim::CreateU32(payload_bit_count);
 }
 
 absl::StatusOr<TypeDim> SumType::GetTotalBitCount() const {
@@ -1626,5 +1667,37 @@ absl::StatusOr<bool> TypeIsInhabited(const Type& type) {
   SumInhabitanceMemo inhabited_sums;
   return TypeIsInhabitedInternal(type, inhabited_sums);
 }
+
+namespace internal {
+
+absl::StatusOr<TypeDim> GetBitCountWithSharedSumPayload(const Type& type) {
+  if (const auto* sum = dynamic_cast<const SumType*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(TypeDim payload_bit_count,
+                         sum->GetMaxPayloadBitCount());
+    return sum->tag_bit_count().Add(payload_bit_count);
+  } else if (const auto* structure =
+                 dynamic_cast<const StructTypeBase*>(&type)) {
+    return ComputeSharedSumPayloadMemberBitCount(structure->members());
+  } else if (const auto* tuple = dynamic_cast<const TupleType*>(&type)) {
+    return ComputeSharedSumPayloadMemberBitCount(tuple->members());
+  } else if (const auto* array = dynamic_cast<const ArrayType*>(&type)) {
+    if (IsBitsConstructor(array->element_type())) {
+      return array->size();
+    } else {
+      XLS_ASSIGN_OR_RETURN(
+          TypeDim element_bit_count,
+          GetBitCountWithSharedSumPayload(array->element_type()));
+      return element_bit_count.Mul(array->size());
+    }
+  } else if (const auto* function = dynamic_cast<const FunctionType*>(&type)) {
+    return ComputeSharedSumPayloadMemberBitCount(function->params());
+  } else if (const auto* channel = dynamic_cast<const ChannelType*>(&type)) {
+    return GetBitCountWithSharedSumPayload(channel->payload_type());
+  } else {
+    return type.GetTotalBitCount();
+  }
+}
+
+}  // namespace internal
 
 }  // namespace xls::dslx

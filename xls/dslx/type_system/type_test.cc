@@ -100,6 +100,24 @@ class EqualityCountingBitsType : public BitsType {
   int64_t& comparison_count_;
 };
 
+class WidthCountingBitsType : public BitsType {
+ public:
+  explicit WidthCountingBitsType(int64_t& width_queries)
+      : BitsType(false, 1), width_queries_(width_queries) {}
+
+  absl::StatusOr<TypeDim> GetTotalBitCount() const override {
+    ++width_queries_;
+    return BitsType::GetTotalBitCount();
+  }
+
+  std::unique_ptr<Type> CloneToUnique() const override {
+    return std::make_unique<WidthCountingBitsType>(width_queries_);
+  }
+
+ private:
+  int64_t& width_queries_;
+};
+
 // Creates tuple constructors whose members are u8. Concrete payload Types are
 // supplied separately by the tests, including deliberately invalid dimensions.
 SumDef* CreateTupleSumDef(Module& module,
@@ -330,6 +348,105 @@ TEST(TypeTest, EmptyStructTypeIsNotUnit) {
   EXPECT_EQ(s.ToString(), "S {}");
   EXPECT_EQ(s.ToInlayHintString(), "S");
   EXPECT_EQ(s.ToStringFullyQualified(file_table), "relpath/to/test.x:S {}");
+}
+
+TEST(TypeTest, SharedSumPayloadWidthUsesMaximumRecursively) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  auto make_choice = [&](std::unique_ptr<Type> left,
+                         std::unique_ptr<Type> right, int64_t tag_bits) {
+    SumDef* def = CreateTupleSumDef(module, {1, 1});
+    std::vector<SumTypeVariant> variants;
+    std::vector<std::unique_ptr<Type>> first;
+    first.push_back(std::move(left));
+    variants.push_back(
+        SumTypeVariant::MakeTuple(*def->variants()[0], std::move(first)));
+    std::vector<std::unique_ptr<Type>> second;
+    second.push_back(std::move(right));
+    variants.push_back(
+        SumTypeVariant::MakeTuple(*def->variants()[1], std::move(second)));
+    return SumType(*def, std::move(variants), TypeDim::CreateU32(tag_bits));
+  };
+  SumType different =
+      make_choice(BitsType::MakeU8(), std::make_unique<BitsType>(false, 16), 1);
+  EXPECT_THAT(different.GetMaxPayloadBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(16)));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(different),
+              IsOkAndHolds(TypeDim::CreateU32(17)));
+
+  SumType inner = make_choice(BitsType::MakeU8(), BitsType::MakeU8(), 1);
+  SumType outer =
+      make_choice(TupleType::Create2(inner.CloneToUnique(), BitsType::MakeU8()),
+                  BitsType::MakeU8(), 3);
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(inner),
+              IsOkAndHolds(TypeDim::CreateU32(9)));
+  EXPECT_THAT(outer.GetMaxPayloadBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(17)));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(outer),
+              IsOkAndHolds(TypeDim::CreateU32(20)));
+
+  ArrayType array(inner.CloneToUnique(), TypeDim::CreateU32(2));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(array),
+              IsOkAndHolds(TypeDim::CreateU32(18)));
+  StructType shape = CreateSimpleStruct(module);
+  std::vector<std::unique_ptr<Type>> fields;
+  fields.push_back(array.CloneToUnique());
+  fields.push_back(BitsType::MakeU1());
+  StructType structure(std::move(fields), shape.nominal_type());
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(structure),
+              IsOkAndHolds(TypeDim::CreateU32(19)));
+  ArrayType bits(
+      std::make_unique<BitsConstructorType>(TypeDim::CreateBool(true)),
+      TypeDim::CreateU32(5));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(bits),
+              IsOkAndHolds(TypeDim::CreateU32(5)));
+
+  SumDef* empty_def = CreateTupleSumDef(module, {});
+  SumType empty(*empty_def, {});
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(empty),
+              IsOkAndHolds(TypeDim::CreateU32(0)));
+  ArrayType empty_array(inner.CloneToUnique(), TypeDim::CreateU32(0));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(empty_array),
+              IsOkAndHolds(TypeDim::CreateU32(0)));
+}
+
+TEST(TypeTest, SharedSumPayloadWidthReusesDescriptionsAndPreservesErrors) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumDef* def = CreateTupleSumDef(module, {1, 1});
+  auto wrap = [&](const Type& type) {
+    std::vector<SumTypeVariant> variants;
+    for (const SumVariant* variant : def->variants()) {
+      std::vector<std::unique_ptr<Type>> members;
+      members.push_back(type.CloneToUnique());
+      variants.push_back(
+          SumTypeVariant::MakeTuple(*variant, std::move(members)));
+    }
+    return std::make_unique<SumType>(*def, std::move(variants));
+  };
+
+  int64_t width_queries = 0;
+  std::unique_ptr<Type> current =
+      std::make_unique<WidthCountingBitsType>(width_queries);
+  for (int64_t depth = 0; depth < 12; ++depth) {
+    current = wrap(*current);
+  }
+  EXPECT_EQ(width_queries, 2);
+  for (int64_t i = 0; i < 2; ++i) {
+    EXPECT_THAT(
+        internal::GetBitCountWithSharedSumPayload(*current->CloneToUnique()),
+        IsOkAndHolds(TypeDim::CreateU32(13)));
+  }
+  EXPECT_EQ(width_queries, 2);
+
+  ArrayType invalid(BitsType::MakeU1(), TypeDim(InterpValue::MakeTuple({})));
+  absl::Status expected = invalid.GetTotalBitCount().status();
+  ASSERT_FALSE(expected.ok());
+  std::unique_ptr<SumType> invalid_sum = wrap(invalid);
+  EXPECT_EQ(invalid_sum->GetMaxPayloadBitCount().status(), expected);
+  EXPECT_EQ(
+      internal::GetBitCountWithSharedSumPayload(*wrap(*invalid_sum)).status(),
+      expected);
 }
 
 // N0 has no values and both alternatives of Ni contain the same Ni-1

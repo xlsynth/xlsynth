@@ -931,6 +931,8 @@ class SumType : public Type {
   bool IsAggregate() const override { return true; }
 
   std::vector<TypeDim> GetAllDims() const override;
+  // Reuses the width or error stored with the immutable shared description.
+  absl::StatusOr<TypeDim> GetMaxPayloadBitCount() const;
   absl::StatusOr<TypeDim> GetTotalBitCount() const override;
   std::string GetDebugTypeName() const override { return "sum"; }
   std::unique_ptr<Type> CloneToUnique() const override;
@@ -960,6 +962,8 @@ class SumType : public Type {
 
     const SumDef& sum_def;
     std::vector<SumTypeVariant> variants;
+    // Keep width errors queryable without rejecting description construction.
+    absl::StatusOr<uint32_t> max_payload_bit_count;
     TypeDim tag_bit_count;
     std::vector<InterpValue> discriminants;
     std::vector<ParametricArgument> parametric_arguments;
@@ -1389,6 +1393,14 @@ absl::StatusOr<bool> TypeIsInhabited(const Type& type);
 // Returns whether every payload member of a semantic-sum constructor can hold
 // a value.
 absl::StatusOr<bool> SumVariantIsInhabited(const SumTypeVariant& variant);
+
+namespace internal {
+
+// Returns the flattened width when each semantic sum uses its tag and only
+// the widest of its payloads, including sums nested in other types.
+absl::StatusOr<TypeDim> GetBitCountWithSharedSumPayload(const Type& type);
+
+}  // namespace internal
 
 }  // namespace xls::dslx
 
