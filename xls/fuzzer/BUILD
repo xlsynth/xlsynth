@@ -1171,6 +1171,7 @@ cc_test(
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info",
         "//xls/ir:bits",
+        "@abseil-cpp//absl/container:flat_hash_set",
         "@abseil-cpp//absl/status:status_matchers",
         "@googletest//:gtest",
     ],
