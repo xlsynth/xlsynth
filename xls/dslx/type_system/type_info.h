@@ -332,11 +332,20 @@ class TypeInfo {
 
   // Sets the type associated with the given AST node.
   void SetItem(const AstNode* key, const Type& value) {
+    lazy_specialization_types_.erase(key);
     dict_[key] = value.CloneToUnique();
   }
   void SetItem(const AstNode* key, std::unique_ptr<Type> value) {
+    lazy_specialization_types_.erase(key);
     dict_[key] = std::move(value);
   }
+
+  // Replaces the type associated with the given AST node with an immutable
+  // specialization shape. GetItem() materializes an independently mutable Type
+  // for this node, wrapped in MetaType if requested.
+  void SetLazySpecializationType(const AstNode* key,
+                                 SpecializationTypeShapePtr shape,
+                                 bool is_meta);
 
   // Used by type inference to set the resolved data for a `ProcAlias`.
   void SetResolvedProcAlias(const ProcAlias* alias,
@@ -514,12 +523,10 @@ class TypeInfo {
     return GetRoot()->imports();
   }
 
-  // Returns a reference to the underlying mapping that associates an AST node
-  // with its deduced type.
+  // Returns a reference to the local mapping that associates an AST node with
+  // its deduced type, materializing any pending specialization types.
   const absl::flat_hash_map<const AstNode*, std::unique_ptr<Type>>& dict()
-      const {
-    return dict_;
-  }
+      const;
 
   absl::flat_hash_map<const Function*, std::vector<const Function*>>
   GetFunctionCallGraph(const Module* module = nullptr) const;
@@ -543,6 +550,13 @@ class TypeInfo {
 
  private:
   friend class TypeInfoOwner;
+
+  struct LazySpecializationType {
+    SpecializationTypeShapePtr shape;
+    bool is_meta;
+
+    std::unique_ptr<Type> Materialize() const;
+  };
 
   void InsertInvocationData(const Invocation& invocation,
                             std::unique_ptr<InvocationData> data);
@@ -575,8 +589,11 @@ class TypeInfo {
 
   // Node to type mapping -- this is present on "derived" type info (i.e. for
   // instantiated parametric type info) as well as the root type information for
-  // a module.
-  absl::flat_hash_map<const AstNode*, std::unique_ptr<Type>> dict_;
+  // a module. A local entry is in either the materialized map or the lazy map;
+  // const queries may move entries into the materialized map.
+  mutable absl::flat_hash_map<const AstNode*, std::unique_ptr<Type>> dict_;
+  mutable absl::flat_hash_map<const AstNode*, LazySpecializationType>
+      lazy_specialization_types_;
 
   // Node to constexpr-value mapping -- this is also present on "derived" type
   // info as constexprs take on different values in different parametric
