@@ -664,7 +664,9 @@ void TypeInfo::InsertInvocationData(const Invocation& invocation,
 absl::Status TypeInfo::AddInvocation(const Invocation& invocation,
                                      const Function* callee,
                                      const Function* caller,
-                                     TypeInfo* derived_type_info) {
+                                     TypeInfo* derived_type_info,
+                                     const AstNode* caller_parametric_owner) {
+  const TypeInfo* caller_type_info = this;
   // We keep most instantiation info on the top-level type info. The "context
   // stack" doesn't matter so it creates a more understandable tree to flatten
   // it all against the top level. The exception is impl functions, because if
@@ -688,16 +690,25 @@ absl::Status TypeInfo::AddInvocation(const Invocation& invocation,
                            .callee_bindings = {},
                            .caller_bindings = {},
                            .derived_type_info = derived_type_info,
-                           .invocation = &invocation});
+                           .invocation = &invocation,
+                           .caller_type_info = caller_type_info,
+                           .caller_parametric_owner = caller_parametric_owner});
   return absl::OkStatus();
 }
 
-absl::Status TypeInfo::AddInvocationTypeInfo(const Invocation& invocation,
-                                             const Function* callee,
-                                             const Function* caller,
-                                             const ParametricEnv& caller_env,
-                                             const ParametricEnv& callee_env,
-                                             TypeInfo* derived_type_info) {
+absl::Status TypeInfo::AddInvocationTypeInfo(
+    const Invocation& invocation, const Function* callee,
+    const Function* caller, const ParametricEnv& caller_env,
+    const ParametricEnv& callee_env, TypeInfo* derived_type_info,
+    const AstNode* caller_parametric_owner) {
+  InvocationCalleeData callee_data{
+      .callee = callee,
+      .callee_bindings = callee_env,
+      .caller_bindings = caller_env,
+      .derived_type_info = derived_type_info,
+      .invocation = &invocation,
+      .caller_type_info = this,
+      .caller_parametric_owner = caller_parametric_owner};
   // The rationale for this is the same as in AddInvocation().
   TypeInfo* ti =
       callee != nullptr && callee->impl().has_value() ? this : GetRoot();
@@ -712,8 +723,6 @@ absl::Status TypeInfo::AddInvocationTypeInfo(const Invocation& invocation,
   if (it == ti->invocations_.end()) {
     // No data for this invocation yet.
     absl::flat_hash_map<ParametricEnv, InvocationCalleeData> env_to_callee_data;
-    InvocationCalleeData callee_data{callee, callee_env, caller_env,
-                                     derived_type_info, &invocation};
     env_to_callee_data[caller_env] = callee_data;
 
     ti->InsertInvocationData(invocation, std::make_unique<InvocationData>(
@@ -727,8 +736,6 @@ absl::Status TypeInfo::AddInvocationTypeInfo(const Invocation& invocation,
   }
   VLOG(3) << "Adding to existing invocation data.";
   InvocationData* invocation_data = it->second.get();
-  InvocationCalleeData callee_data{callee, callee_env, caller_env,
-                                   derived_type_info, &invocation};
   ti->callee_data_[callee].push_back(callee_data);
   GetRoot()->callee_data_by_invocation_[&invocation].push_back(callee_data);
   return invocation_data->Add(caller_env, callee_data);
