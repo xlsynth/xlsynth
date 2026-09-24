@@ -490,7 +490,8 @@ absl::StatusOr<std::optional<std::string>> TypeInfo::FindSvType(
 }
 
 bool TypeInfo::Contains(AstNode* key) const {
-  return dict_.contains(key) || (parent_ != nullptr && parent_->Contains(key));
+  return dict_.contains(key) || lazy_specialization_types_.contains(key) ||
+         (parent_ != nullptr && parent_->Contains(key));
 }
 
 std::string TypeInfo::GetImportsDebugString() const {
@@ -633,15 +634,46 @@ std::vector<InvocationCalleeData> TypeInfo::GetAllInvocationCalleeData(
   return entries->second;
 }
 
+std::unique_ptr<Type> TypeInfo::LazySpecializationType::Materialize() const {
+  std::unique_ptr<Type> type = shape->Materialize();
+  if (is_meta) {
+    type = std::make_unique<MetaType>(std::move(type));
+  }
+  return type;
+}
+
+void TypeInfo::SetLazySpecializationType(const AstNode* key,
+                                         SpecializationTypeShapePtr shape,
+                                         bool is_meta) {
+  CHECK(shape != nullptr);
+  dict_.erase(key);
+  lazy_specialization_types_.insert_or_assign(
+      key, LazySpecializationType{std::move(shape), is_meta});
+}
+
+const absl::flat_hash_map<const AstNode*, std::unique_ptr<Type>>&
+TypeInfo::dict() const {
+  for (const auto& [key, lazy] : lazy_specialization_types_) {
+    dict_.emplace(key, lazy.Materialize());
+  }
+  lazy_specialization_types_.clear();
+  return dict_;
+}
+
 std::optional<Type*> TypeInfo::GetItem(const AstNode* key) const {
   auto it = dict_.find(key);
   if (it != dict_.end()) {
     return it->second.get();
-  }
-  if (parent_ != nullptr) {
+  } else if (auto lazy_it = lazy_specialization_types_.find(key);
+             lazy_it != lazy_specialization_types_.end()) {
+    auto materialized = dict_.emplace(key, lazy_it->second.Materialize()).first;
+    lazy_specialization_types_.erase(lazy_it);
+    return materialized->second.get();
+  } else if (parent_ != nullptr) {
     return parent_->GetItem(key);
+  } else {
+    return std::nullopt;
   }
-  return std::nullopt;
 }
 
 absl::StatusOr<Type*> TypeInfo::GetItemOrError(const AstNode* key) const {
