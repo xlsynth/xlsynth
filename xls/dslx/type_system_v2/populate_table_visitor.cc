@@ -647,6 +647,9 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       return TypeInferenceErrorStatus(node->span(), /*type=*/nullptr,
                                       "`match` expression has no arms.",
                                       file_table_);
+    } else if (node->origin() == Match::Origin::kIfLet) {
+      XLS_RETURN_IF_ERROR(
+          ValidateIfLetPattern(node->arms().front()->patterns().front()));
     }
 
     bool saw_invalid_arm = false;
@@ -2334,6 +2337,28 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
   }
 
  private:
+  // Ordinary qualified patterns can also name enum members or constants. Once
+  // this resolves a sum constructor, normal match typing constrains the
+  // scrutinee to the constructor's sum type.
+  absl::Status ValidateIfLetPattern(const PatternTree& pattern) {
+    const auto* colon_ref = std::get_if<ColonRef*>(&pattern);
+    if (colon_ref == nullptr) {
+      // Payload constructor patterns are checked by their dedicated visitor.
+      return absl::OkStatus();
+    } else {
+      XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> constructor,
+                           ResolveSumConstructor(*colon_ref, import_data_));
+      if (constructor.has_value()) {
+        return absl::OkStatus();
+      } else {
+        return TypeInferenceErrorStatus(
+            GetPatternSpan(pattern), nullptr,
+            "`if let` requires a top-level sum constructor pattern.",
+            file_table_);
+      }
+    }
+  }
+
   absl::Status HandleStructDefBaseInternal(const StructDefBase* node) {
     for (const StructMemberNode* member : node->members()) {
       XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(member, member->type()));
