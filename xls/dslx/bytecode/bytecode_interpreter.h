@@ -401,9 +401,14 @@ class BytecodeInterpreter {
   // runtime execution.
   absl::Status RunBuiltinMap(const Bytecode& bytecode);
 
+  // Observes constructor patterns and constants; bindings and wildcards only
+  // transport their matched value. The bytecode supplies failure source
+  // context. The path identifies a tuple/payload position in the fixed
+  // scrutinee.
   absl::StatusOr<bool> MatchArmEqualsInterpValue(
-      Frame* frame, const Bytecode::MatchArmItem& item,
-      const InterpValue& value);
+      const Bytecode& bytecode, Frame* frame,
+      const Bytecode::MatchArmItem& item, const InterpValue& value,
+      std::vector<int64_t>& path);
 
   // Reuses successful shallow observations in the active match. Payloads remain
   // valid until kEndMatch; failures keep the observing bytecode's source span.
