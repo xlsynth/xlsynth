@@ -40,6 +40,10 @@ class SemanticsAnalysis {
  public:
   SemanticsAnalysis(bool suppress_warnings = false);
 
+  // Runs pre-typecheck normalization and warning analysis. May replace `module`
+  // with a normalized clone, destroying the original module and invalidating
+  // pointers into its AST. Callers must use the returned module and reacquire
+  // any AST pointers after this call.
   absl::StatusOr<std::unique_ptr<Module>> RunPreTypeCheckPass(
       std::unique_ptr<Module> module, WarningCollector& warning_collector,
       ImportData& import_data,
