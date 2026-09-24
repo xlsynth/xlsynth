@@ -2015,6 +2015,33 @@ fn identity(narrow: E<u2>, wide: E<u4>) -> (E<u2>, E<u4>) {
   }
 }
 
+TEST(TypecheckV2Test, TaggedSemanticSumKeepsOuterAndFormalBindingsDistinct) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(generics)]
+enum E<N: u32>: uN[N] { A(), B }
+fn f<N: u32>() -> u32 {
+  type Local = E<{N + u32:1}>;
+  let value = Local::A();
+  match value { Local::A() => u32:0, Local::B => u32:1 }
+}
+const X = f<u32:2>();
+)"));
+  Function* function = result.tm.module->GetFunction("f").value();
+  auto invocations =
+      result.tm.type_info->GetUniqueInvocationCalleeData(function);
+  ASSERT_EQ(invocations.size(), 1);
+  TypeInfo* function_type_info = invocations[0].derived_type_info;
+  ASSERT_NE(function_type_info, nullptr);
+  const auto* value = dynamic_cast<const Let*>(
+      ToAstNode(function->body()->statements().at(1)->wrapped()));
+  ASSERT_NE(value, nullptr);
+  std::optional<Type*> type = function_type_info->GetItem(value->rhs());
+  ASSERT_TRUE(type.has_value());
+  const auto* sum_type = dynamic_cast<const SumType*>(*type);
+  ASSERT_NE(sum_type, nullptr);
+  EXPECT_THAT(sum_type->tag_bit_count().GetAsInt64(), IsOkAndHolds(3));
+}
+
 TEST(TypecheckV2Test, TaggedSemanticSumResolvesSignedParametricDiscriminants) {
   XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
 #![feature(generics)]
@@ -2079,7 +2106,7 @@ fn identity(value: E<u32:2>) -> E<u32:2> { value }
 )")
                   .status(),
               StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("size mismatch: u3 vs. uN[2]")));
+                       HasSubstr("size mismatch: uN[3] vs. uN[2]")));
   EXPECT_THAT(R"(
 #![feature(generics)]
 enum E<N: u32>: uN[N] { A() = 1 + 1, B = 2 }
@@ -3310,27 +3337,13 @@ fn values(explicit_values: defs::E<defs::LOW, defs::HIGH>,
   EXPECT_EQ(&type->params()[1]->AsSum().nominal_type(), &definition);
   ASSERT_EQ(definition.variants().size(), 1);
   ASSERT_TRUE(definition.variants()[0]->discriminant().has_value());
-  const Expr* source_discriminant = *definition.variants()[0]->discriminant();
 
-  // Observe computed discriminant roots, as in the adjacent imported-tag
-  // tests. Both records must retain their own values in the same expression:
+  // Both records must retain their own values in the computed wire tag:
   // explicit values compute 2 + 5; the dependent default computes 5 + 6.
-  std::vector<InterpValue> evaluated_discriminants;
-  for (const auto& [node, node_type] : result.tm.type_info->dict()) {
-    if (node != source_discriminant && node->owner() == result.tm.module &&
-        node->kind() == source_discriminant->kind() &&
-        node->GetSpan() == source_discriminant->GetSpan() &&
-        node->parent() == source_discriminant->parent()) {
-      XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
-                               result.tm.type_info->GetConstExpr(node));
-      evaluated_discriminants.push_back(value);
-    }
-  }
-  EXPECT_THAT(evaluated_discriminants, Contains(InterpValue::MakeU32(7)));
-  EXPECT_THAT(evaluated_discriminants, Contains(InterpValue::MakeU32(11)));
-  EXPECT_THAT(evaluated_discriminants,
-              ::testing::Each(::testing::AnyOf(InterpValue::MakeU32(7),
-                                               InterpValue::MakeU32(11))));
+  EXPECT_EQ(type->params()[0]->AsSum().GetDiscriminant(0),
+            InterpValue::MakeU32(7));
+  EXPECT_EQ(type->params()[1]->AsSum().GetDiscriminant(0),
+            InterpValue::MakeU32(11));
 }
 
 TEST(TypecheckV2Test, SemanticSumInfersBeforeStructuredValueDefault) {
@@ -3352,25 +3365,11 @@ const VALUE = E::Value(u5:1);
   const SumDef& definition = (*type)->AsSum().nominal_type();
   ASSERT_EQ(definition.variants().size(), 1);
   ASSERT_TRUE(definition.variants()[0]->discriminant().has_value());
-  const Expr* source_discriminant = *definition.variants()[0]->discriminant();
 
   // N must be inferred as 5 before constructing the default Record. Its
   // retained value is observed through the computed tag, independently of
   // the payload width that supplied the scalar inference evidence.
-  std::vector<InterpValue> evaluated_discriminants;
-  for (const auto& [node, node_type] : result.tm.type_info->dict()) {
-    if (node != source_discriminant && node->owner() == result.tm.module &&
-        node->kind() == source_discriminant->kind() &&
-        node->GetSpan() == source_discriminant->GetSpan() &&
-        node->parent() == source_discriminant->parent()) {
-      XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
-                               result.tm.type_info->GetConstExpr(node));
-      evaluated_discriminants.push_back(value);
-    }
-  }
-  EXPECT_THAT(evaluated_discriminants, Contains(InterpValue::MakeU32(6)));
-  EXPECT_THAT(evaluated_discriminants,
-              ::testing::Each(InterpValue::MakeU32(6)));
+  EXPECT_EQ((*type)->AsSum().GetDiscriminant(0), InterpValue::MakeU32(6));
 }
 
 TEST(TypecheckV2Test, SemanticSumValueDefaultSubstitutesLiteralWidth) {
@@ -3617,7 +3616,7 @@ TEST(TypecheckV2Test, GenericSemanticSumChecksDeclaredTagWidth) {
 enum E<N: u32>: u1 { V(uN[N]) = 2 }
 const X = E<u32:8>::V(u8:0);
 )",
-      TypecheckFails(HasSubstr("size mismatch: u2 vs. u1")));
+      TypecheckFails(HasSubstr("size mismatch: uN[2] vs. uN[1]")));
 }
 
 TEST(TypecheckV2Test, GenericSemanticSumChecksTagWidthPerInstantiation) {
@@ -3627,7 +3626,7 @@ enum E<N: u32>: uN[N] { A(u8) = 0, B(u8) = 2 }
 const WIDE = E<u32:2>::A(u8:0);
 const NARROW = E<u32:1>::A(u8:0);
 )",
-      TypecheckFails(HasSubstr("size mismatch: u2 vs. uN[1]")));
+      TypecheckFails(HasSubstr("size mismatch: uN[2] vs. uN[1]")));
 }
 
 TEST(TypecheckV2Test, GenericSemanticSumChecksDuplicateTagsPerInstantiation) {
@@ -3710,24 +3709,11 @@ fn identity(low: defs::E<u32:1>, high: defs::E<u32:7>)
   const Expr* source_discriminant = *definition.variants()[0]->discriminant();
   ASSERT_EQ(source_discriminant->kind(), AstNodeKind::kIndex);
 
-  // Inspect the computed roots cloned from this declaration. The type-argument
-  // literals cannot satisfy these checks: they have a different kind and span.
-  std::vector<InterpValue> evaluated_discriminants;
-  for (const auto& [node, type] : result.tm.type_info->dict()) {
-    if (node->owner() == result.tm.module &&
-        node->kind() == source_discriminant->kind() &&
-        node->GetSpan() == source_discriminant->GetSpan() &&
-        node->parent() == source_discriminant->parent()) {
-      XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
-                               result.tm.type_info->GetConstExpr(node));
-      evaluated_discriminants.push_back(value);
-    }
-  }
-  EXPECT_THAT(evaluated_discriminants, Contains(InterpValue::MakeU32(1)));
-  EXPECT_THAT(evaluated_discriminants, Contains(InterpValue::MakeU32(7)));
-  EXPECT_THAT(evaluated_discriminants,
-              ::testing::Each(::testing::AnyOf(InterpValue::MakeU32(1),
-                                               InterpValue::MakeU32(7))));
+  // Check the computed wire tags, not the literal type arguments.
+  EXPECT_EQ(function_type->params()[0]->AsSum().GetDiscriminant(0),
+            InterpValue::MakeU32(1));
+  EXPECT_EQ(function_type->params()[1]->AsSum().GetDiscriminant(0),
+            InterpValue::MakeU32(7));
 }
 
 TEST(TypecheckV2Test,
@@ -3763,24 +3749,11 @@ fn identity(low: defs::E<u32:1>, high: defs::E<u32:7>)
   const Expr* source_discriminant = *definition.variants()[0]->discriminant();
   ASSERT_EQ(source_discriminant->kind(), AstNodeKind::kInvocation);
 
-  // Both imported instantiations must evaluate their own discriminant. Match
-  // the cloned invocation roots rather than the literal type arguments.
-  std::vector<InterpValue> evaluated_discriminants;
-  for (const auto& [node, type] : result.tm.type_info->dict()) {
-    if (node->owner() == result.tm.module &&
-        node->kind() == source_discriminant->kind() &&
-        node->GetSpan() == source_discriminant->GetSpan() &&
-        node->parent() == source_discriminant->parent()) {
-      XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
-                               result.tm.type_info->GetConstExpr(node));
-      evaluated_discriminants.push_back(value);
-    }
-  }
-  EXPECT_THAT(evaluated_discriminants, Contains(InterpValue::MakeU32(1)));
-  EXPECT_THAT(evaluated_discriminants, Contains(InterpValue::MakeU32(7)));
-  EXPECT_THAT(evaluated_discriminants,
-              ::testing::Each(::testing::AnyOf(InterpValue::MakeU32(1),
-                                               InterpValue::MakeU32(7))));
+  // Both imported instantiations must retain their own computed wire tag.
+  EXPECT_EQ(function_type->params()[0]->AsSum().GetDiscriminant(0),
+            InterpValue::MakeU32(1));
+  EXPECT_EQ(function_type->params()[1]->AsSum().GetDiscriminant(0),
+            InterpValue::MakeU32(7));
 }
 
 TEST(TypecheckV2Test,
@@ -3816,25 +3789,11 @@ fn identity(low: defs::E<u32:1>, high: defs::E<u32:7>)
   ASSERT_TRUE(definition.variants()[0]->discriminant().has_value());
   const Expr* source_discriminant = *definition.variants()[0]->discriminant();
   ASSERT_EQ(source_discriminant->kind(), AstNodeKind::kStatementBlock);
-  // Both imported instantiations must evaluate their own discriminant. Match
-  // the cloned block roots rather than the literal type arguments or tuple
-  // items.
-  std::vector<InterpValue> evaluated_discriminants;
-  for (const auto& [node, type] : result.tm.type_info->dict()) {
-    if (node->owner() == result.tm.module &&
-        node->kind() == source_discriminant->kind() &&
-        node->GetSpan() == source_discriminant->GetSpan() &&
-        node->parent() == source_discriminant->parent()) {
-      XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
-                               result.tm.type_info->GetConstExpr(node));
-      evaluated_discriminants.push_back(value);
-    }
-  }
-  EXPECT_THAT(evaluated_discriminants, Contains(InterpValue::MakeU32(1)));
-  EXPECT_THAT(evaluated_discriminants, Contains(InterpValue::MakeU32(7)));
-  EXPECT_THAT(evaluated_discriminants,
-              ::testing::Each(::testing::AnyOf(InterpValue::MakeU32(1),
-                                               InterpValue::MakeU32(7))));
+  // Both imported instantiations must retain their own computed wire tag.
+  EXPECT_EQ(function_type->params()[0]->AsSum().GetDiscriminant(0),
+            InterpValue::MakeU32(1));
+  EXPECT_EQ(function_type->params()[1]->AsSum().GetDiscriminant(0),
+            InterpValue::MakeU32(7));
 }
 
 TEST(TypecheckV2Test, SemanticSumReferenceRequiresUnboundParametrics) {
