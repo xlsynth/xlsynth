@@ -923,6 +923,24 @@ cc_library(
     ],
 )
 
+cc_test(
+    name = "make_value_format_descriptor_test",
+    srcs = ["make_value_format_descriptor_test.cc"],
+    deps = [
+        ":make_value_format_descriptor",
+        ":value_format_descriptor",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
+        "//xls/dslx/type_system:type",
+        "//xls/dslx/type_system:type_info",
+        "//xls/dslx/type_system:typecheck_test_utils",
+        "//xls/ir:format_preference",
+        "@googletest//:gtest",
+    ],
+)
+
 cc_library(
     name = "channel_direction",
     hdrs = ["channel_direction.h"],
