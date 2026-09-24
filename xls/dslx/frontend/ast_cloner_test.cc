@@ -2448,15 +2448,22 @@ TEST(AstClonerTest, ParamTypeAnnotation) {
                   "the_module", file_table));
   XLS_ASSERT_OK_AND_ASSIGN(const Function* foo,
                            module->GetMemberOrError<Function>("foo"));
-  const ParamTypeAnnotation* annotation = module->Make<ParamTypeAnnotation>(
-      module->Make<FunctionTypeAnnotation>(
-          std::vector<const TypeAnnotation*>{
-              foo->params()[0]->type_annotation(),
-              foo->params()[1]->type_annotation()},
-          foo->return_type()),
-      0);
-  XLS_ASSERT_OK_AND_ASSIGN(AstNode * clone, CloneAst(annotation));
-  EXPECT_EQ(annotation->ToString(), clone->ToString());
+  for (ParamTypeAnnotation::InferenceRole role :
+       {ParamTypeAnnotation::InferenceRole::kArgument,
+        ParamTypeAnnotation::InferenceRole::kPatternBinding}) {
+    const ParamTypeAnnotation* annotation = module->Make<ParamTypeAnnotation>(
+        module->Make<FunctionTypeAnnotation>(
+            std::vector<const TypeAnnotation*>{
+                foo->params()[0]->type_annotation(),
+                foo->params()[1]->type_annotation()},
+            foo->return_type()),
+        0, role);
+    XLS_ASSERT_OK_AND_ASSIGN(AstNode * clone, CloneAst(annotation));
+    EXPECT_EQ(annotation->ToString(), clone->ToString());
+    const auto* cloned_param = dynamic_cast<const ParamTypeAnnotation*>(clone);
+    ASSERT_NE(cloned_param, nullptr);
+    EXPECT_EQ(cloned_param->inference_role(), role);
+  }
 }
 
 TEST(AstClonerTest, ExternVerilog) {
@@ -3323,6 +3330,32 @@ fn extract_raw(x: Option) -> u9 {
       dynamic_cast<const InvalidPattern*>(raw_name_def->definer());
   ASSERT_NE(invalid_pattern, nullptr);
   EXPECT_EQ(invalid_pattern->raw_name_def(), raw_name_def);
+}
+
+TEST(AstClonerTest, CloneModuleRebindsBuiltinNameDefs) {
+  constexpr std::string_view kProgram = R"(
+fn main(x: u32) -> u32 {
+  assert_eq(x, x);
+  x
+}
+)";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<Module> module,
+      ParseModule(kProgram, "builtin_ref.x", "the_module", file_table));
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> clone, CloneModule(*module));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                           clone->GetMemberOrError<Function>("main"));
+  std::optional<NameRef*> assert_eq_ref =
+      FindFirstNameRefWithId(function, "assert_eq");
+  ASSERT_TRUE(assert_eq_ref.has_value());
+  ASSERT_TRUE(
+      std::holds_alternative<BuiltinNameDef*>((*assert_eq_ref)->name_def()));
+  BuiltinNameDef* builtin =
+      std::get<BuiltinNameDef*>((*assert_eq_ref)->name_def());
+  EXPECT_EQ(builtin->owner(), clone.get());
+  EXPECT_EQ(builtin->identifier(), "assert_eq");
 }
 
 }  // namespace

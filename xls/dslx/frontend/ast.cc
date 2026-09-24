@@ -1338,10 +1338,11 @@ std::string ReturnTypeAnnotation::ToString() const {
 
 ParamTypeAnnotation::ParamTypeAnnotation(Module* owner,
                                          TypeAnnotation* function_type,
-                                         int param_index)
+                                         int param_index, InferenceRole role)
     : TypeAnnotation(owner, function_type->span(), kAnnotationKind),
       function_type_(function_type),
-      param_index_(param_index) {}
+      param_index_(param_index),
+      inference_role_(role) {}
 
 std::string ParamTypeAnnotation::ToString() const {
   return absl::Substitute("Param type $0 of: $1", param_index_,
