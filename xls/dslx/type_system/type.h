@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -57,6 +58,7 @@ class BitsType;
 class TupleType;
 class StructType;
 class SumType;
+class Type;
 struct TypeStringContext;
 
 // Represents a parametric binding in a Type, which is either a) a
@@ -123,6 +125,94 @@ inline std::ostream& operator<<(std::ostream& os, const TypeDim& ctd) {
   os << ctd.ToString();
   return os;
 }
+
+class SpecializationType;
+class SpecializationTypeShape;
+using SpecializationTypePtr = std::shared_ptr<const SpecializationType>;
+using SpecializationTypeShapePtr =
+    std::shared_ptr<const SpecializationTypeShape>;
+using SpecializationArgument = std::variant<InterpValue, SpecializationTypePtr>;
+
+// Immutable semantic identity for an argument of a nominal type. Nominal types
+// are identified by their declaration and arguments, never by their physical
+// members. Structural children retain source order. The AST must outlive these
+// descriptions.
+class SpecializationType {
+ public:
+  enum class Kind {
+    kBits,
+    kToken,
+    kEnum,
+    kStruct,
+    kProc,
+    kSum,
+    kTuple,
+    kArray,
+    kFunction,
+    kChannel,
+    kMeta,
+    kBitsConstructor,
+  };
+
+  struct Description {
+    Kind kind;
+    const AstNode* nominal = nullptr;
+    std::optional<TypeDim> size;
+    std::optional<TypeDim> signedness;
+    std::optional<ChannelDirection> direction;
+    std::vector<SpecializationArgument> arguments;
+    std::vector<SpecializationTypePtr> children;
+    // Only older, manually constructed parametric records can lack this data.
+    bool nominal_arguments_known = true;
+  };
+
+  static SpecializationTypePtr Create(Description description);
+  static SpecializationTypePtr FromType(const Type& type);
+
+  const Description& description() const { return description_; }
+  size_t hash() const { return hash_; }
+  bool SemanticEquals(const SpecializationType& other) const;
+
+ private:
+  explicit SpecializationType(Description description);
+
+  Description description_;
+  size_t hash_;
+};
+
+// Stores the information needed to explicitly reconstruct a full Type without
+// forcing phantom arguments to acquire mutable physical Type trees at compile
+// time. Each Materialize call creates fresh structural wrappers; sum wrappers
+// share their completed, immutable backing.
+class SpecializationTypeShape {
+ public:
+  struct Description {
+    SpecializationTypePtr identity;
+    std::vector<SpecializationTypeShapePtr> children;
+    std::optional<TypeDim> tag_bit_count;
+    std::vector<InterpValue> discriminants;
+    std::vector<InterpValue> enum_members;
+    // Positionally aligned with identity arguments; value positions are null.
+    std::vector<SpecializationTypeShapePtr> argument_shapes;
+  };
+
+  static SpecializationTypeShapePtr Create(Description description);
+  static SpecializationTypeShapePtr FromType(const Type& type);
+  const Description& description() const { return description_; }
+  std::unique_ptr<Type> Materialize() const;
+  // Installs the first completed sum for this shape, then returns a wrapper
+  // sharing that sum's immutable backing. The candidate must match this shape.
+  std::unique_ptr<SumType> ReuseCompletedSum(
+      std::unique_ptr<SumType> candidate) const;
+
+ private:
+  explicit SpecializationTypeShape(Description description)
+      : description_(std::move(description)) {}
+
+  Description description_;
+  mutable std::mutex completed_sum_mutex_;
+  mutable std::shared_ptr<const SumType> completed_sum_;
+};
 
 // keep-sorted start
 class ArrayType;
@@ -234,8 +324,12 @@ class Type {
 
   virtual absl::Status Accept(TypeVisitor& v) const = 0;
 
-  // Note that this is type equivalence; e.g. types are equivalent and
-  // substitutable if this equality holds.
+  // Tests the equivalence used by ordinary type descriptions. Record equality
+  // ignores unused generic arguments: Record<1> and Record<2> can compare
+  // equal even though Box<Record<1>> and Box<Record<2>> are distinct when Box
+  // is a sum. For instances of the same sum declaration, use
+  // SumType::HasSameParametricArguments to compare their specialization
+  // arguments instead of comparing the argument types separately.
   virtual bool operator==(const Type& other) const = 0;
   bool operator!=(const Type& other) const { return !(*this == other); }
 
@@ -461,6 +555,39 @@ class TokenType : public Type {
   }
 };
 
+// A declaration-ordered resolved argument of a nominal type. Type arguments are
+// read-only so descriptions shared by clones remain immutable.
+using NominalParametricArgument =
+    std::variant<InterpValue, std::unique_ptr<const Type>>;
+
+// Bridges the compact compiler representation and the full, explicitly
+// inspectable SumType API. The full representation is constructed at most once.
+class SpecializationArguments {
+ public:
+  explicit SpecializationArguments(
+      std::vector<NominalParametricArgument> full_arguments);
+  SpecializationArguments(
+      std::vector<SpecializationArgument> arguments,
+      std::vector<SpecializationTypeShapePtr> argument_shapes);
+
+  const std::vector<SpecializationArgument>& arguments() const {
+    return arguments_;
+  }
+  const std::vector<SpecializationTypeShapePtr>& argument_shapes() const;
+  const std::vector<NominalParametricArgument>& full_arguments() const;
+  const std::optional<std::vector<NominalParametricArgument>>&
+  full_arguments_optional() const;
+  bool has_full_input() const { return has_full_input_; }
+
+ private:
+  std::vector<SpecializationArgument> arguments_;
+  bool has_full_input_;
+  mutable std::once_flag shapes_once_;
+  mutable std::vector<SpecializationTypeShapePtr> argument_shapes_;
+  mutable std::once_flag full_once_;
+  mutable std::optional<std::vector<NominalParametricArgument>> full_arguments_;
+};
+
 // Base class for the type of a struct or a new-style proc that is formatted
 // like a struct.
 class StructTypeBase : public Type {
@@ -469,10 +596,12 @@ class StructTypeBase : public Type {
 
   // Note: members must correspond to struct_def's members (same length and
   // order).
-  StructTypeBase(std::vector<std::unique_ptr<Type>> members,
-                 const StructDefBase& struct_def_base,
-                 absl::flat_hash_map<std::string, TypeDim>
-                     nominal_type_dims_by_identifier);
+  StructTypeBase(
+      std::vector<std::unique_ptr<Type>> members,
+      const StructDefBase& struct_def_base,
+      absl::flat_hash_map<std::string, TypeDim> nominal_type_dims_by_identifier,
+      std::optional<std::vector<NominalParametricArgument>>
+          resolved_parametric_arguments = std::nullopt);
 
   bool operator==(const Type& other) const override;
   void AppendToStringInternal(FullyQualify fully_qualify,
@@ -539,11 +668,62 @@ class StructTypeBase : public Type {
 
   const StructDefBase& struct_def_base() const { return struct_def_base_; }
 
+  // Full arguments only when explicitly supplied to the legacy constructor.
+  // Compiler-created records retain compact nominal identity instead.
+  const std::optional<std::vector<NominalParametricArgument>>&
+  resolved_parametric_arguments() const;
+
+  // All concrete arguments in source-declaration order, including defaulted and
+  // unused bindings. An empty vector is distinct from missing information on a
+  // manually constructed type. Ordinary record equality still ignores them.
+  const std::vector<SpecializationArgument>* specialization_arguments() const {
+    const auto& full = resolved_parametric_data_->full;
+    return full == nullptr ? nullptr : &full->arguments();
+  }
+
+  std::shared_ptr<const std::vector<SpecializationArgument>>
+  shared_specialization_arguments() const;
+  SpecializationTypePtr specialization_type() const;
+
+  const std::vector<SpecializationTypeShapePtr>&
+  specialization_argument_shapes() const;
+
+  // Retains explicitly supplied full arguments independently of this type.
+  std::shared_ptr<const std::vector<NominalParametricArgument>>
+  shared_resolved_parametric_arguments() const;
+
+ protected:
+  struct ResolvedParametricData {
+    explicit ResolvedParametricData(
+        std::optional<std::vector<NominalParametricArgument>> arguments);
+    ResolvedParametricData(
+        std::vector<SpecializationArgument> arguments,
+        std::vector<SpecializationTypeShapePtr> argument_shapes);
+
+    std::shared_ptr<const SpecializationArguments> full;
+    mutable std::once_flag identity_once;
+    mutable SpecializationTypePtr identity;
+  };
+
+  StructTypeBase(
+      std::vector<std::unique_ptr<Type>> members,
+      const StructDefBase& struct_def_base,
+      absl::flat_hash_map<std::string, TypeDim> nominal_type_dims_by_identifier,
+      std::shared_ptr<const ResolvedParametricData> resolved_data);
+
+  const std::shared_ptr<const ResolvedParametricData>&
+  resolved_parametric_data() const {
+    return resolved_parametric_data_;
+  }
+
  private:
+  friend size_t HashTypeForSumSpecialization(const Type& type);
+
   std::vector<std::unique_ptr<Type>> members_;
   const StructDefBase& struct_def_base_;
   const absl::flat_hash_map<std::string, TypeDim>
       nominal_type_dims_by_identifier_;
+  std::shared_ptr<const ResolvedParametricData> resolved_parametric_data_;
 };
 
 // Represents a struct type -- these are similar in spirit to "tuples with named
@@ -556,17 +736,23 @@ class StructType : public StructTypeBase {
   StructType(std::vector<std::unique_ptr<Type>> members,
              const StructDef& struct_def,
              absl::flat_hash_map<std::string, TypeDim>
-                 nominal_type_dims_by_identifier = {})
-      : StructTypeBase(std::move(members), struct_def,
-                       std::move(nominal_type_dims_by_identifier)) {}
+                 nominal_type_dims_by_identifier = {},
+             std::optional<std::vector<NominalParametricArgument>>
+                 resolved_parametric_arguments = std::nullopt);
+
+  static std::unique_ptr<StructType> CreateWithSpecializationArguments(
+      std::vector<std::unique_ptr<Type>> members, const StructDef& struct_def,
+      std::vector<SpecializationArgument> arguments,
+      std::vector<SpecializationTypeShapePtr> argument_shapes = {});
 
   absl::Status Accept(TypeVisitor& v) const override {
     return v.HandleStruct(*this);
   }
 
   std::unique_ptr<Type> CloneToUnique() const override {
-    return std::make_unique<StructType>(CloneSpan(members()), nominal_type(),
-                                        nominal_type_dims_by_identifier());
+    return absl::WrapUnique(new StructType(CloneSpan(members()), nominal_type(),
+                                           nominal_type_dims_by_identifier(),
+                                           resolved_parametric_data()));
   }
 
   const StructDef& nominal_type() const {
@@ -576,6 +762,15 @@ class StructType : public StructTypeBase {
   std::string ToInlayHintString() const override {
     return nominal_type().identifier();
   }
+
+ private:
+  StructType(
+      std::vector<std::unique_ptr<Type>> members, const StructDef& struct_def,
+      absl::flat_hash_map<std::string, TypeDim> nominal_type_dims_by_identifier,
+      std::shared_ptr<const ResolvedParametricData> resolved_data)
+      : StructTypeBase(std::move(members), struct_def,
+                       std::move(nominal_type_dims_by_identifier),
+                       std::move(resolved_data)) {}
 };
 
 // Represents a proc that is formatted like a struct and may contain members
@@ -586,17 +781,26 @@ class ProcType : public StructTypeBase {
   ProcType(std::vector<std::unique_ptr<Type>> members,
            const ProcDef& struct_def,
            absl::flat_hash_map<std::string, TypeDim>
-               nominal_type_dims_by_identifier = {})
+               nominal_type_dims_by_identifier = {},
+           std::optional<std::vector<NominalParametricArgument>>
+               resolved_parametric_arguments = std::nullopt)
       : StructTypeBase(std::move(members), struct_def,
-                       std::move(nominal_type_dims_by_identifier)) {}
+                       std::move(nominal_type_dims_by_identifier),
+                       std::move(resolved_parametric_arguments)) {}
+
+  static std::unique_ptr<ProcType> CreateWithSpecializationArguments(
+      std::vector<std::unique_ptr<Type>> members, const ProcDef& proc_def,
+      std::vector<SpecializationArgument> arguments,
+      std::vector<SpecializationTypeShapePtr> argument_shapes = {});
 
   absl::Status Accept(TypeVisitor& v) const override {
     return v.HandleProc(*this);
   }
 
   std::unique_ptr<Type> CloneToUnique() const override {
-    return std::make_unique<ProcType>(CloneSpan(members()), nominal_type(),
-                                      nominal_type_dims_by_identifier());
+    return absl::WrapUnique(new ProcType(CloneSpan(members()), nominal_type(),
+                                         nominal_type_dims_by_identifier(),
+                                         resolved_parametric_data()));
   }
 
   const ProcDef& nominal_type() const {
@@ -606,6 +810,15 @@ class ProcType : public StructTypeBase {
   std::string ToInlayHintString() const override {
     return nominal_type().identifier();
   }
+
+ private:
+  ProcType(
+      std::vector<std::unique_ptr<Type>> members, const ProcDef& struct_def,
+      absl::flat_hash_map<std::string, TypeDim> nominal_type_dims_by_identifier,
+      std::shared_ptr<const ResolvedParametricData> resolved_data)
+      : StructTypeBase(std::move(members), struct_def,
+                       std::move(nominal_type_dims_by_identifier),
+                       std::move(resolved_data)) {}
 };
 
 // Represents a tuple type. Tuples have unnamed members.
@@ -875,11 +1088,9 @@ class SumTypeVariant {
 // borrowed SumDef or SumVariant AST nodes.
 class SumType : public Type {
  public:
-  // Value and type arguments are retained in source-declaration order, even
-  // when an argument does not occur in any variant's payload. Type arguments
-  // are read-only so shared descriptions cannot be changed through a clone.
-  using ParametricArgument =
-      std::variant<InterpValue, std::unique_ptr<const Type>>;
+  // Value and type arguments are retained even when they do not occur in any
+  // variant's payload.
+  using ParametricArgument = NominalParametricArgument;
 
   // `variants` must be in the same declaration order as `sum_def.variants()`.
   // When `discriminants` is omitted, the type uses the implicit declaration
@@ -888,6 +1099,17 @@ class SumType : public Type {
           std::optional<TypeDim> tag_bit_count = std::nullopt,
           std::vector<InterpValue> discriminants = {},
           std::vector<ParametricArgument> parametric_arguments = {});
+
+  // Each type argument requires a matching non-null shape at the same index so
+  // parametric_arguments() can reconstruct its complete type. Value arguments
+  // need no shape; argument_shapes may be empty only when there are no type
+  // arguments.
+  static std::unique_ptr<SumType> CreateWithSpecializationArguments(
+      const SumDef& sum_def, std::vector<SumTypeVariant> variants,
+      std::optional<TypeDim> tag_bit_count,
+      std::vector<InterpValue> discriminants,
+      std::vector<SpecializationArgument> arguments,
+      std::vector<SpecializationTypeShapePtr> argument_shapes);
 
   absl::Status Accept(TypeVisitor& v) const override {
     return v.HandleSum(*this);
@@ -904,6 +1126,10 @@ class SumType : public Type {
   // revisiting shared type data.
   static size_t HashParametricArguments(
       absl::Span<const ParametricArgument> arguments);
+  bool HasSameSpecializationArguments(
+      absl::Span<const SpecializationArgument> arguments) const;
+  static size_t HashSpecializationArguments(
+      absl::Span<const SpecializationArgument> arguments);
   // Reuses the hash stored with this immutable description, including in
   // clones.
   size_t parametric_arguments_hash() const {
@@ -940,7 +1166,20 @@ class SumType : public Type {
     return data_->discriminants.at(variant_index);
   }
   const std::vector<ParametricArgument>& parametric_arguments() const {
-    return data_->parametric_arguments;
+    return data_->parametric_arguments->full_arguments();
+  }
+  const std::vector<SpecializationArgument>& specialization_arguments() const {
+    return data_->parametric_arguments->arguments();
+  }
+  std::shared_ptr<const std::vector<SpecializationArgument>>
+  shared_specialization_arguments() const {
+    return std::shared_ptr<const std::vector<SpecializationArgument>>(
+        data_->parametric_arguments, &specialization_arguments());
+  }
+  SpecializationTypePtr specialization_type() const;
+  const std::vector<SpecializationTypeShapePtr>&
+  specialization_argument_shapes() const {
+    return data_->parametric_arguments->argument_shapes();
   }
 
  private:
@@ -948,7 +1187,7 @@ class SumType : public Type {
     Data(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
          std::optional<TypeDim> tag_bit_count,
          std::vector<InterpValue> discriminants,
-         std::vector<ParametricArgument> parametric_arguments);
+         std::shared_ptr<const SpecializationArguments> parametric_arguments);
 
     const SumDef& sum_def;
     std::vector<SumTypeVariant> variants;
@@ -956,10 +1195,12 @@ class SumType : public Type {
     absl::StatusOr<uint32_t> max_payload_bit_count;
     TypeDim tag_bit_count;
     std::vector<InterpValue> discriminants;
-    std::vector<ParametricArgument> parametric_arguments;
+    std::shared_ptr<const SpecializationArguments> parametric_arguments;
     size_t parametric_arguments_hash;
     // Only runtime payloads contribute; phantom type arguments do not.
     bool has_token;
+    mutable std::once_flag identity_once;
+    mutable SpecializationTypePtr identity;
   };
 
   explicit SumType(std::shared_ptr<const Data> data) : data_(std::move(data)) {}
@@ -1374,10 +1615,16 @@ absl::StatusOr<bool> IsSigned(const Type& c);
 // aggregates and channels.
 bool TypeContainsSemanticSum(const Type& type);
 
-// Process-local fingerprint for resolved types in sum-related caches. Nested
-// sums reuse their stored argument hash; collisions still require Type equality.
-// This is not an identity for unresolved types or a serialized representation.
+// Process-local fingerprint for fully concrete types used by metadata caches
+// with ordinary Type equality. It ignores unused struct arguments, matching
+// ordinary struct equality. Nested sums still use their own equality. Always
+// compare values on collisions; this is not a serialized identity.
 size_t HashTypeForSumCache(const Type& type);
+
+// Process-local fingerprint for a type used as a sum specialization argument.
+// Unlike ordinary struct equality, this includes nominal struct and proc
+// arguments. Compare collisions using SumType::HasSameParametricArguments.
+size_t HashTypeForSumSpecialization(const Type& type);
 
 // Returns whether values exist for the given fully-concrete type.
 absl::StatusOr<bool> TypeIsInhabited(const Type& type);

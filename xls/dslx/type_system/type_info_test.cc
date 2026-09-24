@@ -36,6 +36,7 @@
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/type_system/parametric_env.h"
+#include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/typecheck_test_utils.h"
 
 namespace xls::dslx {
@@ -66,6 +67,47 @@ TEST(TypeInfoTest, Instantiate) {
   XLS_ASSERT_OK_AND_ASSIGN(TypeInfo * type_info,
                            owner.New(file_table, TypeInfo::kRootName));
   EXPECT_EQ(type_info->parent(), nullptr);
+}
+
+TEST(TypeInfoTest, DeferredGenericAnnotationsKeepOrdinaryTypeInfoSemantics) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  TypeInfoOwner owner;
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfo * parent,
+                           owner.New(file_table, TypeInfo::kRootName));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfo * child,
+                           owner.New(file_table, "child", parent));
+  auto* first = module.Make<NameDef>(Span::Fake(), "first", nullptr);
+  auto* second = module.Make<NameDef>(Span::Fake(), "second", nullptr);
+  auto* third = module.Make<NameDef>(Span::Fake(), "third", nullptr);
+  const auto shape = SpecializationTypeShape::FromType(*BitsType::MakeU8());
+  parent->SetLazySpecializationType(first, shape, /*is_meta=*/true);
+  parent->SetLazySpecializationType(second, shape, /*is_meta=*/true);
+  parent->SetLazySpecializationType(third, shape, /*is_meta=*/false);
+  EXPECT_TRUE(child->Contains(first));
+
+  XLS_ASSERT_OK_AND_ASSIGN(Type * first_stored, child->GetItemOrError(first));
+  XLS_ASSERT_OK_AND_ASSIGN(Type * second_stored,
+                           parent->GetItemOrError(second));
+  auto* first_type = dynamic_cast<MetaType*>(first_stored);
+  auto* second_type = dynamic_cast<MetaType*>(second_stored);
+  ASSERT_NE(first_type, nullptr);
+  ASSERT_NE(second_type, nullptr);
+  EXPECT_NE(first_type, second_type);
+  EXPECT_NE(first_type->wrapped().get(), second_type->wrapped().get());
+  EXPECT_EQ(parent->GetItem(first).value(), first_type);
+  first_type->wrapped() = BitsType::MakeU1();
+  EXPECT_EQ(*second_type->wrapped(), *BitsType::MakeU8());
+  EXPECT_EQ(*parent->dict().at(third), *BitsType::MakeU8());
+
+  parent->SetItem(first, BitsType::MakeU32());
+  XLS_ASSERT_OK_AND_ASSIGN(BitsType * ordinary,
+                           child->GetItemAs<BitsType>(first));
+  EXPECT_EQ(*ordinary, *BitsType::MakeU32());
+  parent->SetLazySpecializationType(first, shape, /*is_meta=*/false);
+  XLS_ASSERT_OK_AND_ASSIGN(BitsType * replacement,
+                           child->GetItemAs<BitsType>(first));
+  EXPECT_EQ(*replacement, *BitsType::MakeU8());
 }
 
 // Tests our internal-error reporting path if a bad parametric environment is
