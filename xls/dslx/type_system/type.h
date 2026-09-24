@@ -1371,6 +1371,11 @@ absl::StatusOr<bool> IsSigned(const Type& c);
 // aggregates and channels.
 bool TypeContainsSemanticSum(const Type& type);
 
+// Process-local fingerprint for resolved types in sum-related caches. Nested
+// sums reuse their stored argument hash; collisions still require Type equality.
+// This is not an identity for unresolved types or a serialized representation.
+size_t HashTypeForSumCache(const Type& type);
+
 // Returns whether values exist for the given fully-concrete type.
 absl::StatusOr<bool> TypeIsInhabited(const Type& type);
 

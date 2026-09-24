@@ -237,6 +237,10 @@ size_t HashSumArgumentType(const Type& type) {
 
 }  // namespace
 
+size_t HashTypeForSumCache(const Type& type) {
+  return HashSumArgumentType(type);
+}
+
 Type::~Type() = default;
 
 std::string Type::ToStringInternal(FullyQualify fully_qualify,
