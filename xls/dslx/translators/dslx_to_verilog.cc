@@ -144,6 +144,34 @@ absl::StatusOr<int64_t> BitCount(const Type& type) {
   return bits.GetAsInt64();
 }
 
+// Named ordinary dependencies can fail against explicit sum aliases during
+// conversion. Raw sum emission does not traverse its payload dependencies.
+bool ContainsOrdinaryTypeReference(const Type& type,
+                                   const TypeAnnotation& annotation) {
+  const Type* concrete = UnboxMetaTypes(&type);
+  if (concrete->IsSum()) {
+    return false;
+  } else if (auto* array =
+                 dynamic_cast<const ArrayTypeAnnotation*>(&annotation)) {
+    if (!GetBitsLike(*concrete).has_value()) {
+      return ContainsOrdinaryTypeReference(concrete->AsArray().element_type(),
+                                           *array->element_type());
+    }
+  } else if (auto* tuple =
+                 dynamic_cast<const TupleTypeAnnotation*>(&annotation)) {
+    for (int64_t i = 0; i < concrete->AsTuple().size(); ++i) {
+      if (ContainsOrdinaryTypeReference(concrete->AsTuple().GetMemberType(i),
+                                        *tuple->members().at(i))) {
+        return true;
+      }
+    }
+  } else if (dynamic_cast<const TypeRefTypeAnnotation*>(&annotation) !=
+             nullptr) {
+    return true;
+  }
+  return false;
+}
+
 std::string AllocateSumName(std::string_view identifier, NameUniquer& uniquer,
                             const std::set<std::string>& ordinary_source_names,
                             std::set<std::string>& allocated) {
@@ -624,7 +652,37 @@ DslxTypeToVerilogManager::FindSumFamily(const SumType& sum) const {
   return nullptr;
 }
 
+DslxTypeToVerilogManager::SumNameState
+DslxTypeToVerilogManager::GetSumNameState(const Type& type) const {
+  if (type.IsSum()) {
+    const SumFamily* family = FindSumFamily(type.AsSum());
+    return family != nullptr && family->envelope != nullptr
+               ? SumNameState::kAllEmitted
+               : SumNameState::kHasUnemitted;
+  } else if (type.IsArray()) {
+    return GetSumNameState(type.AsArray().element_type());
+  } else if (type.IsStruct() || type.IsTuple()) {
+    SumNameState state = SumNameState::kNoSums;
+    int64_t count =
+        type.IsStruct() ? type.AsStruct().size() : type.AsTuple().size();
+    for (int64_t i = 0; i < count; ++i) {
+      const Type& member = type.IsStruct() ? type.AsStruct().GetMemberType(i)
+                                           : type.AsTuple().GetMemberType(i);
+      SumNameState member_state = GetSumNameState(member);
+      if (member_state == SumNameState::kHasUnemitted) {
+        return member_state;
+      } else if (member_state == SumNameState::kAllEmitted) {
+        state = member_state;
+      }
+    }
+    return state;
+  } else {
+    return SumNameState::kNoSums;
+  }
+}
+
 absl::Status DslxTypeToVerilogManager::CheckOrdinaryTypeName(
+    const Type& type, const TypeAnnotation* annotation, ImportData* import_data,
     std::string_view identifier) {
   std::string name(identifier);
   XLS_RETURN_IF_ERROR(CheckOrdinaryNameAgainstSumAliases(name));
@@ -668,8 +726,181 @@ absl::Status DslxTypeToVerilogManager::CheckOrdinaryTypeName(
        !emitted_ordinary_type_names_.contains(name) &&
        !is_only_generic_stem())) {
     return OrdinaryTypeNameConflict(name);
+  } else if (emitted_ordinary_type_names_.contains(name)) {
+    return absl::OkStatus();
   }
-  return absl::OkStatus();
+  if (auto* reference =
+          dynamic_cast<const TypeRefTypeAnnotation*>(annotation)) {
+    const TypeDefinition& definition = reference->type_ref()->type_definition();
+    AstNode* node = TypeDefinitionToAstNode(definition);
+    if (converted_types_.contains(node)) {
+      XLS_ASSIGN_OR_RETURN(TypeInfo * info,
+                           import_data->GetRootTypeInfoForNode(node));
+      XLS_ASSIGN_OR_RETURN(const TypeInfo::TypeSource source,
+                           info->ResolveTypeDefinition(definition));
+      if (TypeDefinitionIdentifier(source).has_value()) {
+        // TypeDefinitionToVastType reuses this ordinary declaration without
+        // visiting its members. Its dependencies cannot add package symbols.
+        return absl::OkStatus();
+      }
+    }
+  }
+  SumNameState sum_names = GetSumNameState(type);
+  if (sum_names == SumNameState::kNoSums ||
+      (sum_names == SumNameState::kAllEmitted &&
+       (sum_aliases_.empty() ||
+        !ContainsOrdinaryTypeReference(type, *annotation)))) {
+    return absl::OkStatus();
+  }
+
+  // Named ordinary dependencies use the same uniquifier as sums, and even an
+  // already-converted ordinary dependency advances it. Reproduce their order
+  // in a snapshot so a rejected function export changes no package names.
+  NameUniquer uniquer = typedef_name_uniquer_->Clone();
+  std::set<std::string> allocated = allocated_package_names_;
+  auto nominals = nominal_sum_names_;
+  std::set<AstNode*> converted;
+  for (const auto& [node, unused] : converted_types_) {
+    converted.insert(node);
+  }
+  std::map<const SumDef*, std::vector<const SumType*>> sums;
+  std::set<std::string> newly_allocated_sum_names;
+  auto allocate_sum = [&](std::string_view requested) {
+    std::string allocated_name =
+        AllocateSumName(requested, uniquer, legacy_package_names_, allocated);
+    newly_allocated_sum_names.insert(allocated_name);
+    return allocated_name;
+  };
+  auto visit_sum = [&](const SumType& sum) -> absl::Status {
+    auto& visited = sums[&sum.nominal_type()];
+    for (const SumType* existing : visited) {
+      if (existing->HasSameSpecializationArguments(
+              sum.specialization_arguments())) {
+        return absl::OkStatus();
+      }
+    }
+    visited.push_back(&sum);
+    if (FindSumFamily(sum) != nullptr) {
+      return absl::OkStatus();
+    }
+    SumFamily family;
+    auto nominal = nominals.find(&sum.nominal_type());
+    if (nominal == nominals.end()) {
+      family.name = AllocateSumName(sum.nominal_type().identifier(), uniquer,
+                                    legacy_package_names_, allocated);
+      if (sum.nominal_type().parametric_bindings().empty()) {
+        newly_allocated_sum_names.insert(family.name);
+      }
+      nominals.emplace(&sum.nominal_type(), family.name);
+    } else {
+      family.name = nominal->second;
+    }
+    XLS_ASSIGN_OR_RETURN(std::string specialization,
+                         sum_identities_.SpecializationName(sum));
+    XLS_ASSIGN_OR_RETURN(TypeDim payload_dim, sum.GetMaxPayloadBitCount());
+    XLS_ASSIGN_OR_RETURN(int64_t payload_width, payload_dim.GetAsInt64());
+    // The raw sum declaration does not convert its payload types.
+    return PlanSumFamilyNames(sum, specialization, payload_width, family,
+                              allocate_sum);
+  };
+
+  std::function<absl::Status(const Type*, const TypeAnnotation*)>
+      visit_annotation;
+  std::function<absl::Status(const TypeDefinition&)> visit_definition;
+  visit_definition = [&](const TypeDefinition& definition) -> absl::Status {
+    AstNode* node = TypeDefinitionToAstNode(definition);
+    XLS_ASSIGN_OR_RETURN(TypeInfo * info,
+                         import_data->GetRootTypeInfoForNode(node));
+    XLS_ASSIGN_OR_RETURN(Type * concrete,
+                         GetActualType(node, info, import_data));
+    if (const Type* unboxed = UnboxMetaTypes(concrete); unboxed->IsSum()) {
+      return visit_sum(unboxed->AsSum());
+    }
+    XLS_ASSIGN_OR_RETURN(const TypeInfo::TypeSource source,
+                         info->ResolveTypeDefinition(definition));
+    std::string requested = TypeDefinitionName(definition);
+    bool already_converted = TypeDefinitionIdentifier(source).has_value() &&
+                             converted.contains(node);
+    if (!already_converted) {
+      NameUniquer unoccupied("__");
+      XLS_RETURN_IF_ERROR(CheckOrdinaryNameAgainstSumAliases(
+          unoccupied.GetSanitizedUniqueName(requested)));
+    }
+    AllocateOrdinaryTypeName(requested, already_converted, uniquer, allocated);
+    if (already_converted) {
+      return absl::OkStatus();
+    }
+    XLS_RETURN_IF_ERROR(absl::visit(
+        Visitor{
+            [&](TypeAlias* alias) -> absl::Status {
+              XLS_ASSIGN_OR_RETURN(TypeInfo * alias_info,
+                                   import_data->GetRootTypeInfoForNode(alias));
+              std::optional<Type*> alias_type = alias_info->GetItem(alias);
+              XLS_RET_CHECK(alias_type.has_value());
+              return visit_annotation(*alias_type, &alias->type_annotation());
+            },
+            [&](StructDef* record) -> absl::Status {
+              const StructType& record_type = concrete->AsStruct();
+              for (int64_t i = 0; i < record_type.size(); ++i) {
+                const Type& member = record_type.GetMemberType(i);
+                XLS_ASSIGN_OR_RETURN(int64_t width, BitCount(member));
+                if (width > 0) {
+                  XLS_RETURN_IF_ERROR(visit_annotation(
+                      &member, record->members().at(i)->type()));
+                }
+              }
+              return absl::OkStatus();
+            },
+            [&](EnumDef* enumeration) -> absl::Status {
+              for (int64_t i = 0; i < enumeration->values().size(); ++i) {
+                XLS_RETURN_IF_ERROR(CheckOrdinaryNameAgainstSumAliases(
+                    enumeration->GetMemberName(i)));
+              }
+              return absl::OkStatus();
+            },
+            [](auto*) { return absl::OkStatus(); },
+        },
+        source.definition));
+    converted.insert(node);
+    return absl::OkStatus();
+  };
+  visit_annotation =
+      [&](const Type* current,
+          const TypeAnnotation* current_annotation) -> absl::Status {
+    const Type* unboxed = UnboxMetaTypes(current);
+    if (unboxed->IsSum()) {
+      return visit_sum(unboxed->AsSum());
+    } else if (auto* array = dynamic_cast<const ArrayTypeAnnotation*>(
+                   current_annotation)) {
+      if (!GetBitsLike(*unboxed).has_value()) {
+        const Type& element = unboxed->AsArray().element_type();
+        if (!GetBitsLike(element).has_value()) {
+          return visit_annotation(&element, array->element_type());
+        }
+      }
+    } else if (auto* tuple = dynamic_cast<const TupleTypeAnnotation*>(
+                   current_annotation)) {
+      const TupleType& tuple_type = current->AsTuple();
+      for (int64_t i = 0; i < tuple_type.size(); ++i) {
+        const Type& member = tuple_type.GetMemberType(i);
+        XLS_ASSIGN_OR_RETURN(int64_t width, BitCount(member));
+        if (width > 0) {
+          XLS_RETURN_IF_ERROR(
+              visit_annotation(&member, tuple->members().at(i)));
+        }
+      }
+    } else if (auto* reference = dynamic_cast<const TypeRefTypeAnnotation*>(
+                   current_annotation)) {
+      return visit_definition(reference->type_ref()->type_definition());
+    }
+    return absl::OkStatus();
+  };
+  XLS_RETURN_IF_ERROR(visit_annotation(&type, annotation));
+  if (newly_allocated_sum_names.contains(name)) {
+    return OrdinaryTypeNameConflict(name);
+  } else {
+    return absl::OkStatus();
+  }
 }
 
 absl::StatusOr<verilog::DataType*> DslxTypeToVerilogManager::SumToVastType(
@@ -1342,7 +1573,8 @@ absl::Status DslxTypeToVerilogManager::AddTypeToVerilogPackage(
     }
   }
 
-  XLS_RETURN_IF_ERROR(CheckOrdinaryTypeName(typedef_identifier));
+  XLS_RETURN_IF_ERROR(CheckOrdinaryTypeName(*type, type_annotation, import_data,
+                                            typedef_identifier));
 
   // Add typedef to the verilog file.
   XLS_ASSIGN_OR_RETURN(
