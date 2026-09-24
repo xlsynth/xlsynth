@@ -559,6 +559,44 @@ TEST(InterpValueTest, FormatEnum) {
   EXPECT_EQ(bar.ToFormattedString(fmt_desc).value(), "MyEnum::BAR  // u32:1");
 }
 
+TEST(InterpValueTest, EnumFormatTableIsSharedByDescriptorCopies) {
+  ValueFormatDescriptor original = ValueFormatDescriptor::MakeEnum(
+      "E", {{UBits(0, 2), "AliasA"}, {UBits(1, 2), "B"}},
+      /*bit_count=*/2, /*is_signed=*/false);
+  ValueFormatDescriptor copied = original;
+  ValueFormatDescriptor tuple =
+      ValueFormatDescriptor::MakeTuple({original, copied});
+  ValueFormatDescriptor array = ValueFormatDescriptor::MakeArray(tuple, 2);
+  EXPECT_EQ(&original.value_to_name(), &copied.value_to_name());
+  for (const ValueFormatDescriptor& element :
+       array.array_element_format().tuple_elements()) {
+    EXPECT_EQ(&original.value_to_name(), &element.value_to_name());
+    EXPECT_EQ(element.enum_name(), "E");
+    EXPECT_EQ(element.flat_bit_count(), 2);
+    EXPECT_EQ(element.enum_is_signed(), false);
+  }
+
+  // Aggregate copies retain the complete table after their source descriptors
+  // are replaced. The second member must not inherit the first member's name.
+  original = ValueFormatDescriptor();
+  copied = ValueFormatDescriptor();
+  tuple = ValueFormatDescriptor();
+  InterpValue pair = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(2, 0), InterpValue::MakeUBits(2, 1)});
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue value,
+                           InterpValue::MakeArray({pair, pair}));
+  EXPECT_THAT(value.ToFormattedString(array), IsOkAndHolds(R"([
+    (
+        E::AliasA  // u2:0,
+        E::B  // u2:1
+    ),
+    (
+        E::AliasA  // u2:0,
+        E::B  // u2:1
+    )
+])"));
+}
+
 TEST(InterpValueTest, AsProtoBits) {
   InterpValue iv = InterpValue::MakeU32(0xdeadbeef);
   XLS_ASSERT_OK_AND_ASSIGN(xls::ValueProto proto, iv.AsProto());

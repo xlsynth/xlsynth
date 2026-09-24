@@ -139,11 +139,12 @@ class ValueFormatDescriptor {
   // Enum methods.
   std::string_view enum_name() const {
     CHECK(IsEnum());
-    return std::get<EnumFormat>(nominal_format_).name;
+    return std::get<std::shared_ptr<const EnumFormat>>(nominal_format_)->name;
   }
   const absl::flat_hash_map<Bits, std::string>& value_to_name() const {
     CHECK(IsEnum());
-    return std::get<EnumFormat>(nominal_format_).value_to_name;
+    return std::get<std::shared_ptr<const EnumFormat>>(nominal_format_)
+        ->value_to_name;
   }
   std::optional<bool> enum_is_signed() const {
     CHECK(IsEnum());
@@ -286,9 +287,9 @@ class ValueFormatDescriptor {
 
   // A descriptor describes at most one nominal kind. Sharing its storage keeps
   // semantic-sum support from enlarging every ordinary bytecode instruction.
-  // Copies share immutable sum descriptions, including their descendants,
-  // without retaining any Type or AST pointers.
-  std::variant<std::monostate, EnumFormat, StructFormat,
+  // Copies share immutable enum tables and sum descriptions, including their
+  // descendants, without retaining any Type or AST pointers.
+  std::variant<std::monostate, std::shared_ptr<const EnumFormat>, StructFormat,
                std::shared_ptr<const SumFormat>>
       nominal_format_;
 };
