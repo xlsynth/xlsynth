@@ -94,6 +94,35 @@ TEST(FormatStringsTest, ZeroPaddedFormat) {
   EXPECT_EQ(OperandsExpectedByFormat(zero_padded_format), 1);
 }
 
+TEST(FormatStringsTest, ConditionalSectionsAreRestrictedToIrFormats) {
+  constexpr std::string_view kFormat = "prefix {?}value = {}{/} suffix";
+  const std::vector<FormatStep> expected = {"prefix ",
+                                            FormatControl::kBeginConditional,
+                                            "value = ",
+                                            FormatPreference::kDefault,
+                                            FormatControl::kEndConditional,
+                                            " suffix"};
+
+  EXPECT_THAT(ParseIrFormatString(kFormat), IsOkAndHolds(expected));
+  EXPECT_EQ(OperandsExpectedByFormat(expected), 2);
+  EXPECT_EQ(StepsToXlsFormatString(expected), kFormat);
+  EXPECT_THAT(ParseFormatString(kFormat),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(FormatStringsTest, ConditionalSectionsMustBeBalanced) {
+  EXPECT_THAT(ParseIrFormatString("{/}"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("without matching begin")));
+  EXPECT_THAT(ParseIrFormatString("{?}value"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("without matching end")));
+  EXPECT_THAT(ValidateFormatSteps({FormatControl::kEndConditional}),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(ValidateFormatSteps({FormatControl::kBeginConditional}),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
 TEST(FormatStringsTest, ErrorTests) {
   EXPECT_THAT(ParseFormatString("{abc}"),
               StatusIs(absl::StatusCode::kInvalidArgument,
