@@ -492,16 +492,34 @@ cc_test(
         "//xls/dslx/frontend:ast",
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info",
+        "//xls/dslx:value_format_descriptor",
         "//xls/jit:aot_entrypoint_cc_proto",
         "//xls/jit:jit_buffer",
         "@abseil-cpp//absl/base:core_headers",
         "@abseil-cpp//absl/cleanup",
         "@abseil-cpp//absl/log",
         "@abseil-cpp//absl/strings:str_format",
+        "@abseil-cpp//absl/synchronization",
+        "@abseil-cpp//absl/time",
         "@googletest//:gtest",
         "@llvm-project//llvm:OrcJIT",
         "@llvm-project//llvm:OrcShared",
         "@llvm-project//llvm:Support",
+    ],
+)
+
+cc_test(
+    name = "c_api_dslx_sum_fuzz_test",
+    srcs = ["c_api_dslx_sum_fuzz_test.cc"],
+    deps = [
+        ":c_api",
+        ":c_api_dslx",
+        "//xls/dslx:default_dslx_stdlib_path",
+        "//xls/fuzzer:semantic_sum_fuzz_main",
+        "@abseil-cpp//absl/cleanup",
+        "@abseil-cpp//absl/strings",
+        "@com_google_fuzztest//fuzztest",
+        "@googletest//:gtest",
     ],
 )
 
