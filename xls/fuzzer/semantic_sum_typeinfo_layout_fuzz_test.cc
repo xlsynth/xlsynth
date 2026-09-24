@@ -12,20 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Covers durable serialized metadata for bounded generated sum declarations.
-// FUZZ_TEST generates a vector of two to four variant-kind choices; each choice
-// becomes a bare unit, one-field tuple, empty tuple, one-field struct, or empty
-// struct variant in a fixed enum plus main-function shell.
-//
-// The property validates the source-backed declaration, positional variant
-// count, and concrete payload-member counts. Variant names and shapes remain
-// owned by the source AST. It does not fuzz invalid programs,
-// parametrics, nested sums, payload values, payload-slot widths, or offsets.
+// Covers serialized metadata for finite, acyclic sum declarations. The generated
+// property owns its expected discriminants, concrete member types, parametric
+// arguments, and nominal references independently of production type encoding.
 
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -33,10 +28,10 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
-#include "absl/strings/str_format.h"
 #include "fuzztest/fuzztest.h"
 #include "gtest/gtest.h"
 #include "xls/common/file/get_runfile_path.h"
+#include "xls/common/proto_test_utils.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/create_import_data.h"
@@ -44,6 +39,7 @@
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/parse_and_typecheck.h"
+#include "xls/dslx/sum_type_encoding.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.pb.h"
 #include "xls/dslx/type_system/type_info_to_proto.h"
@@ -51,10 +47,6 @@
 
 namespace xls {
 namespace {
-
-// Variant-kind codes consumed by the generated-program domain.
-constexpr int64_t kBareUnitVariantKind = 0;
-constexpr int64_t kEmptyTuplePayloadVariantKind = 2;
 
 // Resolves the checked-in corpus manifest from Bazel runfiles.
 std::filesystem::path GetManifestPath() {
@@ -141,6 +133,7 @@ absl::Status VerifySumMetadata(std::string_view case_name,
           "type.");
     }
 
+    int64_t max_payload_bit_count = 0;
     for (int64_t i = 0; i < sum_def->variants().size(); ++i) {
       const dslx::SumVariant* ast_variant = sum_def->variants().at(i);
       const dslx::SumTypeVariantProto& proto_variant = sum_proto->variants(i);
@@ -154,68 +147,36 @@ absl::Status VerifySumMetadata(std::string_view case_name,
         return absl::FailedPreconditionError(
             "SumTypeProto payload count did not match its checked variant.");
       }
+      XLS_ASSIGN_OR_RETURN(dslx::TypeDim payload_bit_count,
+                           sum_type->variants().at(i).GetTotalBitCount());
+      XLS_ASSIGN_OR_RETURN(int64_t payload_bit_count_value,
+                           payload_bit_count.GetAsInt64());
+      max_payload_bit_count =
+          std::max(max_payload_bit_count, payload_bit_count_value);
     }
+
+    const dslx::SumTypeEncoding encoding(*sum_type);
+    XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                         encoding.payload_slot_bit_count());
+    if (payload_slot_bit_count != max_payload_bit_count) {
+      return absl::FailedPreconditionError(
+          "SumTypeEncoding payload slot width did not match widest "
+          "payload.");
+    }
+
+    XLS_RETURN_IF_ERROR(encoding.ForEachVariant(
+        [&](const dslx::SumTypeEncoding::VariantInfo& variant) -> absl::Status {
+          if (variant.variant_index < 0 ||
+              variant.variant_index >= sum_type->variant_count()) {
+            return absl::FailedPreconditionError(
+                "Variant index out of bounds.");
+          }
+          return absl::OkStatus();
+        }));
   }
 
   return dslx::ToHumanString(proto, import_data, import_data.file_table())
       .status();
-}
-
-// Emits one bounded variant declaration from a generated kind code.
-std::string GenerateVariantDecl(int64_t index, int64_t kind_choice) {
-  switch (kind_choice) {
-    case kBareUnitVariantKind:
-      return absl::StrFormat("  V%d,\n", index);
-    case 1:
-      return absl::StrFormat("  V%d(u%d),\n", index, 8 * (index + 1));
-    case kEmptyTuplePayloadVariantKind:
-      return absl::StrFormat("  V%d(),\n", index);
-    case 3:
-      return absl::StrFormat("  V%d { x: u%d },\n", index, 8 * (index + 1));
-    default:
-      return absl::StrFormat("  V%d { },\n", index);
-  }
-}
-
-// Emits a constructor matching the generated variant declaration.
-std::string GenerateConstructorExpr(int64_t index, int64_t kind_choice) {
-  switch (kind_choice) {
-    case kBareUnitVariantKind:
-      return absl::StrFormat("Generated::V%d", index);
-    case 1:
-      return absl::StrFormat("Generated::V%d(u%d:0)", index, 8 * (index + 1));
-    case kEmptyTuplePayloadVariantKind:
-      return absl::StrFormat("Generated::V%d()", index);
-    case 3:
-      return absl::StrFormat("Generated::V%d { x: u%d:0 }", index,
-                             8 * (index + 1));
-    default:
-      return absl::StrFormat("Generated::V%d { }", index);
-  }
-}
-
-// Builds one deterministic DSLX program from two to four kind choices.
-std::string GenerateProgram(std::vector<int64_t> kind_choices) {
-  if (std::all_of(kind_choices.begin(), kind_choices.end(),
-                  [](int64_t kind_choice) {
-                    return kind_choice == kBareUnitVariantKind;
-                  })) {
-    // Bare variants alone parse as a numeric enum. Preserve unit-only semantic
-    // sum coverage by adding payload syntax only for otherwise-invalid draws.
-    kind_choices.front() = kEmptyTuplePayloadVariantKind;
-  }
-
-  std::string program = "enum Generated {\n";
-  for (int64_t i = 0; i < kind_choices.size(); ++i) {
-    absl::StrAppend(&program, GenerateVariantDecl(i, kind_choices.at(i)));
-  }
-  absl::StrAppend(&program, "}\n\nfn main(x: bool) -> Generated {\n");
-  absl::StrAppend(
-      &program, "  if x { ", GenerateConstructorExpr(0, kind_choices.front()),
-      " } else { ",
-      GenerateConstructorExpr(kind_choices.size() - 1, kind_choices.back()),
-      " }\n}\n");
-  return program;
 }
 
 // Verifies: reviewed type-info seeds preserve source-backed sum metadata.
@@ -233,19 +194,302 @@ TEST(SemanticSumTypeinfoLayoutFuzzTest, ReplaysManifestCases) {
   EXPECT_EQ(verified, 2);
 }
 
-// Generates one bounded sum declaration and validates its metadata contract.
-// It intentionally excludes layout-width assertions owned by later semantics.
-void GeneratedProgramHasConsistentMetadata(std::vector<int64_t> kind_choices) {
-  std::string program = GenerateProgram(std::move(kind_choices));
+enum class PayloadKind {
+  kUnit,
+  kEmptyTuple,
+  kEmptyStruct,
+  kBits,
+  kMembers,
+  kStruct,
+  kTuple,
+  kArray,
+  kNested,
+};
+
+enum class TagLayout { kImplicit, kUnsignedSparse, kSignedSparse };
+
+int64_t DeclaredTag(TagLayout layout, int64_t index) {
+  constexpr int64_t kUnsignedTags[] = {0, 2, 5, 7};
+  constexpr int64_t kSignedTags[] = {-3, -1, 0, 2};
+  switch (layout) {
+    case TagLayout::kImplicit:
+      return index;
+    case TagLayout::kUnsignedSparse:
+      return kUnsignedTags[index];
+    case TagLayout::kSignedSparse:
+      return kSignedTags[index];
+  }
+}
+
+std::string GenerateProgram(const std::vector<PayloadKind>& kinds,
+                            TagLayout layout, int64_t tag_width,
+                            int64_t value_argument, int64_t type_width) {
+  std::string program =
+      "#![feature(generics)]\n"
+      "enum Child { Leaf(u2), Other(s3) }\n"
+      "enum Generated<N: u32, T: type>";
+  if (layout != TagLayout::kImplicit) {
+    absl::StrAppend(&program,
+                    layout == TagLayout::kSignedSparse ? ": s" : ": u",
+                    tag_width);
+  }
+  absl::StrAppend(&program, " {\n");
+  for (int64_t i = 0; i < kinds.size(); ++i) {
+    absl::StrAppend(&program, "V", i);
+    switch (kinds[i]) {
+      case PayloadKind::kUnit:
+        break;
+      case PayloadKind::kEmptyTuple:
+        absl::StrAppend(&program, "()");
+        break;
+      case PayloadKind::kEmptyStruct:
+        absl::StrAppend(&program, " {}");
+        break;
+      case PayloadKind::kBits:
+        absl::StrAppend(&program, "(uN[N])");
+        break;
+      case PayloadKind::kMembers:
+        absl::StrAppend(&program, "(T, uN[N])");
+        break;
+      case PayloadKind::kStruct:
+        absl::StrAppend(&program, " { first: T, second: uN[N] }");
+        break;
+      case PayloadKind::kTuple:
+        absl::StrAppend(&program, "((T, uN[N]))");
+        break;
+      case PayloadKind::kArray:
+        absl::StrAppend(&program, "(T[2])");
+        break;
+      case PayloadKind::kNested:
+        absl::StrAppend(&program, "(Child, Child)");
+        break;
+    }
+    if (layout != TagLayout::kImplicit) {
+      absl::StrAppend(&program, " = ", DeclaredTag(layout, i));
+    }
+    absl::StrAppend(&program, ",\n");
+  }
+  // Repeated identical instantiations must share; changing N must produce a
+  // distinct nominal definition, including when N is phantom in every payload.
+  absl::StrAppend(&program, "}\ntype Inputs = (Generated<u32:", value_argument,
+                  ", s", type_width, ">, Generated<u32:", value_argument, ", s",
+                  type_width, ">, Generated<u32:", value_argument + 1, ", s",
+                  type_width, ">);\nfn main(x: Inputs) -> Inputs { x }\n");
+  return program;
+}
+
+// The wire contract stores bits in big-endian bytes. This independent writer
+// handles only the small literal widths used by this declaration domain.
+dslx::InterpValueProto ExpectedBits(int64_t width, bool is_signed,
+                                    uint64_t value) {
+  dslx::InterpValueProto result;
+  auto* bits = result.mutable_bits();
+  bits->set_is_signed(is_signed);
+  bits->set_bit_count(width);
+  value &= (uint64_t{1} << width) - 1;
+  std::string bytes((width + 7) / 8, '\0');
+  for (int64_t i = bytes.size(); i > 0; --i) {
+    bytes[i - 1] = static_cast<char>(value & 0xff);
+    value >>= 8;
+  }
+  bits->set_data(bytes);
+  return result;
+}
+
+dslx::TypeDimProto ExpectedDimension(int64_t value) {
+  dslx::TypeDimProto result;
+  *result.mutable_interp_value() = ExpectedBits(32, false, value);
+  return result;
+}
+
+dslx::TypeProto ExpectedBitsType(int64_t width, bool is_signed) {
+  dslx::TypeProto result;
+  result.mutable_bits_type()->set_is_signed(is_signed);
+  *result.mutable_bits_type()->mutable_dim() = ExpectedDimension(width);
+  return result;
+}
+
+dslx::TypeProto ExpectedChild(const dslx::SpanProto& child_span,
+                              uint64_t& next_id,
+                              std::optional<uint64_t>& child_id) {
+  dslx::TypeProto result;
+  if (child_id.has_value()) {
+    result.set_sum_type_reference(*child_id);
+  } else {
+    child_id = next_id++;
+    auto* sum = result.mutable_sum_type();
+    sum->set_definition_id(*child_id);
+    *sum->mutable_sum_def_span() = child_span;
+    *sum->mutable_tag_bit_count() = ExpectedDimension(1);
+    for (int64_t i = 0; i < 2; ++i) {
+      auto* variant = sum->add_variants();
+      *variant->mutable_discriminant() = ExpectedBits(1, false, i);
+      *variant->add_payload_members() =
+          ExpectedBitsType(i == 0 ? 2 : 3, i == 1);
+    }
+  }
+  return result;
+}
+
+dslx::TypeProto ExpectedGenerated(const std::vector<PayloadKind>& kinds,
+                                  TagLayout layout, int64_t tag_width,
+                                  int64_t value_argument, int64_t type_width,
+                                  const dslx::SpanProto& generated_span,
+                                  const dslx::SpanProto& child_span,
+                                  uint64_t& next_id,
+                                  std::optional<uint64_t>& child_id) {
+  dslx::TypeProto result;
+  auto* sum = result.mutable_sum_type();
+  sum->set_definition_id(next_id++);
+  *sum->mutable_sum_def_span() = generated_span;
+  *sum->mutable_tag_bit_count() = ExpectedDimension(tag_width);
+  *sum->add_parametric_arguments()->mutable_value() =
+      ExpectedBits(32, false, value_argument);
+  *sum->add_parametric_arguments()->mutable_type() =
+      ExpectedBitsType(type_width, true);
+  for (int64_t i = 0; i < kinds.size(); ++i) {
+    auto* variant = sum->add_variants();
+    *variant->mutable_discriminant() = ExpectedBits(
+        tag_width, layout == TagLayout::kSignedSparse, DeclaredTag(layout, i));
+    switch (kinds[i]) {
+      case PayloadKind::kUnit:
+      case PayloadKind::kEmptyTuple:
+      case PayloadKind::kEmptyStruct:
+        break;
+      case PayloadKind::kBits:
+        *variant->add_payload_members() =
+            ExpectedBitsType(value_argument, false);
+        break;
+      case PayloadKind::kMembers:
+      case PayloadKind::kStruct:
+        *variant->add_payload_members() = ExpectedBitsType(type_width, true);
+        *variant->add_payload_members() =
+            ExpectedBitsType(value_argument, false);
+        break;
+      case PayloadKind::kTuple: {
+        auto* tuple = variant->add_payload_members()->mutable_tuple_type();
+        *tuple->add_members() = ExpectedBitsType(type_width, true);
+        *tuple->add_members() = ExpectedBitsType(value_argument, false);
+        break;
+      }
+      case PayloadKind::kArray: {
+        auto* array = variant->add_payload_members()->mutable_array_type();
+        *array->mutable_element_type() = ExpectedBitsType(type_width, true);
+        *array->mutable_size() = ExpectedDimension(2);
+        break;
+      }
+      case PayloadKind::kNested:
+        *variant->add_payload_members() =
+            ExpectedChild(child_span, next_id, child_id);
+        *variant->add_payload_members() =
+            ExpectedChild(child_span, next_id, child_id);
+        break;
+    }
+  }
+  return result;
+}
+
+void GeneratedProgramHasConsistentMetadata(std::vector<PayloadKind> kinds,
+                                           TagLayout layout,
+                                           uint8_t explicit_tag_width,
+                                           uint8_t value_argument,
+                                           uint8_t type_width) {
+  if (std::all_of(kinds.begin(), kinds.end(), [](PayloadKind kind) {
+        return kind == PayloadKind::kUnit;
+      })) {
+    // At least one payload spelling distinguishes a semantic sum from an enum.
+    kinds.front() = PayloadKind::kEmptyTuple;
+  }
+  const int64_t tag_width = layout == TagLayout::kImplicit
+                                ? (kinds.size() == 1   ? 0
+                                   : kinds.size() == 2 ? 1
+                                                       : 2)
+                                : explicit_tag_width;
+  const std::string program =
+      GenerateProgram(kinds, layout, tag_width, value_argument, type_width);
   SCOPED_TRACE(program);
-  XLS_ASSERT_OK(VerifySumMetadata("generated_typeinfo_case", program));
+  dslx::ImportData import_data = dslx::CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      dslx::TypecheckedModule tm,
+      dslx::ParseAndTypecheck(program, "generated_metadata.x",
+                              "generated_metadata", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(dslx::TypeInfoProto proto,
+                           dslx::TypeInfoToProto(*tm.type_info, tm.module));
+  dslx::TypeInfoProto parsed;
+  ASSERT_TRUE(parsed.ParseFromString(proto.SerializeAsString()));
+  const dslx::AstNodeTypeInfoProto* parameter = nullptr;
+  for (const auto& node : parsed.nodes()) {
+    if (node.kind() == dslx::AST_NODE_KIND_PARAM) {
+      parameter = &node;
+    }
+  }
+  ASSERT_NE(parameter, nullptr);
+  dslx::SumDef* generated = nullptr;
+  dslx::SumDef* child = nullptr;
+  for (dslx::SumDef* sum : tm.module->GetSumDefs()) {
+    if (sum->identifier() == "Generated") {
+      generated = sum;
+    } else if (sum->identifier() == "Child") {
+      child = sum;
+    }
+  }
+  ASSERT_NE(generated, nullptr);
+  ASSERT_NE(child, nullptr);
+  const dslx::SpanProto generated_span =
+      dslx::ToProto(generated->span(), import_data.file_table());
+  const dslx::SpanProto child_span =
+      dslx::ToProto(child->span(), import_data.file_table());
+  uint64_t next_id = 1;
+  std::optional<uint64_t> child_id;
+  dslx::TypeProto expected;
+  auto* tuple = expected.mutable_tuple_type();
+  *tuple->add_members() =
+      ExpectedGenerated(kinds, layout, tag_width, value_argument, type_width,
+                        generated_span, child_span, next_id, child_id);
+  tuple->add_members()->set_sum_type_reference(1);
+  *tuple->add_members() = ExpectedGenerated(
+      kinds, layout, tag_width, value_argument + 1, type_width, generated_span,
+      child_span, next_id, child_id);
+  EXPECT_THAT(parameter->type(), xls::proto_testing::EqualsProto(expected));
+  // Human printing exercises another consumer, but supplies no oracle fields.
+  XLS_ASSERT_OK(
+      dslx::ToHumanString(*parameter, import_data, import_data.file_table())
+          .status());
+}
+
+TEST(SemanticSumTypeinfoLayoutFuzzTest, GeneratedMetadataWitnesses) {
+  for (TagLayout layout : {TagLayout::kImplicit, TagLayout::kUnsignedSparse,
+                           TagLayout::kSignedSparse}) {
+    GeneratedProgramHasConsistentMetadata({PayloadKind::kUnit}, layout, 3, 1,
+                                          8);
+    GeneratedProgramHasConsistentMetadata({PayloadKind::kEmptyStruct}, layout,
+                                          4, 2, 7);
+    GeneratedProgramHasConsistentMetadata(
+        {PayloadKind::kBits, PayloadKind::kMembers, PayloadKind::kStruct,
+         PayloadKind::kNested},
+        layout, 5, 8, 1);
+    GeneratedProgramHasConsistentMetadata(
+        {PayloadKind::kEmptyTuple, PayloadKind::kTuple, PayloadKind::kArray},
+        layout, 4, 3, 5);
+  }
 }
 
 FUZZ_TEST(SemanticSumTypeinfoLayoutFuzzTest,
           GeneratedProgramHasConsistentMetadata)
-    .WithDomains(fuzztest::VectorOf(fuzztest::InRange<int64_t>(0, 4))
-                     .WithMinSize(2)
-                     .WithMaxSize(4));
+    .WithDomains(
+        fuzztest::VectorOf(fuzztest::ElementOf<PayloadKind>(
+                               {PayloadKind::kUnit, PayloadKind::kEmptyTuple,
+                                PayloadKind::kEmptyStruct, PayloadKind::kBits,
+                                PayloadKind::kMembers, PayloadKind::kStruct,
+                                PayloadKind::kTuple, PayloadKind::kArray,
+                                PayloadKind::kNested}))
+            .WithMinSize(1)
+            .WithMaxSize(4),
+        fuzztest::ElementOf<TagLayout>({TagLayout::kImplicit,
+                                        TagLayout::kUnsignedSparse,
+                                        TagLayout::kSignedSparse}),
+        fuzztest::InRange<uint8_t>(3, 5), fuzztest::InRange<uint8_t>(1, 8),
+        fuzztest::InRange<uint8_t>(1, 8));
 
 }  // namespace
 }  // namespace xls

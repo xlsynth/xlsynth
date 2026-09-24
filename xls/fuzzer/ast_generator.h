@@ -198,12 +198,23 @@ class AstGenerator {
   // would all produce identical generated functions for the same seed.
   using Env = absl::btree_map<std::string, TypedExpr>;
 
+  // Required sums stay outside the ordinary expression environment, whose
+  // productions do not yet handle nominal sum types.
+  struct RequiredSum {
+    SumDef* definition;
+    Param* input;
+    std::vector<std::vector<Expr*>> payloads;
+    Param* selector = nullptr;
+    Param* other_payload = nullptr;
+  };
+
   // The context contains information for an instance in the call stack.
   struct Context {
     // TODO(https://github.com/google/xls/issues/789).
     // TODO(https://github.com/google/xls/issues/790).
     Env env;
     bool is_generating_proc;
+    std::optional<RequiredSum> required_sum;
   };
 
   static bool IsTypeRef(const TypeAnnotation* t);
@@ -470,7 +481,7 @@ class AstGenerator {
   absl::StatusOr<TypedExpr> GenerateConcat(Context* ctx);
 
   // Generates a return-value positioned expression.
-  absl::StatusOr<TypedExpr> GenerateRetval(Context* ctx);
+  absl::StatusOr<TypedExpr> GenerateRetval(Context* ctx, int64_t max_bit_count);
 
   // Generates a return-value positioned expression for a proc next function.
   absl::StatusOr<TypedExpr> GenerateProcNextFunctionRetval(Context* ctx);
@@ -606,9 +617,16 @@ class AstGenerator {
   absl::StatusOr<TypedExpr> GeneratePartialProductDeterministicGroup(
       Context* ctx);
 
-  // Creates a boolean predicate backed by a semantic sum constructor use and
-  // appends the required let statements to `statements`.
-  absl::StatusOr<TypedExpr> GenerateRequiredSumPredicate(
+  absl::StatusOr<RequiredSum> GenerateRequiredSumParameters(
+      std::vector<Param*>* params);
+  Expr* MakeSumConstructor(SumDef* definition, int64_t variant,
+                           absl::Span<Expr* const> payloads);
+  PatternTree MakeSumPattern(SumDef* definition, int64_t variant,
+                             absl::Span<const PatternTree> payloads);
+
+  // Returns complete runtime values and arm markers, and asserts independent
+  // scalar expectations for constructor equality and payload extraction.
+  absl::StatusOr<TypedExpr> GenerateRequiredSumResult(
       Context* ctx, std::vector<Statement*>* statements);
 
   TypeRefTypeAnnotation* MakeImportedSumTypeAnnotation();
