@@ -12,19 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Covers the Phase 1 raw-value boundary for one reviewed sum declaration with
-// an enum-typed payload. The generated domain varies only that payload across
-// declared members {0, 1} and undeclared encodings {2, 3}; each invocation
-// checks one semantic/raw conversion outcome for the fixed declaration.
-//
-// This test does not generate sum declarations, payload layouts, tag values,
-// or arbitrary raw tuples. Source syntax and pattern failures stay in SOURCE
-// replay, while malformed-tag preservation and final layout-width checks
-// belong to later semantic owners.
+// Raw conversion seeds retain numeric-enum strictness. The generated property
+// additionally executes bounded nested sum programs with literal wire images,
+// independently checking transport, constructor padding, and observation depth
+// in bytecode, the IR interpreter, and the JIT. Malformed images never pass
+// through source-domain argument decoding.
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -39,16 +37,27 @@
 #include "xls/common/file/get_runfile_path.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
+#include "xls/dslx/bytecode/bytecode_emitter.h"
+#include "xls/dslx/bytecode/bytecode_interpreter.h"
 #include "xls/dslx/create_import_data.h"
+#include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/interp_value_utils.h"
+#include "xls/dslx/ir_convert/conversion_info.h"
+#include "xls/dslx/ir_convert/convert_options.h"
+#include "xls/dslx/ir_convert/function_converter.h"
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/sum_type_encoding.h"
+#include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/fuzzer/semantic_sum_seed_corpus.h"
+#include "xls/interpreter/function_interpreter.h"
+#include "xls/ir/bits.h"
 #include "xls/ir/ir_parser.h"
+#include "xls/ir/package.h"
 #include "xls/ir/value.h"
+#include "xls/jit/function_jit.h"
 
 namespace xls {
 namespace {
@@ -189,6 +198,18 @@ absl::StatusOr<Value> MakeInvalidEnumRawValue(const RawBoundaryContext& context,
           {Value(UBits(invalid_member_value, payload_slot_bit_count))})});
 }
 
+// Builds one raw sum with an out-of-range tag and arbitrary payload bits.
+absl::StatusOr<Value> MakeMalformedTagRawValue(
+    const RawBoundaryContext& context, uint16_t payload_bits) {
+  const dslx::SumTypeEncoding encoding(*context.sum_type);
+  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
+  XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                       encoding.payload_slot_bit_count());
+  return Value::TupleOwned(std::vector<Value>{
+      Value(UBits(context.sum_type->variant_count(), tag_bit_count)),
+      Value::TupleOwned({Value(UBits(payload_bits, payload_slot_bit_count))})});
+}
+
 // Applies the manifest outcome contract to one reviewed raw IR value.
 absl::Status VerifyManifestRawSeed(const RawBoundaryContext& context,
                                    const fuzzer::SemanticSumSeed& seed) {
@@ -200,6 +221,19 @@ absl::Status VerifyManifestRawSeed(const RawBoundaryContext& context,
     if (!actual.ok()) {
       return actual.status();
     }
+    const dslx::SumTypeEncoding encoding(*context.sum_type);
+    absl::StatusOr<dslx::SumTypeEncoding::VariantInfo> variant =
+        encoding.GetVariantByTagBits(raw_value.elements().at(0).bits());
+    if (variant.status().code() == absl::StatusCode::kNotFound) {
+      XLS_ASSIGN_OR_RETURN(Value roundtrip, actual->ConvertToIr());
+      if (roundtrip != raw_value) {
+        return absl::FailedPreconditionError(absl::StrCat(
+            "Raw-boundary seed '", seed.seed_id(),
+            "' did not preserve malformed raw bits through roundtrip."));
+      }
+      return absl::OkStatus();
+    }
+    XLS_RETURN_IF_ERROR(variant.status());
     XLS_ASSIGN_OR_RETURN(
         Bits enum_payload_bits,
         ExtractEnumPayloadBitsFromRawValue(context, raw_value));
@@ -274,6 +308,21 @@ absl::Status VerifyUndeclaredEnumPayloadRejected(
   return absl::OkStatus();
 }
 
+// Checks that one malformed tag round-trips without losing raw bits.
+absl::Status VerifyMalformedTagPreservesRawImage(
+    const RawBoundaryContext& context, uint16_t payload_bits) {
+  XLS_ASSIGN_OR_RETURN(Value raw_value,
+                       MakeMalformedTagRawValue(context, payload_bits));
+  XLS_ASSIGN_OR_RETURN(dslx::InterpValue semantic_value,
+                       dslx::ValueToInterpValue(raw_value, context.sum_type));
+  XLS_ASSIGN_OR_RETURN(Value roundtrip, semantic_value.ConvertToIr());
+  if (roundtrip != raw_value) {
+    return absl::FailedPreconditionError(
+        "Malformed raw boundary tag did not preserve its raw image.");
+  }
+  return absl::OkStatus();
+}
+
 // Verifies: reviewed raw-boundary seeds convert or reject as declared.
 // Catches: changed conversion or diagnostic behavior for named raw fixtures.
 TEST(SemanticSumRawBoundaryFuzzTest, ReplaysManifestCases) {
@@ -288,7 +337,7 @@ TEST(SemanticSumRawBoundaryFuzzTest, ReplaysManifestCases) {
         ++verified;
         return VerifyManifestRawSeed(context, seed);
       }));
-  EXPECT_EQ(verified, 2);
+  EXPECT_EQ(verified, 3);
 }
 
 // Sparse, out-of-order encodings distinguish member values from their indexes.
@@ -327,6 +376,323 @@ void UndeclaredEnumPayloadIsRejected(uint64_t invalid_member_value) {
 
 FUZZ_TEST(SemanticSumRawBoundaryFuzzTest, UndeclaredEnumPayloadIsRejected)
     .WithDomains(fuzztest::ElementOf<uint64_t>({2, 3}));
+
+// Generates arbitrary payload bits under the fixed malformed tag.
+// It validates raw-image preservation and does not vary declarations.
+void MalformedSumTagPreservesRawImage(uint16_t payload_bits) {
+  XLS_ASSERT_OK_AND_ASSIGN(RawBoundaryContext context,
+                           LoadRawBoundaryContext(GetManifestPath()));
+  XLS_ASSERT_OK(VerifyMalformedTagPreservesRawImage(context, payload_bits));
+}
+
+FUZZ_TEST(SemanticSumRawBoundaryFuzzTest, MalformedSumTagPreservesRawImage)
+    .WithDomains(fuzztest::Arbitrary<uint16_t>());
+
+enum class RawOperation {
+  kForward,
+  kWrap,
+  kBind,
+  kInspect,
+  kInspectInvalid,
+  kCompare,
+  kConstantPattern,
+};
+
+// Both boundary inputs are literal tuples. In particular, neither creation of
+// bytecode arguments nor the expected result invokes semantic sum conversion.
+struct RawSumArgument {
+  dslx::InterpValue bytecode;
+  Value ir;
+};
+
+RawSumArgument MakeRawSumArgument(uint64_t tag, int64_t tag_width,
+                                  uint64_t payload, int64_t payload_width) {
+  return {
+      .bytecode = dslx::InterpValue::MakeTuple(
+          {dslx::InterpValue::MakeUBits(tag_width, tag),
+           dslx::InterpValue::MakeTuple(
+               {dslx::InterpValue::MakeUBits(payload_width, payload)})}),
+      .ir =
+          Value::Tuple({Value(UBits(tag, tag_width)),
+                        Value::Tuple({Value(UBits(payload, payload_width))})}),
+  };
+}
+
+std::string NestedRawProgram(int64_t narrow_width, int64_t wide_width,
+                             RawOperation operation) {
+  std::string program = absl::StrCat(
+      "enum Message: u2 { Wide(u", wide_width, ") = 0, Narrow(u", narrow_width,
+      ") = 2 }\n",
+      "enum Envelope: u1 { Wrapped(Message) = 0, Wide(u16) = 1 }\n");
+  switch (operation) {
+    case RawOperation::kForward:
+      absl::StrAppend(&program, "fn main(x: Message) -> Message { x }\n");
+      break;
+    case RawOperation::kWrap:
+      absl::StrAppend(
+          &program,
+          "fn main(x: Message) -> Envelope { Envelope::Wrapped(x) }\n");
+      break;
+    case RawOperation::kBind:
+      absl::StrAppend(&program, "fn main(x: Envelope) -> Message { match x {\n",
+                      "Envelope::Wrapped(value) => value,\n",
+                      "Envelope::Wide(_) => Message::Narrow(u", narrow_width,
+                      ":0),\n", "} }\n");
+      break;
+    case RawOperation::kInspect:
+    case RawOperation::kInspectInvalid:
+      absl::StrAppend(&program, "fn main(x: Envelope) -> u16 { match x {\n",
+                      "Envelope::Wrapped(inner) => match inner {\n",
+                      "Message::Wide(value) => value as u16,\n",
+                      "Message::Narrow(value) => value as u16,\n");
+      if (operation == RawOperation::kInspectInvalid) {
+        absl::StrAppend(&program, "invalid!(raw) => raw as u16,\n");
+      }
+      absl::StrAppend(&program, "}, Envelope::Wide(value) => value,\n} }\n");
+      break;
+    case RawOperation::kCompare:
+      absl::StrAppend(&program,
+                      "fn main(x: Envelope, y: Envelope) -> (bool, bool, "
+                      "Envelope, Envelope) {\n",
+                      "(x == y, x != y, x, y) }\n");
+      break;
+    case RawOperation::kConstantPattern:
+      absl::StrAppend(&program, "fn main(x: Envelope) -> bool { ",
+                      "const EXPECTED = Envelope::Wrapped(Message::Narrow(u",
+                      narrow_width, ":1));\n",
+                      "match x { EXPECTED => "
+                      "true, _ => false } }\n");
+      break;
+  }
+  return program;
+}
+
+struct RawInput {
+  uint8_t tag;
+  uint8_t payload_bits;
+  uint8_t other_tag;
+  uint8_t other_payload_bits;
+  uint16_t outer_padding_bits;
+};
+
+// All compilation owners remain local to this invocation. The JIT is reused
+// sequentially; each input still gets fresh arguments, results, and an oracle.
+void NestedRawInputBatchesRespectObservation(
+    uint8_t narrow_width, uint8_t wide_width, RawOperation operation,
+    const std::vector<RawInput>& inputs) {
+  const std::string program =
+      NestedRawProgram(narrow_width, wide_width, operation);
+  SCOPED_TRACE(program);
+  dslx::ImportData import_data = dslx::CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(dslx::TypecheckedModule tm,
+                           dslx::ParseAndTypecheck(program, "nested_raw.x",
+                                                   "nested_raw", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(dslx::Function * function,
+                           tm.module->GetMemberOrError<dslx::Function>("main"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto bytecode,
+      dslx::BytecodeEmitter::Emit(&import_data, tm.type_info, *function,
+                                  dslx::ParametricEnv()));
+  dslx::PackageConversionData package{
+      .package = std::make_unique<Package>("nested_raw_package")};
+  dslx::PackageData package_data{.conversion_info = &package};
+  dslx::FunctionConverter converter(
+      package_data, tm.module, &import_data, dslx::ConvertOptions(),
+      /*proc_data=*/nullptr, /*channel_scope=*/nullptr, /*is_top=*/true);
+  XLS_ASSERT_OK(converter.HandleFunction(function, tm.type_info,
+                                         /*parametric_env=*/nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
+                           package.package->GetFunction("__nested_raw__main"));
+  XLS_ASSERT_OK_AND_ASSIGN(auto jit, FunctionJit::Create(ir_function));
+
+  for (const RawInput& input : inputs) {
+    const auto& [tag, payload_bits, other_tag, other_payload_bits,
+                 outer_padding_bits] = input;
+    const uint64_t wide_mask = (uint64_t{1} << wide_width) - 1;
+    const uint64_t narrow_mask = (uint64_t{1} << narrow_width) - 1;
+    const uint64_t payload = payload_bits & wide_mask;
+    const uint64_t other_payload = other_payload_bits & wide_mask;
+    const int64_t inner_width = 2 + wide_width;
+    const uint64_t inner_bits = (uint64_t{tag} << wide_width) | payload;
+    const uint64_t other_inner_bits =
+        (uint64_t{other_tag} << wide_width) | other_payload;
+    const uint64_t outer_padding =
+        (uint64_t{outer_padding_bits} << inner_width) & 0xffff;
+    const RawSumArgument inner =
+        MakeRawSumArgument(tag, 2, payload, wide_width);
+    const RawSumArgument outer =
+        MakeRawSumArgument(0, 1, outer_padding | inner_bits, 16);
+    // Deliberately use different padding in the two otherwise comparable
+    // values.
+    const RawSumArgument other_outer = MakeRawSumArgument(
+        0, 1,
+        (outer_padding ^ (0xffff & ~((uint64_t{1} << inner_width) - 1))) |
+            other_inner_bits,
+        16);
+    const bool malformed = tag != 0 && tag != 2;
+    const bool other_malformed = other_tag != 0 && other_tag != 2;
+    std::vector<dslx::InterpValue> bytecode_args;
+    std::vector<Value> ir_args;
+    Value expected;
+    bool source_observes_malformed = false;
+    switch (operation) {
+      case RawOperation::kForward:
+      case RawOperation::kWrap:
+        bytecode_args = {inner.bytecode};
+        ir_args = {inner.ir};
+        expected = operation == RawOperation::kForward
+                       ? inner.ir
+                       : MakeRawSumArgument(0, 1, inner_bits, 16).ir;
+        break;
+      case RawOperation::kBind:
+        bytecode_args = {outer.bytecode};
+        ir_args = {outer.ir};
+        expected = inner.ir;
+        break;
+      case RawOperation::kInspect:
+      case RawOperation::kInspectInvalid: {
+        bytecode_args = {outer.bytecode};
+        ir_args = {outer.ir};
+        source_observes_malformed = malformed;
+        // Without invalid!, lowered hardware projects undeclared tags through
+        // the final Narrow arm. Source interpretation must fail at this depth.
+        const uint64_t observed =
+            operation == RawOperation::kInspectInvalid && malformed
+                ? inner_bits
+                : (tag == 0 ? payload : payload & narrow_mask);
+        expected = Value(UBits(observed, 16));
+        break;
+      }
+      case RawOperation::kCompare: {
+        bytecode_args = {outer.bytecode, other_outer.bytecode};
+        ir_args = {outer.ir, other_outer.ir};
+        source_observes_malformed = malformed || other_malformed;
+        // Bytecode rejects either malformed operand. Lowered equality instead
+        // compares its tag and the final Narrow constructor's active bits.
+        const uint64_t meaningful_mask = tag == 0 ? wide_mask : narrow_mask;
+        const bool equal =
+            tag == other_tag &&
+            (payload & meaningful_mask) == (other_payload & meaningful_mask);
+        expected =
+            Value::Tuple({Value(UBits(equal, 1)), Value(UBits(!equal, 1)),
+                          outer.ir, other_outer.ir});
+        break;
+      }
+      case RawOperation::kConstantPattern:
+        bytecode_args = {outer.bytecode};
+        ir_args = {outer.ir};
+        source_observes_malformed = malformed;
+        expected = Value(UBits(tag == 2 && (payload & narrow_mask) == 1, 1));
+        break;
+    }
+
+    SCOPED_TRACE(outer.ir.ToString());
+    SCOPED_TRACE(other_outer.ir.ToString());
+    absl::StatusOr<dslx::InterpValue> interpreted =
+        dslx::BytecodeInterpreter::Interpret(&import_data, bytecode.get(),
+                                             bytecode_args, std::nullopt);
+    if (source_observes_malformed) {
+      ASSERT_FALSE(interpreted.ok());
+      EXPECT_EQ(interpreted.status().code(), absl::StatusCode::kInternal);
+      const std::string_view observer =
+          operation == RawOperation::kCompare ? "equality" : "observer";
+      EXPECT_TRUE(
+          absl::StrContains(interpreted.status().message(),
+                            absl::StrCat("Semantic sum ", observer,
+                                         " received a malformed value")))
+          << interpreted.status();
+    } else {
+      XLS_ASSERT_OK(interpreted.status());
+      XLS_ASSERT_OK_AND_ASSIGN(Value actual, interpreted->ConvertToIr());
+      EXPECT_EQ(actual, expected);
+    }
+
+    // These results obey the lowered hardware contract, including the
+    // separately specified malformed fallback, even when bytecode rejected
+    // observation above.
+    XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> ir_result,
+                             InterpretFunction(ir_function, ir_args));
+    EXPECT_EQ(ir_result.value, expected);
+    XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> jit_result,
+                             jit->Run(ir_args));
+    EXPECT_EQ(jit_result.value, expected);
+  }
+}
+
+void NestedRawOperationsRespectObservation(
+    uint8_t narrow_width, uint8_t wide_width, RawOperation operation,
+    uint8_t tag, uint8_t payload_bits, uint8_t other_tag,
+    uint8_t other_payload_bits, uint16_t outer_padding_bits) {
+  NestedRawInputBatchesRespectObservation(
+      narrow_width, wide_width, operation,
+      {{tag, payload_bits, other_tag, other_payload_bits, outer_padding_bits}});
+}
+
+TEST(SemanticSumRawBoundaryFuzzTest, NestedRawOperationWitnesses) {
+  for (RawOperation operation :
+       {RawOperation::kForward, RawOperation::kWrap, RawOperation::kBind,
+        RawOperation::kInspect, RawOperation::kInspectInvalid,
+        RawOperation::kCompare, RawOperation::kConstantPattern}) {
+    for (uint8_t tag : {uint8_t{0}, uint8_t{2}, uint8_t{3}}) {
+      NestedRawOperationsRespectObservation(4, 8, operation, tag, 0xf1, tag,
+                                            0x01, 0x3f);
+    }
+  }
+  // Meaningful-bit and tag differences must survive the padding comparison.
+  NestedRawOperationsRespectObservation(2, 5, RawOperation::kCompare, 2, 0x11,
+                                        2, 0x12, 0x1ff);
+  NestedRawOperationsRespectObservation(2, 5, RawOperation::kCompare, 3, 0x11,
+                                        1, 0x11, 0x1ff);
+}
+
+FUZZ_TEST(SemanticSumRawBoundaryFuzzTest, NestedRawOperationsRespectObservation)
+    .WithDomains(
+        fuzztest::InRange<uint8_t>(1, 4), fuzztest::InRange<uint8_t>(5, 8),
+        fuzztest::ElementOf<RawOperation>(
+            {RawOperation::kForward, RawOperation::kWrap, RawOperation::kBind,
+             RawOperation::kInspect, RawOperation::kInspectInvalid,
+             RawOperation::kCompare, RawOperation::kConstantPattern}),
+        fuzztest::InRange<uint8_t>(0, 3), fuzztest::Arbitrary<uint8_t>(),
+        fuzztest::InRange<uint8_t>(0, 3), fuzztest::Arbitrary<uint8_t>(),
+        fuzztest::Arbitrary<uint16_t>());
+
+TEST(SemanticSumRawBoundaryFuzzTest, NestedRawBatchInputIsolation) {
+  // Alternate valid and malformed inputs, equality outcomes, and dirty padding.
+  // Reversing the same sequence must not change any input's independent oracle.
+  std::vector<RawInput> inputs = {
+      {0, 0xff, 0, 0xff, 0},      {3, 0xf1, 3, 0x01, 0xffff},
+      {2, 0xf1, 2, 0x01, 0xffff}, {1, 0xff, 0, 0xff, 0},
+      {2, 0x01, 2, 0x02, 0},      {0, 0, 0, 0, 0xffff}};
+  for (RawOperation operation :
+       {RawOperation::kForward, RawOperation::kWrap, RawOperation::kBind,
+        RawOperation::kInspect, RawOperation::kInspectInvalid,
+        RawOperation::kCompare, RawOperation::kConstantPattern}) {
+    NestedRawInputBatchesRespectObservation(4, 8, operation, inputs);
+    std::reverse(inputs.begin(), inputs.end());
+    NestedRawInputBatchesRespectObservation(4, 8, operation, inputs);
+  }
+}
+
+// The scalar property remains available for single-input corpus replay. The
+// batched property amortizes compilation, but changes coverage feedback and
+// shape frequency; a batch may shrink to one input for failure reproduction.
+FUZZ_TEST(SemanticSumRawBoundaryFuzzTest,
+          NestedRawInputBatchesRespectObservation)
+    .WithDomains(fuzztest::InRange<uint8_t>(1, 4),
+                 fuzztest::InRange<uint8_t>(5, 8),
+                 fuzztest::ElementOf<RawOperation>(
+                     {RawOperation::kForward, RawOperation::kWrap,
+                      RawOperation::kBind, RawOperation::kInspect,
+                      RawOperation::kInspectInvalid, RawOperation::kCompare,
+                      RawOperation::kConstantPattern}),
+                 fuzztest::VectorOf(fuzztest::StructOf<RawInput>(
+                                        fuzztest::InRange<uint8_t>(0, 3),
+                                        fuzztest::Arbitrary<uint8_t>(),
+                                        fuzztest::InRange<uint8_t>(0, 3),
+                                        fuzztest::Arbitrary<uint8_t>(),
+                                        fuzztest::Arbitrary<uint16_t>()))
+                     .WithMinSize(1)
+                     .WithMaxSize(16));
 
 }  // namespace
 }  // namespace xls
