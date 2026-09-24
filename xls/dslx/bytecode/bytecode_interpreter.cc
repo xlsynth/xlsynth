@@ -27,6 +27,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/log/check.h"
 #include "absl/log/die_if_null.h"
 #include "absl/log/log.h"
@@ -57,6 +58,7 @@
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/interp_value_utils.h"
+#include "xls/dslx/make_value_format_descriptor.h"
 #include "xls/dslx/sum_type_encoding.h"
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
@@ -88,6 +90,97 @@ absl::StatusOr<std::string> ToStringMaybeFormatted(
   }
   return std::string(indentation, ' ') +
          value.ToString(/*humanize=*/false, FormatPreference::kDefault);
+}
+
+// Calls carry channel handles, not messages of the channel's payload type.
+// Render those leaves directly while formatting actual sums in the aggregate.
+absl::StatusOr<ValueFormatDescriptor> MakeTraceCallFormatDescriptor(
+    const Type& type, FormatPreference format_preference) {
+  if (type.GetDirectOrElementChannelType().has_value()) {
+    return ValueFormatDescriptor::MakeLeafValue(format_preference);
+  } else if (const auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
+    std::vector<ValueFormatDescriptor> elements;
+    elements.reserve(tuple_type->size());
+    for (const std::unique_ptr<Type>& member_type : tuple_type->members()) {
+      XLS_ASSIGN_OR_RETURN(
+          ValueFormatDescriptor element,
+          MakeTraceCallFormatDescriptor(*member_type, format_preference));
+      elements.push_back(std::move(element));
+    }
+    return ValueFormatDescriptor::MakeTuple(elements);
+  } else if (const auto* struct_type =
+                 dynamic_cast<const StructTypeBase*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(std::vector<std::string> field_names,
+                         struct_type->GetMemberNames());
+    std::vector<ValueFormatDescriptor> field_formats;
+    field_formats.reserve(struct_type->size());
+    for (const std::unique_ptr<Type>& member_type : struct_type->members()) {
+      XLS_ASSIGN_OR_RETURN(
+          ValueFormatDescriptor field_format,
+          MakeTraceCallFormatDescriptor(*member_type, format_preference));
+      field_formats.push_back(std::move(field_format));
+    }
+    return ValueFormatDescriptor::MakeStruct(
+        struct_type->struct_def_base().identifier(), field_names,
+        field_formats);
+  } else if (const auto* array_type = dynamic_cast<const ArrayType*>(&type);
+             array_type != nullptr && !IsBitsLike(type)) {
+    XLS_ASSIGN_OR_RETURN(int64_t size, array_type->size().GetAsInt64());
+    XLS_ASSIGN_OR_RETURN(ValueFormatDescriptor element,
+                         MakeTraceCallFormatDescriptor(
+                             array_type->element_type(), format_preference));
+    return ValueFormatDescriptor::MakeArray(element, size);
+  } else {
+    return MakeValueFormatDescriptor(type, format_preference);
+  }
+}
+
+absl::StatusOr<std::vector<std::optional<ValueFormatDescriptor>>>
+MakeFunctionParamFormatDescriptors(const Function& function,
+                                   const TypeInfo& type_info,
+                                   FormatPreference format_preference) {
+  XLS_ASSIGN_OR_RETURN(FunctionType * function_type,
+                       type_info.GetItemAs<FunctionType>(&function));
+  std::vector<std::optional<ValueFormatDescriptor>> result;
+  result.reserve(function_type->params().size());
+  for (const std::unique_ptr<Type>& param_type : function_type->params()) {
+    if (TypeContainsSemanticSum(*param_type)) {
+      XLS_ASSIGN_OR_RETURN(
+          ValueFormatDescriptor descriptor,
+          MakeTraceCallFormatDescriptor(*param_type, format_preference));
+      result.emplace_back(std::move(descriptor));
+    } else {
+      result.emplace_back(std::nullopt);
+    }
+  }
+  return result;
+}
+
+absl::StatusOr<std::optional<ValueFormatDescriptor>>
+MakeFunctionReturnFormatDescriptor(const Function& function,
+                                   const TypeInfo& type_info,
+                                   FormatPreference format_preference) {
+  XLS_ASSIGN_OR_RETURN(FunctionType * function_type,
+                       type_info.GetItemAs<FunctionType>(&function));
+  if (TypeContainsSemanticSum(function_type->return_type())) {
+    XLS_ASSIGN_OR_RETURN(ValueFormatDescriptor descriptor,
+                         MakeTraceCallFormatDescriptor(
+                             function_type->return_type(), format_preference));
+    return std::optional<ValueFormatDescriptor>(std::move(descriptor));
+  } else {
+    return std::optional<ValueFormatDescriptor>();
+  }
+}
+
+absl::StatusOr<std::string> FormatTraceCallValue(
+    const InterpValue& value,
+    const std::optional<ValueFormatDescriptor>& descriptor,
+    FormatPreference format_preference) {
+  if (descriptor.has_value()) {
+    return ToStringMaybeFormatted(value, descriptor);
+  } else {
+    return value.ToString(/*humanize=*/false, format_preference);
+  }
 }
 
 // Casts an InterpValue representable as Bits to a new InterpValue
@@ -188,14 +281,23 @@ void DslxInterpreterEvents::AddTraceStatementMessage(
   NoteTraceMessageString(file_table, source_location, msg);
 }
 
-void DslxInterpreterEvents::AddTraceCallMessage(
+absl::Status DslxInterpreterEvents::AddTraceCallMessage(
     const FileTable& file_table, const Span& source_location,
     std::string_view function_name, absl::Span<const InterpValue> args,
+    absl::Span<const std::optional<ValueFormatDescriptor>>
+        arg_format_descriptors,
     int64_t call_depth, FormatPreference format_preference) {
-  std::string args_str = absl::StrJoin(
-      args, ", ", [format_preference](std::string* out, const InterpValue& v) {
-        out->append(v.ToString(/*humanize=*/false, format_preference));
-      });
+  XLS_RET_CHECK_EQ(args.size(), arg_format_descriptors.size());
+  std::vector<std::string> formatted_args;
+  formatted_args.reserve(args.size());
+  for (int64_t i = 0; i < args.size(); ++i) {
+    XLS_ASSIGN_OR_RETURN(
+        std::string formatted_arg,
+        FormatTraceCallValue(args[i], arg_format_descriptors[i],
+                             format_preference));
+    formatted_args.push_back(std::move(formatted_arg));
+  }
+  std::string args_str = absl::StrJoin(formatted_args, ", ");
   std::string indent(call_depth * 2, ' ');
   std::string msg = absl::StrCat(indent, function_name, "(", args_str, ")");
 
@@ -203,20 +305,31 @@ void DslxInterpreterEvents::AddTraceCallMessage(
   tm->set_message(std::string{msg});
   tm->mutable_call()->set_function_name(std::string{function_name});
   tm->mutable_call()->set_call_depth(call_depth);
-  for (const InterpValue& v : args) {
-    *tm->mutable_call()->add_args() = v.AsProto().value();
+  const bool contains_semantic_sum = absl::c_any_of(
+      arg_format_descriptors,
+      [](const std::optional<ValueFormatDescriptor>& descriptor) {
+        return descriptor.has_value();
+      });
+  if (!contains_semantic_sum) {
+    for (const InterpValue& value : args) {
+      *tm->mutable_call()->add_args() = value.AsProto().value();
+    }
   }
   SetLocationProto(tm->mutable_location(), file_table, source_location);
   NoteTraceMessageString(file_table, source_location, msg);
+  return absl::OkStatus();
 }
 
-void DslxInterpreterEvents::AddTraceCallReturnMessage(
+absl::Status DslxInterpreterEvents::AddTraceCallReturnMessage(
     const FileTable& file_table, const Span& source_location,
     std::string_view function_name, int64_t call_depth,
+    const std::optional<ValueFormatDescriptor>& return_format_descriptor,
     FormatPreference format_preference, const InterpValue& return_value) {
   std::string indent(call_depth * 2, ' ');
-  std::string ret_str =
-      return_value.ToString(/*humanize=*/false, format_preference);
+  XLS_ASSIGN_OR_RETURN(
+      std::string ret_str,
+      FormatTraceCallValue(return_value, return_format_descriptor,
+                           format_preference));
   std::string msg =
       absl::StrCat(indent, function_name, "(...)", " => ", ret_str);
 
@@ -224,28 +337,23 @@ void DslxInterpreterEvents::AddTraceCallReturnMessage(
   tm->set_message(std::string{msg});
   tm->mutable_call_return()->set_function_name(std::string{function_name});
   tm->mutable_call_return()->set_call_depth(call_depth);
-  *tm->mutable_call_return()->mutable_return_value() =
-      return_value.AsProto().value();
+  if (!return_format_descriptor.has_value()) {
+    *tm->mutable_call_return()->mutable_return_value() =
+        return_value.AsProto().value();
+  }
   SetLocationProto(tm->mutable_location(), file_table, source_location);
   NoteTraceMessageString(file_table, source_location, msg);
+  return absl::OkStatus();
 }
 
-void DslxInterpreterEvents::AddTraceChannelMessage(
+absl::Status DslxInterpreterEvents::AddTraceChannelMessage(
     const FileTable& file_table, const Span& source_location,
     std::string_view channel_name, const InterpValue& value,
     ChannelDirection direction,
-    const ValueFormatDescriptor& format_descriptor, bool redact_value) {
-  std::string formatted_data;
-  if (redact_value) {
-    formatted_data =
-        absl::StrCat(std::string(kChannelTraceIndentation, ' '),
-                     kOpaqueSemanticSumValue);
-  } else {
-    formatted_data =
-        ToStringMaybeFormatted(value, format_descriptor,
-                               kChannelTraceIndentation)
-            .value();
-  }
+    const ValueFormatDescriptor& format_descriptor) {
+  XLS_ASSIGN_OR_RETURN(std::string formatted_data,
+                       ToStringMaybeFormatted(value, format_descriptor,
+                                              kChannelTraceIndentation));
   const char* verb = direction == ChannelDirection::kIn ? "Received" : "Sent";
   std::string msg = absl::StrFormat("%s data on channel `%s`:\n%s", verb,
                                     channel_name, formatted_data);
@@ -254,6 +362,7 @@ void DslxInterpreterEvents::AddTraceChannelMessage(
   tm->set_message(msg);
   SetLocationProto(tm->mutable_location(), file_table, source_location);
   NoteTraceMessageString(file_table, source_location, std::move(msg));
+  return absl::OkStatus();
 }
 
 void DslxInterpreterEvents::AddAssertMessage(const FileTable& file_table,
@@ -310,10 +419,14 @@ void InfoLoggingDslxInterpreterEvents::NoteTraceMessageString(
                                   options, events);
   XLS_RETURN_IF_ERROR(interpreter.InitFrame(bf, args, bf->type_info()));
   if (options.trace_calls() && events.has_value()) {
-    (*events)->AddTraceCallMessage(
+    XLS_ASSIGN_OR_RETURN(
+        std::vector<std::optional<ValueFormatDescriptor>> arg_descriptors,
+        MakeFunctionParamFormatDescriptors(*bf->source_fn(), *bf->type_info(),
+                                           options.format_preference()));
+    XLS_RETURN_IF_ERROR((*events)->AddTraceCallMessage(
         import_data->file_table(), bf->source_fn()->span(),
-        bf->source_fn()->identifier(), args,
-        /*call_depth=*/0, options.format_preference());
+        bf->source_fn()->identifier(), args, arg_descriptors,
+        /*call_depth=*/0, options.format_preference()));
   }
   XLS_RETURN_IF_ERROR(interpreter.Run());
   if (options.validate_final_stack_depth()) {
@@ -419,10 +532,14 @@ absl::Status BytecodeInterpreter::Run(bool* progress_made) {
     if (options_.trace_calls() && events_.has_value() && source_fn != nullptr) {
       int64_t call_depth = static_cast<int64_t>(frames_.size()) - 1;
       const InterpValue& ret = stack_.PeekOrDie();
-      (*events_)->AddTraceCallReturnMessage(import_data_->file_table(),
-                                            source_fn->span(),
-                                            source_fn->identifier(), call_depth,
-                                            options_.format_preference(), ret);
+      XLS_ASSIGN_OR_RETURN(
+          std::optional<ValueFormatDescriptor> return_descriptor,
+          MakeFunctionReturnFormatDescriptor(*source_fn, *frame->type_info(),
+                                             options_.format_preference()));
+      XLS_RETURN_IF_ERROR((*events_)->AddTraceCallReturnMessage(
+          import_data_->file_table(), source_fn->span(),
+          source_fn->identifier(), call_depth, return_descriptor,
+          options_.format_preference(), ret));
     }
 
     // We've reached the end of a function. Time to load the next frame up!
@@ -871,10 +988,15 @@ absl::Status BytecodeInterpreter::EvalCall(const Bytecode& bytecode) {
 
   // Emit a call trace message with function name and arguments at call time.
   if (options_.trace_calls() && events_.has_value()) {
-    (*events_)->AddTraceCallMessage(
+    XLS_ASSIGN_OR_RETURN(
+        std::vector<std::optional<ValueFormatDescriptor>> arg_descriptors,
+        MakeFunctionParamFormatDescriptors(*user_fn_data.function,
+                                           *bf->type_info(),
+                                           options_.format_preference()));
+    XLS_RETURN_IF_ERROR((*events_)->AddTraceCallMessage(
         import_data_->file_table(), bytecode.source_span(),
-        user_fn_data.function->identifier(), args, frames_.size(),
-        options_.format_preference());
+        user_fn_data.function->identifier(), args, arg_descriptors,
+        frames_.size(), options_.format_preference()));
   }
 
   std::vector<InterpValue> args_copy = args;
@@ -1485,11 +1607,10 @@ absl::Status BytecodeInterpreter::EvalRecvNonBlocking(
   if (condition.IsTrue() && !channel.IsEmpty()) {
     InterpValue value = channel.Read();
     if (options_.trace_channels() && events_.has_value()) {
-      (*events_)->AddTraceChannelMessage(
+      XLS_RETURN_IF_ERROR((*events_)->AddTraceChannelMessage(
           import_data_->file_table(), bytecode.source_span(),
           FormatChannelNameForTracing(*channel_data), value,
-          ChannelDirection::kIn, channel_data->value_fmt_desc(),
-          channel_data->redact_value());
+          ChannelDirection::kIn, channel_data->value_fmt_desc()));
     }
     stack_.Push(InterpValue::MakeTuple(
         {token, std::move(value), InterpValue::MakeBool(true)}));
@@ -1531,11 +1652,10 @@ absl::Status BytecodeInterpreter::EvalRecv(const Bytecode& bytecode) {
     XLS_ASSIGN_OR_RETURN(InterpValue token, Pop());
     InterpValue value = channel.Read();
     if (options_.trace_channels() && events_.has_value()) {
-      (*events_)->AddTraceChannelMessage(
+      XLS_RETURN_IF_ERROR((*events_)->AddTraceChannelMessage(
           import_data_->file_table(), bytecode.source_span(),
           FormatChannelNameForTracing(*channel_data), value,
-          ChannelDirection::kIn, channel_data->value_fmt_desc(),
-          channel_data->redact_value());
+          ChannelDirection::kIn, channel_data->value_fmt_desc()));
     }
     stack_.Push(InterpValue::MakeTuple({token, std::move(value)}));
   } else {
@@ -1563,11 +1683,10 @@ absl::Status BytecodeInterpreter::EvalSend(const Bytecode& bytecode) {
     if (options_.trace_channels() && events_.has_value()) {
       XLS_ASSIGN_OR_RETURN(const Bytecode::ChannelData* channel_data,
                            bytecode.channel_data());
-      (*events_)->AddTraceChannelMessage(
+      XLS_RETURN_IF_ERROR((*events_)->AddTraceChannelMessage(
           import_data_->file_table(), bytecode.source_span(),
           FormatChannelNameForTracing(*channel_data), payload,
-          ChannelDirection::kOut, channel_data->value_fmt_desc(),
-          channel_data->redact_value());
+          ChannelDirection::kOut, channel_data->value_fmt_desc()));
     }
     channel.Write(payload);
   }
@@ -1692,9 +1811,7 @@ absl::Status BytecodeInterpreter::EvalSwap(const Bytecode& bytecode) {
       pieces.push_back(std::get<std::string>(trace_element));
     } else {
       const InterpValue& value = args.at(argno);
-      if (trace_data.redact_value(argno)) {
-        pieces.push_back(std::string(kOpaqueSemanticSumValue));
-      } else if (argno < trace_data.value_fmt_descs().size()) {
+      if (argno < trace_data.value_fmt_descs().size()) {
         XLS_ASSIGN_OR_RETURN(
             std::string formatted,
             value.ToFormattedString(trace_data.value_fmt_descs()[argno]));

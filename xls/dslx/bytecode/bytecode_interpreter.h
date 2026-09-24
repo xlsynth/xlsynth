@@ -62,23 +62,22 @@ class DslxInterpreterEvents {
   virtual void AddTraceStatementMessage(const FileTable& file_table,
                                         const Span& source_location,
                                         std::string_view msg);
-  virtual void AddTraceCallMessage(const FileTable& file_table,
-                                   const Span& source_location,
-                                   std::string_view function_name,
-                                   absl::Span<const InterpValue> args,
-                                   int64_t call_depth,
-                                   FormatPreference format_preference);
-  virtual void AddTraceCallReturnMessage(const FileTable& file_table,
-                                         const Span& source_location,
-                                         std::string_view function_name,
-                                         int64_t call_depth,
-                                         FormatPreference format_preference,
-                                         const InterpValue& return_value);
-  virtual void AddTraceChannelMessage(
+  virtual absl::Status AddTraceCallMessage(
+      const FileTable& file_table, const Span& source_location,
+      std::string_view function_name, absl::Span<const InterpValue> args,
+      absl::Span<const std::optional<ValueFormatDescriptor>>
+          arg_format_descriptors,
+      int64_t call_depth, FormatPreference format_preference);
+  virtual absl::Status AddTraceCallReturnMessage(
+      const FileTable& file_table, const Span& source_location,
+      std::string_view function_name, int64_t call_depth,
+      const std::optional<ValueFormatDescriptor>& return_format_descriptor,
+      FormatPreference format_preference, const InterpValue& return_value);
+  virtual absl::Status AddTraceChannelMessage(
       const FileTable& file_table, const Span& source_location,
       std::string_view channel_name, const InterpValue& value,
       ChannelDirection direction,
-      const ValueFormatDescriptor& format_descriptor, bool redact_value);
+      const ValueFormatDescriptor& format_descriptor);
   virtual void AddAssertMessage(const FileTable& file_table,
                                 const Span& source_location,
                                 std::string_view msg);

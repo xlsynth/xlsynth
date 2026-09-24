@@ -402,41 +402,6 @@ fn main() -> () {
   EXPECT_EQ(value, InterpValue::MakeUnit());
 }
 
-TEST_F(BytecodeInterpreterTest, TraceSemanticSumValueIsOpaqueInPhase1) {
-  constexpr std::string_view kProgram = R"(
-enum Option {
-  None,
-  Some(u32),
-}
-
-fn main() -> () {
-  let x = Option::Some(u32:42);
-  trace!(x);
-}
-)";
-  DslxInterpreterEvents events;
-  XLS_ASSERT_OK_AND_ASSIGN(
-      InterpValue value,
-      Interpret(kProgram, "main", /*args=*/{}, BytecodeInterpreterOptions(),
-                nullptr, &events));
-  EXPECT_THAT(
-      events.GetTraceMessageStrings(),
-      ElementsAre("trace of x: <semantic sum value omitted>"));
-  EXPECT_EQ(value, InterpValue::MakeUnit());
-}
-
-TEST_F(BytecodeInterpreterTest, TraceChannelSemanticSumValueIsOpaqueInPhase1) {
-  DslxInterpreterEvents events;
-  events.AddTraceChannelMessage(
-      import_data_->file_table(), Span::Fake(), "sum_channel",
-      InterpValue::MakeTuple(
-          {InterpValue::MakeUBits(1, 1), InterpValue::MakeU32(42)}),
-      ChannelDirection::kOut, ValueFormatDescriptor(), /*redact_value=*/true);
-  EXPECT_THAT(events.GetTraceMessageStrings(),
-              ElementsAre("Sent data on channel `sum_channel`:\n  "
-                          "<semantic sum value omitted>"));
-}
-
 TEST_F(BytecodeInterpreterTest, TraceActsAsIdentity) {
   constexpr std::string_view kProgram = R"(
 fn main() -> u32 {
@@ -447,7 +412,44 @@ fn main() -> u32 {
   EXPECT_EQ(value, InterpValue::MakeU32(42 >> 1));
 }
 
-TEST_F(BytecodeInterpreterTest, NegativeSumDiscriminantMatches) {
+TEST_F(BytecodeInterpreterTest, TraceSemanticSumUsesSemanticFormatting) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn main() {
+  trace!(Option::Some(u32:42));
+}
+)";
+  DslxInterpreterEvents events;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue value,
+      Interpret(kProgram, "main", /*args=*/{}, BytecodeInterpreterOptions(),
+                nullptr, &events));
+  EXPECT_THAT(
+      events.GetTraceMessageStrings(),
+      testing::ElementsAre("trace of Option::Some(u32:42): Option::Some(42)"));
+  EXPECT_EQ(value, InterpValue::MakeUnit());
+}
+
+TEST_F(BytecodeInterpreterTest, TraceSemanticSumPreservesSignedPayload) {
+  constexpr std::string_view kProgram = R"(
+enum SignedValue { Value(s8) }
+fn main() { trace_fmt!("{}", SignedValue::Value(s8:-1)); }
+)";
+  DslxInterpreterEvents events;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue value,
+      Interpret(kProgram, "main", /*args=*/{}, BytecodeInterpreterOptions(),
+                nullptr, &events));
+  EXPECT_THAT(events.GetTraceMessageStrings(),
+              testing::ElementsAre("SignedValue::Value(-1)"));
+  EXPECT_EQ(value, InterpValue::MakeUnit());
+}
+
+TEST_F(BytecodeInterpreterTest, NegativeSumDiscriminantMatchesAndFormats) {
   constexpr std::string_view kProgram = R"(
 enum SignedOption: s3 {
   Empty = 0,
@@ -456,6 +458,7 @@ enum SignedOption: s3 {
 
 fn main() -> u8 {
   let option = SignedOption::Negative(u8:42);
+  trace!(option);
   match option {
     SignedOption::Negative(value) => value,
     SignedOption::Empty => u8:0,
@@ -463,8 +466,342 @@ fn main() -> u8 {
   }
 }
 )";
-  XLS_ASSERT_OK_AND_ASSIGN(InterpValue value, Interpret(kProgram, "main"));
+  DslxInterpreterEvents events;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue value,
+      Interpret(kProgram, "main", /*args=*/{}, BytecodeInterpreterOptions(),
+                nullptr, &events));
   EXPECT_EQ(value, InterpValue::MakeU8(42));
+  EXPECT_THAT(
+      events.GetTraceMessageStrings(),
+      testing::ElementsAre("trace of option: SignedOption::Negative(42)"));
+}
+
+TEST_F(BytecodeInterpreterTest, TraceCallsUseSemanticSumFormatting) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn id(x: Option) -> Option {
+  x
+}
+
+fn main() -> Option {
+  id(Option::Some(u32:42))
+}
+)";
+  DslxInterpreterEvents events;
+  BytecodeInterpreterOptions options;
+  options.trace_calls(true);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue value,
+      Interpret(kProgram, "main", /*args=*/{}, options, nullptr, &events));
+  EXPECT_THAT(events.GetTraceMessageStrings(),
+              testing::ElementsAre("main()", "  id(Option::Some(42))",
+                                   "  id(...) => Option::Some(42)",
+                                   "main(...) => Option::Some(42)"));
+  const auto& trace_messages = events.AsProto().trace_msgs();
+  ASSERT_EQ(trace_messages.size(), 4);
+  ASSERT_TRUE(trace_messages[0].has_call());
+  EXPECT_EQ(trace_messages[0].call().args_size(), 0);
+  ASSERT_TRUE(trace_messages[1].has_call());
+  EXPECT_EQ(trace_messages[1].call().args_size(), 0);
+  ASSERT_TRUE(trace_messages[2].has_call_return());
+  EXPECT_FALSE(trace_messages[2].call_return().has_return_value());
+  ASSERT_TRUE(trace_messages[3].has_call_return());
+  EXPECT_FALSE(trace_messages[3].call_return().has_return_value());
+  EXPECT_THAT(value.ToString(), HasSubstr("u32:42"));
+}
+
+TEST_F(BytecodeInterpreterTest, TraceCallsPreserveTokenArgumentsAndReturns) {
+  constexpr std::string_view kProgram = R"(
+fn main(x: token) -> token {
+  x
+}
+)";
+  const InterpValue token = InterpValue::MakeToken();
+  DslxInterpreterEvents events;
+  BytecodeInterpreterOptions options;
+  options.trace_calls(true);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue value,
+      Interpret(kProgram, "main", {token}, options, nullptr, &events));
+  EXPECT_EQ(value, token);
+
+  const auto& trace_messages = events.AsProto().trace_msgs();
+  ASSERT_EQ(trace_messages.size(), 2);
+  ASSERT_TRUE(trace_messages[0].has_call());
+  ASSERT_EQ(trace_messages[0].call().args_size(), 1);
+  EXPECT_TRUE(trace_messages[0].call().args(0).has_token());
+  ASSERT_TRUE(trace_messages[1].has_call_return());
+  ASSERT_TRUE(trace_messages[1].call_return().has_return_value());
+  EXPECT_TRUE(trace_messages[1].call_return().return_value().has_token());
+}
+
+TEST_F(BytecodeInterpreterTest, TraceCallsFormatAggregatesWithTokensAndSums) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn id(x: (token, Option)) -> (token, Option) {
+  x
+}
+
+fn main(x: token) -> (token, Option) {
+  id((x, Option::Some(u32:42)))
+}
+)";
+  DslxInterpreterEvents events;
+  BytecodeInterpreterOptions options;
+  options.trace_calls(true);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue value, Interpret(kProgram, "main", {InterpValue::MakeToken()},
+                                   options, nullptr, &events));
+  EXPECT_THAT(events.GetTraceMessageStrings(),
+              testing::Contains(HasSubstr("Option::Some(42)")));
+  EXPECT_THAT(value.ToString(), HasSubstr("u32:42"));
+}
+
+TEST_F(BytecodeInterpreterTest, TraceCallsPreserveAggregateChannelReferences) {
+  constexpr std::string_view kProgram = R"(
+enum Message { Empty(), Full }
+fn main(c: (chan<Message> out,)) -> () { () }
+)";
+  const std::vector<InterpValue> args = {InterpValue::MakeTuple(
+      {InterpValue::MakeChannelReference(ChannelDirection::kOut, 0)})};
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue untraced,
+                           Interpret(kProgram, "main", args));
+  EXPECT_EQ(untraced, InterpValue::MakeUnit());
+
+  DslxInterpreterEvents events;
+  BytecodeInterpreterOptions options;
+  options.trace_calls(true);
+  EXPECT_THAT(Interpret(kProgram, "main", args, options, nullptr, &events),
+              IsOkAndHolds(untraced));
+  EXPECT_THAT(
+      events.GetTraceMessageStrings(),
+      ElementsAre(HasSubstr("channel_reference(out, channel_instance_id=0)"),
+                  "main(...) => ()"));
+  const auto& trace_messages = events.AsProto().trace_msgs();
+  ASSERT_EQ(trace_messages.size(), 2);
+  EXPECT_EQ(trace_messages[0].call().args_size(), 0);
+  EXPECT_TRUE(trace_messages[1].call_return().has_return_value());
+}
+
+TEST_F(BytecodeInterpreterTest, TraceCallsFormatChannelAndSumAggregates) {
+  constexpr std::string_view kProgram = R"(
+enum Message { Empty, Data(u8) }
+struct Record { channels: chan<Message>[1] out, payloads: Message[1] }
+fn id(x: (Record,)) -> (Record,) { x }
+fn main(c: (chan<Message>[1] out,)) -> (Record,) {
+  id((Record { channels: c.0, payloads: [Message::Data(u8:42)] },))
+}
+)";
+  const InterpValue channels = InterpValue::MakeChannelArray(
+      ChannelDirection::kOut, /*channel_array_id=*/1, /*definer=*/nullptr,
+      {InterpValue::MakeChannelReference(ChannelDirection::kOut, 0)});
+  const std::vector<InterpValue> args = {InterpValue::MakeTuple({channels})};
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue untraced,
+                           Interpret(kProgram, "main", args));
+
+  DslxInterpreterEvents events;
+  BytecodeInterpreterOptions options;
+  options.trace_calls(true);
+  EXPECT_THAT(Interpret(kProgram, "main", args, options, nullptr, &events),
+              IsOkAndHolds(untraced));
+  EXPECT_THAT(
+      events.GetTraceMessageStrings(),
+      ElementsAre(
+          HasSubstr("channel_reference(out, channel_instance_id=0)"),
+          testing::AllOf(
+              HasSubstr("  id("), HasSubstr("Record {"),
+              HasSubstr("channel_array(out, channel_array_id=1"),
+              HasSubstr("channel_reference(out, channel_instance_id=0)"),
+              HasSubstr("Message::Data(42)")),
+          testing::AllOf(HasSubstr("  id(...) =>"),
+                         HasSubstr("channel_array(out, channel_array_id=1"),
+                         HasSubstr("Message::Data(42)")),
+          testing::AllOf(HasSubstr("main(...) =>"),
+                         HasSubstr("channel_array(out, channel_array_id=1"),
+                         HasSubstr("Message::Data(42)"))));
+  const auto& trace_messages = events.AsProto().trace_msgs();
+  ASSERT_EQ(trace_messages.size(), 4);
+  EXPECT_EQ(trace_messages[0].call().args_size(), 0);
+  EXPECT_EQ(trace_messages[1].call().args_size(), 0);
+  EXPECT_FALSE(trace_messages[2].call_return().has_return_value());
+  EXPECT_FALSE(trace_messages[3].call_return().has_return_value());
+}
+
+TEST_F(BytecodeInterpreterTest,
+       TraceCallsRejectMalformedSumBesideChannelReference) {
+  constexpr std::string_view kProgram = R"(
+enum Message: u2 { Empty = 0, Data(u8) = 1 }
+fn main(x: ((chan<Message> out,), Message)) -> () { () }
+)";
+  const InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple({InterpValue::MakeU8(7)})});
+  const std::vector<InterpValue> args = {InterpValue::MakeTuple(
+      {InterpValue::MakeTuple(
+           {InterpValue::MakeChannelReference(ChannelDirection::kOut, 0)}),
+       malformed})};
+  EXPECT_THAT(Interpret(kProgram, "main", args),
+              IsOkAndHolds(InterpValue::MakeUnit()));
+
+  DslxInterpreterEvents events;
+  BytecodeInterpreterOptions options;
+  options.trace_calls(true);
+  EXPECT_THAT(
+      Interpret(kProgram, "main", args, options, nullptr, &events),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("Sum tag u2:3 is not declared for `Message`.")));
+}
+
+TEST_F(BytecodeInterpreterTest,
+       TraceCallsRedactAggregatesContainingSemanticSums) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+struct Record {
+  value: Option,
+}
+
+fn id(x: (Record, Option[1])) -> (Record, Option[1]) {
+  x
+}
+
+fn main() -> (Record, Option[1]) {
+  id((Record { value: Option::Some(u32:42) }, [Option::None]))
+}
+)";
+  DslxInterpreterEvents events;
+  BytecodeInterpreterOptions options;
+  options.trace_calls(true);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue value,
+      Interpret(kProgram, "main", /*args=*/{}, options, nullptr, &events));
+
+  const auto& trace_messages = events.AsProto().trace_msgs();
+  ASSERT_EQ(trace_messages.size(), 4);
+  ASSERT_TRUE(trace_messages[1].has_call());
+  EXPECT_EQ(trace_messages[1].call().args_size(), 0);
+  EXPECT_THAT(trace_messages[1].message(), HasSubstr("Option::Some(42)"));
+  EXPECT_THAT(trace_messages[1].message(), HasSubstr("Option::None"));
+  ASSERT_TRUE(trace_messages[2].has_call_return());
+  EXPECT_FALSE(trace_messages[2].call_return().has_return_value());
+  ASSERT_TRUE(trace_messages[3].has_call_return());
+  EXPECT_FALSE(trace_messages[3].call_return().has_return_value());
+}
+
+TEST_F(BytecodeInterpreterTest, TraceSemanticSumRejectsMalformedInput) {
+  constexpr std::string_view kProgram = R"(
+enum Option: u2 {
+  None = 0,
+  Some(u32) = 1,
+}
+
+fn main(x: Option) {
+  trace!(x);
+}
+)";
+  InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeUBits(/*bit_count=*/32, /*value=*/7)})});
+  EXPECT_THAT(
+      Interpret(kProgram, "main", {malformed}),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("Sum tag u2:3 is not declared for `Option`.")));
+}
+
+TEST_F(BytecodeInterpreterTest, TraceCallsRejectMalformedSemanticSumInput) {
+  constexpr std::string_view kProgram = R"(
+enum Option: u2 {
+  None = 0,
+  Some(u32) = 1,
+}
+
+fn main(x: Option) -> Option {
+  x
+}
+)";
+  InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeUBits(/*bit_count=*/32, /*value=*/7)})});
+  DslxInterpreterEvents events;
+  BytecodeInterpreterOptions options;
+  options.trace_calls(true);
+  EXPECT_THAT(
+      Interpret(kProgram, "main", {malformed}, options, nullptr, &events),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("Sum tag u2:3 is not declared for `Option`.")));
+}
+
+TEST_F(BytecodeInterpreterTest, TraceSemanticSumRejectsNonUnsignedTags) {
+  constexpr std::string_view kProgram = R"(
+enum Option: u2 { None = 0, Some(u8) = 1 }
+fn forward(x: Option) -> Option { x }
+fn observe(x: Option) { trace_fmt!("{}", x); }
+)";
+  ImportData tag_import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tag_module,
+                           ParseAndTypecheck("enum Tag: u2 { One = 1 }",
+                                             "tag.x", "tag", &tag_import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(EnumDef * tag_def,
+                           tag_module.module->GetMemberOrError<EnumDef>("Tag"));
+  const std::vector<InterpValue> malformed_tags = {
+      InterpValue::MakeSBits(/*bit_count=*/2, /*value=*/1),
+      InterpValue::MakeEnum(UBits(1, 2), /*is_signed=*/false, tag_def)};
+  for (const InterpValue& tag : malformed_tags) {
+    SCOPED_TRACE(tag.ToString());
+    // The raw bits name Some, but the encoded tag must itself be unsigned
+    // bits, not a signed DSLX value or a numeric enum value.
+    const InterpValue malformed = InterpValue::MakeTuple(
+        {tag, InterpValue::MakeTuple({InterpValue::MakeU8(7)})});
+    EXPECT_THAT(Interpret(kProgram, "forward", {malformed}),
+                IsOkAndHolds(malformed));
+    for (bool trace_calls : {false, true}) {
+      SCOPED_TRACE(trace_calls);
+      DslxInterpreterEvents events;
+      BytecodeInterpreterOptions options;
+      options.trace_calls(trace_calls);
+      EXPECT_THAT(Interpret(kProgram, trace_calls ? "forward" : "observe",
+                            {malformed}, options, nullptr, &events),
+                  StatusIs(absl::StatusCode::kInvalidArgument,
+                           HasSubstr("Expected sum tag to be unsigned bits.")));
+    }
+  }
+}
+
+TEST_F(BytecodeInterpreterTest, TraceSignedSumAcceptsUnsignedEncodedTag) {
+  constexpr std::string_view kProgram = R"(
+enum Signed: s2 { Data(u8) = -1 }
+fn main(x: Signed) -> Signed {
+    trace_fmt!("{}", x);
+    x
+}
+)";
+  // Source discriminant -1 is stored as unsigned tag bits 0b11. Both observer
+  // paths must accept it even though signed InterpValue tags are malformed.
+  const InterpValue value = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple({InterpValue::MakeU8(7)})});
+  DslxInterpreterEvents events;
+  BytecodeInterpreterOptions options;
+  options.trace_calls(true);
+  EXPECT_THAT(Interpret(kProgram, "main", {value}, options, nullptr, &events),
+              IsOkAndHolds(value));
+  EXPECT_THAT(events.GetTraceMessageStrings(),
+              ElementsAre(HasSubstr("main(Signed::Data(7))"), "Signed::Data(7)",
+                          HasSubstr("main(...) => Signed::Data(7)")));
 }
 
 TEST_F(BytecodeInterpreterTest, TraceFmtBitsValueDefaultFormat) {
@@ -2489,6 +2826,26 @@ fn doomed() {
                      HasSubstr("first differing index: 1"))));
 }
 
+TEST_F(BytecodeInterpreterTest, AssertEqArrayPreservesSemanticSumFormatting) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u8),
+}
+
+fn doomed() {
+  assert_eq([Option::None, Option::Some(u8:7)],
+            [Option::None, Option::Some(u8:9)]);
+})";
+
+  absl::StatusOr<InterpValue> value = Interpret(kProgram, "doomed");
+  EXPECT_THAT(value.status(),
+              StatusIs(absl::StatusCode::kInternal,
+                       AllOf(HasSubstr("first differing index: 1"),
+                             HasSubstr("Option::Some(u8:7)"),
+                             HasSubstr("Option::Some(u8:9)"))));
+}
+
 TEST_F(BytecodeInterpreterTest, AssertEqTuple) {
   constexpr std::string_view kProgram = R"(
 fn doomed() {
@@ -2598,37 +2955,11 @@ fn doomed() {
 })";
 
   absl::StatusOr<InterpValue> value = Interpret(kProgram, "doomed");
-  EXPECT_THAT(value.status(),
-              StatusIs(absl::StatusCode::kInternal,
-                       AllOf(HasSubstr("lhs and rhs were not equal; "
-                                       "formatting values containing semantic "
-                                       "sums is not supported"),
-                             Not(HasSubstr("Option::Pair")),
-                             Not(HasSubstr("rhs: u32:2")),
-                             Not(HasSubstr("rhs: u32:3")))));
-}
-
-TEST_F(BytecodeInterpreterTest,
-       AssertEqAggregateContainingSemanticSumIsOpaqueInPhase1) {
-  constexpr std::string_view kProgram = R"(
-enum Option {
-  None,
-  Some(u32),
-}
-
-fn doomed() {
-  let a = Option[1]:[Option::Some(u32:2)];
-  let b = Option[1]:[Option::Some(u32:3)];
-  assert_eq(a, b)
-})";
-
-  absl::StatusOr<InterpValue> value = Interpret(kProgram, "doomed");
-  EXPECT_THAT(value.status(),
-              StatusIs(absl::StatusCode::kInternal,
-                       AllOf(HasSubstr("formatting values containing semantic "
-                                       "sums is not supported"),
-                             Not(HasSubstr("first differing index")),
-                             Not(HasSubstr("Option::Some")))));
+  EXPECT_THAT(value.status(), StatusIs(absl::StatusCode::kInternal,
+                                       AllOf(HasSubstr("were not equal"),
+                                             HasSubstr("Option::Pair {"),
+                                             HasSubstr("<     rhs: u32:2"),
+                                             HasSubstr(">     rhs: u32:3"))));
 }
 
 TEST_F(BytecodeInterpreterTest, CheckedCastSnToSn) {
@@ -3386,6 +3717,7 @@ fn aggregate_equal(x: Message, y: Message) -> bool {
   a == b
 }
 fn assert_equal(x: Message[2], y: Message[2]) { assert_eq(x, y); }
+fn trace_value(x: Message) -> Message { trace_fmt!("{}", x); x }
 const SMALL = Message::Small(u4:10);
 fn constant_pattern(x: Message) -> bool { match x { SMALL => true, _ => false } }
 fn local_constant_pattern(x: Message) -> bool {
@@ -3472,11 +3804,11 @@ TEST_F(BytecodeInterpreterTest, SemanticSumEqualityIgnoresPaddingRecursively) {
   EXPECT_THAT(
       Interpret(kTransparentSumProgram, "assert_equal", {lhs, unequal_rhs}),
       StatusIs(absl::StatusCode::kInternal,
-               HasSubstr("lhs and rhs were not equal")));
+               HasSubstr("first differing index: 1")));
 }
 
 // Verifies: Active inner padding is ignored independently of outer padding.
-// Catches: Recursive equality comparing packed slots.
+// Catches: Recursive equality or assertion diagnostics comparing packed slots.
 TEST_F(BytecodeInterpreterTest, SemanticSumEqualityIgnoresNestedPadding) {
   const InterpValue dirty = InterpValue::MakeTuple(
       {InterpValue::MakeUBits(1, 0),
@@ -3508,7 +3840,7 @@ TEST_F(BytecodeInterpreterTest, SemanticSumEqualityIgnoresNestedPadding) {
   EXPECT_THAT(Interpret(kTransparentSumProgram, "assert_outer_equal",
                         {lhs, unequal_rhs}),
               StatusIs(absl::StatusCode::kInternal,
-                       HasSubstr("lhs and rhs were not equal")));
+                       HasSubstr("first differing index: 1")));
 }
 
 // Verifies: Unit-constructor syntax only observes its own constructor.
@@ -3746,6 +4078,31 @@ fn main() -> u32 {
               IsOkAndHolds(InterpValue::MakeU32(32)));
 }
 
+// Verifies: Tracing formats dirty sums without changing the returned bits.
+// Catches: Padding becoming visible or being rewritten during observation.
+TEST_F(BytecodeInterpreterTest,
+       SemanticSumTracingPreservesDirtyRepresentation) {
+  const InterpValue dirty = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(2, 0),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(8, 0xfa)})});
+  DslxInterpreterEvents events;
+  EXPECT_THAT(Interpret(kTransparentSumProgram, "trace_value", {dirty},
+                        BytecodeInterpreterOptions(), nullptr, &events),
+              IsOkAndHolds(dirty));
+  EXPECT_THAT(events.GetTraceMessageStrings(),
+              ElementsAre("Message::Small(10)"));
+
+  DslxInterpreterEvents call_events;
+  BytecodeInterpreterOptions call_options;
+  call_options.trace_calls(true);
+  EXPECT_THAT(Interpret(kTransparentSumProgram, "identity", {dirty},
+                        call_options, nullptr, &call_events),
+              IsOkAndHolds(dirty));
+  EXPECT_THAT(call_events.GetTraceMessageStrings(),
+              ElementsAre("identity(Message::Small(10))",
+                          "identity(...) => Message::Small(10)"));
+}
+
 // Negative test: Equality rejects malformed nested tags after unequal members.
 TEST_F(BytecodeInterpreterTest,
        SemanticSumEqualityRejectsNestedMalformedInput) {
@@ -3867,6 +4224,20 @@ fn doomed() -> Option {
               StatusIs(absl::StatusCode::kInternal,
                        AllOf(HasSubstr("<semantic sum value omitted>"),
                              Not(HasSubstr("u32:42")))));
+}
+
+TEST_F(BytecodeInterpreterTest, FailTokenReportsOriginalFailure) {
+  constexpr std::string_view kProgram = R"(
+fn doomed(x: token) -> token {
+  fail!("failure", x)
+}
+)";
+  const InterpValue token = InterpValue::MakeToken();
+  EXPECT_THAT(Interpret(kProgram, "doomed", {token}).status(),
+              StatusIs(absl::StatusCode::kInternal,
+                       AllOf(HasSubstr("program being interpreted failed"),
+                             HasSubstr("token:"),
+                             Not(HasSubstr("Cannot format a token type")))));
 }
 
 TEST_F(BytecodeInterpreterTest, SemanticSumChainedIfLetUsesDistinctSumTypes) {
