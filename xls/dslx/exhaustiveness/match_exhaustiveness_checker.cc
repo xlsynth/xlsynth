@@ -391,6 +391,27 @@ NdIntervalWithEmpty PatternLeavesToInterval(
   return NdIntervalWithEmpty(intervals);
 }
 
+bool HasRuntimeDependentPatternLeaf(const PatternTree& pattern,
+                                    const TypeInfo& type_info) {
+  const std::vector<PatternLeaf> pattern_leaves = FlattenPattern(pattern);
+  return std::any_of(
+      pattern_leaves.begin(), pattern_leaves.end(),
+      [&](const PatternLeaf& leaf) {
+        const auto* name_ref = std::get_if<NameRef*>(&leaf);
+        if (name_ref != nullptr &&
+            !type_info.GetConstExprOption(*name_ref).has_value()) {
+          const AstNode* definer = (*name_ref)->GetDefiner();
+          const auto* binding = dynamic_cast<const Let*>(definer);
+          // Declared constants retain their existing resolution path, including
+          // unit sum aliases checked before constexpr collection finishes.
+          return dynamic_cast<const ConstantDef*>(definer) == nullptr &&
+                 (binding == nullptr || !binding->is_const());
+        } else {
+          return false;
+        }
+      });
+}
+
 IntervalPatternLeaf ToIntervalPatternLeaf(const PatternTree& pattern) {
   return absl::visit(
       Visitor{
@@ -1386,27 +1407,10 @@ MatchExhaustivenessChecker::AddPattern(const PatternTree& pattern) {
   PatternAddResult result{
       .outcome = PatternAddResult::Unmatchable{},
   };
-  std::vector<PatternLeaf> leaves = FlattenPattern(pattern);
-  bool has_runtime_value =
-      std::any_of(leaves.begin(), leaves.end(), [&](const PatternLeaf& leaf) {
-        if (const auto* name_ref = std::get_if<NameRef*>(&leaf);
-            name_ref != nullptr &&
-            !impl_->type_info_.GetConstExprOption(*name_ref).has_value()) {
-          const AstNode* definer = (*name_ref)->GetDefiner();
-          const auto* binding = dynamic_cast<const Let*>(definer);
-          // Declared constants retain their existing resolution path, including
-          // unit sum aliases checked before constexpr collection finishes.
-          return dynamic_cast<const ConstantDef*>(definer) == nullptr &&
-                 (binding == nullptr || !binding->is_const());
-        } else {
-          return false;
-        }
-      });
-  if (has_runtime_value) {
-    // Do this before expansion: tuple and sum names need known values to
-    // expand, and a scalar runtime value must not become a full proven
-    // interval.
-    result.outcome = PatternAddResult::UnknownCoverage{};
+  // Aggregate references must be classified before expansion, which requires
+  // their compile-time contents. Unknown runtime values prove no coverage.
+  if (HasRuntimeDependentPatternLeaf(pattern, impl_->type_info_)) {
+    result.outcome = PatternAddResult::RuntimeDependent{};
   } else if (impl_->matched_sum_type_ != nullptr) {
     if (IsIrrefutablePattern(pattern)) {
       for (Impl::SumVariantState& variant_state : impl_->sum_variant_states_) {
