@@ -2455,6 +2455,7 @@ class Conditional : public Expr {
  public:
   Conditional(Module* owner, Span span, Expr* test, StatementBlock* consequent,
               std::variant<StatementBlock*, Conditional*> alternate,
+              std::optional<PatternTree> if_let_pattern = std::nullopt,
               bool in_parens = false, bool has_else = true,
               bool is_const = false);
 
@@ -2474,9 +2475,7 @@ class Conditional : public Expr {
 
   std::string_view GetNodeTypeName() const override { return "Conditional"; }
 
-  std::vector<AstNode*> GetChildren(bool want_types) const override {
-    return {test_, consequent_, ToAstNode(alternate_)};
-  }
+  std::vector<AstNode*> GetChildren(bool want_types) const override;
 
   Expr* test() const { return test_; }
   StatementBlock* consequent() const { return consequent_; }
@@ -2485,6 +2484,10 @@ class Conditional : public Expr {
   }
 
   bool IsConst() const { return is_const_; }
+  bool IsIfLet() const { return if_let_pattern_.has_value(); }
+  const PatternTree* if_let_pattern() const {
+    return if_let_pattern_.has_value() ? &*if_let_pattern_ : nullptr;
+  }
 
   bool HasElse() const { return has_else_; }
 
@@ -2512,6 +2515,7 @@ class Conditional : public Expr {
   Expr* test_;
   StatementBlock* consequent_;
   std::variant<StatementBlock*, Conditional*> alternate_;
+  std::optional<PatternTree> if_let_pattern_;
   bool has_else_;
   bool is_const_;
 };
@@ -2830,8 +2834,13 @@ class SumVariantPayloadPattern : public AstNode {
 // (prioritized in sequential order from first arm to last arm).
 class Match : public Expr {
  public:
+  // Normalized if-let matches retain their constructor-only pattern rule.
+  // Ordinary and otherwise generated matches use kMatch by default.
+  enum class Origin { kMatch, kIfLet };
+
   Match(Module* owner, Span span, Expr* matched, std::vector<MatchArm*> arms,
-        bool in_parens = false, bool is_const = false);
+        bool in_parens = false, bool is_const = false,
+        Origin origin = Origin::kMatch);
 
   ~Match() override;
 
@@ -2859,6 +2868,7 @@ class Match : public Expr {
   }
 
   bool IsConst() const { return is_const_; }
+  Origin origin() const { return origin_; }
 
  private:
   std::string ToStringInternal() const final;
@@ -2866,6 +2876,7 @@ class Match : public Expr {
   Expr* matched_;
   std::vector<MatchArm*> arms_;
   bool is_const_;
+  Origin origin_;
 };
 
 // Represents an attribute access expression; e.g. `a.x`.

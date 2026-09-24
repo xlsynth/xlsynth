@@ -23,12 +23,17 @@
 
 #include "absl/base/casts.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/flags/declare.h"
+#include "absl/flags/flag.h"
+#include "absl/flags/reflection.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/substitute.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "xls/common/file/filesystem.h"
+#include "xls/common/file/temp_directory.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/create_import_data.h"
@@ -50,6 +55,10 @@
 #include "xls/dslx/virtualizable_file_system.h"
 #include "xls/dslx/warning_collector.h"
 #include "xls/dslx/warning_kind.h"
+
+ABSL_DECLARE_FLAG(std::string, typecheck_trace_out_dir);
+ABSL_DECLARE_FLAG(bool, typecheck_dump_inference_table);
+ABSL_DECLARE_FLAG(bool, typecheck_dump_traces);
 
 namespace xls::dslx {
 namespace {
@@ -885,6 +894,31 @@ TEST(TypecheckV2Test, DiscardedModuleDoesNotInstallSum) {
   EXPECT_FALSE(import_data.Contains(subject));
 }
 
+TEST(TypecheckV2Test, IfLetNormalizesImportedSemanticSumConstructors) {
+  constexpr std::string_view kImported = R"(
+pub enum Option {
+  None,
+  Some(u32),
+}
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn unwrap_or_zero(value: imported::Option) -> u32 {
+  if let imported::Option::Some(payload) = value {
+    payload
+  } else {
+    u32:0
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(TypecheckV2(kImported, "imported", &import_data));
+  EXPECT_THAT(TypecheckV2(kProgram, "main", &import_data),
+              IsOkAndHolds(HasTypeInfo(HasNodeWithType("payload", "uN[32]"))));
+}
+
 TEST(TypecheckV2Test, SemanticSumExplicitDiscriminantsMustBeDistinct) {
   EXPECT_THAT(
       R"(
@@ -1239,6 +1273,145 @@ fn f(x: S) -> u32 {
 }
 )",
       TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test, IfLetOnSemanticSum) {
+  EXPECT_THAT(R"(
+enum Option {
+  None,
+  Some(u8),
+}
+fn f(x: Option) -> u8 {
+  if let Option::Some(v) = x {
+    v
+  } else {
+    u8:0
+  }
+}
+)",
+              TypecheckSucceeds(::testing::A<std::string>()));
+}
+
+// If-let lowering replaces the module before diagnostics are written. Keep the
+// saved name alive for every dump path, including names too long for inline
+// string storage.
+TEST(TypecheckV2Test, IfLetPreservesLongModuleNameForTypecheckDumps) {
+  absl::FlagSaver flag_saver;
+  XLS_ASSERT_OK_AND_ASSIGN(TempDirectory output_dir, TempDirectory::Create());
+  absl::SetFlag(&FLAGS_typecheck_trace_out_dir, output_dir.path().string());
+  absl::SetFlag(&FLAGS_typecheck_dump_inference_table, true);
+  absl::SetFlag(&FLAGS_typecheck_dump_traces, true);
+  constexpr std::string_view kModuleName =
+      "semantic_sum_if_let_module_with_a_heap_allocated_name";
+  XLS_ASSERT_OK(TypecheckV2(R"(
+enum E { A, B(u8) }
+fn f(x: E) -> u8 {
+  if let E::B(v) = x { v } else { u8:0 }
+}
+)",
+                            kModuleName));
+  for (std::string_view prefix : {"inference_table", "traces", "trace_stats"}) {
+    SCOPED_TRACE(prefix);
+    XLS_ASSERT_OK_AND_ASSIGN(
+        std::string contents,
+        GetFileContents(output_dir.path() /
+                        absl::Substitute("$0_$1.txt", prefix, kModuleName)));
+    EXPECT_FALSE(contents.empty());
+  }
+}
+
+TEST(TypecheckV2Test, IfLetPreservesShadowingLocalAliases) {
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum E: u8 { A = 1 }
+enum F: u8 { A = 2 }
+enum S { None, Some(u8) }
+enum T { None, Some(u8) }
+fn f(present: bool) -> u8 {
+  type E = F;
+  type S = T;
+  let wrapped: T = if present { S::Some(E::A as u8) } else { S::None };
+  if let S::None = wrapped {
+    u8:0
+  } else {
+    if let S::Some(value) = wrapped { value } else { u8:3 }
+  }
+}
+const_assert!(f(true) == u8:2);
+const_assert!(f(false) == u8:0);
+)"));
+}
+
+// Negative test: checks error handling for numeric-enum if-let patterns.
+TEST(TypecheckV2Test, IfLetRejectsNumericEnumPattern) {
+  EXPECT_THAT(R"(
+enum E: u1 { A = 0, B = 1 }
+fn f(x: E) -> u8 {
+  if let E::A = x { u8:1 } else { u8:0 }
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "`if let` requires a top-level sum constructor pattern.")));
+}
+
+// Negative test: checks numeric-enum if-let errors survive lambda cloning.
+TEST(TypecheckV2Test, IfLetRejectsNumericEnumPatternAfterLambdaCloning) {
+  EXPECT_THAT(R"(
+enum E: u1 { A = 0, B = 1 }
+fn f(values: E[1]) -> u8[1] {
+  map(values, |x: E| -> u8 {
+    if let E::A = x { u8:1 } else { u8:0 }
+  })
+}
+)",
+              TypecheckFails(HasSubstr(
+                  "`if let` requires a top-level sum constructor pattern.")));
+}
+
+// Verifies: sum-alias if-let and ordinary numeric-enum matches remain valid.
+// Catches: applying the constructor-only restriction to ordinary matches.
+TEST(TypecheckV2Test, IfLetUnitAliasPreservesNumericEnumMatch) {
+  EXPECT_THAT(R"(
+enum E: u1 { A = 0, B = 1 }
+enum Option { None, Some(u8) }
+type Alias = Option;
+fn match_enum(x: E) -> u8 {
+  match x { E::A => u8:1, _ => u8:0 }
+}
+fn is_none(x: Option) -> bool {
+  if let Alias::None = x { true } else { false }
+}
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+// Negative test: checks if-let constant errors despite valid match use.
+TEST(TypecheckV2Test, IfLetRejectsQualifiedSumConstantPattern) {
+  constexpr std::string_view kImported = R"(
+pub enum Flag { Off, On(u8) }
+pub const SELECTED: Flag = Flag::Off;
+)";
+  constexpr std::string_view kMatchProgram = R"(
+import imported;
+fn f(x: imported::Flag) -> bool {
+  match x { imported::SELECTED => true, _ => false }
+}
+)";
+  constexpr std::string_view kIfLetProgram = R"(
+import imported;
+fn f(x: imported::Flag) -> bool {
+  if let imported::SELECTED = x { true } else { false }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(TypecheckV2(kImported, "imported", &import_data).status());
+  XLS_ASSERT_OK(
+      TypecheckV2(kMatchProgram, "match_module", &import_data).status());
+  EXPECT_THAT(
+      TypecheckV2(kIfLetProgram, "if_let_module", &import_data),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("`if let` requires a top-level sum constructor "
+                         "pattern.")));
 }
 
 TEST(TypecheckV2Test, InvalidPatternBindsRawRepresentationBits) {

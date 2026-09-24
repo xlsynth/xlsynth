@@ -8357,6 +8357,36 @@ fn option_test() {
                              }));
 }
 
+// Verifies: if-let source and IR results agree.
+// Catches: comparison failures inside otherwise successful test-run statuses.
+TEST_F(IrConverterTest, SemanticSumIfLetComparesWithInterpreter) {
+  constexpr std::string_view program = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn unwrap_or_zero(x: Option) -> u32 {
+  if let Option::Some(v) = x { v } else { u32:0 }
+}
+
+#[test]
+fn option_if_let_test() {
+  assert_eq(unwrap_or_zero(Option::Some(u32:7)), u32:7);
+  assert_eq(unwrap_or_zero(Option::None), u32:0);
+}
+)";
+  RunComparator run_comparator(CompareMode::kInterpreter);
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(program, "", "test_module.x",
+                                        ParseAndTestOptions{
+                                            .run_comparator = &run_comparator,
+                                        }));
+  EXPECT_EQ(result.result(), TestResult::kAllPassed);
+  EXPECT_EQ(result.GetRanCount(), 1);
+  EXPECT_EQ(result.GetSkippedCount(), 0);
+}
+
 TEST_F(IrConverterTest,
        SemanticSumEqualityInsideAggregatesCompareWithInterpreter) {
   constexpr std::string_view program = R"(
