@@ -14,6 +14,7 @@
 
 #include "xls/dslx/translators/dslx_to_verilog.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -27,6 +28,7 @@
 #include "absl/strings/str_format.h"
 #include "gtest/gtest.h"
 #include "re2/re2.h"
+#include "xls/codegen/vast/vast.h"
 #include "xls/common/golden_files.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/create_import_data.h"
@@ -37,6 +39,7 @@
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/virtualizable_file_system.h"
+#include "xls/ir/source_location.h"
 
 namespace xls::dslx {
 
@@ -63,6 +66,89 @@ class DslxTypeToVerilogManagerTestPeer {
         return status;
       }
     });
+  }
+
+  static void AddProjectedMemberNameScopes(DslxTypeToVerilogManager& manager) {
+    verilog::DataType* scalar = manager.MakeBits(1);
+    verilog::DataType* token = manager.AddNamedType("Token", scalar);
+    verilog::DataType* positional = manager.AddNamedType("index_0", scalar);
+    auto array = [&](verilog::DataType* element) {
+      return manager.file_->Make<verilog::PackedArrayType>(
+          SourceInfo(), element, std::vector<int64_t>{2}, false);
+    };
+    auto record = [&](const std::vector<verilog::Def*>& fields) {
+      return manager.file_->Make<verilog::Struct>(SourceInfo(), fields);
+    };
+
+    std::vector<verilog::Def*> named = {
+        manager.MakeMember("Token", scalar), manager.MakeMember("value", token),
+        manager.MakeMember("values", array(token))};
+    manager.ProjectSumAggregateMemberNames(named);
+    manager.AddNamedType("NamedBefore", record(named));
+    std::vector<verilog::Def*> named_reverse = {
+        manager.MakeMember("value", token),
+        manager.MakeMember("values", array(token)),
+        manager.MakeMember("Token", scalar)};
+    manager.ProjectSumAggregateMemberNames(named_reverse);
+    manager.AddNamedType("NamedAfter", record(named_reverse));
+
+    std::vector<verilog::Def*> fixed = {
+        manager.MakeMember("index_0", scalar),
+        manager.MakeMember("index_1", positional),
+        manager.MakeMember("index_2", array(positional))};
+    manager.ProtectFixedSumMemberNames(fixed);
+    manager.AddNamedType("FixedBefore", record(fixed));
+    std::vector<verilog::Def*> fixed_reverse = {
+        manager.MakeMember("index_0", array(positional)),
+        manager.MakeMember("index_1", scalar)};
+    manager.ProtectFixedSumMemberNames(fixed_reverse);
+    manager.AddNamedType("FixedAfter", record(fixed_reverse));
+
+    std::vector<verilog::Def*> nested = {
+        manager.MakeMember("index_0", scalar),
+        manager.MakeMember("index_1", positional)};
+    std::vector<verilog::Def*> ordinary = {
+        manager.MakeMember("tuples", array(record(nested)))};
+    manager.ProjectOrdinarySumStructMemberNames(ordinary);
+    manager.AddNamedType("Ordinary", record(ordinary));
+  }
+
+  static verilog::TypedefType* NamedType(DslxTypeToVerilogManager& manager,
+                                         AstNode* definition) {
+    return dynamic_cast<verilog::TypedefType*>(
+        manager.converted_types_.at(definition));
+  }
+
+  static void ProjectEnumValues(DslxTypeToVerilogManager& manager,
+                                verilog::Enum* enumeration,
+                                verilog::DataType* named) {
+    auto* aliases =
+        manager.top_pkg_->Add<verilog::VerilogPackageSection>(SourceInfo());
+    manager.ProjectSumEnumValues(enumeration, named, aliases);
+  }
+
+  static absl::Status AddProjectedPayloadTypes(
+      DslxTypeToVerilogManager& manager, const SumType& sum,
+      ImportData* import_data) {
+    DslxTypeToVerilogManager::SumFamily family;
+    family.type = sum.CloneToUnique();
+    family.name = "Projection";
+    auto symbols = manager.CompanionNameRequests(sum, family.name);
+    if (!symbols.ok()) {
+      return symbols.status();
+    } else {
+      family.symbols = *std::move(symbols);
+    }
+    for (const SumTypeVariant& variant : sum.variants()) {
+      auto type = manager.SumMemberToVastType(variant.GetMemberType(0), family,
+                                              import_data);
+      if (!type.ok()) {
+        return type.status();
+      } else {
+        manager.AddNamedType(variant.variant().identifier(), *type);
+      }
+    }
+    return absl::OkStatus();
   }
 };
 
@@ -1405,6 +1491,143 @@ pub type ArrayOfStructType = StructType[10];
   }
 
   ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
+}
+
+TEST_F(DslxToVerilogTest, PayloadMemberNamesRespectDeclarationOrder) {
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+  DslxTypeToVerilogManagerTestPeer::AddProjectedMemberNameScopes(manager);
+
+  const std::string emitted = manager.Emit();
+  EXPECT_NE(emitted.find(R"(typedef struct packed {
+    logic Token__1;
+    Token value;
+    Token [1:0] values;
+  } NamedBefore;)"),
+            std::string::npos)
+      << emitted;
+  EXPECT_NE(emitted.find(R"(typedef struct packed {
+    Token value;
+    Token [1:0] values;
+    logic Token;
+  } NamedAfter;)"),
+            std::string::npos)
+      << emitted;
+  EXPECT_NE(emitted.find(R"(typedef struct packed {
+    logic index_0;
+    test_pkg::index_0 index_1;
+    test_pkg::index_0 [1:0] index_2;
+  } FixedBefore;)"),
+            std::string::npos)
+      << emitted;
+  EXPECT_NE(emitted.find(R"(typedef struct packed {
+    index_0 [1:0] index_0;
+    logic index_1;
+  } FixedAfter;)"),
+            std::string::npos)
+      << emitted;
+  EXPECT_NE(emitted.find(R"(typedef struct packed {
+    struct packed {
+      logic index_0;
+      test_pkg::index_0 index_1;
+    } [1:0] tuples;
+  } Ordinary;)"),
+            std::string::npos)
+      << emitted;
+}
+
+TEST_F(DslxToVerilogTest, DuplicateOrdinaryEnumValuesKeepTheOriginalEnum) {
+  constexpr std::string_view program = R"(
+enum Ordinary : u2 { FIRST = 0, ALIAS = 0, OTHER = 1 }
+type ExistingUse = Ordinary;
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+  const TypeDefinition ordinary =
+      tm.module->GetTypeDefinition("Ordinary").value();
+  const TypeDefinition existing_use =
+      tm.module->GetTypeDefinition("ExistingUse").value();
+  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(ordinary, &import_data));
+  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(existing_use, &import_data));
+  verilog::TypedefType* named = DslxTypeToVerilogManagerTestPeer::NamedType(
+      manager, TypeDefinitionToAstNode(ordinary));
+  verilog::TypedefType* consumer = DslxTypeToVerilogManagerTestPeer::NamedType(
+      manager, TypeDefinitionToAstNode(existing_use));
+  ASSERT_NE(named, nullptr);
+  ASSERT_NE(consumer, nullptr);
+  auto* enumeration =
+      dynamic_cast<verilog::Enum*>(named->type_def()->data_type());
+  ASSERT_NE(enumeration, nullptr);
+  ASSERT_EQ(enumeration->members().size(), 3);
+  verilog::EnumMember* first = enumeration->members()[0];
+  verilog::EnumMember* other = enumeration->members()[2];
+  ASSERT_EQ(consumer->type_def()->data_type(), named);
+
+  DslxTypeToVerilogManagerTestPeer::ProjectEnumValues(manager, enumeration,
+                                                      named);
+
+  EXPECT_EQ(named->type_def()->data_type(), enumeration);
+  EXPECT_EQ(consumer->type_def()->data_type(), named);
+  ASSERT_EQ(enumeration->members().size(), 2);
+  EXPECT_EQ(enumeration->members()[0], first);
+  EXPECT_EQ(enumeration->members()[1], other);
+  const std::string emitted = manager.Emit();
+  EXPECT_NE(emitted.find(R"(typedef enum logic [1:0] {
+    FIRST = 2'h0,
+    OTHER = 2'h1
+  } Ordinary;)"),
+            std::string::npos)
+      << emitted;
+  EXPECT_EQ(CountOccurrences(emitted, "parameter Ordinary ALIAS = FIRST;"), 1)
+      << emitted;
+  EXPECT_EQ(CountOccurrences(emitted, "typedef Ordinary ExistingUse;"), 1)
+      << emitted;
+}
+
+TEST_F(DslxToVerilogTest, PayloadProjectionPreservesSignedSelectionsAndTuples) {
+  constexpr std::string_view program = R"(
+enum Payload {
+  Scalar(s1),
+  Packed(s8[2][3]),
+  Repeat(s8[4]),
+  Tuple((s8, uN[0], u3[2], s8[2])),
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+  XLS_ASSERT_OK(DslxTypeToVerilogManagerTestPeer::AddProjectedPayloadTypes(
+      manager, ConcreteSum(tm, "Payload"), &import_data));
+
+  const std::string emitted = manager.Emit();
+  EXPECT_EQ(CountOccurrences(emitted, "typedef logic signed Scalar;"), 1)
+      << emitted;
+  EXPECT_EQ(CountOccurrences(
+                emitted, "typedef logic signed [7:0] Projection_s8_value_t;"),
+            1)
+      << emitted;
+  EXPECT_EQ(CountOccurrences(
+                emitted, "typedef Projection_s8_value_t [2:0][1:0] Packed;"),
+            1)
+      << emitted;
+  EXPECT_EQ(
+      CountOccurrences(emitted, "typedef Projection_s8_value_t [3:0] Repeat;"),
+      1)
+      << emitted;
+  EXPECT_NE(emitted.find(R"(typedef struct packed {
+    logic signed [7:0] index_0;
+    logic [1:0][2:0] index_2;
+    Projection_s8_value_t [1:0] index_3;
+  } Tuple;)"),
+            std::string::npos)
+      << emitted;
 }
 
 }  // namespace

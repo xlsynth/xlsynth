@@ -118,6 +118,7 @@ cc_test(
     data = glob(["testdata/*"]),
     deps = [
         ":dslx_to_verilog",
+        "//xls/codegen/vast",
         "//xls/common:golden_files",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
@@ -129,6 +130,7 @@ cc_test(
         "//xls/dslx/frontend:module",
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info",
+        "//xls/ir:source_location",
         "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/strings:str_format",
