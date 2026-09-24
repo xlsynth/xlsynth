@@ -20,10 +20,10 @@
 #include <optional>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/frontend/ast.h"
@@ -206,6 +206,42 @@ TEST(Phase1SumTypeEncodingTest, RejectsSumVariantsOutsideDeclarationOrder) {
         SumType invalid_type(valid_type.nominal_type(),
                              std::move(invalid_variants),
                              valid_type.zero_selection());
+      },
+      "Check failed");
+}
+
+TEST(SumTypeEncodingTest, RejectsVariantInfoFromDifferentEncoding) {
+  FileTable file_table;
+  Module local_module("local", /*fs_path=*/std::nullopt, file_table);
+  Module foreign_module("foreign", /*fs_path=*/std::nullopt, file_table);
+  SumType local_type = MakeTuplePayloadSumType(local_module);
+  SumType foreign_type = MakeTuplePayloadSumType(foreign_module);
+  SumTypeEncoding local_encoding(local_type);
+  SumTypeEncoding foreign_encoding(foreign_type);
+
+  XLS_ASSERT_OK_AND_ASSIGN(SumTypeEncoding::VariantInfo foreign_pair,
+                           foreign_encoding.GetVariant("Pair"));
+  EXPECT_THAT(local_encoding.ForEachPayloadMember(
+                  foreign_pair,
+                  [](int64_t, const Type&) -> absl::Status {
+                    return absl::OkStatus();
+                  }),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(SumTypeEncodingTest, RejectsSumVariantsOutsideDeclarationOrder) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumType valid_type = MakeTuplePayloadSumType(module);
+
+  EXPECT_DEATH(
+      {
+        std::vector<SumTypeVariant> invalid_variants;
+        invalid_variants.push_back(valid_type.variants().at(1).Clone());
+        invalid_variants.push_back(valid_type.variants().at(0).Clone());
+        invalid_variants.push_back(valid_type.variants().at(2).Clone());
+        SumType invalid_type(valid_type.nominal_type(),
+                             std::move(invalid_variants));
       },
       "Check failed");
 }

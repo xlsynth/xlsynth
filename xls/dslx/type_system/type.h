@@ -23,6 +23,7 @@
 #ifndef XLS_DSLX_TYPE_SYSTEM_TYPE_H_
 #define XLS_DSLX_TYPE_SYSTEM_TYPE_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -56,6 +57,7 @@ class BitsType;
 class TupleType;
 class StructType;
 class SumType;
+struct TypeStringContext;
 
 // Represents a parametric binding in a Type, which is either a) a
 // parametric expression or b) evaluated to an InterpValue. When type
@@ -237,7 +239,8 @@ class Type {
   virtual bool operator==(const Type& other) const = 0;
   bool operator!=(const Type& other) const { return !(*this == other); }
 
-  // Returns a string representation of this type.
+  // Returns a string representation of this type. Repeated shared sum
+  // descriptions use local @N= definitions and subsequent @N references.
   std::string ToString() const {
     return ToStringInternal(FullyQualify::kNo, /*file_table=*/nullptr);
   }
@@ -258,8 +261,16 @@ class Type {
   //
   // Note: if the FullyQualify request is kNo, we should not need the
   // file_table, and so it can be null in that case.
+  // Leaf types can override the default sum-reference context setup.
   virtual std::string ToStringInternal(FullyQualify fully_qualify,
-                                       const FileTable* file_table) const = 0;
+                                       const FileTable* file_table) const;
+
+  // Recursive implementation of type printing. Use ToStringInternal at an
+  // entry point so the complete output has one sum-reference scope.
+  virtual void AppendToStringInternal(FullyQualify fully_qualify,
+                                      const FileTable* file_table,
+                                      TypeStringContext& context,
+                                      std::string& output) const = 0;
 
   // Variation on `ToString()` to be used in user-facing error reporting.
   virtual std::string ToErrorString() const { return ToString(); }
@@ -397,10 +408,14 @@ class MetaType : public Type {
   const std::unique_ptr<Type>& wrapped() const { return wrapped_; }
   std::unique_ptr<Type>& wrapped() { return wrapped_; }
 
-  std::string ToStringInternal(FullyQualify fully_qualify,
-                               const FileTable* file_table) const override {
-    return absl::StrCat(
-        "typeof(", wrapped_->ToStringInternal(fully_qualify, file_table), ")");
+  void AppendToStringInternal(FullyQualify fully_qualify,
+                              const FileTable* file_table,
+                              TypeStringContext& context,
+                              std::string& output) const override {
+    absl::StrAppend(&output, "typeof(");
+    wrapped_->AppendToStringInternal(fully_qualify, file_table, context,
+                                     output);
+    absl::StrAppend(&output, ")");
   }
 
  private:
@@ -424,9 +439,10 @@ class TokenType : public Type {
     return v.HandleToken(*this);
   }
   bool operator==(const Type& other) const override { return other.IsToken(); }
-  std::string ToStringInternal(FullyQualify fully_qualify,
-                               const FileTable*) const override {
-    return "token";
+  void AppendToStringInternal(FullyQualify fully_qualify, const FileTable*,
+                              TypeStringContext& context,
+                              std::string& output) const override {
+    absl::StrAppend(&output, "token");
   }
   std::vector<TypeDim> GetAllDims() const override { return {}; }
   absl::StatusOr<TypeDim> GetTotalBitCount() const override {
@@ -457,8 +473,10 @@ class StructTypeBase : public Type {
                      nominal_type_dims_by_identifier);
 
   bool operator==(const Type& other) const override;
-  std::string ToStringInternal(FullyQualify fully_qualify,
-                               const FileTable* file_table) const override;
+  void AppendToStringInternal(FullyQualify fully_qualify,
+                              const FileTable* file_table,
+                              TypeStringContext& context,
+                              std::string& output) const override;
   std::vector<TypeDim> GetAllDims() const override;
   absl::StatusOr<TypeDim> GetTotalBitCount() const override;
   std::string GetDebugTypeName() const override { return "struct"; }
@@ -617,8 +635,10 @@ class TupleType : public Type {
   }
 
   bool operator==(const Type& other) const override;
-  std::string ToStringInternal(FullyQualify fully_qualify,
-                               const FileTable* file_table) const override;
+  void AppendToStringInternal(FullyQualify fully_qualify,
+                              const FileTable* file_table,
+                              TypeStringContext& context,
+                              std::string& output) const override;
   std::vector<TypeDim> GetAllDims() const override;
   absl::StatusOr<TypeDim> GetTotalBitCount() const override;
   std::string GetDebugTypeName() const override { return "tuple"; }
@@ -672,8 +692,10 @@ class ArrayType : public Type {
     return v.HandleArray(*this);
   }
 
-  std::string ToStringInternal(FullyQualify fully_qualify,
-                               const FileTable* file_table) const override;
+  void AppendToStringInternal(FullyQualify fully_qualify,
+                              const FileTable* file_table,
+                              TypeStringContext& context,
+                              std::string& output) const override;
   std::vector<TypeDim> GetAllDims() const override;
   absl::StatusOr<TypeDim> GetTotalBitCount() const override;
   bool HasEnum() const override { return element_type_->HasEnum(); }
@@ -730,6 +752,10 @@ class EnumType : public Type {
 
   std::string ToStringInternal(FullyQualify fully_qualify,
                                const FileTable* file_table) const override;
+  void AppendToStringInternal(FullyQualify fully_qualify,
+                              const FileTable* file_table,
+                              TypeStringContext& context,
+                              std::string& output) const override;
   std::vector<TypeDim> GetAllDims() const override;
   bool HasEnum() const override { return true; }
   bool HasToken() const override { return false; }
@@ -768,8 +794,9 @@ class EnumType : public Type {
 // The payload shape is part of the typed value itself, so callers construct
 // unit/tuple/struct variants through the matching named factory instead of
 // providing an unchecked parallel payload vector. The containing `SumType`
-// keeps these variants in canonical `SumDef` order, so variant position
-// remains the source of truth for tag numbering and payload-slot layout.
+// keeps these variants in canonical `SumDef` order for deterministic traversal
+// and payload-slot layout. Wire tags are the semantic discriminants stored on
+// `SumType` and need not equal a variant's declaration-order position.
 class SumTypeVariant {
   struct TuplePayload {
     std::vector<std::unique_ptr<Type>> members;
@@ -834,57 +861,66 @@ class SumTypeVariant {
 
 // Represents a semantic sum after typechecking.
 //
-// `variants()` is stored in the same order as the defining `SumDef`. That order
-// determines the dense storage tag, flattened payload-slot layout, and the
-// behavior of positional consumers such as equality, formatting, and
-// serialization. Source-level discriminants are separate from storage tags.
+// `variants()` is stored in the same order as the defining `SumDef`. Variant
+// order remains useful for deterministic traversal and the implicit
+// discriminant rule, but Phase 2 carries the chosen tag width and concrete
+// semantic discriminants explicitly so lowering does not conflate source order
+// with wire tags.
 //
-// Storage contains one tag followed by the payload slots for every variant,
-// including inactive variants. Consequently, `A(u8) | B(u16)` uses 25 bits:
-// one tag bit plus both the eight-bit and sixteen-bit payload slots. The tag
-// always occupies at least one bit, including for sums with zero or one
-// variant.
+// Clones own separate Type wrappers but share completed, immutable sum data.
+// The source module must still outlive every wrapper: sharing does not own the
+// borrowed SumDef or SumVariant AST nodes.
 class SumType : public Type {
  public:
   struct SelectedZeroVariant {
     std::reference_wrapper<const SumVariant> variant;
   };
   struct NoZeroVariant {};
-
-  // The variant selected for zero for this concrete type: the first variant
-  // with implicit discriminants, or the one with explicit discriminant zero.
-  // NoZeroVariant means validation proved that none exists. A selected variant
-  // still requires a zero-constructible payload. Its original declaration must
-  // outlive this type.
   using ZeroSelection = std::variant<SelectedZeroVariant, NoZeroVariant>;
 
+  // Value and type arguments are retained in source-declaration order, even
+  // when an argument does not occur in any variant's payload. Type arguments
+  // are read-only so shared descriptions cannot be changed through a clone.
+  using ParametricArgument =
+      std::variant<InterpValue, std::unique_ptr<const Type>>;
+
   // `variants` must be in the same declaration order as `sum_def.variants()`.
-  // `SumType` uses the vector order exactly as supplied when deriving tag
-  // numbering and payload-slot layout. A selected zero variant must refer to
-  // one of the original variants of `sum_def`.
+  // When `discriminants` is omitted, the type uses the implicit declaration
+  // order rule `0..n-1` at the supplied or inferred tag width.
   SumType(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
-          ZeroSelection zero_selection)
-      : sum_def_(sum_def),
-        variants_(std::move(variants)),
-        zero_selection_(zero_selection) {
-    CHECK_EQ(variants_.size(), sum_def_.variants().size());
-    for (int64_t i = 0; i < variants_.size(); ++i) {
-      CHECK_EQ(&variants_[i].variant(), sum_def_.variants()[i]);
-    }
-    if (const auto* selected =
-            std::get_if<SelectedZeroVariant>(&zero_selection_)) {
-      CHECK(
-          absl::c_linear_search(sum_def_.variants(), &selected->variant.get()));
-    }
-  }
+          std::optional<TypeDim> tag_bit_count = std::nullopt,
+          std::vector<InterpValue> discriminants = {},
+          std::vector<ParametricArgument> parametric_arguments = {});
+
+  // The inherited compiler construction path retains its storage layout until
+  // all executing consumers can move to semantic discriminants together.
+  SumType(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
+          ZeroSelection zero_selection);
 
   absl::Status Accept(TypeVisitor& v) const override {
     return v.HandleSum(*this);
   }
 
   bool operator==(const Type& other) const override;
-  std::string ToStringInternal(FullyQualify fully_qualify,
-                               const FileTable* file_table) const override;
+  // Compares every resolved argument semantically, including unused arguments.
+  // The caller must separately check nominal_type() when matching an instance.
+  bool HasSameParametricArguments(
+      absl::Span<const ParametricArgument> arguments) const;
+  // Computes a process-local cache hash of resolved sum arguments, not a
+  // general Type identity. Collisions must be checked with
+  // HasSameParametricArguments. Nested sums use their stored hash rather than
+  // revisiting shared type data.
+  static size_t HashParametricArguments(
+      absl::Span<const ParametricArgument> arguments);
+  // Reuses the hash stored with this immutable description, including in
+  // clones.
+  size_t parametric_arguments_hash() const {
+    return data_->parametric_arguments_hash;
+  }
+  void AppendToStringInternal(FullyQualify fully_qualify,
+                              const FileTable* file_table,
+                              TypeStringContext& context,
+                              std::string& output) const override;
   std::string ToErrorString() const override;
   std::string ToInlayHintString() const override {
     return nominal_type().identifier();
@@ -899,18 +935,45 @@ class SumType : public Type {
   std::string GetDebugTypeName() const override { return "sum"; }
   std::unique_ptr<Type> CloneToUnique() const override;
 
-  const SumDef& nominal_type() const { return sum_def_; }
-  const std::vector<SumTypeVariant>& variants() const { return variants_; }
+  const SumDef& nominal_type() const { return data_->sum_def; }
+  const std::vector<SumTypeVariant>& variants() const {
+    return data_->variants;
+  }
   const ZeroSelection& zero_selection() const { return zero_selection_; }
 
-  int64_t variant_count() const { return variants_.size(); }
-  // Returns the dense storage-tag width, not the source discriminant width.
+  int64_t variant_count() const { return data_->variants.size(); }
+  TypeDim tag_bit_count() const { return data_->tag_bit_count; }
   TypeDim storage_tag_bit_count() const;
+  const InterpValue& GetDiscriminant(int64_t variant_index) const {
+    return data_->discriminants.at(variant_index);
+  }
+  const std::vector<ParametricArgument>& parametric_arguments() const {
+    return data_->parametric_arguments;
+  }
 
  private:
-  const SumDef& sum_def_;
-  std::vector<SumTypeVariant> variants_;
-  const ZeroSelection zero_selection_;
+  struct Data {
+    Data(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
+         std::optional<TypeDim> tag_bit_count,
+         std::vector<InterpValue> discriminants,
+         std::vector<ParametricArgument> parametric_arguments);
+
+    const SumDef& sum_def;
+    std::vector<SumTypeVariant> variants;
+    TypeDim tag_bit_count;
+    std::vector<InterpValue> discriminants;
+    std::vector<ParametricArgument> parametric_arguments;
+    size_t parametric_arguments_hash;
+    // Only runtime payloads contribute; phantom type arguments do not.
+    bool has_token;
+  };
+
+  explicit SumType(std::shared_ptr<const Data> data,
+                   ZeroSelection zero_selection)
+      : data_(std::move(data)), zero_selection_(std::move(zero_selection)) {}
+
+  std::shared_ptr<const Data> data_;
+  ZeroSelection zero_selection_ = NoZeroVariant{};
 };
 
 // This represents the type of annotations like:
@@ -929,8 +992,10 @@ class BitsConstructorType : public Type {
   absl::Status Accept(TypeVisitor& v) const override;
 
   bool operator==(const Type& other) const override;
-  std::string ToStringInternal(FullyQualify fully_qualify,
-                               const FileTable* file_table) const override;
+  void AppendToStringInternal(FullyQualify fully_qualify,
+                              const FileTable* file_table,
+                              TypeStringContext& context,
+                              std::string& output) const override;
   std::string GetDebugTypeName() const override;
   bool HasEnum() const override;
   bool HasToken() const override;
@@ -963,8 +1028,10 @@ class ModuleType : public Type {
     return false;
   }
 
-  std::string ToStringInternal(FullyQualify fully_qualify,
-                               const FileTable* file_table) const override;
+  void AppendToStringInternal(FullyQualify fully_qualify,
+                              const FileTable* file_table,
+                              TypeStringContext& context,
+                              std::string& output) const override;
 
   bool HasEnum() const override { return false; }
   bool HasToken() const override { return false; }
@@ -1026,8 +1093,10 @@ class BitsType : public Type {
   }
 
   bool operator==(const Type& other) const override;
-  std::string ToStringInternal(FullyQualify fully_qualify,
-                               const FileTable* file_table) const override;
+  void AppendToStringInternal(FullyQualify fully_qualify,
+                              const FileTable* file_table,
+                              TypeStringContext& context,
+                              std::string& output) const override;
   std::string GetDebugTypeName() const override;
   bool HasEnum() const override { return false; }
   bool HasToken() const override { return false; }
@@ -1072,8 +1141,10 @@ class FunctionType : public Type {
   absl::Status Accept(TypeVisitor& v) const override {
     return v.HandleFunction(*this);
   }
-  std::string ToStringInternal(FullyQualify fully_qualify,
-                               const FileTable* file_table) const override;
+  void AppendToStringInternal(FullyQualify fully_qualify,
+                              const FileTable* file_table,
+                              TypeStringContext& context,
+                              std::string& output) const override;
   std::string GetDebugTypeName() const override { return "function"; }
   std::vector<TypeDim> GetAllDims() const override;
   absl::StatusOr<TypeDim> GetTotalBitCount() const override;
@@ -1131,8 +1202,10 @@ class ChannelType : public Type {
   absl::Status Accept(TypeVisitor& v) const override {
     return v.HandleChannel(*this);
   }
-  std::string ToStringInternal(FullyQualify fully_qualify,
-                               const FileTable* file_table) const override;
+  void AppendToStringInternal(FullyQualify fully_qualify,
+                              const FileTable* file_table,
+                              TypeStringContext& context,
+                              std::string& output) const override;
   std::string GetDebugTypeName() const override { return "channel"; }
   std::vector<TypeDim> GetAllDims() const override;
   absl::StatusOr<TypeDim> GetTotalBitCount() const override;
@@ -1306,8 +1379,16 @@ inline bool IsBool(const Type& t) {
 absl::StatusOr<bool> IsSigned(const Type& c);
 
 // Returns whether a type is, or recursively contains, a semantic sum type.
-// Formatting validation uses this to reject unsupported nested sum values.
+// Formatting and runtime validation use this to process sums nested in
+// aggregates and channels.
 bool TypeContainsSemanticSum(const Type& type);
+
+// Returns whether values exist for the given fully-concrete type.
+absl::StatusOr<bool> TypeIsInhabited(const Type& type);
+
+// Returns whether every payload member of a semantic-sum constructor can hold
+// a value.
+absl::StatusOr<bool> SumVariantIsInhabited(const SumTypeVariant& variant);
 
 }  // namespace xls::dslx
 

@@ -23,6 +23,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xls/dslx/type_system/type.h"
+#include "xls/ir/bits.h"
 
 namespace xls::dslx {
 
@@ -89,6 +90,56 @@ class Phase1SumTypeEncoding {
 
   const SumType& type_;
   std::vector<const Type*> payload_slot_types_;
+  std::vector<VariantInfo> variants_;
+};
+
+// Shared semantic-sum storage encoding.
+//
+// The runtime representation is one semantic-discriminant tag plus one shared
+// low-bit-aligned payload bit slot sized to the widest flattened variant
+// payload.
+class SumTypeEncoding {
+ public:
+  struct VariantInfo {
+    const int64_t variant_index;
+    const SumTypeVariant* const variant;
+    const InterpValue* const discriminant;
+
+    int64_t payload_size() const { return variant->size(); }
+
+   private:
+    friend class SumTypeEncoding;
+
+    VariantInfo(int64_t variant_index, const SumTypeVariant& variant,
+                const InterpValue& discriminant)
+        : variant_index(variant_index),
+          variant(&variant),
+          discriminant(&discriminant) {}
+  };
+
+  explicit SumTypeEncoding(const SumType& type);
+
+  absl::StatusOr<int64_t> tag_bit_count() const;
+
+  absl::StatusOr<VariantInfo> GetVariant(std::string_view variant_name) const;
+  absl::StatusOr<VariantInfo> GetVariantByTagBits(const Bits& tag_bits) const;
+  absl::Status ForEachVariant(
+      absl::FunctionRef<absl::Status(const VariantInfo& variant)> visitor)
+      const;
+  // Visits the semantic payload members for one variant in declaration order.
+  absl::Status ForEachPayloadMember(
+      const VariantInfo& variant,
+      absl::FunctionRef<absl::Status(int64_t active_index, const Type& type)>
+          visitor) const;
+
+ private:
+  absl::Status ValidateVariantInfo(const VariantInfo& variant) const;
+  absl::StatusOr<const VariantInfo*> FindVariant(
+      std::string_view variant_name) const;
+  absl::StatusOr<const VariantInfo*> FindVariantByTagBits(
+      const Bits& tag_bits) const;
+
+  const SumType& type_;
   std::vector<VariantInfo> variants_;
 };
 
