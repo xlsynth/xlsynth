@@ -257,6 +257,11 @@ class Bytecode {
     static MatchArmItem MakeLoad(SlotIndex slot_index);
     static MatchArmItem MakeStore(SlotIndex slot_index);
     static MatchArmItem MakeRange(InterpValue start, InterpValue limit);
+    static MatchArmItem MakeSum(const SumType* sum_type,
+                                std::string variant_name,
+                                InterpValue discriminant,
+                                std::vector<MatchArmItem> payload_items);
+    static MatchArmItem MakeInvalidSum();
     static MatchArmItem MakeTuple(std::vector<MatchArmItem> elements);
     static MatchArmItem MakeWildcard();
     static MatchArmItem MakeRestOfTuple();
@@ -265,6 +270,8 @@ class Bytecode {
       kInterpValue,
       kLoad,
       kRange,
+      kSum,
+      kInvalidSum,
       kStore,
       kTuple,
       kWildcard,
@@ -276,9 +283,17 @@ class Bytecode {
       InterpValue limit;
     };
 
+    struct SumMatchData {
+      const SumType* sum_type;
+      std::string variant_name;
+      InterpValue discriminant;
+      std::vector<MatchArmItem> payload_items;
+    };
+
     absl::StatusOr<InterpValue> interp_value() const;
     absl::StatusOr<SlotIndex> slot_index() const;
     absl::StatusOr<RangeData> range() const;
+    absl::StatusOr<const SumMatchData*> sum_match_data() const;
     absl::StatusOr<std::vector<MatchArmItem>> tuple_elements() const;
     Kind kind() const { return kind_; }
 
@@ -286,12 +301,13 @@ class Bytecode {
 
    private:
     explicit MatchArmItem(Kind kind);
-    MatchArmItem(Kind kind, std::variant<InterpValue, SlotIndex, RangeData,
-                                         std::vector<MatchArmItem>>
-                                data);
+    MatchArmItem(Kind kind,
+                 std::variant<InterpValue, SlotIndex, RangeData, SumMatchData,
+                              std::vector<MatchArmItem>>
+                     data);
 
     Kind kind_;
-    std::optional<std::variant<InterpValue, SlotIndex, RangeData,
+    std::optional<std::variant<InterpValue, SlotIndex, RangeData, SumMatchData,
                                std::vector<MatchArmItem>>>
         data_;
   };
