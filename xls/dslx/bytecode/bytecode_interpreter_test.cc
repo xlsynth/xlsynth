@@ -501,6 +501,22 @@ fn main() -> () {
   EXPECT_EQ(value, InterpValue::MakeUnit());
 }
 
+TEST_F(BytecodeInterpreterTest, TracePreservesBracesInExpressionText) {
+  constexpr std::string_view kProgram = R"(
+fn main() -> () {
+  trace!("{{}}");
+}
+)";
+  DslxInterpreterEvents events;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue value,
+      Interpret(kProgram, "main", /*args=*/{}, BytecodeInterpreterOptions(),
+                nullptr, &events));
+  EXPECT_THAT(events.GetTraceMessageStrings(),
+              ElementsAre("trace of \"{{}}\": [123, 123, 125, 125]"));
+  EXPECT_EQ(value, InterpValue::MakeUnit());
+}
+
 TEST_F(BytecodeInterpreterTest, TraceSemanticSumValueIsOpaqueInPhase1) {
   constexpr std::string_view kProgram = R"(
 enum Option {
@@ -578,6 +594,42 @@ fn main() -> () {
       Interpret(kProgram, "main", /*args=*/{}, BytecodeInterpreterOptions(),
                 nullptr, &events));
   EXPECT_THAT(events.GetTraceMessageStrings(), testing::ElementsAre("42"));
+  EXPECT_EQ(value, InterpValue::MakeUnit());
+}
+
+TEST_F(BytecodeInterpreterTest, TraceFmtEscapedBraces) {
+  constexpr std::string_view kProgram = R"(
+fn main() -> () {
+  trace_fmt!("{{}}");
+  trace_fmt!("{{{{}}}}");
+  trace_fmt!("{{{}}}", u32:7);
+}
+)";
+  DslxInterpreterEvents events;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue value,
+      Interpret(kProgram, "main", /*args=*/{}, BytecodeInterpreterOptions(),
+                nullptr, &events));
+  EXPECT_THAT(events.GetTraceMessageStrings(),
+              ElementsAre("{}", "{{}}", "{7}"));
+  EXPECT_EQ(value, InterpValue::MakeUnit());
+}
+
+TEST_F(BytecodeInterpreterTest, VTraceFmtEscapedBraces) {
+  constexpr std::string_view kProgram = R"(
+fn main() -> () {
+  vtrace_fmt!(u32:0, "{{}}");
+  vtrace_fmt!(u32:0, "{{{{}}}}");
+  vtrace_fmt!(u32:0, "{{{}}}", u32:7);
+}
+)";
+  DslxInterpreterEvents events;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue value,
+      Interpret(kProgram, "main", /*args=*/{}, BytecodeInterpreterOptions(),
+                nullptr, &events));
+  EXPECT_THAT(events.GetTraceMessageStrings(),
+              ElementsAre("{}", "{{}}", "{7}"));
   EXPECT_EQ(value, InterpValue::MakeUnit());
 }
 
