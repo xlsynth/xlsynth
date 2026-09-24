@@ -141,8 +141,13 @@ class DslxTypeToVerilogManager {
   // manager borrows them; keep the modules and their owning ImportData alive
   // until all exports have been added. Use one ImportData for roots that can
   // reach the same source module, so its declarations each have one identity.
+  // Optional owner spellings qualify colliding public sum names and name their
+  // nested nominal specialization arguments without changing compiler identity
+  // or standalone ordinary exports. Entries refer to nominal definitions in
+  // the prepared graph; omitted entries use their compiler module name.
   void PrepareForModules(
-      absl::Span<const std::pair<Module*, TypeInfo*>> modules);
+      absl::Span<const std::pair<Module*, TypeInfo*>> modules,
+      const std::map<const AstNode*, std::string>& public_nominal_owners = {});
 
   // Emits added DSLX types as a verilog package.
   std::string Emit() const { return file_->Emit(); }
@@ -398,6 +403,9 @@ class DslxTypeToVerilogManager {
   std::set<std::string> ephemeral_ordinary_type_names_;
   // Reuses semantic fingerprints across every family emitted into this package.
   verilog_sum::IdentityBuilder sum_identities_;
+  // Separate spellings for public sum names; compiler module identity remains
+  // authoritative for semantic fingerprints and ordinary standalone exports.
+  std::map<const AstNode*, std::string> public_nominal_owners_;
   // Source modules already scanned for declarations and ordinary names.
   std::set<const Module*> prepared_sum_modules_;
   // Potential ordinary typedef and enum-member names found during module
