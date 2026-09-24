@@ -1418,14 +1418,44 @@ absl::StatusOr<Conditional*> Parser::ParseConditionalNode(
   }
 
   XLS_ASSIGN_OR_RETURN(Token if_kw, PopKeywordOrError(Keyword::kIf));
+  XLS_ASSIGN_OR_RETURN(bool is_if_let, PeekTokenIs(Keyword::kLet));
+  Bindings consequent_bindings(&bindings);
+  std::optional<PatternTree> if_let_pattern;
+  Expr* test;
+  if (is_if_let) {
+    if (is_const) {
+      return ParseErrorStatus(if_kw.span(), "`const if let` is not supported");
+    }
+    XLS_RETURN_IF_ERROR(DropKeywordOrError(Keyword::kLet));
+    XLS_ASSIGN_OR_RETURN(
+        PatternTree pattern,
+        ParsePattern(consequent_bindings, /*within_tuple_pattern=*/false));
+    if_let_pattern = pattern;
+    if (!std::holds_alternative<ColonRef*>(pattern) &&
+        !std::holds_alternative<SumVariantPayloadPattern*>(pattern)) {
+      return ParseErrorStatus(
+          GetPatternSpan(pattern),
+          "`if let` requires a top-level sum constructor pattern.");
+    }
+    XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kEquals));
+    XLS_ASSIGN_OR_RETURN(
+        test,
+        ParseExpression(bindings,
+                        MakeRestrictions({ExprRestriction::kNoStructLiteral})));
+  } else {
+    XLS_ASSIGN_OR_RETURN(
+        test,
+        ParseExpression(bindings,
+                        MakeRestrictions({ExprRestriction::kNoStructLiteral})));
+  }
   XLS_ASSIGN_OR_RETURN(
-      Expr * test,
-      ParseExpression(bindings,
-                      MakeRestrictions({ExprRestriction::kNoStructLiteral})));
-  XLS_ASSIGN_OR_RETURN(StatementBlock * consequent,
-                       ParseBlockExpression(bindings));
+      StatementBlock * consequent,
+      ParseBlockExpression(is_if_let ? consequent_bindings : bindings));
 
   XLS_ASSIGN_OR_RETURN(bool has_else, PeekTokenIs(Keyword::kElse));
+  if (is_if_let && !has_else) {
+    return ParseErrorStatus(if_kw.span(), "`if let` requires an `else` arm");
+  }
 
   std::variant<StatementBlock*, Conditional*> alternate;
   if (has_else) {
@@ -1448,7 +1478,7 @@ absl::StatusOr<Conditional*> Parser::ParseConditionalNode(
 
   auto* outer_conditional = module_->Make<Conditional>(
       Span(if_kw.span().start(), GetPos()), test, consequent, alternate,
-      /*in_parens=*/false, has_else, is_const);
+      if_let_pattern, /*in_parens=*/false, has_else, is_const);
   for (StatementBlock* block : outer_conditional->GatherBlocks()) {
     block->SetEnclosing(outer_conditional);
   }
