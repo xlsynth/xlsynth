@@ -234,3 +234,33 @@ sh_test(
         "manual",
     ],
 )
+
+xls_dslx_library(
+    name = "semantic_sum_packed_abi_dslx",
+    srcs = ["testdata/semantic_sum_packed_abi.x"],
+)
+
+xls_dslx_to_verilog_package(
+    name = "semantic_sum_packed_abi_pkg",
+    library = ":semantic_sum_packed_abi_dslx",
+    namespace = "semantic_sum_packed_abi",
+    package_file = "semantic_sum_packed_abi_pkg.sv",
+)
+
+sh_test(
+    name = "dslx_to_verilog_semantic_sum_packed_abi_test",
+    srcs = ["testdata/semantic_sum_name_scope.sh"],
+    args = [
+        "$(rootpath :semantic_sum_packed_abi_pkg.sv)",
+        "$(rootpath testdata/semantic_sum_packed_abi.sv)",
+        "semantic_sum_packed_abi_consumer",
+    ],
+    data = [
+        ":semantic_sum_packed_abi_pkg.sv",
+        "testdata/semantic_sum_packed_abi.sv",
+    ],
+    tags = [
+        "local",
+        "manual",
+    ],
+)
