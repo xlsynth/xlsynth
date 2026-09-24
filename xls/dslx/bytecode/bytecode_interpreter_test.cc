@@ -558,6 +558,7 @@ fn main() -> u8 {
   match option {
     SignedOption::Negative(value) => value,
     SignedOption::Empty => u8:0,
+    invalid! => u8:255,
   }
 }
 )";
@@ -3490,6 +3491,38 @@ fn main(x: Option) -> bool {
                HasSubstr("Semantic sum equality received a malformed value")));
 }
 
+// Negative test: Malformed tags report errors before normal or invalid raw arms.
+TEST_F(BytecodeInterpreterTest, SemanticSumMatchRejectsMalformedInput) {
+  constexpr std::string_view kProgram = R"(
+enum Option: u2 {
+  None = 0,
+  Some(u32) = 1,
+}
+
+fn main(x: Option) -> u32 {
+  match x {
+    Option::None => u32:0,
+    Option::Some(v) => v,
+    invalid!(raw) => raw as u32,
+  }
+}
+fn named(x: Option) -> u32 {
+  match x { _bound => u32:0, invalid! => u32:1 }
+}
+)";
+  InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeUBits(/*bit_count=*/32, /*value=*/7)})});
+  for (std::string_view function : {"main", "named"}) {
+    EXPECT_THAT(
+        Interpret(kProgram, function, {malformed}),
+        StatusIs(
+            absl::StatusCode::kInternal,
+            HasSubstr("Semantic sum observer received a malformed value")));
+  }
+}
+
 TEST_F(BytecodeInterpreterTest, FailSemanticSumValueIsOpaqueInPhase1) {
   constexpr std::string_view kProgram = R"(
 enum Option {
@@ -3624,6 +3657,7 @@ fn main(x: u32) -> u32 {
   match imported::make_some(x) {
     imported::Option::Some(v) => v,
     imported::Option::None => u32:0,
+    invalid! => u32:0,
   }
 }
 )";

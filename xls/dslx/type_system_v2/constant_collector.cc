@@ -307,6 +307,16 @@ class Visitor : public AstNodeVisitorWithDefault {
         trace_.SetResult(*value);
         ti_->NoteConstExpr(colon_ref, *value);
       }
+    } else if ((*target)->kind() == AstNodeKind::kSumVariant && type_.IsSum() &&
+               absl::down_cast<const SumVariant*>(*target)->is_unit()) {
+      // The initial typecheck runs before unit constructors become
+      // SumInstances. Publish their values now so named constants contribute
+      // coverage during that pass too.
+      XLS_ASSIGN_OR_RETURN(
+          InterpValue value,
+          CreateSumValue(type_.AsSum(), direct_colon_ref->attr(), {}));
+      trace_.SetResult(value);
+      ti_->NoteConstExpr(colon_ref, std::move(value));
     }
     return absl::OkStatus();
   }

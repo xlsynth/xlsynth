@@ -59,7 +59,9 @@ std::vector<PatternTree> GetPatterns(const Match& match) {
   return patterns;
 }
 
-void CheckExhaustiveOnlyAfterLastPattern(std::string_view program) {
+void CheckExhaustiveStartingAtPattern(
+    std::string_view program,
+    std::optional<int64_t> first_exhaustive_pattern = std::nullopt) {
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK_AND_ASSIGN(
       TypecheckedModule tm,
@@ -79,16 +81,21 @@ void CheckExhaustiveOnlyAfterLastPattern(std::string_view program) {
                                      *matched_type.value());
 
   std::vector<PatternTree> patterns = GetPatterns(*match);
+  const int64_t first_exhaustive_index =
+      first_exhaustive_pattern.value_or(patterns.size() - 1);
   for (int64_t i = 0; i < patterns.size(); ++i) {
     checker.AddPattern(patterns[i]);
     bool now_exhaustive = checker.IsExhaustive();
-    // We expect it to become exhaustive with the last match arm.
-    bool expect_now_exhaustive = i + 1 == patterns.size();
+    bool expect_now_exhaustive = i >= first_exhaustive_index;
     EXPECT_EQ(now_exhaustive, expect_now_exhaustive)
         << "Expected match to be "
         << (expect_now_exhaustive ? "exhaustive" : "non-exhaustive")
         << " after adding pattern `" << PatternToString(patterns[i]) << "`";
   }
+}
+
+void CheckExhaustiveOnlyAfterLastPattern(std::string_view program) {
+  CheckExhaustiveStartingAtPattern(program);
 }
 
 void CheckExhaustiveBeforeAnyPattern(std::string_view program) {
@@ -309,6 +316,66 @@ TEST(ExhaustivenessMatchTest, CheckerOwnsCopiedPatternWrappers) {
             MatchPatternOverlapKind::kExactDuplicate);
 }
 
+TEST(ExhaustivenessMatchTest, RuntimeNameRefsDoNotProveStaticCoverage) {
+  constexpr std::string_view kMatch = R"(
+fn main(value: u8, first: u8, second: u8) -> u8 {
+  match value {
+    first => u8:1,
+    second => u8:2,
+    _ => u8:0,
+  }
+}
+)";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest, RuntimeNameRefsInTuplesDoNotProveStaticCoverage) {
+  constexpr std::string_view kMatch = R"(
+fn main(value: (u8, bool), first: u8, second: u8) -> u8 {
+  match value {
+    (first, true) => u8:1,
+    (second, true) => u8:2,
+    _ => u8:0,
+  }
+}
+)";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest,
+     RuntimeNameRefsInSumPayloadsDoNotProveStaticCoverage) {
+  constexpr std::string_view kMatch = R"(
+enum Option {
+  None,
+  Some(u8),
+}
+
+fn main(value: Option, first: u8, second: u8) -> u8 {
+  match value {
+    Option::Some(first) => u8:1,
+    Option::Some(second) => u8:2,
+    Option::None => u8:0,
+    Option::Some(_) => u8:3,
+  }
+}
+)";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest,
+     RuntimeAggregateSumPayloadDoesNotProveStaticCoverage) {
+  constexpr std::string_view kMatch = R"(
+enum E { P(u8[2]), Q }
+fn main(value: E, expected: u8[2]) -> u8 {
+  match value {
+    E::P(expected) => u8:1,
+    E::Q => u8:0,
+  }
+}
+)";
+  CheckNonExhaustive(kMatch);
+}
+
 // Dense enum values but missing the top value in the underlying type.
 TEST(ExhaustivenessMatchTest, MatchOnDenseZeroAlignedEnum) {
   constexpr std::string_view kMatch = R"(enum E : u2 {
@@ -489,6 +556,88 @@ TEST(ExhaustivenessMatchTest, CheckerTraversesEachSumInsideArray) {
   EXPECT_EQ(checker.FormatSimplestUncoveredValue(), std::nullopt);
 }
 
+TEST(ExhaustivenessMatchTest, MatchOnNestedSemanticSumConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Inner {
+  A(),
+  B(),
+}
+
+enum Outer {
+  Wrap(Inner),
+}
+
+fn main(x: Outer) -> u32 {
+  match x {
+    Outer::Wrap(Inner::A()) => u32:0,
+    Outer::Wrap(Inner::B()) => u32:1,
+    invalid! => u32:2,
+  }
+})";
+  CheckExhaustiveStartingAtPattern(kMatch, /*first_exhaustive_pattern=*/1);
+}
+
+TEST(ExhaustivenessMatchTest, MatchOnSemanticSumAggregatePayloads) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+struct Pair {
+  left: u1,
+  right: u1,
+}
+
+enum Message {
+  Pair(Pair),
+  Bytes(u2[2]),
+  None,
+}
+
+fn main(x: Message) -> u1 {
+  match x {
+    Message::Pair(_) => u1:0,
+    Message::Bytes(_) => u1:1,
+    Message::None => u1:0,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest,
+     MatchOnSemanticSumConstructorsIgnoresMalformedTagSpace) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum SparseMaybe : u3 {
+  None = 0,
+  Some(u32) = 7,
+}
+
+fn main(x: SparseMaybe) -> u32 {
+  match x {
+    SparseMaybe::Some(v) => v,
+    SparseMaybe::None => u32:0,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+TEST(ExhaustivenessMatchTest,
+     InvalidPatternDoesNotCompleteSemanticSumConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum MaybeU32 {
+  None,
+  Some(u32),
+}
+
+fn main(x: MaybeU32) -> u32 {
+  match x {
+    MaybeU32::Some(v) => v,
+    invalid! => u32:0,
+  }
+})";
+  CheckNonExhaustive(kMatch);
+}
+
 TEST(ExhaustivenessMatchTest,
      MatchOnTupleContainingEmptySemanticSumIsVacuouslyExhaustive) {
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
@@ -543,6 +692,144 @@ fn main(x: (MaybeImpossible, bool)) -> u32 {
   CheckExhaustiveOnlyAfterLastPattern(kMatch);
 }
 
+// Negative test: checks error handling for incomplete inhabited coverage.
+TEST(ExhaustivenessMatchTest,
+     NestedUninhabitedPayloadDoesNotEraseUncoveredConstructor) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Never {}
+enum Dead { Only(Never) }
+enum Inner { Good, Bad(Dead) }
+enum Outer { Wrap(Inner), End }
+
+fn main(x: Outer) -> u8 {
+  match x {
+    Outer::End => u8:0,
+  }
+})";
+  ImportData import_data = CreateImportDataForTest();
+  EXPECT_THAT(
+      ParseAndTypecheck(kMatch, "test.x", "test", &import_data).status(),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               ::testing::AllOf(HasSubstr("Match patterns are not exhaustive"),
+                                HasSubstr("Outer::Wrap(Inner::Good)"))));
+}
+
+// Verifies: inhabited constructors suffice despite inactive empty payloads.
+// Catches: treating impossible nested constructors as required match cases.
+TEST(ExhaustivenessMatchTest,
+     NestedUninhabitedPayloadNeedsOnlyInhabitedConstructors) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Never {}
+enum Dead { Only(Never) }
+enum Inner { Good, Bad(Dead) }
+enum Outer { Wrap(Inner), End }
+
+fn main(x: Outer) -> u8 {
+  match x {
+    Outer::Wrap(Inner::Good) => u8:1,
+    Outer::End => u8:0,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+// Verifies: tuple coverage retains each inhabited nested-sum case.
+// Catches: inactive empty payloads erasing another tuple member's domain.
+TEST(ExhaustivenessMatchTest,
+     TupleWithDeepUninhabitedPayloadNeedsInhabitedCases) {
+  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
+
+enum Never {}
+enum Dead { Only(Never) }
+enum DeadWrapper { Only(Dead) }
+enum Inner : u3 {
+  Bad(DeadWrapper) = 5,
+  Good = 7,
+}
+
+fn main(x: (bool, Inner)) -> u8 {
+  match x {
+    (true, Inner::Good) => u8:1,
+    (false, Inner::Good) => u8:0,
+  }
+})";
+  CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+// Verifies: a wildcard covers a large array of partially inhabited sums.
+// Catches: exponential region expansion before a wildcard arm is processed.
+TEST(ExhaustivenessMatchTest,
+     WildcardCoversArrayOfNestedPartiallyInhabitedSums) {
+  constexpr std::string_view kProgram = R"(#![feature(type_inference_v2)]
+enum Never {}
+enum Inner { Bad(Never), Good }
+enum Outer { Wrap(Inner), End }
+fn main(x: Outer[64]) -> u8 {
+  match x { _ => u8:0 }
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(
+      ParseAndTypecheck(kProgram, "test.x", "test", &import_data).status());
+}
+
+// Verifies: coverage ignores impossible nested constructor payloads.
+// Catches: inactive constructor holes multiplying array coverage regions.
+TEST(ExhaustivenessMatchTest, WildcardCoversArrayWithImpossiblePayloadSubtree) {
+  constexpr std::string_view kProgram = R"(#![feature(type_inference_v2)]
+enum Never {}
+enum Inner { First, Bad(Never), Last }
+enum Dead { Only(Never, Inner) }
+enum Outer { Good, Bad(Dead) }
+fn main(x: Outer[64]) -> u8 {
+  match x { _ => u8:0 }
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(
+      ParseAndTypecheck(kProgram, "test.x", "test", &import_data).status());
+}
+
+// Verifies: a wildcard covers an array with an impossible middle constructor.
+// Catches: an active constructor hole multiplying coverage regions.
+TEST(ExhaustivenessMatchTest,
+     WildcardCoversArrayWithImpossibleMiddleConstructor) {
+  constexpr std::string_view kProgram = R"(#![feature(type_inference_v2)]
+enum Never {}
+enum Dead { Only(Never) }
+enum Inner { First, Bad(Dead), Last }
+fn main(x: Inner[64]) -> u8 {
+  match x { _ => u8:0 }
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(
+      ParseAndTypecheck(kProgram, "test.x", "test", &import_data).status());
+}
+
+// Negative test: the witness must decode a nested sum's private coordinate to
+// its inhabited declaration, skipping the impossible middle constructor.
+TEST(ExhaustivenessMatchTest,
+     MissingTupleCaseNamesInhabitedConstructorAfterHole) {
+  constexpr std::string_view kProgram = R"(#![feature(type_inference_v2)]
+enum Never {}
+enum Dead { Only(Never) }
+enum Inner { First, Bad(Dead), Last }
+fn main(x: (Inner, bool)) -> u8 {
+  match x { (Inner::First, _) => u8:0 }
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  EXPECT_THAT(
+      ParseAndTypecheck(kProgram, "test.x", "test", &import_data).status(),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               ::testing::AllOf(HasSubstr("Match patterns are not exhaustive"),
+                                HasSubstr("Inner::Last"),
+                                ::testing::Not(HasSubstr("Inner::Bad")))));
+}
+
 TEST(ExhaustivenessMatchTest, NonExhaustiveMatchOnSemanticSumConstructors) {
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
 
@@ -557,24 +844,6 @@ fn main(x: MaybeU32) -> u32 {
   }
 })";
   CheckNonExhaustive(kMatch);
-}
-
-TEST(ExhaustivenessMatchTest, MatchOnSemanticSumConstructorsWithWildcard) {
-  constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
-
-enum MaybeU32 {
-  None,
-  Some(u32),
-}
-
-fn main(x: MaybeU32) -> u32 {
-  match x {
-    MaybeU32::Some(v) => v,
-    _ => u32:0,
-    MaybeU32::None => u32:1,
-  }
-})";
-  CheckExhaustiveWithRedundantPattern(kMatch);
 }
 
 TEST(ExhaustivenessMatchTest, MatchOnSemanticStructVariantConstructors) {
@@ -667,7 +936,8 @@ fn main(x: (MaybeU32, bool)) -> u32 {
 }
 
 TEST(ExhaustivenessMatchTest,
-     MatchOnSemanticSumConstructorsRedundantAfterWildcard) {
+     MatchOnSemanticSumConstructorsRedundantAfterBinding) {
+  // The special ordering rule applies to `_`, not every irrefutable pattern.
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
 
 enum Option {
@@ -679,7 +949,7 @@ enum Option {
 fn main(x: Option) -> u32 {
   match x {
     Option::Some(v) => v,
-    _ => u32:0,
+    _value => u32:0,
     Option::None => u32:1,
   }
 })";
