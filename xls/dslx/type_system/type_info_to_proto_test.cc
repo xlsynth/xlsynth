@@ -18,6 +18,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "absl/strings/str_format.h"
 #include "gmock/gmock.h"
@@ -30,6 +32,7 @@
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
+#include "xls/dslx/interp_value.h"
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
@@ -451,6 +454,102 @@ TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
   }
   XLS_ASSERT_OK(
       ToHumanString(with_layout, import_data, import_data.file_table()));
+}
+
+constexpr std::string_view kPackedNominalArgumentProgram =
+    R"(#![feature(generics)]
+struct Record { marker: u8, fields: u8[2], empty: u8[0] }
+const RECORD = Record {
+  marker: u8:0x5b, fields: u8[2]:[0x12, 0xa4], empty: u8[0]:[],
+};
+enum Phantom<V: Record> { Only() }
+fn f(x: Phantom<RECORD>) -> Phantom<RECORD> { x }
+)";
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       ReadsPackedNominalArgumentUsingItsDeclaredType) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kPackedNominalArgumentProgram,
+                                             "fake.x", "fake", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto proto,
+                           TypeInfoToProto(*tm.type_info, tm.module));
+  const AstNodeTypeInfoProto* node =
+      FindSumTypeInfoNode(proto, "Phantom", import_data);
+  ASSERT_NE(node, nullptr);
+  EXPECT_EQ(node->type().sum_type().parametric_arguments_size(), 0);
+
+  AstNodeTypeInfoProto with_argument = *node;
+  BitsValueProto* packed = with_argument.mutable_type()
+                               ->mutable_sum_type()
+                               ->add_parametric_arguments()
+                               ->mutable_packed_value();
+  packed->set_bit_count(24);
+  packed->set_is_signed(false);
+  packed->set_data(std::string("\x5b\xa4\x12", 3));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string human,
+      ToHumanString(with_argument, import_data, import_data.file_table()));
+  EXPECT_THAT(human, ::testing::EndsWith(" :: Phantom<(u8:91, [u8:18, "
+                                         "u8:164], [])> { Only() }"));
+
+  packed->set_is_signed(true);
+  EXPECT_THAT(
+      ToHumanString(with_argument, import_data, import_data.file_table()),
+      absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                             ::testing::HasSubstr("unsigned bit count")));
+  packed->set_is_signed(false);
+  packed->set_data(std::string("\xa4\x12", 2));
+  EXPECT_THAT(
+      ToHumanString(with_argument, import_data, import_data.file_table()),
+      absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                             ::testing::HasSubstr("data does not match")));
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       WritesPackedNominalArgumentFromSemanticSumType) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kPackedNominalArgumentProgram,
+                                             "fake.x", "fake", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                           tm.module->GetMemberOrError<Function>("f"));
+  const Param* param = function->params().front();
+  XLS_ASSERT_OK_AND_ASSIGN(SumType * parsed_sum,
+                           tm.type_info->GetItemAs<SumType>(param));
+  EXPECT_TRUE(parsed_sum->parametric_arguments().empty());
+  const SumDef& sum_def = parsed_sum->nominal_type();
+
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue fields,
+                           InterpValue::MakeArray({InterpValue::MakeU8(0x12),
+                                                   InterpValue::MakeU8(0xa4)}));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue empty, InterpValue::MakeArray({}));
+  std::vector<SumType::ParametricArgument> arguments;
+  arguments.emplace_back(InterpValue::MakeTuple(
+      {InterpValue::MakeU8(0x5b), std::move(fields), std::move(empty)}));
+  std::vector<SumTypeVariant> variants;
+  variants.push_back(
+      SumTypeVariant::MakeTuple(*sum_def.variants().front(), {}));
+  SumType semantic_sum(sum_def, std::move(variants), std::nullopt, {},
+                       std::move(arguments));
+  tm.type_info->SetItem(param, semantic_sum);
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto proto,
+                           TypeInfoToProto(*tm.type_info, tm.module));
+  const SumTypeProto* written = nullptr;
+  for (const AstNodeTypeInfoProto& node : proto.nodes()) {
+    if (node.kind() == AST_NODE_KIND_PARAM && node.type().has_sum_type()) {
+      written = &node.type().sum_type();
+      break;
+    }
+  }
+  ASSERT_NE(written, nullptr);
+  ASSERT_EQ(written->parametric_arguments_size(), 1);
+  ASSERT_TRUE(written->parametric_arguments(0).has_packed_value());
+  const BitsValueProto& packed =
+      written->parametric_arguments(0).packed_value();
+  EXPECT_EQ(packed.bit_count(), 24);
+  EXPECT_FALSE(packed.is_signed());
+  EXPECT_EQ(packed.data(), std::string("\x5b\xa4\x12", 3));
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
