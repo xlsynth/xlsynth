@@ -276,6 +276,72 @@ TEST_F(InferenceTableTest, ParametricVariable) {
   EXPECT_EQ(parametric_inv2_n_value->expr()->ToString(), "u32:5");
 }
 
+TEST_F(InferenceTableTest, ParametricSumContextsKeepInstanceBindings) {
+  ParseAndInitModuleAndTable(R"(#![feature(generics)]
+    enum Choice<T: type, N: u32> { None, Some(T) }
+    type ByteChoice = Choice<u8, u32:4>;
+    type WordChoice = Choice<u16, u32:9>;
+  )");
+  XLS_ASSERT_OK_AND_ASSIGN(const SumDef* sum,
+                           module_->GetMemberOrError<SumDef>("Choice"));
+  XLS_ASSERT_OK_AND_ASSIGN(const TypeAlias* byte_use,
+                           module_->GetMemberOrError<TypeAlias>("ByteChoice"));
+  XLS_ASSERT_OK_AND_ASSIGN(const TypeAlias* word_use,
+                           module_->GetMemberOrError<TypeAlias>("WordChoice"));
+  const ParametricBinding* t = sum->parametric_bindings().at(0);
+  const ParametricBinding* n = sum->parametric_bindings().at(1);
+  XLS_ASSERT_OK_AND_ASSIGN(const NameRef* t_ref,
+                           table_->DefineParametricVariable(*t));
+  XLS_ASSERT_OK(table_->DefineParametricVariable(*n));
+  TypeAnnotation* u8 = CreateUnOrSnAnnotation(*module_, Span::Fake(), false, 8);
+  TypeAnnotation* u16 =
+      CreateUnOrSnAnnotation(*module_, Span::Fake(), false, 16);
+  ParametricEnv byte_env(absl::flat_hash_map<std::string, InterpValue>{
+      {"T", InterpValue::MakeTypeReference(u8)},
+      {"N", InterpValue::MakeU32(4)}});
+  ParametricEnv word_env(absl::flat_hash_map<std::string, InterpValue>{
+      {"T", InterpValue::MakeTypeReference(u16)},
+      {"N", InterpValue::MakeU32(9)}});
+  TypeInfo* byte_type_info = CreateTypeInfo();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      const ParametricContext* byte_context,
+      table_->AddParametricSumContext(sum, byte_use, byte_env, byte_type_info,
+                                      /*parent_context=*/std::nullopt));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      const ParametricContext* word_context,
+      table_->AddParametricSumContext(sum, word_use, word_env, CreateTypeInfo(),
+                                      byte_context));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      const ParametricContext* another_byte_context,
+      table_->AddParametricSumContext(sum, byte_use, byte_env, CreateTypeInfo(),
+                                      /*parent_context=*/std::nullopt));
+
+  EXPECT_NE(byte_context, word_context);
+  EXPECT_NE(byte_context, another_byte_context);
+  EXPECT_EQ(byte_context->node(), byte_use);
+  EXPECT_EQ(byte_context->type_info(), byte_type_info);
+  EXPECT_EQ(word_context->parent_context(), byte_context);
+  EXPECT_FALSE(byte_context->is_invocation());
+  EXPECT_FALSE(byte_context->is_struct());
+  EXPECT_EQ(byte_context->target_struct(), std::nullopt);
+  EXPECT_THAT(byte_context->parametric_bindings(), ElementsAre(t, n));
+  EXPECT_THAT(word_context->parametric_bindings(), ElementsAre(t, n));
+  EXPECT_EQ(byte_context->GetEnvValue(n->name_def()), InterpValue::MakeU32(4));
+  EXPECT_EQ(word_context->GetEnvValue(n->name_def()), InterpValue::MakeU32(9));
+  EXPECT_EQ(table_->GetParametricEnv(byte_context), byte_env);
+  EXPECT_EQ(table_->GetParametricEnv(word_context), word_env);
+  XLS_ASSERT_OK_AND_ASSIGN(TypeAnnotation * byte_type,
+                           table_->GetGenericType(byte_context, t->name_def()));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeAnnotation * word_type,
+                           table_->GetGenericType(word_context, t->name_def()));
+  EXPECT_EQ(byte_type, u8);
+  EXPECT_EQ(word_type, u16);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::vector<const TypeAnnotation*> unscoped,
+      table_->GetTypeAnnotationsForTypeVariable(std::nullopt, t_ref));
+  EXPECT_TRUE(unscoped.empty());
+}
+
 TEST_F(InferenceTableTest, ParametricVariableWithDefault) {
   ParseAndInitModuleAndTable(R"(
     fn foo<M: u32 = {u32:4}, N: u32 = {M * M}>(a: uN[M], b: uN[N])
