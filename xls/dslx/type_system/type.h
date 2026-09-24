@@ -872,12 +872,6 @@ class SumTypeVariant {
 // borrowed SumDef or SumVariant AST nodes.
 class SumType : public Type {
  public:
-  struct SelectedZeroVariant {
-    std::reference_wrapper<const SumVariant> variant;
-  };
-  struct NoZeroVariant {};
-  using ZeroSelection = std::variant<SelectedZeroVariant, NoZeroVariant>;
-
   // Value and type arguments are retained in source-declaration order, even
   // when an argument does not occur in any variant's payload. Type arguments
   // are read-only so shared descriptions cannot be changed through a clone.
@@ -939,7 +933,6 @@ class SumType : public Type {
 
   int64_t variant_count() const { return data_->variants.size(); }
   TypeDim tag_bit_count() const { return data_->tag_bit_count; }
-  TypeDim storage_tag_bit_count() const;
   const InterpValue& GetDiscriminant(int64_t variant_index) const {
     return data_->discriminants.at(variant_index);
   }

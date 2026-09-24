@@ -1141,13 +1141,6 @@ std::unique_ptr<Type> SumType::CloneToUnique() const {
   return std::unique_ptr<Type>(new SumType(data_));
 }
 
-TypeDim SumType::storage_tag_bit_count() const {
-  return TypeDim::CreateU32(
-      variants().size() <= 1
-          ? 1
-          : Bits::MinBitCountUnsigned(variants().size() - 1));
-}
-
 // -- TupleType
 
 TupleType::TupleType(std::vector<std::unique_ptr<Type>> members)
