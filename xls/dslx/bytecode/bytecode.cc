@@ -63,6 +63,15 @@ absl::StatusOr<Bytecode::Op> OpFromString(std::string_view s) {
   if (s == "and") {
     return Bytecode::Op::kAnd;
   }
+  if (s == "assert_well_formed") {
+    return Bytecode::Op::kAssertWellFormed;
+  }
+  if (s == "begin_match") {
+    return Bytecode::Op::kBeginMatch;
+  }
+  if (s == "end_match") {
+    return Bytecode::Op::kEndMatch;
+  }
   if (s == "call") {
     return Bytecode::Op::kCall;
   }
@@ -80,6 +89,9 @@ absl::StatusOr<Bytecode::Op> OpFromString(std::string_view s) {
   }
   if (s == "create_tuple") {
     return Bytecode::Op::kCreateTuple;
+  }
+  if (s == "create_sum") {
+    return Bytecode::Op::kCreateSum;
   }
   if (s == "decode") {
     return Bytecode::Op::kDecode;
@@ -224,6 +236,12 @@ std::string OpToString(Bytecode::Op op) {
       return "uadd";
     case Bytecode::Op::kAnd:
       return "and";
+    case Bytecode::Op::kAssertWellFormed:
+      return "assert_well_formed";
+    case Bytecode::Op::kBeginMatch:
+      return "begin_match";
+    case Bytecode::Op::kEndMatch:
+      return "end_match";
     case Bytecode::Op::kCall:
       return "call";
     case Bytecode::Op::kCast:
@@ -236,6 +254,8 @@ std::string OpToString(Bytecode::Op op) {
       return "create_array";
     case Bytecode::Op::kCreateTuple:
       return "create_tuple";
+    case Bytecode::Op::kCreateSum:
+      return "create_sum";
     case Bytecode::Op::kDecode:
       return "decode";
     case Bytecode::Op::kDiv:
@@ -498,6 +518,16 @@ DEF_UNARY_BUILDER(Swap);
                   std::move(format_descriptor));
 }
 
+/* static */ Bytecode Bytecode::MakeAssertWellFormed(
+    Span span, std::unique_ptr<Type> type) {
+  return Bytecode(span, Op::kAssertWellFormed, std::move(type));
+}
+
+/* static */ Bytecode Bytecode::MakeCreateSum(Span span,
+                                              SumConstructionData sum_data) {
+  return Bytecode(span, Op::kCreateSum, std::move(sum_data));
+}
+
 /* static */ Bytecode Bytecode::MakeLoad(Span span, SlotIndex slot_index) {
   return Bytecode(span, Op::kLoad, slot_index);
 }
@@ -555,6 +585,13 @@ absl::StatusOr<const Bytecode::ChannelData*> Bytecode::channel_data() const {
   XLS_RET_CHECK(data_.has_value());
   XLS_RET_CHECK(std::holds_alternative<ChannelData>(data_.value()));
   return &std::get<ChannelData>(data_.value());
+}
+
+absl::StatusOr<const Bytecode::SumConstructionData*>
+Bytecode::sum_construction_data() const {
+  XLS_RET_CHECK(data_.has_value());
+  XLS_RET_CHECK(std::holds_alternative<SumConstructionData>(data_.value()));
+  return &std::get<SumConstructionData>(data_.value());
 }
 
 absl::StatusOr<Bytecode::SlotIndex> Bytecode::slot_index() const {
@@ -656,6 +693,11 @@ std::string Bytecode::ToString(const FileTable& file_table,
 
       std::string operator()(const ChannelData& channel_data) {
         return std::string{channel_data.channel_name()};
+      }
+
+      std::string operator()(const SumConstructionData& sum_data) {
+        return absl::StrCat(sum_data.sum_type().ToString(),
+                            "::", sum_data.variant_name());
       }
 
       std::string operator()(const JumpTarget& target) {

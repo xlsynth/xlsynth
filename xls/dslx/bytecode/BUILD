@@ -222,6 +222,7 @@ cc_library(
     deps = [
         ":bytecode",
         "//xls/dslx:interp_value",
+        "//xls/dslx:interp_value_utils",
         "//xls/dslx/type_system:parametric_env",
         "//xls/dslx/type_system:type_info",
     ],
@@ -329,8 +330,10 @@ cc_test(
         "//xls/dslx:parse_and_typecheck",
         "//xls/dslx:virtualizable_file_system",
         "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:pos",
         "//xls/dslx/type_system:parametric_env",
+        "//xls/dslx/type_system:type",
         "//xls/ir:bits",
         "//xls/ir:format_preference",
         "//xls/ir:format_strings",

@@ -23,6 +23,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/log/check.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xls/common/strong_int.h"
@@ -49,6 +50,18 @@ class Bytecode {
     kSAdd,
     // Performs a bitwise AND of the top two values on the stack.
     kAnd,
+    // Shallowly observes TOS0 as the SumType in the data argument, checking its
+    // constructor and ordinary payload validity without changing its bits.
+    // Dirty padding and unobserved nested sum tags are allowed. Runs within
+    // kBeginMatch/kEndMatch so subsequent constructor patterns reuse the
+    // result.
+    kAssertWellFormed,
+    // Starts observation reuse for one fixed sum-containing match scrutinee.
+    // Neither this instruction nor kEndMatch changes the value stack.
+    kBeginMatch,
+    // Discards the current match's observations before its selected arm body
+    // or unmatched-value failure. Match dispatches do not nest within a frame.
+    kEndMatch,
     // Invokes the function given in the Bytecode's data argument. Arguments are
     // given on the stack with deeper elements being earlier in the arg list
     // (rightmost arg is TOS1 because we evaluate args left-to-right, TOS0 is
@@ -69,6 +82,9 @@ class Bytecode {
     // Creates an N-tuple (N given in the data argument) from the values on the
     // stack.
     kCreateTuple,
+    // Creates a semantic sum value from its active payload members using the
+    // sum constructor carried in the data argument.
+    kCreateSum,
     // Decodes the element on top of the stack to a one-hot of the type given as
     // the parametric arg.
     kDecode,
@@ -391,10 +407,34 @@ class Bytecode {
     bool redact_value_;
   };
 
-  using Data = std::variant<InterpValue, JumpTarget, NumElements, SlotIndex,
-                            std::unique_ptr<Type>, InvocationData, MatchArmItem,
-                            SpawnData, TraceData, ChannelData>;
+  class SumConstructionData {
+   public:
+    SumConstructionData(std::unique_ptr<Type> sum_type, int64_t variant_index)
+        : sum_type_(std::move(sum_type)), variant_index_(variant_index) {
+      CHECK(sum_type_ != nullptr);
+      CHECK(sum_type_->IsSum());
+      CHECK_GE(variant_index_, 0);
+      CHECK_LT(variant_index_, this->sum_type().variant_count());
+    }
 
+    const SumType& sum_type() const { return sum_type_->AsSum(); }
+    int64_t variant_index() const { return variant_index_; }
+    std::string_view variant_name() const {
+      return sum_type().variants().at(variant_index_).variant().identifier();
+    }
+
+   private:
+    std::unique_ptr<Type> sum_type_;
+    int64_t variant_index_;
+  };
+
+  using Data =
+      std::variant<InterpValue, JumpTarget, NumElements, SlotIndex,
+                   std::unique_ptr<Type>, InvocationData, MatchArmItem,
+                   SpawnData, TraceData, ChannelData, SumConstructionData>;
+
+  static Bytecode MakeAssertWellFormed(Span span, std::unique_ptr<Type> type);
+  static Bytecode MakeCreateSum(Span span, SumConstructionData sum_data);
   static Bytecode MakeDup(Span span);
   static Bytecode MakeIndex(Span span);
   static Bytecode MakeTupleIndex(Span span);
@@ -452,6 +492,7 @@ class Bytecode {
   absl::StatusOr<const SpawnData*> spawn_data() const;
   absl::StatusOr<const TraceData*> trace_data() const;
   absl::StatusOr<const ChannelData*> channel_data() const;
+  absl::StatusOr<const SumConstructionData*> sum_construction_data() const;
   absl::StatusOr<const Type*> type_data() const;
   absl::StatusOr<InterpValue> value_data() const;
 
