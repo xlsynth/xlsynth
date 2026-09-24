@@ -596,11 +596,19 @@ constructor. Source/bytecode equality validates both complete active values befo
 returning true or false, including when their outer tags differ. See the
 constructor-versus-constant example under [`match`](#match-expression).
 
-`trace!`, `trace_fmt!`, and `vtrace_fmt!` display semantic constructor names,
-including constructors nested in tuples, structs, and arrays. Requested
-hexadecimal or binary formatting applies recursively to constructor payloads,
-except that numeric enums retain their default formatting.
-Tracing an undeclared constructor tag fails without emitting partial output.
+In the DSLX bytecode interpreter, `trace!`, `trace_fmt!`, and `vtrace_fmt!`
+display constructor names as `Type::Constructor`, including those nested in
+tuples, structs, and arrays. Requested hexadecimal or binary formatting applies
+recursively to constructor payloads, except that numeric enums retain their
+default formatting. If a traced value contains an undeclared constructor tag,
+that trace operation fails without emitting its message.
+
+In IR, `trace!(x)` returns `x` without emitting a trace or checking constructor
+tags. With trace emission enabled, `trace_fmt!` and `vtrace_fmt!` preserve
+constructor names and recursive payload formatting; numeric enums use each
+backend's default formatting. This lowering also emits an assertion for an
+undeclared constructor tag when the trace operation is active. Reporting that
+failure depends on the backend executing the assertion.
 
 `zero!<Message>()` selects the constructor whose discriminant is zero, whether
 or not that constructor appears first, and recursively initializes its payload
