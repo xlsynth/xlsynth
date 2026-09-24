@@ -16,6 +16,7 @@ load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load(
     "//xls/build_rules:xls_dslx_rules.bzl",
     "xls_dslx_library",
@@ -127,7 +128,10 @@ cc_test(
         "//xls/dslx:virtualizable_file_system",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:module",
+        "//xls/dslx/type_system:type",
+        "//xls/dslx/type_system:type_info",
         "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/strings:str_format",
         "@googletest//:gtest",
         "@re2",
@@ -197,4 +201,36 @@ diff_test(
     name = "dslx_to_verilog_main_semantic_sum_test",
     file1 = "testdata/semantic_sum_pkg.sv",
     file2 = ":semantic_sum_pkg.sv",
+)
+
+xls_dslx_library(
+    name = "semantic_sum_name_scope_dslx",
+    srcs = ["testdata/semantic_sum_name_scope.x"],
+)
+
+xls_dslx_to_verilog_package(
+    name = "semantic_sum_name_scope_pkg",
+    library = ":semantic_sum_name_scope_dslx",
+    namespace = "semantic_sum_name_scope",
+    package_file = "semantic_sum_name_scope_pkg.sv",
+)
+
+# Icarus rejects legal packed members that share a name with a package typedef.
+# Check semantic name resolution with a local Slang installation instead; invoke
+# with --test_env=XLS_SV_SLANG=/path/to/slang.
+sh_test(
+    name = "dslx_to_verilog_semantic_sum_name_scope_test",
+    srcs = ["testdata/semantic_sum_name_scope.sh"],
+    args = [
+        "$(rootpath :semantic_sum_name_scope_pkg.sv)",
+        "$(rootpath testdata/semantic_sum_name_scope.sv)",
+    ],
+    data = [
+        ":semantic_sum_name_scope_pkg.sv",
+        "testdata/semantic_sum_name_scope.sv",
+    ],
+    tags = [
+        "local",
+        "manual",
+    ],
 )
