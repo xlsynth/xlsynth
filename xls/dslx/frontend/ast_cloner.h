@@ -130,6 +130,12 @@ absl::StatusOr<std::unique_ptr<Module>> CloneModule(
     const Module& module, CloneReplacer replacer = &NoopCloneReplacer,
     ClonePostReplacer post_replacer = nullptr);
 
+// Returns a fresh clone of `module` in which every `if let` conditional is
+// lowered to its equivalent `match` expression. Module metadata is preserved,
+// including configured values and source span.
+absl::StatusOr<std::unique_ptr<Module>> CloneModuleWithIfLetsLowered(
+    const Module& module);
+
 // Returns a clone of `module` that omits any top-level members whose
 // definitions appear in `members_to_remove`. References to those members are
 // not validated or rewritten; the caller is responsible for handling any

@@ -117,8 +117,9 @@ absl::StatusOr<std::unique_ptr<ModuleInfo>> TypecheckModuleV2(
   }
   std::string module_name(module->name());
   if (semantics_analysis != nullptr) {
-    XLS_RETURN_IF_ERROR(semantics_analysis->RunPreTypeCheckPass(
-        *module, *warnings, *import_data, typecheck_imported_module));
+    XLS_ASSIGN_OR_RETURN(module, semantics_analysis->RunPreTypeCheckPass(
+                                     std::move(module), *warnings, *import_data,
+                                     typecheck_imported_module));
   }
   XLS_ASSIGN_OR_RETURN(TypecheckFlagsProto flags, GetTypecheckFlagsProto());
   std::unique_ptr<TypeSystemTracer> tracer =

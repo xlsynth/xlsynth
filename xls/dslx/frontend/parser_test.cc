@@ -3994,6 +3994,62 @@ TEST_F(ParserTest, LadderedConditional) {
        "another_really_long_identifier_so_that_this_is_too_many_chars"});
 }
 
+TEST_F(ParserTest, IfLetConditional) {
+  RoundTrip(R"(enum Option {
+    None,
+    Some(u8),
+}
+fn f(x: Option) -> u8 {
+    if let Option::Some(v) = x { v } else { u8:0 }
+})");
+}
+
+TEST_F(ParserTest, IfLetElseIfChain) {
+  RoundTrip(R"(enum Option {
+    None,
+    Some(u8),
+}
+fn f(x: Option, y: Option) -> u8 {
+    if let Option::Some(v) = x {
+        v
+    } else if let Option::Some(w) = y { w } else { u8:0 }
+})");
+}
+
+TEST_F(ParserTest, IfLetRequiresElse) {
+  constexpr std::string_view kProgram = R"(enum Option {
+    None,
+    Some(u8),
+}
+fn f(x: Option) -> u8 {
+    if let Option::Some(v) = x { v }
+})";
+  EXPECT_THAT(Parse(kProgram),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("`if let` requires an `else` arm")));
+}
+
+TEST_F(ParserTest, IfLetRequiresConstructorPattern) {
+  constexpr std::string_view kProgram = R"(fn f(x: u8) -> u8 {
+    if let _ = x { x } else { u8:0 }
+})";
+  EXPECT_THAT(
+      Parse(kProgram),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("`if let` requires a top-level sum constructor "
+                         "pattern.")));
+}
+
+TEST_F(ParserTest, IfLetAllowsUnitConstructorPattern) {
+  RoundTrip(R"(enum Option {
+    None,
+    Some(u8),
+}
+fn f(x: Option) -> u8 {
+    if let Option::None = x { u8:0 } else { u8:1 }
+})");
+}
+
 TEST_F(ParserTest, InvalidPatternRoundTrips) {
   std::unique_ptr<Module> module = RoundTrip(R"(enum Option {
     None,

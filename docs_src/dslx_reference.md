@@ -1604,6 +1604,21 @@ That final ordinary arm must be either `_` or exactly one constructor pattern
 whose payload subpatterns are all irrefutable; a refutable payload or `|`
 alternatives cannot serve as the malformed-input fallback.
 
+For a single constructor case, `if let` provides the equivalent conditional
+form. Its pattern must be a semantic-sum constructor, and its `else` branch is
+required:
+
+```dslx
+enum Message {
+    Idle,
+    Request(u8),
+}
+
+fn maybe_request(message: Message) -> u8 {
+    if let Message::Request(value) = message { value } else { u8:0 }
+}
+```
+
 We can also `match` on ranges of values using the "range" syntax:
 
 ```dslx
