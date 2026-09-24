@@ -14,16 +14,18 @@
 
 #include "xls/fuzzer/ast_generator.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <random>
+#include <set>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -31,6 +33,8 @@
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "re2/re2.h"
 #include "xls/common/logging/log_lines.h"
 #include "xls/common/status/matchers.h"
@@ -372,29 +376,116 @@ TEST(AstGeneratorMultiTest, GeneratesRequiredSumTypes) {
   std::mt19937_64 rng{0};
   AstGeneratorOptions options;
   options.require_sum_type = true;
-  constexpr int64_t kNumSamples = 32;
+  constexpr int64_t kNumSamples = 64;
+  std::set<int64_t> variant_counts;
+  bool saw_sparse_discriminants = false;
+  bool saw_signed_discriminants = false;
+  bool saw_zero_tag = false;
+  bool saw_unit = false;
+  bool saw_empty_tuple = false;
+  bool saw_empty_struct = false;
+  bool saw_multiple_payloads = false;
+  bool saw_struct_payload = false;
+  bool saw_tuple = false;
+  bool saw_array = false;
+  bool saw_struct = false;
+  bool saw_nested_sum = false;
+  bool saw_or = false;
+  bool saw_constant = false;
+  bool saw_range = false;
+  bool saw_raw_binding = false;
+  bool saw_if_let_chain = false;
   for (int64_t i = 0; i < kNumSamples; ++i) {
     AstGenerator g(options, rng, file_table);
-    VLOG(1) << "Generating required-sum sample: " << i;
     std::string module_name = absl::StrFormat("sum_sample_%d", i);
     XLS_ASSERT_OK_AND_ASSIGN(AnnotatedModule module,
                              g.Generate("main", module_name));
     std::string text = module.module->ToString();
-    EXPECT_THAT(text, ContainsRegex(R"(enum x[0-9]+ \{)")) << text;
-    EXPECT_THAT(text, ContainsRegex(R"(x[0-9]+::x[0-9]+\()")) << text;
-    EXPECT_THAT(text, ContainsRegex(R"(match \()")) << text;
-    EXPECT_THAT(text, ContainsRegex(R"(assert_eq\()")) << text;
-    EXPECT_THAT(text,
-                ContainsRegex(R"(assert_eq\(x[0-9]+, bool:(0x|0b)?1\))"))
-        << text;
-    EXPECT_THAT(text,
-                ContainsRegex(R"(assert_eq\(x[0-9]+, u32:(0x|0b)?1\))"))
-        << text;
-    EXPECT_THAT(text, ContainsRegex(R"(==)")) << text;
-    EXPECT_THAT(text, ContainsRegex(R"(== u32:(0x|0b)?1)")) << text;
-    EXPECT_THAT(text, ContainsRegex(R"(!=)")) << text;
-    XLS_ASSERT_OK(ParseAndTypecheck<Function>(text, module_name)) << text;
+    SCOPED_TRACE(text);
+    const std::vector<SumDef*> definitions = module.module->GetSumDefs();
+    ASSERT_FALSE(definitions.empty());
+    SumDef* definition = definitions.back();
+    variant_counts.insert(definition->variants().size());
+    saw_zero_tag |= definition->variants().size() == 1;
+    if (TypeAnnotation* tag = definition->tag_type_annotation()) {
+      saw_signed_discriminants |= tag->ToString().starts_with("s");
+      // Wider tags with fewer constructors leave unused discriminants.
+      saw_sparse_discriminants |= tag->ToString() != "u1" &&
+                                  tag->ToString() != "u2" &&
+                                  definition->variants().size() > 1;
+    }
+    for (const SumVariant* variant : definition->variants()) {
+      saw_unit |= variant->is_unit();
+      saw_empty_tuple |=
+          variant->is_tuple() && variant->tuple_members().empty();
+      saw_empty_struct |=
+          variant->is_struct() && variant->struct_members().empty();
+      saw_multiple_payloads |= variant->payload_member_count() > 1;
+      saw_struct_payload |=
+          variant->is_struct() && !variant->struct_members().empty();
+      for (int64_t j = 0; j < variant->payload_member_count(); ++j) {
+        TypeAnnotation* member = variant->is_tuple()
+                                     ? variant->tuple_members().at(j)
+                                     : variant->struct_members().at(j)->type();
+        saw_tuple |= dynamic_cast<TupleTypeAnnotation*>(member) != nullptr;
+        saw_array |= dynamic_cast<ArrayTypeAnnotation*>(member) != nullptr;
+        if (auto* ref = dynamic_cast<TypeRefTypeAnnotation*>(member)) {
+          const TypeDefinition& target = ref->type_ref()->type_definition();
+          saw_struct |= std::holds_alternative<StructDef*>(target);
+          saw_nested_sum |= std::holds_alternative<SumDef*>(target);
+        }
+      }
+    }
+    XLS_ASSERT_OK_AND_ASSIGN(Function * main,
+                             module.module->GetMemberOrError<Function>("main"));
+    EXPECT_TRUE(std::any_of(main->params().begin(), main->params().end(),
+                            [&](Param* param) {
+                              return param->type_annotation()->ToString() ==
+                                     definition->identifier();
+                            }));
+    EXPECT_THAT(text, testing::HasSubstr("if let "));
+    EXPECT_THAT(text, testing::HasSubstr("assert_eq("));
+    EXPECT_THAT(text, testing::HasSubstr("!="));
+    saw_if_let_chain |= text.find("else if let ") != std::string::npos;
+
+    // Inspect actual pattern nodes, not unrelated bitwise operators or
+    // constants in the ordinary randomized body.
+    std::function<void(AstNode*)> inspect = [&](AstNode* node) {
+      if (auto* arm = dynamic_cast<MatchArm*>(node)) {
+        saw_or |= arm->patterns().size() > 1;
+        for (const PatternTree& pattern : arm->patterns()) {
+          saw_constant |= std::holds_alternative<NameRef*>(pattern);
+        }
+      } else if (dynamic_cast<Range*>(node) != nullptr) {
+        saw_range = true;
+      } else if (auto* invalid = dynamic_cast<InvalidPattern*>(node)) {
+        saw_raw_binding |= invalid->binds_raw_bits();
+      }
+      for (AstNode* child : node->GetChildren(/*want_types=*/false)) {
+        inspect(child);
+      }
+    };
+    inspect(main->body());
+    XLS_ASSERT_OK(ParseAndTypecheck<Function>(text, module_name));
   }
+  EXPECT_EQ(variant_counts, (std::set<int64_t>{1, 2, 3, 4}));
+  EXPECT_TRUE(saw_sparse_discriminants);
+  EXPECT_TRUE(saw_signed_discriminants);
+  EXPECT_TRUE(saw_zero_tag);
+  EXPECT_TRUE(saw_unit);
+  EXPECT_TRUE(saw_empty_tuple);
+  EXPECT_TRUE(saw_empty_struct);
+  EXPECT_TRUE(saw_multiple_payloads);
+  EXPECT_TRUE(saw_struct_payload);
+  EXPECT_TRUE(saw_tuple);
+  EXPECT_TRUE(saw_array);
+  EXPECT_TRUE(saw_struct);
+  EXPECT_TRUE(saw_nested_sum);
+  EXPECT_TRUE(saw_or);
+  EXPECT_TRUE(saw_constant);
+  EXPECT_TRUE(saw_range);
+  EXPECT_TRUE(saw_raw_binding);
+  EXPECT_TRUE(saw_if_let_chain);
 }
 
 TEST(AstGeneratorMultiTest, GeneratesRequiredCrossModuleSumTypes) {
@@ -488,8 +579,7 @@ TEST(AstGeneratorMultiTest,
     std::vector<SumDef*> sum_defs = module.module->GetSumDefs();
     ASSERT_EQ(sum_defs.size(), 1) << text;
     const std::vector<SumVariant*>& variants = sum_defs.front()->variants();
-    ASSERT_EQ(variants.size(), 2) << text;
-    EXPECT_TRUE(variants.front()->is_unit()) << text;
+    ASSERT_EQ(variants.size(), 1) << text;
     EXPECT_TRUE(variants.back()->is_tuple()) << text;
     EXPECT_TRUE(variants.back()->tuple_members().empty()) << text;
     XLS_ASSERT_OK(ParseAndTypecheck<Function>(text, module_name)) << text;
