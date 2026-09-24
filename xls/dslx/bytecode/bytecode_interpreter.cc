@@ -92,49 +92,6 @@ absl::StatusOr<std::string> ToStringMaybeFormatted(
          value.ToString(/*humanize=*/false, FormatPreference::kDefault);
 }
 
-// Calls carry channel handles, not messages of the channel's payload type.
-// Render those leaves directly while formatting actual sums in the aggregate.
-absl::StatusOr<ValueFormatDescriptor> MakeTraceCallFormatDescriptor(
-    const Type& type, FormatPreference format_preference) {
-  if (type.GetDirectOrElementChannelType().has_value()) {
-    return ValueFormatDescriptor::MakeLeafValue(format_preference);
-  } else if (const auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
-    std::vector<ValueFormatDescriptor> elements;
-    elements.reserve(tuple_type->size());
-    for (const std::unique_ptr<Type>& member_type : tuple_type->members()) {
-      XLS_ASSIGN_OR_RETURN(
-          ValueFormatDescriptor element,
-          MakeTraceCallFormatDescriptor(*member_type, format_preference));
-      elements.push_back(std::move(element));
-    }
-    return ValueFormatDescriptor::MakeTuple(elements);
-  } else if (const auto* struct_type =
-                 dynamic_cast<const StructTypeBase*>(&type)) {
-    XLS_ASSIGN_OR_RETURN(std::vector<std::string> field_names,
-                         struct_type->GetMemberNames());
-    std::vector<ValueFormatDescriptor> field_formats;
-    field_formats.reserve(struct_type->size());
-    for (const std::unique_ptr<Type>& member_type : struct_type->members()) {
-      XLS_ASSIGN_OR_RETURN(
-          ValueFormatDescriptor field_format,
-          MakeTraceCallFormatDescriptor(*member_type, format_preference));
-      field_formats.push_back(std::move(field_format));
-    }
-    return ValueFormatDescriptor::MakeStruct(
-        struct_type->struct_def_base().identifier(), field_names,
-        field_formats);
-  } else if (const auto* array_type = dynamic_cast<const ArrayType*>(&type);
-             array_type != nullptr && !IsBitsLike(type)) {
-    XLS_ASSIGN_OR_RETURN(int64_t size, array_type->size().GetAsInt64());
-    XLS_ASSIGN_OR_RETURN(ValueFormatDescriptor element,
-                         MakeTraceCallFormatDescriptor(
-                             array_type->element_type(), format_preference));
-    return ValueFormatDescriptor::MakeArray(element, size);
-  } else {
-    return MakeValueFormatDescriptor(type, format_preference);
-  }
-}
-
 absl::StatusOr<std::vector<std::optional<ValueFormatDescriptor>>>
 MakeFunctionParamFormatDescriptors(const Function& function,
                                    const TypeInfo& type_info,
