@@ -76,6 +76,13 @@ struct InvocationCalleeData {
   ParametricEnv caller_bindings;
   TypeInfo* derived_type_info;
   const Invocation* invocation;
+  // The concrete context and source declaration defining caller_bindings.
+  // The owner is a Function, StructDefBase, or SumDef, not necessarily the
+  // lexical caller: struct defaults and sum tags have no enclosing function.
+  // These pointers borrow from the compilation owner and are independent of
+  // callee canonicalization.
+  const TypeInfo* caller_type_info = nullptr;
+  const AstNode* caller_parametric_owner = nullptr;
 };
 
 // The type information about a concrete spawn of a proc.
@@ -231,20 +238,24 @@ class TypeInfo {
   //     nullptr if the invocation is at the top level of the module.
   //   caller_env: The caller's symbolic bindings at the point of invocation.
   //   callee_env: The callee's computed symbolic bindings for the invocation.
+  //   caller_parametric_owner: The function, struct/proc, or sum defining
+  //     caller_env in the actual parent parametric context, or nullptr without
+  //     a context. This TypeInfo is captured as the concrete caller context
+  //     before routing storage to the root or local invocation index.
   //
   // Returns an error status if internal invariants are violated; e.g. if the
   // "caller_env" is not a valid env for the "caller".
-  absl::Status AddInvocationTypeInfo(const Invocation& invocation,
-                                     const Function* callee,
-                                     const Function* caller,
-                                     const ParametricEnv& caller_env,
-                                     const ParametricEnv& callee_env,
-                                     TypeInfo* derived_type_info);
+  absl::Status AddInvocationTypeInfo(
+      const Invocation& invocation, const Function* callee,
+      const Function* caller, const ParametricEnv& caller_env,
+      const ParametricEnv& callee_env, TypeInfo* derived_type_info,
+      const AstNode* caller_parametric_owner = nullptr);
 
   // Add data for a non-parametric invocation.
   absl::Status AddInvocation(const Invocation& invocation,
                              const Function* callee, const Function* caller,
-                             TypeInfo* derived_type_info);
+                             TypeInfo* derived_type_info,
+                             const AstNode* caller_parametric_owner = nullptr);
 
   // Adds data for a concrete spawn of a proc.
   absl::Status AddSpawn(const Proc* proc, ParametricEnv env, bool test,
