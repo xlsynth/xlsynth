@@ -14,7 +14,6 @@
 
 #include "xls/dslx/type_system/deduce_utils.h"
 
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -78,9 +77,8 @@ TEST(DeduceUtilsTest, RejectsSemanticSumNestedInFormattedTuple) {
   std::vector<SumTypeVariant> variants;
   variants.push_back(SumTypeVariant::MakeUnit(*none));
   std::vector<std::unique_ptr<Type>> tuple_members;
-  tuple_members.push_back(std::make_unique<SumType>(
-      *sum_def, std::move(variants),
-      SumType::SelectedZeroVariant{std::cref(*none)}));
+  tuple_members.push_back(
+      std::make_unique<SumType>(*sum_def, std::move(variants)));
   TupleType nested_sum(std::move(tuple_members));
 
   EXPECT_THAT(ValidateFormatMacroArgument(nested_sum, kFakeSpan, file_table),
