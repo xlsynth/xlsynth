@@ -565,6 +565,7 @@ cc_test(
         ":conversion_info",
         ":convert_options",
         ":function_converter",
+        ":ir_converter",
         ":test_utils",
         "//xls/codegen:combinational_generator",
         "//xls/common:proto_test_utils",
