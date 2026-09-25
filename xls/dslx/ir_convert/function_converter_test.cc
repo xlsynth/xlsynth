@@ -36,6 +36,7 @@
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/ir_convert/conversion_info.h"
 #include "xls/dslx/ir_convert/convert_options.h"
+#include "xls/dslx/ir_convert/ir_converter.h"
 #include "xls/dslx/ir_convert/test_utils.h"
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/type_system/parametric_env.h"
@@ -739,12 +740,9 @@ fn f(x: u8, y: u16) -> (E, E, E, E, bool, bool, bool, u16, u16, u32) {
                                                  *function, ParametricEnv{}));
 
   PackageConversionData package = MakeConversionData("test_module_package");
-  PackageData package_data{.conversion_info = &package};
-  FunctionConverter converter(package_data, tm.module, &import_data,
-                              ConvertOptions(), /*proc_data=*/nullptr,
-                              /*channel_scope=*/nullptr, /*is_top=*/true);
-  XLS_ASSERT_OK(
-      converter.HandleFunction(function, tm.type_info, ParametricEnv{}));
+  XLS_ASSERT_OK(ConvertOneFunctionIntoPackage(function, &import_data,
+                                              /*parametric_env=*/nullptr,
+                                              ConvertOptions(), &package));
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
                            package.package->GetFunction("__test_module__f"));
   XLS_ASSERT_OK_AND_ASSIGN(auto jit, FunctionJit::Create(ir_function));
