@@ -1634,6 +1634,58 @@ TEST(QuickcheckTest, ValueGeneratorsPreservePriorValuesAcrossRecursiveLeaves) {
   }
 }
 
+TEST(QuickcheckTest, ValueGeneratorRejectsSumWidthBeforeGeneratingPayload) {
+  constexpr std::string_view kProgram = R"(
+enum Generated: u1 { Active(uN[0], u1[2][3]) = 0 }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test.x", "test", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(SumDef * sum_def,
+                           tm.module->GetMemberOrError<SumDef>("Generated"));
+  auto make_sum = [&](uint32_t inner_size, uint32_t outer_size) {
+    std::vector<std::unique_ptr<Type>> payload;
+    payload.push_back(std::make_unique<BitsType>(false, 0));
+    payload.push_back(std::make_unique<ArrayType>(
+        std::make_unique<ArrayType>(std::make_unique<BitsType>(false, 1),
+                                    TypeDim::CreateU32(inner_size)),
+        TypeDim::CreateU32(outer_size)));
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(SumTypeVariant::MakeTuple(*sum_def->variants().front(),
+                                                 std::move(payload)));
+    return SumType(*sum_def, std::move(variants), TypeDim::CreateU32(1));
+  };
+  SumType overflow = make_sum(65535, 65537);
+  XLS_ASSERT_OK_AND_ASSIGN(TypeDim payload_width,
+                           overflow.GetMaxPayloadBitCount());
+  XLS_ASSERT_OK_AND_ASSIGN(int64_t payload_bits, payload_width.GetAsInt64());
+  ASSERT_EQ(payload_bits, 4294967295);
+
+  int leaf_calls = 0;
+  auto stop_before_array =
+      [&](absl::BitGenRef, const BitsLikeProperties&,
+          absl::Span<const InterpValue>) -> absl::StatusOr<InterpValue> {
+    ++leaf_calls;
+    return absl::AbortedError("reached the active payload");
+  };
+  std::mt19937_64 bit_gen{2};
+  InterpValueGenerator generator;
+  // The first leaf has no bits and safely stops the old traversal before it
+  // can enter the enormous second member. Its callback must not run at all.
+  EXPECT_THAT(generator.Generate(bit_gen, overflow, {}, stop_before_array),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("shared sum bit count exceeds")));
+  EXPECT_EQ(leaf_calls, 0);
+
+  SumType ordinary = make_sum(2, 3);
+  EXPECT_THAT(generator.Generate(bit_gen, ordinary, {}, stop_before_array),
+              StatusIs(absl::StatusCode::kAborted,
+                       HasSubstr("reached the active payload")));
+  EXPECT_EQ(leaf_calls, 1);
+  XLS_ASSERT_OK(generator.Generate(bit_gen, ordinary, {}));
+}
+
 TEST(QuickcheckTest, JitNestedConditionalTraceSectionsEmitOneEvent) {
   Package package("conditional_trace");
   constexpr std::string_view kIr = R"(
