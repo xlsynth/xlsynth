@@ -72,6 +72,7 @@ absl::StatusOr<InterpValue> InterpValueGenerator::GenerateSum(
               ? "Cannot generate an InterpValue for an empty sum type."
               : "Cannot generate an InterpValue for an uninhabited sum type.");
     }
+    XLS_RETURN_IF_ERROR(sum_type.GetTotalBitCount().status());
     XLS_ASSIGN_OR_RETURN(TypeDim payload_slot_bit_count,
                          sum_type.GetMaxPayloadBitCount());
     XLS_ASSIGN_OR_RETURN(int64_t concrete_payload_slot_bit_count,
