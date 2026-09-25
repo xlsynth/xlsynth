@@ -109,6 +109,7 @@ absl::StatusOr<PackedProjection> Project(Package& package, const Type& type,
   BuilderBase* builder = bits.has_value() ? bits->builder() : nullptr;
   if (type.IsSum()) {
     const SumTypeEncoding encoding(type.AsSum());
+    XLS_RETURN_IF_ERROR(GetPackedSumBitCount(type).status());
     XLS_ASSIGN_OR_RETURN(int64_t slot_width, encoding.payload_slot_bit_count());
     XLS_ASSIGN_OR_RETURN(int64_t tag_width, encoding.tag_bit_count());
     xls::Type* result = package.GetTupleType(
@@ -371,6 +372,9 @@ absl::StatusOr<BValue> BuildPackedSumValue(
     absl::Span<const BValue> members, const SourceInfo& loc) {
   XLS_RET_CHECK_EQ(members.size(), variant.payload_size());
   const SumTypeEncoding encoding(sum);
+  XLS_RETURN_IF_ERROR(GetPackedSumBitCount(sum).status());
+  XLS_ASSIGN_OR_RETURN(int64_t active_width, variant.payload_bit_count());
+  XLS_ASSIGN_OR_RETURN(int64_t slot_width, encoding.payload_slot_bit_count());
   std::vector<BValue> pieces;
   XLS_RETURN_IF_ERROR(encoding.ForEachPayloadMember(
       variant, [&](int64_t i, const Type& type) -> absl::Status {
@@ -380,8 +384,6 @@ absl::StatusOr<BValue> BuildPackedSumValue(
         return absl::OkStatus();
       }));
   BValue slot = ConcatOrZero(builder, pieces, loc);
-  XLS_ASSIGN_OR_RETURN(int64_t active_width, variant.payload_bit_count());
-  XLS_ASSIGN_OR_RETURN(int64_t slot_width, encoding.payload_slot_bit_count());
   if (active_width != slot_width) {
     slot = builder.ZeroExtend(slot, slot_width, loc);
   }
