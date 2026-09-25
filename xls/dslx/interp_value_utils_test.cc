@@ -261,6 +261,27 @@ SumType MakeOptionalPayloadSumType(Module& module, BuiltinType annotation_kind,
                                     std::move(payload_type));
 }
 
+SumType MakeSumWithMaxWidthInactiveArray(Module& module) {
+  const Span span = Span::Fake();
+  auto* u1 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU1,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU1));
+  auto* u32 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU32,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU32));
+  auto* inner_count =
+      module.Make<Number>(span, "65535", NumberKind::kOther, u32);
+  auto* outer_count =
+      module.Make<Number>(span, "65537", NumberKind::kOther, u32);
+  auto* inner = module.Make<ArrayTypeAnnotation>(span, u1, inner_count);
+  auto* outer = module.Make<ArrayTypeAnnotation>(span, inner, outer_count);
+  auto payload = std::make_unique<ArrayType>(
+      std::make_unique<ArrayType>(BitsType::MakeU1(),
+                                  TypeDim::CreateU32(65535)),
+      TypeDim::CreateU32(65537));
+  return MakeOptionalPayloadSumType(module, outer, std::move(payload));
+}
+
 // Counts actual leaf construction while preserving the counter through clones.
 class DescriptorCountingBitsType : public BitsType {
  public:
@@ -592,6 +613,48 @@ TEST(InterpValueHelpersTest, ConstructsIndexedPackedSumAndIgnoresOnlyPadding) {
   EXPECT_THAT(CreateSumValue(sum_type, 3, {}),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        HasSubstr("no constructor at index 3")));
+}
+
+TEST(InterpValueHelpersTest, SumConstructorsRejectTotalOverflowBeforePayload) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const SumType type = MakeSumWithMaxWidthInactiveArray(module);
+  EXPECT_THAT(
+      type.GetMaxPayloadBitCount(),
+      IsOkAndHolds(TypeDim::CreateU32(std::numeric_limits<uint32_t>::max())));
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+  EXPECT_THAT(type.GetTotalBitCount(), overflow);
+
+  // The extra argument keeps even a broken constructor from allocating the
+  // 512 MiB inactive slot. The declared type and slot width are real; its
+  // one-bit tag makes the total unrepresentable before payload inspection.
+  const std::vector<InterpValue> extra_payload = {InterpValue::MakeU8(1)};
+  EXPECT_THAT(CreateSumValue(type, "None", extra_payload), overflow);
+  EXPECT_THAT(CreateSumValue(type, 0, extra_payload), overflow);
+  EXPECT_THAT(internal::CreateSumValueFromValidatedZeroPayload(type, "None",
+                                                               extra_payload),
+              overflow);
+  EXPECT_THAT(internal::CreateSumValueFromValidatedGeneratedPayload(
+                  type, 0, std::numeric_limits<uint32_t>::max(), extra_payload),
+              overflow);
+
+  const SumType ordinary = MakeMixedPayloadSumType(module);
+  const auto arity_error = StatusIs(absl::StatusCode::kInvalidArgument,
+                                    HasSubstr("expected 0 payload values"));
+  EXPECT_THAT(CreateSumValue(ordinary, "None", extra_payload), arity_error);
+  EXPECT_THAT(CreateSumValue(ordinary, 0, extra_payload), arity_error);
+}
+
+TEST(InterpValueHelpersTest, SumPlaceholderRejectsTotalOverflow) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const SumType type = MakeSumWithMaxWidthInactiveArray(module);
+  EXPECT_THAT(
+      internal::CreateInternalPlaceholderValueFromType(type),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits")));
 }
 
 TEST(InterpValueHelpersTest, IndexedPackedSumUsesSparseSemanticTags) {
