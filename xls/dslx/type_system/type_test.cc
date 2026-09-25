@@ -892,6 +892,140 @@ TEST(TypeTest, SumWidthRejectsOverflowInPayloadOrTag) {
       overflow);
 }
 
+TEST(TypeTest, PublicSumVariantWidthRejectsOverflow) {
+  constexpr uint32_t kLargestWidth = std::numeric_limits<uint32_t>::max();
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumDef* sum_def = CreateTupleSumDef(module, {2, 1});
+  auto make_pair = [&](uint32_t first_width) {
+    std::vector<std::unique_ptr<Type>> members;
+    members.push_back(
+        std::make_unique<BitsType>(false, TypeDim::CreateU32(first_width)));
+    members.push_back(BitsType::MakeU1());
+    return SumTypeVariant::MakeTuple(*sum_def->variants()[0],
+                                     std::move(members));
+  };
+  EXPECT_THAT(make_pair(kLargestWidth - 1).GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(kLargestWidth)));
+  EXPECT_THAT(make_pair(kLargestWidth).GetTotalBitCount(), overflow);
+
+  std::vector<std::unique_ptr<Type>> members;
+  members.push_back(std::make_unique<ArrayType>(BitsType::MakeU32(),
+                                                TypeDim::CreateU32(134217728)));
+  auto nested =
+      SumTypeVariant::MakeTuple(*sum_def->variants()[1], std::move(members));
+  EXPECT_THAT(nested.GetTotalBitCount(), overflow);
+}
+
+TEST(TypeTest, PublicEnclosingSumWidthsRejectOverflow) {
+  constexpr uint32_t kLargestWidth = std::numeric_limits<uint32_t>::max();
+  constexpr uint32_t kHalfRange = uint32_t{1} << 31;
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumDef* sum_def = CreateTupleSumDef(module, {1});
+  auto make_sum = [&](uint32_t total_width) {
+    std::vector<std::unique_ptr<Type>> members;
+    members.push_back(std::make_unique<ArrayType>(
+        BitsType::MakeU1(), TypeDim::CreateU32(total_width - 1)));
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(
+        SumTypeVariant::MakeTuple(*sum_def->variants()[0], std::move(members)));
+    return std::make_unique<SumType>(*sum_def, std::move(variants),
+                                     TypeDim::CreateU32(1));
+  };
+  auto half_range = make_sum(kHalfRange);
+  auto below_half_range = make_sum(kHalfRange - 1);
+  ASSERT_THAT(half_range->GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(kHalfRange)));
+  ASSERT_THAT(below_half_range->GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(kHalfRange - 1)));
+
+  auto exact_tuple = TupleType::Create2(half_range->CloneToUnique(),
+                                        below_half_range->CloneToUnique());
+  auto overflowing_tuple = TupleType::Create2(half_range->CloneToUnique(),
+                                              half_range->CloneToUnique());
+  EXPECT_THAT(exact_tuple->GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(kLargestWidth)));
+  EXPECT_THAT(overflowing_tuple->GetTotalBitCount(), overflow);
+  ArrayType exact_array(below_half_range->CloneToUnique(),
+                        TypeDim::CreateU32(2));
+  ArrayType overflowing_array(half_range->CloneToUnique(),
+                              TypeDim::CreateU32(2));
+  EXPECT_THAT(exact_array.GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(kLargestWidth - 1)));
+  EXPECT_THAT(overflowing_array.GetTotalBitCount(), overflow);
+
+  StructType struct_shape = CreateSimpleStruct(module);
+  auto make_pair = [&](bool overflow) {
+    std::vector<std::unique_ptr<Type>> members;
+    members.push_back(half_range->CloneToUnique());
+    members.push_back(overflow ? half_range->CloneToUnique()
+                               : below_half_range->CloneToUnique());
+    return members;
+  };
+  StructType exact_struct(make_pair(false), struct_shape.nominal_type());
+  StructType overflowing_struct(make_pair(true), struct_shape.nominal_type());
+  EXPECT_THAT(exact_struct.GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(kLargestWidth)));
+  EXPECT_THAT(overflowing_struct.GetTotalBitCount(), overflow);
+  FunctionType exact_function(make_pair(false), BitsType::MakeU1());
+  FunctionType overflowing_function(make_pair(true), BitsType::MakeU1());
+  EXPECT_THAT(exact_function.GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(kLargestWidth)));
+  EXPECT_THAT(overflowing_function.GetTotalBitCount(), overflow);
+
+  auto enclosing =
+      TupleType::Create2(BitsType::MakeU1(), overflowing_array.CloneToUnique());
+  EXPECT_THAT(enclosing->GetTotalBitCount(), overflow);
+  ArrayType no_elements(half_range->CloneToUnique(), TypeDim::CreateU32(0));
+  EXPECT_THAT(no_elements.GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(0)));
+  auto plain_overflow = TupleType::Create2(
+      std::make_unique<BitsType>(false, TypeDim::CreateU32(kLargestWidth)),
+      BitsType::MakeU1());
+  auto later_sum = TupleType::Create2(std::move(plain_overflow),
+                                      no_elements.CloneToUnique());
+  EXPECT_THAT(later_sum->GetTotalBitCount(), overflow);
+
+  std::vector<std::unique_ptr<Type>> ordinary_params;
+  ordinary_params.push_back(
+      std::make_unique<BitsType>(false, TypeDim::CreateU32(kHalfRange)));
+  ordinary_params.push_back(
+      std::make_unique<BitsType>(false, TypeDim::CreateU32(kHalfRange)));
+  auto sum_only_in_result = std::make_unique<FunctionType>(
+      std::move(ordinary_params), half_range->CloneToUnique());
+  EXPECT_TRUE(TypeContainsSemanticSum(*sum_only_in_result));
+  EXPECT_THAT(sum_only_in_result->GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(0)));
+  auto nested_function =
+      TupleType::Create2(std::move(sum_only_in_result), BitsType::MakeU1());
+  EXPECT_TRUE(TypeContainsSemanticSum(*nested_function));
+  EXPECT_THAT(nested_function->GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(1)));
+}
+
+TEST(TypeTest, PublicNonSumWidthArithmeticIsUnchanged) {
+  constexpr uint32_t kHalfRange = uint32_t{1} << 31;
+  auto make_wide_bits = [&] {
+    return std::make_unique<BitsType>(false, TypeDim::CreateU32(kHalfRange));
+  };
+  auto tuple = TupleType::Create2(make_wide_bits(), make_wide_bits());
+  ArrayType array(make_wide_bits(), TypeDim::CreateU32(2));
+  EXPECT_THAT(tuple->GetTotalBitCount(), IsOkAndHolds(TypeDim::CreateU32(0)));
+  EXPECT_THAT(array.GetTotalBitCount(), IsOkAndHolds(TypeDim::CreateU32(0)));
+  std::vector<std::unique_ptr<Type>> params;
+  params.push_back(make_wide_bits());
+  params.push_back(make_wide_bits());
+  FunctionType function(std::move(params), BitsType::MakeU1());
+  EXPECT_THAT(function.GetTotalBitCount(), IsOkAndHolds(TypeDim::CreateU32(0)));
+}
+
 // -- TypeDimTest
 
 TEST(TypeDimTest, TestArithmetic) {

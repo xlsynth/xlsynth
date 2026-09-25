@@ -310,6 +310,8 @@ class Type {
   // this type.
   virtual std::vector<TypeDim> GetAllDims() const = 0;
 
+  // Arithmetic that exceeds the u32 dimension range is rejected when this bit
+  // count includes a semantic sum.
   virtual absl::StatusOr<TypeDim> GetTotalBitCount() const = 0;
 
   // Returns a "type name" suitable for debugging; e.g. "array", "bits", "enum",
@@ -846,6 +848,7 @@ class SumTypeVariant {
   }
 
   std::vector<TypeDim> GetAllDims() const;
+  // Returns the payload width, rejecting arithmetic beyond the u32 range.
   absl::StatusOr<TypeDim> GetTotalBitCount() const;
   bool HasEnum() const;
   bool HasToken() const;
