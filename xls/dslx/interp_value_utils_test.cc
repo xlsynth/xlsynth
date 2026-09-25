@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <set>
@@ -1151,6 +1152,44 @@ TEST(InterpValueHelpersTest, CreateSumValueRejectsMalformedArrayPayload) {
   EXPECT_THAT(CreateSumValue(sum_type, "Some", {wide_array}),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        HasSubstr("does not match")));
+}
+
+TEST(InterpValueHelpersTest, MakeSumValueFormatDescriptorRejectsWidthOverflow) {
+  constexpr int64_t kMaxWidth = std::numeric_limits<uint32_t>::max();
+  const Span span = Span::Fake();
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  auto* unsigned_bits = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kUN,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kUN));
+  auto* u32 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU32,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU32));
+  auto make_sum = [&](int64_t payload_width) {
+    auto* dimension = module.Make<Number>(span, absl::StrCat(payload_width),
+                                          NumberKind::kOther, u32);
+    auto* annotation =
+        module.Make<ArrayTypeAnnotation>(span, unsigned_bits, dimension);
+    return MakeOptionalPayloadSumType(
+        module, annotation,
+        std::make_unique<BitsType>(/*is_signed=*/false, payload_width));
+  };
+
+  const SumType boundary = make_sum(kMaxWidth - 1);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      ValueFormatDescriptor descriptor,
+      MakeValueFormatDescriptor(boundary, FormatPreference::kDefault));
+  EXPECT_EQ(descriptor.sum_tag_bit_count(), 1);
+  EXPECT_EQ(descriptor.sum_payload_slot_bit_count(), kMaxWidth - 1);
+  EXPECT_EQ(descriptor.flat_bit_count(), kMaxWidth);
+
+  // Neither input width overflows; only their combined sum width does. No value
+  // or storage proportional to the represented payload is constructed.
+  const SumType overflow = make_sum(kMaxWidth);
+  EXPECT_THAT(
+      MakeValueFormatDescriptor(overflow, FormatPreference::kDefault),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits")));
 }
 
 // Verifies: Production sum formatting ignores inactive padding.

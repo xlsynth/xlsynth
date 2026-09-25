@@ -153,6 +153,8 @@ absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::BuildSum(
         return absl::OkStatus();
       }));
   XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
+  // The tag and payload can each fit the DSLX width while their sum does not.
+  XLS_RETURN_IF_ERROR(type.GetTotalBitCount().status());
   XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
                        encoding.payload_slot_bit_count());
   return internal::MakePackedSumValueFormatDescriptor(
