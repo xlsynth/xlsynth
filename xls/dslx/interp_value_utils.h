@@ -117,6 +117,13 @@ class MatchValueObservation {
   absl::StatusOr<const std::vector<InterpValue>*> GetSumPayloadValues(
       const SumType& type, const InterpValue& value, const Path& path);
 
+  // Validates the complete constant first, then completes/reuses validation of
+  // this scrutinee subtree before comparing meaningful values. No equality
+  // results or failed checks are retained.
+  absl::StatusOr<bool> EqualsConstant(const InterpValue& constant,
+                                      const InterpValue& value,
+                                      const Type& type, const Path& path);
+
  private:
   friend class ValueTraversal;
 
@@ -130,6 +137,13 @@ class MatchValueObservation {
   // Map nodes keep payload references stable during recursive insertion.
   std::map<Path, Observation> observations_;
 };
+
+// Compares declared constructors and meaningful payloads recursively, ignoring
+// packed sum padding. Validates all active constructors in both operands, even
+// if an earlier member differs. Neither operand is rewritten.
+absl::StatusOr<bool> PackedValuesEqual(const InterpValue& lhs,
+                                       const InterpValue& rhs,
+                                       const Type& type);
 
 }  // namespace internal
 

@@ -536,8 +536,8 @@ absl::Status ValidateEnumValue(const InterpValue& value,
 
 namespace internal {
 
-// Shares ordinary and match-local packed validation. A null observation owner
-// keeps ordinary validation free of path/map allocation.
+// One validator/comparator serves ordinary calls and match-local reuse. A null
+// observation owner keeps ordinary validation free of path/map allocation.
 class ValueTraversal {
  public:
   explicit ValueTraversal(SumValidation sum_validation,
@@ -550,6 +550,10 @@ class ValueTraversal {
   // Checks according to sum_validation_, reusing successful complete subtrees
   // only when this traversal belongs to a match observation owner.
   absl::Status Validate(const InterpValue& value, const Type& type);
+  // Both operands must already be fully validated. Only RHS storage is reused;
+  // constants and their comparison results are never retained in the owner.
+  absl::StatusOr<bool> Compare(const InterpValue& lhs, const InterpValue& rhs,
+                               const Type& type);
   // Checks one constructor and ordinary payload validity, not nested sum tags.
   absl::StatusOr<const std::vector<InterpValue>*> ObserveSum(
       const SumType& type, const InterpValue& value,
@@ -567,6 +571,8 @@ class ValueTraversal {
   absl::Status ValidateSumValue(const InterpValue& value, const SumType& type);
   absl::Status ValidateChild(int64_t index, const InterpValue& value,
                              const Type& type);
+  absl::StatusOr<bool> CompareChild(int64_t index, const InterpValue& lhs,
+                                    const InterpValue& rhs, const Type& type);
   // Returns owner-backed storage for matches, or uses transient_payload for
   // ordinary calls. Either storage must outlive the returned pointer's use.
   absl::StatusOr<const std::vector<InterpValue>*> DecodePayload(
@@ -620,6 +626,20 @@ absl::Status ValueTraversal::ValidateChild(int64_t index,
     path_.pop_back();
   }
   return status;
+}
+
+absl::StatusOr<bool> ValueTraversal::CompareChild(int64_t index,
+                                                  const InterpValue& lhs,
+                                                  const InterpValue& rhs,
+                                                  const Type& type) {
+  if (observation_ != nullptr) {
+    path_.push_back(index);
+  }
+  absl::StatusOr<bool> equal = Compare(lhs, rhs, type);
+  if (observation_ != nullptr) {
+    path_.pop_back();
+  }
+  return equal;
 }
 
 absl::StatusOr<const std::vector<InterpValue>*> ValueTraversal::DecodePayload(
@@ -757,6 +777,73 @@ absl::Status ValueTraversal::ValidateUncached(const InterpValue& value,
   }
 }
 
+// The caller has validated both complete source values. Comparison may stop at
+// the first unequal member without hiding a later malformed active constructor.
+absl::StatusOr<bool> ValueTraversal::Compare(const InterpValue& lhs,
+                                             const InterpValue& rhs,
+                                             const Type& type) {
+  auto compare_members = [&](absl::Span<const std::unique_ptr<Type>> members)
+      -> absl::StatusOr<bool> {
+    for (int64_t i = 0; i < members.size(); ++i) {
+      XLS_ASSIGN_OR_RETURN(
+          bool equal, CompareChild(i, lhs.GetValuesOrDie().at(i),
+                                   rhs.GetValuesOrDie().at(i), *members.at(i)));
+      if (!equal) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (auto* sum_type = dynamic_cast<const SumType*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(internal::EncodedSumView lhs_view,
+                         internal::GetEncodedSumView(lhs));
+    XLS_ASSIGN_OR_RETURN(internal::EncodedSumView rhs_view,
+                         internal::GetEncodedSumView(rhs));
+    const SumTypeEncoding encoding(*sum_type);
+    XLS_ASSIGN_OR_RETURN(auto variant, encoding.GetVariantByTagBits(
+                                           lhs_view.tag.GetBitsOrDie()));
+    XLS_RETURN_IF_ERROR(
+        encoding.GetVariantByTagBits(rhs_view.tag.GetBitsOrDie()).status());
+    if (lhs_view.tag.Ne(rhs_view.tag)) {
+      return false;
+    }
+    XLS_ASSIGN_OR_RETURN(
+        std::vector<InterpValue> lhs_payload,
+        DecodeVariantPayloadValues(variant, lhs_view.payload_slot));
+    std::vector<InterpValue> transient_payload;
+    XLS_ASSIGN_OR_RETURN(
+        const std::vector<InterpValue>* rhs_payload,
+        DecodePayload(variant, rhs_view.payload_slot, transient_payload));
+    for (int64_t i = 0; i < variant.payload_size(); ++i) {
+      XLS_ASSIGN_OR_RETURN(
+          bool equal, CompareChild(i, lhs_payload.at(i), rhs_payload->at(i),
+                                   variant.variant->GetMemberType(i)));
+      if (!equal) {
+        return false;
+      }
+    }
+    return true;
+  } else if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
+    return compare_members(tuple_type->members());
+  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type)) {
+    return compare_members(struct_type->members());
+  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type);
+             array_type != nullptr && !GetBitsLike(type).has_value()) {
+    for (int64_t i = 0; i < lhs.GetValuesOrDie().size(); ++i) {
+      XLS_ASSIGN_OR_RETURN(
+          bool equal,
+          CompareChild(i, lhs.GetValuesOrDie().at(i),
+                       rhs.GetValuesOrDie().at(i), array_type->element_type()));
+      if (!equal) {
+        return false;
+      }
+    }
+    return true;
+  } else {
+    return lhs.Eq(rhs);
+  }
+}
+
 absl::StatusOr<const std::vector<InterpValue>*> ValueTraversal::ObserveSum(
     const SumType& type, const InterpValue& value,
     std::vector<InterpValue>& transient_payload) {
@@ -798,6 +885,25 @@ MatchValueObservation::GetSumPayloadValues(const SumType& type,
   std::vector<InterpValue> unused;
   return ValueTraversal(SumValidation::kRepresentation, this, path)
       .ObserveSum(type, value, unused);
+}
+
+absl::StatusOr<bool> MatchValueObservation::EqualsConstant(
+    const InterpValue& constant, const InterpValue& value, const Type& type,
+    const Path& path) {
+  XLS_RETURN_IF_ERROR(ValueTraversal(SumValidation::kDeclaredConstructors)
+                          .Validate(constant, type));
+  ValueTraversal traversal(SumValidation::kDeclaredConstructors, this, path);
+  XLS_RETURN_IF_ERROR(traversal.Validate(value, type));
+  return traversal.Compare(constant, value, type);
+}
+
+absl::StatusOr<bool> PackedValuesEqual(const InterpValue& lhs,
+                                       const InterpValue& rhs,
+                                       const Type& type) {
+  ValueTraversal traversal(SumValidation::kDeclaredConstructors);
+  XLS_RETURN_IF_ERROR(traversal.Validate(lhs, type));
+  XLS_RETURN_IF_ERROR(traversal.Validate(rhs, type));
+  return traversal.Compare(lhs, rhs, type);
 }
 
 }  // namespace internal
