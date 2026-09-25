@@ -3093,10 +3093,10 @@ absl::Status FunctionConverter::HandleSumConstructorInvocation(
 
   XLS_RETURN_IF_ERROR(
       DefWithStatus(node,
-                    [this, &payload_members, &sum_type, &encoding,
+                    [this, &payload_members, &encoding,
                      variant](const SourceInfo& loc) -> absl::StatusOr<BValue> {
                       return internal::BuildPackedSumValue(
-                          *function_builder_, sum_type, encoding, variant,
+                          *function_builder_, encoding, variant,
                           payload_members, loc);
                     })
           .status());
@@ -3115,11 +3115,10 @@ absl::Status FunctionConverter::HandleSumInstance(const SumInstance* node) {
                          encoding.GetVariant(node->constructor_ref()->attr()));
     XLS_RETURN_IF_ERROR(
         DefWithStatus(node,
-                      [this, &sum_type, &encoding, variant](
+                      [this, &encoding, variant](
                           const SourceInfo& loc) -> absl::StatusOr<BValue> {
-                        return internal::BuildPackedSumValue(*function_builder_,
-                                                             sum_type, encoding,
-                                                             variant, {}, loc);
+                        return internal::BuildPackedSumValue(
+                            *function_builder_, encoding, variant, {}, loc);
                       })
             .status());
     return absl::OkStatus();
@@ -3148,10 +3147,10 @@ absl::Status FunctionConverter::HandleSumInstance(const SumInstance* node) {
 
   XLS_RETURN_IF_ERROR(
       DefWithStatus(node,
-                    [this, &payload_members, &sum_type, &encoding,
+                    [this, &payload_members, &encoding,
                      variant](const SourceInfo& loc) -> absl::StatusOr<BValue> {
                       return internal::BuildPackedSumValue(
-                          *function_builder_, sum_type, encoding, variant,
+                          *function_builder_, encoding, variant,
                           payload_members, loc);
                     })
           .status());
@@ -5063,10 +5062,10 @@ absl::Status FunctionConverter::HandleSumStructInstance(
 
   XLS_RETURN_IF_ERROR(
       DefWithStatus(node,
-                    [this, &payload_members, &sum_type, &encoding,
+                    [this, &payload_members, &encoding,
                      variant](const SourceInfo& loc) -> absl::StatusOr<BValue> {
                       return internal::BuildPackedSumValue(
-                          *function_builder_, sum_type, encoding, variant,
+                          *function_builder_, encoding, variant,
                           payload_members, loc);
                     })
           .status());

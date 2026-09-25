@@ -54,6 +54,7 @@ class SumTypeEncoding {
 
   explicit SumTypeEncoding(const SumType& type);
 
+  const SumType& sum_type() const { return type_; }
   absl::StatusOr<int64_t> payload_slot_bit_count() const;
   absl::StatusOr<int64_t> tag_bit_count() const;
 

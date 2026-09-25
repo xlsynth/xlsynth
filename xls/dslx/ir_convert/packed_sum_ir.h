@@ -45,10 +45,9 @@ absl::StatusOr<BValue> BuildPackedSumDiscriminant(BuilderBase& builder,
                                                   const SourceInfo& loc);
 
 // Constructs `(semantic tag, (shared payload bits,))` from only the active
-// variant's members. Unused high payload bits are zeroed. The encoding must
-// describe the given sum.
+// variant's members. Unused high payload bits are zeroed.
 absl::StatusOr<BValue> BuildPackedSumValue(
-    BuilderBase& builder, const SumType& sum, const SumTypeEncoding& encoding,
+    BuilderBase& builder, const SumTypeEncoding& encoding,
     const SumTypeEncoding::VariantInfo& variant,
     absl::Span<const BValue> members, const SourceInfo& loc);
 
