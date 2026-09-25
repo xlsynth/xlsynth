@@ -553,10 +553,11 @@ TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
   XLS_ASSERT_OK_AND_ASSIGN(Function * function,
                            tm.module->GetMemberOrError<Function>("f"));
   const Param* param = function->params().front();
-  XLS_ASSERT_OK_AND_ASSIGN(SumType * parsed_sum,
-                           tm.type_info->GetItemAs<SumType>(param));
-  EXPECT_TRUE(parsed_sum->parametric_arguments().empty());
-  const SumDef& sum_def = parsed_sum->nominal_type();
+  XLS_ASSERT_OK_AND_ASSIGN(Type * parsed_type,
+                           tm.type_info->GetItemOrError(param));
+  ASSERT_TRUE(parsed_type->IsSum());
+  EXPECT_TRUE(parsed_type->AsSum().parametric_arguments().empty());
+  const SumDef& sum_def = parsed_type->AsSum().nominal_type();
 
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue fields,
                            InterpValue::MakeArray({InterpValue::MakeU8(0x12),
