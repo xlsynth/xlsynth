@@ -556,7 +556,12 @@ A semantic sum's complete packed representation may contain at most
 payload slot alone may use that many bits only when the tag has zero bits. For
 example, a one-bit tag leaves at most 4,294,967,294 bits for the payload slot.
 The compiler reports an error if a constructor payload exceeds 4,294,967,295
-bits or if the tag and shared payload slot together exceed that limit.
+bits or if the tag and shared payload slot together exceed that limit. The
+`bit_count` builtin also reports an error if the total bit count of a tuple,
+struct, or array containing a semantic sum exceeds that limit. For example, a
+tuple containing two sums of 2,147,483,648 bits each requires 4,294,967,296
+bits. Each sum is within the limit, but the tuple's bit count cannot be
+represented by the builtin's `u32` result.
 
 Arguments, returns, assignments, selected conditionals, tuples, structs,
 arrays and array updates, proc state, channels, and hardware boundaries preserve
