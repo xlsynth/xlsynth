@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -134,13 +135,42 @@ void ValidateSumTypeVariantPayload(
   }
 }
 
+enum class SharedSumWidthOperation { kAdd, kMultiply };
+
+absl::StatusOr<TypeDim> CheckedSharedSumWidth(
+    const TypeDim& lhs, const TypeDim& rhs, SharedSumWidthOperation operation) {
+  // Keep the original diagnostics for malformed dimensions. Actual shared sum
+  // widths are unsigned 32-bit dimensions; compute them again without wrapping.
+  XLS_ASSIGN_OR_RETURN(
+      TypeDim result,
+      operation == SharedSumWidthOperation::kAdd ? lhs.Add(rhs) : lhs.Mul(rhs));
+  uint64_t bit_count = 0;
+  if (lhs.value().IsUBits() && lhs.value().GetBitsOrDie().bit_count() == 32 &&
+      rhs.value().IsUBits() && rhs.value().GetBitsOrDie().bit_count() == 32) {
+    XLS_ASSIGN_OR_RETURN(uint64_t lhs_width, lhs.value().GetBitValueUnsigned());
+    XLS_ASSIGN_OR_RETURN(uint64_t rhs_width, rhs.value().GetBitValueUnsigned());
+    bit_count = operation == SharedSumWidthOperation::kAdd
+                    ? lhs_width + rhs_width
+                    : lhs_width * rhs_width;
+  }
+  if (bit_count > std::numeric_limits<uint32_t>::max()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("shared sum bit count exceeds ",
+                     std::numeric_limits<uint32_t>::max(), " bits"));
+  } else {
+    return result;
+  }
+}
+
 absl::StatusOr<TypeDim> ComputeSharedSumPayloadMemberBitCount(
     absl::Span<const std::unique_ptr<Type>> members) {
   TypeDim bit_count = TypeDim::CreateU32(0);
   for (const auto& member : members) {
     XLS_ASSIGN_OR_RETURN(TypeDim member_bit_count,
                          internal::GetBitCountWithSharedSumPayload(*member));
-    XLS_ASSIGN_OR_RETURN(bit_count, bit_count.Add(member_bit_count));
+    XLS_ASSIGN_OR_RETURN(bit_count,
+                         CheckedSharedSumWidth(bit_count, member_bit_count,
+                                               SharedSumWidthOperation::kAdd));
   }
   return bit_count;
 }
@@ -1671,7 +1701,9 @@ absl::StatusOr<TypeDim> GetBitCountWithSharedSumPayload(
   for (int64_t i = 0; i < variant.size(); ++i) {
     XLS_ASSIGN_OR_RETURN(TypeDim member_bits, GetBitCountWithSharedSumPayload(
                                                   variant.GetMemberType(i)));
-    XLS_ASSIGN_OR_RETURN(variant_bits, variant_bits.Add(member_bits));
+    XLS_ASSIGN_OR_RETURN(variant_bits,
+                         CheckedSharedSumWidth(variant_bits, member_bits,
+                                               SharedSumWidthOperation::kAdd));
   }
   return variant_bits;
 }
@@ -1680,7 +1712,8 @@ absl::StatusOr<TypeDim> GetBitCountWithSharedSumPayload(const Type& type) {
   if (const auto* sum = dynamic_cast<const SumType*>(&type)) {
     XLS_ASSIGN_OR_RETURN(TypeDim payload_bit_count,
                          sum->GetMaxPayloadBitCount());
-    return sum->tag_bit_count().Add(payload_bit_count);
+    return CheckedSharedSumWidth(sum->tag_bit_count(), payload_bit_count,
+                                 SharedSumWidthOperation::kAdd);
   } else if (const auto* structure =
                  dynamic_cast<const StructTypeBase*>(&type)) {
     return ComputeSharedSumPayloadMemberBitCount(structure->members());
@@ -1693,7 +1726,8 @@ absl::StatusOr<TypeDim> GetBitCountWithSharedSumPayload(const Type& type) {
       XLS_ASSIGN_OR_RETURN(
           TypeDim element_bit_count,
           GetBitCountWithSharedSumPayload(array->element_type()));
-      return element_bit_count.Mul(array->size());
+      return CheckedSharedSumWidth(element_bit_count, array->size(),
+                                   SharedSumWidthOperation::kMultiply);
     }
   } else if (const auto* function = dynamic_cast<const FunctionType*>(&type)) {
     return ComputeSharedSumPayloadMemberBitCount(function->params());

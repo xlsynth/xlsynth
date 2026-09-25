@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -408,6 +409,59 @@ TEST(TypeTest, SharedSumPayloadWidthUsesMaximumRecursively) {
   ArrayType empty_array(inner.CloneToUnique(), TypeDim::CreateU32(0));
   EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(empty_array),
               IsOkAndHolds(TypeDim::CreateU32(0)));
+}
+
+TEST(TypeTest, SharedSumPayloadWidthRejectsOverflow) {
+  constexpr uint32_t kLargestWidth = std::numeric_limits<uint32_t>::max();
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+
+  ArrayType near_limit(BitsType::MakeU32(), TypeDim::CreateU32(134217727));
+  ArrayType overflowing_array(BitsType::MakeU32(),
+                              TypeDim::CreateU32(134217728));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(near_limit),
+              IsOkAndHolds(TypeDim::CreateU32(kLargestWidth - 31)));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(overflowing_array),
+              overflow);
+
+  auto exact_tuple = TupleType::Create2(near_limit.CloneToUnique(),
+                                        std::make_unique<BitsType>(false, 31));
+  auto overflowing_tuple =
+      TupleType::Create2(near_limit.CloneToUnique(), BitsType::MakeU32());
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(*exact_tuple),
+              IsOkAndHolds(TypeDim::CreateU32(kLargestWidth)));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(*overflowing_tuple),
+              overflow);
+
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumDef* pair_def = CreateTupleSumDef(module, {2});
+  std::vector<std::unique_ptr<Type>> pair_members;
+  pair_members.push_back(near_limit.CloneToUnique());
+  pair_members.push_back(BitsType::MakeU32());
+  std::vector<SumTypeVariant> pair_variants;
+  pair_variants.push_back(SumTypeVariant::MakeTuple(*pair_def->variants()[0],
+                                                    std::move(pair_members)));
+  SumType overflowing_variant(*pair_def, std::move(pair_variants));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(
+                  overflowing_variant.variants()[0]),
+              overflow);
+  EXPECT_THAT(overflowing_variant.GetMaxPayloadBitCount(), overflow);
+  EXPECT_THAT(overflowing_variant.GetMaxPayloadBitCount(), overflow);
+
+  SumDef* tagged_def = CreateTupleSumDef(module, {1});
+  std::vector<std::unique_ptr<Type>> tagged_members;
+  tagged_members.push_back(exact_tuple->CloneToUnique());
+  std::vector<SumTypeVariant> tagged_variants;
+  tagged_variants.push_back(SumTypeVariant::MakeTuple(
+      *tagged_def->variants()[0], std::move(tagged_members)));
+  SumType overflowing_tag(*tagged_def, std::move(tagged_variants),
+                          TypeDim::CreateU32(1));
+  EXPECT_THAT(overflowing_tag.GetMaxPayloadBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(kLargestWidth)));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(overflowing_tag),
+              overflow);
 }
 
 TEST(TypeTest, SharedSumPayloadWidthReusesDescriptionsAndPreservesErrors) {
