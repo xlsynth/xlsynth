@@ -57,6 +57,7 @@
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/interp_value_utils.h"
+#include "xls/dslx/sum_type_encoding.h"
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
@@ -1072,8 +1073,17 @@ absl::Status BytecodeInterpreter::EvalDup(const Bytecode& bytecode) {
 }
 
 absl::Status BytecodeInterpreter::EvalEq(const Bytecode& bytecode) {
-  return EvalBinop([](const InterpValue& lhs, const InterpValue& rhs) {
-    return InterpValue::MakeBool(lhs.Eq(rhs));
+  return EvalBinop([&](const InterpValue& lhs,
+                       const InterpValue& rhs) -> absl::StatusOr<InterpValue> {
+    if (bytecode.has_data()) {
+      XLS_ASSIGN_OR_RETURN(const Type* type, bytecode.type_data());
+      absl::StatusOr<bool> equal = SemanticValuesEqual(lhs, rhs, *type);
+      XLS_RETURN_IF_ERROR(
+          CheckSemanticObserverStatus(bytecode, equal.status(), "equality"));
+      return InterpValue::MakeBool(*equal);
+    } else {
+      return InterpValue::MakeBool(lhs.Eq(rhs));
+    }
   });
 }
 
@@ -1252,10 +1262,23 @@ absl::StatusOr<bool> BytecodeInterpreter::MatchArmEqualsInterpValue(
     const Bytecode& bytecode, Frame* frame, const Bytecode::MatchArmItem& item,
     const InterpValue& value, std::vector<int64_t>& path) {
   using Kind = Bytecode::MatchArmItem::Kind;
+  auto matches_value =
+      [&](const InterpValue& arm_value) -> absl::StatusOr<bool> {
+    if (item.value_type() != nullptr) {
+      XLS_RET_CHECK(frame->match_observation().has_value());
+      absl::StatusOr<bool> equal = frame->match_observation()->EqualsConstant(
+          arm_value, value, *item.value_type(), path);
+      XLS_RETURN_IF_ERROR(
+          CheckSemanticObserverStatus(bytecode, equal.status(), "observer"));
+      return *equal;
+    } else {
+      return arm_value.Eq(value);
+    }
+  };
   switch (item.kind()) {
     case Kind::kInterpValue: {
       XLS_ASSIGN_OR_RETURN(InterpValue arm_value, item.interp_value());
-      return arm_value.Eq(value);
+      return matches_value(arm_value);
     }
     case Kind::kRange: {
       XLS_ASSIGN_OR_RETURN(Bytecode::MatchArmItem::RangeData range,
@@ -1314,7 +1337,7 @@ absl::StatusOr<bool> BytecodeInterpreter::MatchArmEqualsInterpValue(
             frame->slots().size(), "."));
       }
       InterpValue arm_value = frame->slots().at(slot_index.value());
-      return arm_value.Eq(value);
+      return matches_value(arm_value);
     }
 
     case Kind::kStore: {
@@ -1408,8 +1431,17 @@ absl::Status BytecodeInterpreter::EvalMul(const Bytecode& bytecode,
 }
 
 absl::Status BytecodeInterpreter::EvalNe(const Bytecode& bytecode) {
-  return EvalBinop([](const InterpValue& lhs, const InterpValue& rhs) {
-    return InterpValue::MakeBool(lhs.Ne(rhs));
+  return EvalBinop([&](const InterpValue& lhs,
+                       const InterpValue& rhs) -> absl::StatusOr<InterpValue> {
+    if (bytecode.has_data()) {
+      XLS_ASSIGN_OR_RETURN(const Type* type, bytecode.type_data());
+      absl::StatusOr<bool> equal = SemanticValuesEqual(lhs, rhs, *type);
+      XLS_RETURN_IF_ERROR(
+          CheckSemanticObserverStatus(bytecode, equal.status(), "inequality"));
+      return InterpValue::MakeBool(!*equal);
+    } else {
+      return InterpValue::MakeBool(lhs.Ne(rhs));
+    }
   });
 }
 
