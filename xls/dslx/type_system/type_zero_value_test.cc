@@ -14,6 +14,7 @@
 
 #include "xls/dslx/type_system/type_zero_value.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -247,6 +248,59 @@ TEST(TypeZeroValueTest, RejectsAnEmptySumWithoutAZeroVariant) {
   ImportData import_data = CreateImportDataForTest();
 
   EXPECT_FALSE(MakeZeroValue(never, import_data, span).ok());
+}
+
+TEST(TypeZeroValueTest, RejectsSumWidthBeforeConstructingZeroPayload) {
+  constexpr char kProgram[] = R"(
+enum NoZero: u1 { One = 1 }
+enum HasZero: u1 { Zero = 0 }
+enum Outer: u1 { Active(NoZero, u2[2]) = 0 }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test.x", "test", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(SumDef * sum_def,
+                           tm.module->GetMemberOrError<SumDef>("Outer"));
+  XLS_ASSERT_OK_AND_ASSIGN(EnumDef * no_zero_def,
+                           tm.module->GetMemberOrError<EnumDef>("NoZero"));
+  XLS_ASSERT_OK_AND_ASSIGN(EnumDef * has_zero_def,
+                           tm.module->GetMemberOrError<EnumDef>("HasZero"));
+  EnumType no_zero(*no_zero_def, TypeDim::CreateU32(1), /*is_signed=*/false,
+                   {InterpValue::MakeUBits(1, 1)});
+  EnumType has_zero(*has_zero_def, TypeDim::CreateU32(1), /*is_signed=*/false,
+                    {InterpValue::MakeUBits(1, 0)});
+  auto make_sum = [&](const EnumType& first, uint32_t array_size) {
+    std::vector<std::unique_ptr<Type>> payload;
+    payload.push_back(first.CloneToUnique());
+    payload.push_back(std::make_unique<ArrayType>(
+        std::make_unique<BitsType>(false, 2), TypeDim::CreateU32(array_size)));
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(SumTypeVariant::MakeTuple(*sum_def->variants().front(),
+                                                 std::move(payload)));
+    return SumType(*sum_def, std::move(variants), TypeDim::CreateU32(1));
+  };
+  SumType overflow = make_sum(no_zero, 2147483647);
+  XLS_ASSERT_OK_AND_ASSIGN(TypeDim payload_width,
+                           overflow.GetMaxPayloadBitCount());
+  XLS_ASSERT_OK_AND_ASSIGN(int64_t payload_bits, payload_width.GetAsInt64());
+  ASSERT_EQ(payload_bits, 4294967295);
+
+  // The first member safely stops the old traversal before it can enter the
+  // enormous array. Width rejection must take place before zeroing either.
+  EXPECT_THAT(MakeZeroValue(overflow, import_data, tm.module->span()),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("shared sum bit count exceeds")));
+
+  SumType ordinary_without_zero = make_sum(no_zero, 2);
+  EXPECT_THAT(
+      MakeZeroValue(ordinary_without_zero, import_data, tm.module->span()),
+      StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          HasSubstr("Enum type 'NoZero' does not have a known zero value")));
+  SumType ordinary_with_zero = make_sum(has_zero, 2);
+  XLS_ASSERT_OK(
+      MakeZeroValue(ordinary_with_zero, import_data, tm.module->span()));
 }
 
 TEST(TypeZeroValueTest, EmptyArraysDoNotMaterializeUninhabitedSumElements) {
