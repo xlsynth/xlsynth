@@ -951,25 +951,7 @@ SumType::SumType(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
                  std::vector<ParametricArgument> parametric_arguments)
     : data_(std::make_shared<const Data>(
           sum_def, std::move(variants), std::move(tag_bit_count),
-          std::move(discriminants), std::move(parametric_arguments))) {
-  for (int64_t i = 0; i < variant_count(); ++i) {
-    if (GetDiscriminant(i).GetBitsOrDie().IsZero()) {
-      zero_selection_ =
-          SelectedZeroVariant{std::cref(this->variants().at(i).variant())};
-      break;
-    }
-  }
-}
-
-SumType::SumType(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
-                 ZeroSelection zero_selection)
-    : SumType(sum_def, std::move(variants)) {
-  if (const auto* selected =
-          std::get_if<SelectedZeroVariant>(&zero_selection)) {
-    CHECK(absl::c_linear_search(sum_def.variants(), &selected->variant.get()));
-  }
-  zero_selection_ = std::move(zero_selection);
-}
+          std::move(discriminants), std::move(parametric_arguments))) {}
 
 bool SumType::operator==(const Type& other) const {
   if (const auto* t = dynamic_cast<const SumType*>(&other); t == nullptr) {
@@ -1135,7 +1117,7 @@ bool SumType::HasEnum() const {
 bool SumType::HasToken() const { return data_->has_token; }
 
 std::vector<TypeDim> SumType::GetAllDims() const {
-  std::vector<TypeDim> results = {storage_tag_bit_count()};
+  std::vector<TypeDim> results = {tag_bit_count()};
   for (const SumTypeVariant& variant : variants()) {
     std::vector<TypeDim> variant_dims = variant.GetAllDims();
     for (TypeDim& dim : variant_dims) {
@@ -1152,16 +1134,11 @@ absl::StatusOr<TypeDim> SumType::GetMaxPayloadBitCount() const {
 }
 
 absl::StatusOr<TypeDim> SumType::GetTotalBitCount() const {
-  TypeDim sum = storage_tag_bit_count();
-  for (const SumTypeVariant& variant : variants()) {
-    XLS_ASSIGN_OR_RETURN(TypeDim variant_bits, variant.GetTotalBitCount());
-    XLS_ASSIGN_OR_RETURN(sum, sum.Add(variant_bits));
-  }
-  return sum;
+  return internal::GetBitCountWithSharedSumPayload(*this);
 }
 
 std::unique_ptr<Type> SumType::CloneToUnique() const {
-  return std::unique_ptr<Type>(new SumType(data_, zero_selection_));
+  return std::unique_ptr<Type>(new SumType(data_));
 }
 
 TypeDim SumType::storage_tag_bit_count() const {

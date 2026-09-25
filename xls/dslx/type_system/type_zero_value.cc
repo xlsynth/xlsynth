@@ -81,17 +81,17 @@ absl::StatusOr<bool> HasKnownAllOnesValue(const EnumType& t,
 }
 
 const SumTypeVariant* GetZeroDiscriminantVariant(const SumType& type) {
-  if (const auto* selected =
-          std::get_if<SumType::SelectedZeroVariant>(&type.zero_selection())) {
-    auto it =
-        std::find_if(type.variants().begin(), type.variants().end(),
-                     [&](const SumTypeVariant& variant) {
-                       return &variant.variant() == &selected->variant.get();
-                     });
-    return &*it;
-  } else {
+  if (type.variant_count() == 0) {
     return nullptr;
   }
+
+  for (int64_t variant_index = 0; variant_index < type.variant_count();
+       ++variant_index) {
+    if (type.GetDiscriminant(variant_index).GetBitsOrDie().IsZero()) {
+      return &type.variants().at(variant_index);
+    }
+  }
+  return nullptr;
 }
 
 absl::StatusOr<InterpValue> ZeroOfBitsLike(const BitsLikeProperties& bits_like,
@@ -248,9 +248,10 @@ class MakeValueVisitor : public TypeVisitor {
       XLS_ASSIGN_OR_RETURN(InterpValue payload_value, ResultOrError());
       payload_values.push_back(std::move(payload_value));
     }
-    XLS_ASSIGN_OR_RETURN(result_, CreateSumValueFromValidatedZeroPayload(
-                                      t, zero_variant->variant().identifier(),
-                                      std::move(payload_values)));
+    XLS_ASSIGN_OR_RETURN(result_,
+                         internal::CreateSumValueFromValidatedZeroPayload(
+                             t, zero_variant->variant().identifier(),
+                             std::move(payload_values)));
     return absl::OkStatus();
   }
   absl::Status HandleProc(const ProcType& t) override {
