@@ -584,6 +584,7 @@ cc_test(
         "//xls/ir",
         "//xls/ir:bits",
         "//xls/ir:clone_package",
+        "//xls/ir:type",
         "//xls/ir:value",
         "//xls/ir:xls_ir_interface_cc_proto",
         "//xls/jit:function_jit",
