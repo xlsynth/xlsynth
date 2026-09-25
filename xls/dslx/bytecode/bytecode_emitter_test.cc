@@ -1822,6 +1822,53 @@ proc Foo {
   }
 }
 
+TEST(BytecodeEmitterTest, ProcNextMapsDifferentMemberIdentitiesToTheirSlots) {
+  constexpr std::string_view kProgram = R"(
+proc P {
+  left: u32;
+  right: u32;
+  config() { (u32:0, u32:1) }
+  init { u32:0 }
+  next(state: u32) {
+    let left = state;
+    right + left
+  }
+}
+)";
+  auto original_import_data = CreateImportDataForTest();
+  auto independent_import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule original,
+      ParseAndTypecheck(kProgram, "test.x", "test", &original_import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule independent,
+      ParseAndTypecheck(kProgram, "test.x", "test", &independent_import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(Proc * registered,
+                           original.module->GetMemberOrError<Proc>("P"));
+  XLS_ASSERT_OK_AND_ASSIGN(Proc * emitting,
+                           independent.module->GetMemberOrError<Proc>("P"));
+  ASSERT_NE(registered->members()[1]->name_def(),
+            emitting->members()[1]->name_def());
+  std::vector<NameDef*> registered_members = {
+      registered->members()[0]->name_def(),
+      registered->members()[1]->name_def()};
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypeInfo * type_info,
+      independent.type_info->GetTopLevelProcTypeInfo(emitting));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<BytecodeFunction> bytecode,
+      BytecodeEmitter::EmitProcNext(&independent_import_data, type_info,
+                                    emitting->next(), ParametricEnv(),
+                                    registered_members));
+  std::vector<std::string> instructions;
+  for (const Bytecode& instruction : bytecode->bytecodes()) {
+    instructions.push_back(
+        instruction.ToString(independent_import_data.file_table()));
+  }
+  EXPECT_THAT(instructions,
+              ElementsAre("load 2", "store 3", "load 1", "load 3", "uadd"));
+}
+
 TEST(BytecodeEmitterTest, SpawnedProc) {
   constexpr std::string_view kProgram = R"(
 proc Child {
