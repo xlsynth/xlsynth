@@ -15,6 +15,7 @@
 #ifndef XLS_DSLX_INTERP_VALUE_H_
 #define XLS_DSLX_INTERP_VALUE_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -727,6 +728,13 @@ struct EncodedSumView {
 absl::StatusOr<EncodedSumView> GetEncodedSumView(const InterpValue& value);
 
 namespace internal {
+
+// Returns the declaration-order variant index and its decoded payload members
+// from a packed sum carrier. Unused high payload bits are ignored. Nested sums
+// remain packed carriers so their own descriptors can decode them separately.
+absl::StatusOr<std::pair<size_t, std::vector<InterpValue>>>
+DecodeFormattedSumPayload(const InterpValue& value,
+                          const ValueFormatDescriptor& fmt_desc);
 
 // Borrowed view of the semantic-sum `(tag, packed-payload-slot)` carrier.
 struct EncodedSumView {
