@@ -121,13 +121,41 @@ TEST_F(PackedSumIrTest, ConstructsSignedSparseTagsAndZeroPadding) {
   XLS_ASSERT_OK_AND_ASSIGN(auto first, encoding.GetVariant("First"));
   XLS_ASSERT_OK_AND_ASSIGN(auto last, encoding.GetVariant("Last"));
   XLS_ASSERT_OK_AND_ASSIGN(
-      BValue a, BuildPackedSumValue(builder_, *sum, first,
+      BValue a, BuildPackedSumValue(builder_, encoding, first,
                                     {builder_.Literal(UBits(0xa5, 8))}, {}));
   XLS_ASSERT_OK_AND_ASSIGN(
-      BValue b, BuildPackedSumValue(builder_, *sum, last,
+      BValue b, BuildPackedSumValue(builder_, encoding, last,
                                     {builder_.Literal(UBits(5, 3))}, {}));
   XLS_ASSERT_OK_AND_ASSIGN(Value result, Run(builder_.Tuple({a, b})));
   EXPECT_EQ(result, Value::Tuple({Raw(14, 4, 0xa5, 8), Raw(3, 4, 5, 8)}));
+}
+
+TEST_F(PackedSumIrTest, RejectsVariantFromAnotherSumBeforeBuildingNodes) {
+  auto sum =
+      Choice(Payload(BitsType::MakeU8()), {},
+             {InterpValue::MakeUBits(4, 1), InterpValue::MakeUBits(4, 2)});
+  auto other_sum =
+      Choice(Payload(BitsType::MakeU8()),
+             Payload(std::make_unique<BitsType>(false, 12)),
+             {InterpValue::MakeUBits(4, 6), InterpValue::MakeUBits(4, 9)});
+  const SumTypeEncoding encoding(*sum);
+  const SumTypeEncoding other_encoding(*other_sum);
+  XLS_ASSERT_OK_AND_ASSIGN(auto first, other_encoding.GetVariant("First"));
+  BValue value = builder_.Literal(UBits(0xa5, 8));
+  const int64_t initial_nodes = builder_.function()->node_count();
+
+  const auto result =
+      BuildPackedSumValue(builder_, encoding, first, {value}, {});
+  EXPECT_FALSE(result.ok());
+  EXPECT_THAT(result.status().message(),
+              ::testing::HasSubstr("does not belong to sum"));
+  EXPECT_EQ(builder_.function()->node_count(), initial_nodes);
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      BValue other,
+      BuildPackedSumValue(builder_, other_encoding, first, {value}, {}));
+  XLS_ASSERT_OK_AND_ASSIGN(Value other_result, Run(other));
+  EXPECT_EQ(other_result, Raw(6, 4, 0xa5, 12));
 }
 
 TEST_F(PackedSumIrTest, RejectsInactiveOverflowBeforePackingActiveArray) {
@@ -136,13 +164,14 @@ TEST_F(PackedSumIrTest, RejectsInactiveOverflowBeforePackingActiveArray) {
                     Payload(std::make_unique<ArrayType>(
                         std::make_unique<BitsType>(false, 1'000'000),
                         TypeDim::CreateU32(5'000))));
-  XLS_ASSERT_OK_AND_ASSIGN(auto first,
-                           SumTypeEncoding(*sum).GetVariant("First"));
+  const SumTypeEncoding encoding(*sum);
+  XLS_ASSERT_OK_AND_ASSIGN(auto first, encoding.GetVariant("First"));
   BValue value = builder_.Param(
       "value", package_.GetArrayType(3, package_.GetBitsType(8)));
   const int64_t initial_nodes = builder_.function()->node_count();
 
-  const auto result = BuildPackedSumValue(builder_, *sum, first, {value}, {});
+  const auto result =
+      BuildPackedSumValue(builder_, encoding, first, {value}, {});
   EXPECT_FALSE(result.ok());
   EXPECT_THAT(
       result.status().message(),
@@ -153,12 +182,13 @@ TEST_F(PackedSumIrTest, RejectsInactiveOverflowBeforePackingActiveArray) {
 TEST_F(PackedSumIrTest, RejectsCombinedTagAndSlotOverflowBeforeBuildingNodes) {
   auto sum = Choice(Payload(BitsType::MakeU8()),
                     Payload(std::make_unique<BitsType>(false, 4'294'967'295)));
-  XLS_ASSERT_OK_AND_ASSIGN(auto first,
-                           SumTypeEncoding(*sum).GetVariant("First"));
+  const SumTypeEncoding encoding(*sum);
+  XLS_ASSERT_OK_AND_ASSIGN(auto first, encoding.GetVariant("First"));
   BValue value = builder_.Param("value", package_.GetBitsType(8));
   const int64_t initial_nodes = builder_.function()->node_count();
 
-  const auto result = BuildPackedSumValue(builder_, *sum, first, {value}, {});
+  const auto result =
+      BuildPackedSumValue(builder_, encoding, first, {value}, {});
   EXPECT_FALSE(result.ok());
   EXPECT_THAT(
       result.status().message(),
@@ -207,9 +237,9 @@ TEST_F(PackedSumIrTest, ProjectsNestedSharedPayloadAndIgnoresInactivePayload) {
   XLS_ASSERT_OK_AND_ASSIGN(auto last, encoding.GetVariant("Last"));
   XLS_ASSERT_OK_AND_ASSIGN(
       BValue constructed,
-      BuildPackedSumValue(builder_, *outer, first, {unpacked}, {}));
-  XLS_ASSERT_OK_AND_ASSIGN(BValue unit,
-                           BuildPackedSumValue(builder_, *outer, last, {}, {}));
+      BuildPackedSumValue(builder_, encoding, first, {unpacked}, {}));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      BValue unit, BuildPackedSumValue(builder_, encoding, last, {}, {}));
   XLS_ASSERT_OK_AND_ASSIGN(
       BValue equal,
       BuildPackedSumEquality(builder_, *outer, constructed,
@@ -237,11 +267,11 @@ TEST_F(PackedSumIrTest, ConcreteBitsConstructorUsesScalarBits) {
       BValue unpacked,
       UnpackPackedSumPayload(builder_, bits, builder_.Literal(UBits(0x1e, 5)),
                              {}));
-  XLS_ASSERT_OK_AND_ASSIGN(auto first,
-                           SumTypeEncoding(*sum).GetVariant("First"));
+  const SumTypeEncoding encoding(*sum);
+  XLS_ASSERT_OK_AND_ASSIGN(auto first, encoding.GetVariant("First"));
   XLS_ASSERT_OK_AND_ASSIGN(
       BValue constructed,
-      BuildPackedSumValue(builder_, *sum, first, {unpacked}, {}));
+      BuildPackedSumValue(builder_, encoding, first, {unpacked}, {}));
   XLS_ASSERT_OK_AND_ASSIGN(Value result,
                            Run(builder_.Tuple({unpacked, constructed})));
   EXPECT_EQ(result, Value::Tuple({Value(UBits(0x1e, 5)), Raw(0, 1, 0x1e, 5)}));
@@ -256,11 +286,11 @@ TEST_F(PackedSumIrTest, ArraysUsePackedElementTypesAndIndexZeroIsLow) {
                              builder_.Literal(UBits((0x134 << 9) | 0x12, 18)),
                              {}));
   auto outer = Choice(Payload(array.CloneToUnique()), {});
-  XLS_ASSERT_OK_AND_ASSIGN(auto first,
-                           SumTypeEncoding(*outer).GetVariant("First"));
+  const SumTypeEncoding encoding(*outer);
+  XLS_ASSERT_OK_AND_ASSIGN(auto first, encoding.GetVariant("First"));
   XLS_ASSERT_OK_AND_ASSIGN(
       BValue repacked,
-      BuildPackedSumValue(builder_, *outer, first, {unpacked}, {}));
+      BuildPackedSumValue(builder_, encoding, first, {unpacked}, {}));
   XLS_ASSERT_OK_AND_ASSIGN(Value result,
                            Run(builder_.Tuple({unpacked, repacked})));
   EXPECT_EQ(

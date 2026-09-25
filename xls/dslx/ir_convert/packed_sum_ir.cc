@@ -367,11 +367,11 @@ absl::StatusOr<BValue> BuildPackedSumDiscriminant(BuilderBase& builder,
 }
 
 absl::StatusOr<BValue> BuildPackedSumValue(
-    BuilderBase& builder, const SumType& sum,
+    BuilderBase& builder, const SumTypeEncoding& encoding,
     const SumTypeEncoding::VariantInfo& variant,
     absl::Span<const BValue> members, const SourceInfo& loc) {
+  const SumType& sum = encoding.sum_type();
   XLS_RET_CHECK_EQ(members.size(), variant.payload_size());
-  const SumTypeEncoding encoding(sum);
   XLS_RETURN_IF_ERROR(GetPackedSumBitCount(sum).status());
   XLS_ASSIGN_OR_RETURN(int64_t active_width, variant.payload_bit_count());
   XLS_ASSIGN_OR_RETURN(int64_t slot_width, encoding.payload_slot_bit_count());
