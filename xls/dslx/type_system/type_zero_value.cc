@@ -241,6 +241,7 @@ class MakeValueVisitor : public TypeVisitor {
                           t.nominal_type().identifier()),
           file_table());
     }
+    XLS_RETURN_IF_ERROR(t.GetTotalBitCount().status());
     std::vector<InterpValue> payload_values;
     payload_values.reserve(zero_variant->size());
     for (int64_t i = 0; i < zero_variant->size(); ++i) {
