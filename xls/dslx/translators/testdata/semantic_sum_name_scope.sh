@@ -18,6 +18,7 @@ set -euo pipefail
 : "${XLS_SV_SLANG:?Set XLS_SV_SLANG to the Slang SystemVerilog compiler executable}"
 package="${TEST_SRCDIR}/${TEST_WORKSPACE}/$1"
 consumer="${TEST_SRCDIR}/${TEST_WORKSPACE}/$2"
+top="${3:-semantic_sum_name_scope_consumer}"
 
-exec "${XLS_SV_SLANG}" --top semantic_sum_name_scope_consumer \
+exec "${XLS_SV_SLANG}" --top "${top}" \
   "${package}" "${consumer}"
