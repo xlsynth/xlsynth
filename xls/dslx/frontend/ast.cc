@@ -1693,11 +1693,12 @@ SumDef::~SumDef() = default;
 
 std::vector<AstNode*> SumDef::GetChildren(bool want_types) const {
   std::vector<AstNode*> results = {name_def_};
-  if (want_types && tag_type_annotation_ != nullptr) {
-    results.push_back(tag_type_annotation_);
-  }
+  // Bindings must precede the tag so cloning can remap its parameter refs.
   for (ParametricBinding* binding : parametric_bindings_) {
     results.push_back(binding);
+  }
+  if (want_types && tag_type_annotation_ != nullptr) {
+    results.push_back(tag_type_annotation_);
   }
   for (SumVariant* variant : variants_) {
     results.push_back(variant);

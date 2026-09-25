@@ -1254,7 +1254,12 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(node, sum_value_type));
 
     if (node->is_unit()) {
-      return absl::OkStatus();
+      // Canonicalization gives a unit value its own constructor child. Keep
+      // that child's type tied to the value's surrounding context, as it was
+      // before the original ColonRef became a SumInstance.
+      return table_.SetTypeAnnotation(node->constructor_ref(),
+                                      module_.Make<TypeVariableTypeAnnotation>(
+                                          *table_.GetTypeVariable(node)));
     } else if (node->is_tuple()) {
       const NameRef* type_variable = *table_.GetTypeVariable(node);
       const TypeAnnotation* constructor_type =

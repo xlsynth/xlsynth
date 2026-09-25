@@ -21,8 +21,6 @@
 #include <string_view>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/algorithm/container.h"
 #include "absl/base/casts.h"
 #include "absl/container/flat_hash_map.h"
@@ -31,6 +29,8 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "re2/re2.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
@@ -138,6 +138,134 @@ fn expect_fail() -> u32 {
 005 call assert_eq(foo, u32:2)
 006 pop
 007 load 0)");
+}
+
+TEST(BytecodeEmitterTest, SemanticSumConstructorUsesCreateSum) {
+  constexpr std::string_view kProgram = R"(
+enum Choice: s3 {
+  Empty() = -3,
+  Tuple(u8, u4) = -1,
+  Struct { first: u8, second: u4 } = 2,
+}
+fn make_tuple() -> Choice { Choice::Tuple(u8:0x12, u4:0xa) }
+fn make_struct() -> Choice {
+  Choice::Struct { second: u4:0xb, first: u8:0x34 }
+}
+fn make_empty() -> Choice { Choice::Empty() }
+)";
+  ImportData import_data(CreateImportDataForTest());
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test.x", "test", &import_data));
+  struct TestCase {
+    std::string_view function;
+    int64_t variant_index;
+    std::string_view variant_name;
+    std::vector<InterpValue> payload;
+  };
+  const TestCase kCases[] = {
+      {"make_tuple",
+       1,
+       "Tuple",
+       {InterpValue::MakeUBits(8, 0x12), InterpValue::MakeUBits(4, 0xa)}},
+      {"make_struct",
+       2,
+       "Struct",
+       {InterpValue::MakeUBits(8, 0x34), InterpValue::MakeUBits(4, 0xb)}},
+      {"make_empty", 0, "Empty", {}},
+  };
+  for (const TestCase& test_case : kCases) {
+    SCOPED_TRACE(test_case.function);
+    XLS_ASSERT_OK_AND_ASSIGN(
+        Function * function,
+        tm.module->GetMemberOrError<Function>(test_case.function));
+    ASSERT_EQ(function->body()->size(), 1);
+    auto* instance = dynamic_cast<SumInstance*>(
+        ToAstNode(function->body()->statements()[0]->wrapped()));
+    ASSERT_NE(instance, nullptr);
+    XLS_ASSERT_OK_AND_ASSIGN(Type * type,
+                             tm.type_info->GetItemOrError(instance));
+
+    // Normal source reaches SumInstance. Exercise the legacy Invocation and
+    // StructInstance entry points with the same typed payload expressions.
+    Expr* legacy = nullptr;
+    if (instance->is_tuple()) {
+      legacy = tm.module->Make<Invocation>(instance->span(),
+                                           instance->constructor_ref(),
+                                           instance->tuple_payload_args());
+    } else {
+      auto* ref = tm.module->Make<TypeRef>(instance->span(),
+                                           instance->constructor_ref());
+      auto* annotation = tm.module->Make<TypeRefTypeAnnotation>(
+          instance->span(), ref, std::vector<ExprOrType>{});
+      legacy = tm.module->Make<StructInstance>(
+          instance->span(), annotation, instance->struct_payload_field_args());
+    }
+    tm.type_info->SetItem(legacy, *type);
+    for (Expr* expression : {static_cast<Expr*>(instance), legacy}) {
+      SCOPED_TRACE(expression->GetNodeTypeName());
+      XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<BytecodeFunction> bf,
+                               BytecodeEmitter::EmitExpression(
+                                   &import_data, tm.type_info, expression,
+                                   /*env=*/{}, std::nullopt));
+      ASSERT_EQ(bf->bytecodes().size(), test_case.payload.size() + 1);
+      for (int64_t i = 0; i < test_case.payload.size(); ++i) {
+        EXPECT_EQ(bf->bytecodes()[i].op(), Bytecode::Op::kLiteral);
+        EXPECT_THAT(bf->bytecodes()[i].value_data(),
+                    IsOkAndHolds(test_case.payload[i]));
+      }
+      const Bytecode& construction = bf->bytecodes().back();
+      ASSERT_EQ(construction.op(), Bytecode::Op::kCreateSum);
+      XLS_ASSERT_OK_AND_ASSIGN(const Bytecode::SumConstructionData* data,
+                               construction.sum_construction_data());
+      EXPECT_EQ(data->variant_index(), test_case.variant_index);
+      EXPECT_EQ(data->variant_name(), test_case.variant_name);
+      EXPECT_THAT(
+          BytecodesToString(bf->bytecodes(), /*source_locs=*/false,
+                            import_data.file_table()),
+          ::testing::HasSubstr(absl::StrCat("::", test_case.variant_name)));
+    }
+  }
+}
+
+TEST(BytecodeEmitterTest, SemanticSumPatternUsesSemanticDiscriminant) {
+  constexpr std::string_view kProgram = R"(
+enum Message: u3 {
+  Request(u8) = 3,
+  Idle(u8, bool) = 0,
+}
+
+fn classify(x: Message) -> u8 {
+  match x {
+    Message::Request(v) => v,
+    Message::Idle(code, _) => code,
+  }
+}
+)";
+
+  ImportData import_data(CreateImportDataForTest());
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<BytecodeFunction> bf,
+                           EmitBytecodes(&import_data, kProgram, "classify"));
+
+  bool found_request_pattern = false;
+  for (const Bytecode& bytecode : bf->bytecodes()) {
+    if (bytecode.op() != Bytecode::Op::kMatchArm) {
+      continue;
+    }
+    XLS_ASSERT_OK_AND_ASSIGN(const Bytecode::MatchArmItem* item,
+                             bytecode.match_arm_item());
+    if (item->kind() != Bytecode::MatchArmItem::Kind::kSum) {
+      continue;
+    }
+    XLS_ASSERT_OK_AND_ASSIGN(
+        const Bytecode::MatchArmItem::SumMatchData* sum_match,
+        item->sum_match_data());
+    if (sum_match->variant_name == "Request") {
+      found_request_pattern = true;
+      EXPECT_TRUE(sum_match->discriminant.Eq(InterpValue::MakeUBits(3, 3)));
+    }
+  }
+  EXPECT_TRUE(found_request_pattern);
 }
 
 TEST(BytecodeEmitterTest, DestructuringLet) {
@@ -2075,11 +2203,10 @@ fn main() -> imported::Option {
   ASSERT_EQ(bytecodes.size(), 1);
   EXPECT_EQ(bytecodes[0].op(), Bytecode::Op::kLiteral);
   ASSERT_TRUE(bytecodes[0].has_data());
-  EXPECT_EQ(
-      bytecodes[0].value_data().value(),
-      InterpValue::MakeTuple(
-          {InterpValue::MakeUBits(1, 1),
-           InterpValue::MakeTuple({InterpValue::MakeU32(7)})}));
+  EXPECT_EQ(bytecodes[0].value_data().value(),
+            InterpValue::MakeTuple(
+                {InterpValue::MakeUBits(1, 1),
+                 InterpValue::MakeTuple({InterpValue::MakeU32(7)})}));
 }
 
 }  // namespace

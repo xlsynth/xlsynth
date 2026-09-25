@@ -90,9 +90,7 @@ dslx::SumType MakeTestSumType(dslx::Module& module) {
   pair_members.push_back(dslx::BitsType::MakeU1());
   variants.push_back(
       dslx::SumTypeVariant::MakeTuple(*pair_variant, std::move(pair_members)));
-  return dslx::SumType(
-      *sum_def, std::move(variants),
-      dslx::SumType::SelectedZeroVariant{std::cref(*none_variant)});
+  return dslx::SumType(*sum_def, std::move(variants));
 }
 
 dslx::SumType MakeEmptySumType(dslx::Module& module) {
@@ -103,8 +101,7 @@ dslx::SumType MakeEmptySumType(dslx::Module& module) {
       kFakeSpan, sum_name, std::vector<dslx::ParametricBinding*>{},
       std::vector<dslx::SumVariant*>{}, /*is_public=*/false);
   sum_name->set_definer(sum_def);
-  return dslx::SumType(*sum_def, std::vector<dslx::SumTypeVariant>{},
-                       dslx::SumType::NoZeroVariant{});
+  return dslx::SumType(*sum_def, std::vector<dslx::SumTypeVariant>{});
 }
 
 absl::StatusOr<dslx::TypeRefTypeAnnotation*> MakeTypeAnnotation(
@@ -174,9 +171,7 @@ absl::StatusOr<dslx::SumType> MakeEnumPayloadSumType(dslx::Module& module) {
   std::vector<dslx::SumTypeVariant> variants;
   variants.push_back(dslx::SumTypeVariant::MakeTuple(
       *enum_variant, std::move(payload_members)));
-  return dslx::SumType(
-      *sum_def, std::move(variants),
-      dslx::SumType::SelectedZeroVariant{std::cref(*enum_variant)});
+  return dslx::SumType(*sum_def, std::move(variants));
 }
 
 absl::StatusOr<dslx::SumType> MakeSumWithEmptyEnumPayload(
@@ -231,9 +226,7 @@ absl::StatusOr<dslx::SumType> MakeSumWithEmptyEnumPayload(
       std::vector<dslx::InterpValue>{}));
   variants.push_back(dslx::SumTypeVariant::MakeTuple(
       *impossible_variant, std::move(payload_members)));
-  return dslx::SumType(*sum_def, std::move(variants),
-                       dslx::SumType::SelectedZeroVariant{
-                           std::cref(*sum_def->variants().front())});
+  return dslx::SumType(*sum_def, std::move(variants));
 }
 
 void ExpectValueMatchesType(const dslx::Type& type,
@@ -245,31 +238,18 @@ void ExpectCanonicalSumValue(const dslx::SumType& sum_type,
   ASSERT_EQ(value.GetValuesOrDie().size(), 2);
 
   const dslx::InterpValue& tag = value.GetValuesOrDie().at(0);
-  const dslx::InterpValue& payload_tuple = value.GetValuesOrDie().at(1);
   ASSERT_TRUE(tag.IsUBits());
-  ASSERT_TRUE(payload_tuple.IsTuple());
 
   XLS_ASSERT_OK_AND_ASSIGN(uint64_t variant_index, tag.GetBitValueUnsigned());
   ASSERT_LT(variant_index, sum_type.variant_count());
 
-  const std::vector<dslx::InterpValue>& payload_slots =
-      payload_tuple.GetValuesOrDie();
-  int64_t slot_index = 0;
-  for (int64_t i = 0; i < sum_type.variant_count(); ++i) {
-    const dslx::SumTypeVariant& variant = sum_type.variants().at(i);
-    for (int64_t j = 0; j < variant.size(); ++j, ++slot_index) {
-      const dslx::InterpValue& slot_value = payload_slots.at(slot_index);
-      if (i == variant_index) {
-        ExpectValueMatchesType(variant.GetMemberType(j), slot_value);
-      } else {
-        XLS_ASSERT_OK_AND_ASSIGN(dslx::InterpValue zero,
-                                 dslx::CreateZeroValueFromType(
-                                     variant.GetMemberType(j)));
-        EXPECT_TRUE(slot_value.Eq(zero));
-      }
-    }
+  XLS_ASSERT_OK_AND_ASSIGN(std::vector<dslx::InterpValue> payload_values,
+                           dslx::GetSumPayloadValues(sum_type, value));
+  const dslx::SumTypeVariant& variant = sum_type.variants().at(variant_index);
+  ASSERT_EQ(payload_values.size(), variant.size());
+  for (int64_t i = 0; i < variant.size(); ++i) {
+    ExpectValueMatchesType(variant.GetMemberType(i), payload_values.at(i));
   }
-  ASSERT_EQ(payload_slots.size(), slot_index);
 }
 
 void ExpectValueMatchesType(const dslx::Type& type,
@@ -460,8 +440,10 @@ TEST(ValueGeneratorTest, GenerateSemanticSumArgumentWithEnumPayload) {
   XLS_ASSERT_OK_AND_ASSIGN(dslx::InterpValue value,
                            GenerateInterpValue(rng, sum_type, {}));
   ExpectCanonicalSumValue(sum_type, value);
-  ASSERT_EQ(value.GetValuesOrDie().at(1).GetValuesOrDie().size(), 1);
-  EXPECT_TRUE(value.GetValuesOrDie().at(1).GetValuesOrDie().at(0).IsEnum());
+  XLS_ASSERT_OK_AND_ASSIGN(std::vector<dslx::InterpValue> payload_values,
+                           dslx::GetSumPayloadValues(sum_type, value));
+  ASSERT_EQ(payload_values.size(), 1);
+  EXPECT_TRUE(payload_values.at(0).IsEnum());
 }
 
 TEST(ValueGeneratorTest,

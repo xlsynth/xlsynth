@@ -366,13 +366,17 @@ std::string BytecodesToString(absl::Span<const Bytecode> bytecodes,
 }
 
 /* static */ Bytecode::MatchArmItem Bytecode::MatchArmItem::MakeInterpValue(
-    const InterpValue& interp_value) {
-  return MatchArmItem(Kind::kInterpValue, interp_value);
+    const InterpValue& interp_value, const Type* value_type) {
+  MatchArmItem item(Kind::kInterpValue, interp_value);
+  item.value_type_ = value_type;
+  return item;
 }
 
 /* static */ Bytecode::MatchArmItem Bytecode::MatchArmItem::MakeLoad(
-    SlotIndex slot_index) {
-  return MatchArmItem(Kind::kLoad, slot_index);
+    SlotIndex slot_index, const Type* value_type) {
+  MatchArmItem item(Kind::kLoad, slot_index);
+  item.value_type_ = value_type;
+  return item;
 }
 
 /* static */ Bytecode::MatchArmItem Bytecode::MatchArmItem::MakeStore(

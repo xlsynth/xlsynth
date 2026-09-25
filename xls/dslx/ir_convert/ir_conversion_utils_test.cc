@@ -13,7 +13,6 @@
 // limitations under the License.
 #include "xls/dslx/ir_convert/ir_conversion_utils.h"
 
-#include <functional>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -92,9 +91,7 @@ class IrConversionUtilsSemanticSumTest : public ::testing::Test {
 
     std::vector<SumTypeVariant> variants;
     variants.push_back(SumTypeVariant::MakeUnit(*variant));
-    sum_type_ = std::make_unique<SumType>(
-        *sum_def, std::move(variants),
-        SumType::SelectedZeroVariant{std::cref(*variant)});
+    sum_type_ = std::make_unique<SumType>(*sum_def, std::move(variants));
   }
 
   FileTable file_table_;
@@ -103,10 +100,11 @@ class IrConversionUtilsSemanticSumTest : public ::testing::Test {
   std::unique_ptr<SumType> sum_type_;
 };
 
-TEST_F(IrConversionUtilsSemanticSumTest, SemanticSumLoweringUsesDenseStorage) {
+TEST_F(IrConversionUtilsSemanticSumTest,
+       SingletonUnitSumUsesZeroWidthTagAndSharedSlot) {
   XLS_ASSERT_OK_AND_ASSIGN(xls::Type * lowered,
                            TypeToIr(&package_, *sum_type_, ParametricEnv{}));
-  EXPECT_EQ(lowered->ToString(), "(bits[1], ())");
+  EXPECT_EQ(lowered->ToString(), "(bits[0], (bits[0]))");
 }
 
 TEST_F(IrConversionUtilsSemanticSumTest, AggregateContainingSumIsLowered) {
@@ -114,7 +112,7 @@ TEST_F(IrConversionUtilsSemanticSumTest, AggregateContainingSumIsLowered) {
       TupleType::Create2(BitsType::MakeU8(), sum_type_->CloneToUnique());
   XLS_ASSERT_OK_AND_ASSIGN(xls::Type * lowered,
                            TypeToIr(&package_, *aggregate, ParametricEnv{}));
-  EXPECT_EQ(lowered->ToString(), "(bits[8], (bits[1], ()))");
+  EXPECT_EQ(lowered->ToString(), "(bits[8], (bits[0], (bits[0])))");
 }
 
 }  // namespace xls::dslx
