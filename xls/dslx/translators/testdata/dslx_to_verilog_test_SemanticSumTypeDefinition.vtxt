@@ -31,6 +31,30 @@ package test_pkg;
     MaybeWord_payload_t payload;
   } MaybeWord;
 
+  function automatic MaybeWord MaybeWord_make_none ();
+    begin
+      MaybeWord_make_none = MaybeWord'({MaybeWord_tag_None, 32'h0000_0000});
+    end
+  endfunction
+
+  function automatic MaybeWord MaybeWord_make_some (input logic [31:0] value);
+    begin
+      MaybeWord_make_some = MaybeWord'({MaybeWord_tag_Some, value});
+    end
+  endfunction
+
+  function automatic MaybeWord MaybeWord_make_pair (input logic [7:0] lo, input logic [7:0] hi);
+    begin
+      MaybeWord_make_pair = MaybeWord'({MaybeWord_tag_Pair, 16'h0000, lo, hi});
+    end
+  endfunction
+
+  function automatic MaybeWord_tag_t MaybeWord_get_tag (input MaybeWord value);
+    begin
+      MaybeWord_get_tag = MaybeWord_tag_t'(value[33:32]);
+    end
+  endfunction
+
   // DSLX Type: pub enum ExplicitTagWidth : u5 {
   //     None = 0,
   //     Some(u8) = 1,
@@ -55,6 +79,24 @@ package test_pkg;
     ExplicitTagWidth_payload_t payload;
   } ExplicitTagWidth;
 
+  function automatic ExplicitTagWidth ExplicitTagWidth_make_none ();
+    begin
+      ExplicitTagWidth_make_none = ExplicitTagWidth'({ExplicitTagWidth_tag_None, 8'h00});
+    end
+  endfunction
+
+  function automatic ExplicitTagWidth ExplicitTagWidth_make_some (input logic [7:0] value);
+    begin
+      ExplicitTagWidth_make_some = ExplicitTagWidth'({ExplicitTagWidth_tag_Some, value});
+    end
+  endfunction
+
+  function automatic ExplicitTagWidth_tag_t ExplicitTagWidth_get_tag (input ExplicitTagWidth value);
+    begin
+      ExplicitTagWidth_get_tag = ExplicitTagWidth_tag_t'(value[12:8]);
+    end
+  endfunction
+
   // DSLX Type: pub enum Singleton {
   //     Only(u16),
   // }
@@ -71,4 +113,16 @@ package test_pkg;
   typedef struct packed {
     Singleton_payload_t payload;
   } Singleton;
+
+  function automatic Singleton Singleton_make_only (input logic [15:0] value);
+    begin
+      Singleton_make_only = Singleton'(value);
+    end
+  endfunction
+
+  function automatic Singleton_tag_t Singleton_get_tag (input Singleton value);
+    begin
+      Singleton_get_tag = Singleton_tag_Only;
+    end
+  endfunction
 endpackage

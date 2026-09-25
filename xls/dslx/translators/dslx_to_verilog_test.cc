@@ -278,7 +278,7 @@ type AliasType1 = Point[1];
 }
 
 // Verifies: Sum declarations emit the expected public SystemVerilog API.
-// Catches: Incorrect tags, payload layouts, or public type definitions.
+// Catches: Incorrect tags, payload layouts, or helper definitions.
 TEST_F(DslxToVerilogTest, SemanticSumTypeDefinition) {
   constexpr std::string_view program =
       R"(
@@ -316,7 +316,7 @@ pub enum Singleton {
 }
 
 // Verifies: Definitions and function aliases reuse one nested sum API.
-// Catches: Duplicate types and outer types emitted before their dependencies.
+// Catches: Duplicate helpers and outer types emitted before their dependencies.
 TEST_F(DslxToVerilogTest, NestedSumFunctionParameterAndOutput) {
   constexpr std::string_view program = R"(
 enum Inner { A(u8), B(u8) }
@@ -359,11 +359,14 @@ fn identity(x: Outer) -> Outer { x }
     const std::string emitted = type_to_verilog.Emit();
     EXPECT_EQ(CountOccurrences(emitted, "} Inner_tag_t;"), 1) << emitted;
     EXPECT_EQ(CountOccurrences(emitted, "} Outer_tag_t;"), 1) << emitted;
-    EXPECT_EQ(CountOccurrences(emitted, "} Outer_a_view_t;"), 1) << emitted;
+    EXPECT_EQ(CountOccurrences(emitted, "Outer_get_tag ("), 1) << emitted;
+    EXPECT_EQ(CountOccurrences(emitted, "Outer_make_a ("), 1) << emitted;
     EXPECT_NE(emitted.find("typedef Outer input_t;"), std::string::npos)
         << emitted;
     EXPECT_NE(emitted.find("typedef Outer output_t;"), std::string::npos)
         << emitted;
+    EXPECT_EQ(emitted.find("input_t_get_tag"), std::string::npos) << emitted;
+    EXPECT_EQ(emitted.find("output_t_get_tag"), std::string::npos) << emitted;
     EXPECT_LT(emitted.find("} Inner;"), emitted.find("} Outer;")) << emitted;
   }
 }
@@ -402,14 +405,16 @@ pub enum Collision {
 
   const std::string emitted = type_to_verilog.Emit();
   for (std::string_view declaration :
-       {"Message_tag_None = 2'h0", "Message_tag_Byte = 2'h1",
-        "Message_tag_Pair = 2'h2", "Message_tag_Positional = 2'h3",
-        "} Message_tag_t;", "} Message_none_view_t;", "} Message_byte_view_t;",
-        "} Message_pair_view_t;", "} Message_payload_t;",
-        "Message_pair_view_t as_pair;", "logic [15:0] bits;",
-        "logic [7:0] xls_padding;", "logic [7:0] index_0;",
-        "logic [7:0] index_1;", "Sparse_tag_Negative = 3'h7",
-        "Sparse_tag_Positive = 3'h2"}) {
+       {"Message_tag_None = 2'h0",    "Message_tag_Byte = 2'h1",
+        "Message_tag_Pair = 2'h2",    "Message_tag_Positional = 2'h3",
+        "} Message_tag_t;",           "} Message_none_view_t;",
+        "} Message_byte_view_t;",     "} Message_pair_view_t;",
+        "} Message_payload_t;",       "Message_pair_view_t as_pair;",
+        "logic [15:0] bits;",         "logic [7:0] xls_padding;",
+        "logic [7:0] index_0;",       "logic [7:0] index_1;",
+        "Message_make_none (",        "Message_make_byte (",
+        "Message_make_pair (",        "Message_get_tag (",
+        "Sparse_tag_Negative = 3'h7", "Sparse_tag_Positive = 3'h2"}) {
     EXPECT_NE(emitted.find(declaration), std::string::npos)
         << declaration << '\n'
         << emitted;
@@ -605,9 +610,14 @@ pub enum Second { None, Error(SignedCode) }
   EXPECT_NE(emitted.find("logic [7:0] item;"), std::string::npos) << emitted;
   EXPECT_NE(emitted.find("} Message_Record_value_t;"), std::string::npos)
       << emitted;
-  EXPECT_NE(emitted.find("Message_Record_value_t value;"), std::string::npos)
+  EXPECT_NE(
+      emitted.find("Message_make_record (input Message_Record_value_t value)"),
+      std::string::npos)
       << emitted;
   EXPECT_NE(emitted.find("UnsignedCode value;"), std::string::npos) << emitted;
+  EXPECT_NE(emitted.find("Message_make_status (input UnsignedCode value)"),
+            std::string::npos)
+      << emitted;
   EXPECT_EQ(emitted.find("Message_UnsignedCode_value_t"), std::string::npos)
       << emitted;
 }
@@ -841,7 +851,7 @@ pub enum Symbols: u1 { Message_tag_Item = 0 }
     const std::string emitted = manager.Emit();
     EXPECT_NE(emitted.find("} Message_tag_t__1;"), std::string::npos)
         << emitted;
-    EXPECT_NE(emitted.find("logic [7:0] Message_get_tag;"), std::string::npos)
+    EXPECT_NE(emitted.find("Message_get_tag__1 ("), std::string::npos)
         << emitted;
     EXPECT_NE(emitted.find("Message_tag_Item__1 = 2'h0"), std::string::npos)
         << emitted;
@@ -882,10 +892,16 @@ pub enum ExplicitSingleton: u3 { Only(u8) = 5 }
       << emitted;
   EXPECT_EQ(emitted.find("TagOnly_payload_t"), std::string::npos) << emitted;
   EXPECT_EQ(emitted.find("TagOnly_empty_view_t"), std::string::npos) << emitted;
+  EXPECT_NE(emitted.find("TagOnly_make_empty ("), std::string::npos) << emitted;
+  EXPECT_NE(emitted.find("TagOnly_make_empty_record ("), std::string::npos)
+      << emitted;
   EXPECT_NE(emitted.find("} Singleton_tag_t;"), std::string::npos) << emitted;
   EXPECT_EQ(emitted.find(" Singleton_tag_t tag;"), std::string::npos)
       << emitted;
-  EXPECT_NE(emitted.find("Singleton_tag_Only = 1'h0"), std::string::npos)
+  EXPECT_NE(emitted.find("Singleton_get_tag ("), std::string::npos) << emitted;
+  EXPECT_NE(
+      emitted.find("function automatic Singleton_tag_t Singleton_get_tag"),
+      std::string::npos)
       << emitted;
   EXPECT_NE(emitted.find("ExplicitSingleton_tag_t tag;"), std::string::npos)
       << emitted;
@@ -895,7 +911,7 @@ pub enum ExplicitSingleton: u3 { Only(u8) = 5 }
 }
 
 // Verifies: Imported same-named sums keep distinct names across export orders.
-// Catches: Merged declarations, duplicate views, or order-dependent aliases.
+// Catches: Merged declarations, duplicate helpers, or order-dependent aliases.
 TEST_F(DslxToVerilogTest, ImportedSameNamedSumsHaveStableDistinctFamilies) {
   constexpr std::string_view program = R"(
 import a;
@@ -943,9 +959,8 @@ pub type Right = b::Duplicate;
     }
     ASSERT_EQ(families.size(), 2) << emitted;
     for (const std::string& family : families) {
-      EXPECT_EQ(CountOccurrences(emitted, "} " + family + "_item_view_t;"), 1)
-          << emitted;
-      EXPECT_EQ(CountOccurrences(emitted, "} " + family + "_payload_t;"), 1)
+      EXPECT_EQ(CountOccurrences(emitted, family + "_get_tag ("), 1) << emitted;
+      EXPECT_EQ(CountOccurrences(emitted, family + "_make_item ("), 1)
           << emitted;
     }
     std::pair<std::string, std::string> aliases;
@@ -957,6 +972,8 @@ pub type Right = b::Duplicate;
         << emitted;
     EXPECT_EQ(aliases.first, "a_Duplicate") << emitted;
     EXPECT_EQ(aliases.second, "b_Duplicate") << emitted;
+    EXPECT_EQ(emitted.find("Left_get_tag"), std::string::npos) << emitted;
+    EXPECT_EQ(emitted.find("Right_get_tag"), std::string::npos) << emitted;
     if (reverse) {
       EXPECT_EQ(families, forward_families) << emitted;
       EXPECT_EQ(aliases, forward_aliases) << emitted;
@@ -1437,6 +1454,12 @@ pub enum Matrix { Unsigned(u8[2][3]), Signed(s8[2][3]) }
   EXPECT_NE(emitted.find("Matrix_s8_value_t [2:0][1:0] value;"),
             std::string::npos)
       << emitted;
+  EXPECT_NE(emitted.find("input logic [2:0][1:0][7:0] value"),
+            std::string::npos)
+      << emitted;
+  EXPECT_NE(emitted.find("input Matrix_s8_value_t [2:0][1:0] value"),
+            std::string::npos)
+      << emitted;
 }
 
 // Verifies: Unsigned payload types handle SV keywords and enum name collisions.
@@ -1654,7 +1677,7 @@ fn identity(message: Message) -> Message { message }
   EXPECT_EQ(emitted.find("logic [7:0] byte;"), std::string::npos) << emitted;
 }
 
-// Verifies: Reordering sums preserves tags and reserved operation names.
+// Verifies: Reordering sums preserves ownership of tags and helpers.
 // Catches: Assigning collision suffixes in emission order instead of by owner.
 TEST_F(DslxToVerilogTest, SumGeneratedPackageNamesRetainTheirOwners) {
   const std::string first = R"(
@@ -1665,10 +1688,10 @@ pub enum A { Empty, BGetTag(u8) }
 pub enum Message_tag: u2 { Empty = 0, Item() = 2 }
 pub enum A_make_b { Empty, Item(u16) }
 )";
+  std::pair<std::string, std::string> forward_functions;
   for (bool reverse : {false, true}) {
     SCOPED_TRACE(reverse);
-    const std::string program = (reverse ? second + first : first + second) +
-                                "fn identity(x: A) -> A { x }";
+    const std::string program = reverse ? second + first : first + second;
     ImportData import_data = CreateImportDataForTest();
     XLS_ASSERT_OK_AND_ASSIGN(
         TypecheckedModule tm,
@@ -1684,13 +1707,55 @@ pub enum A_make_b { Empty, Item(u16) }
         << emitted;
     EXPECT_NE(emitted.find("Message_tag_tag_Item__1 = 2'h2"), std::string::npos)
         << emitted;
-    Function* identity = tm.module->GetFunction("identity").value();
-    for (std::string_view name : {"A_make_b_get_tag", "A_make_b_get_tag__1"}) {
-      const auto status =
-          manager.AddTypeForFunctionOutput(identity, &import_data, name);
-      EXPECT_FALSE(status.ok()) << name;
-      EXPECT_EQ(manager.Emit(), emitted);
+    std::pair<std::string, std::string> functions;
+    ASSERT_TRUE(RE2::PartialMatch(
+        emitted,
+        R"(function automatic A ([A-Za-z0-9_]+) \(input logic \[7:0\] value\))",
+        &functions.first))
+        << emitted;
+    ASSERT_TRUE(RE2::PartialMatch(
+        emitted,
+        R"(function automatic A_make_b_tag_t ([A-Za-z0-9_]+) \(input A_make_b value\))",
+        &functions.second))
+        << emitted;
+    EXPECT_NE(functions.first, functions.second);
+    if (reverse) {
+      EXPECT_EQ(functions, forward_functions);
+    } else {
+      forward_functions = functions;
     }
+  }
+}
+
+// Negative test: aliases that claim generated operations fail without emission.
+TEST_F(DslxToVerilogTest, SumFunctionOutputAliasesCannotClaimOperations) {
+  constexpr std::string_view program = R"(
+pub enum A { Empty, BGetTag(u8) }
+pub enum A_make_b { Empty, Item(u16) }
+fn identity(x: A) -> A { x }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
+                        nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+  for (const TypeDefinition& definition : tm.module->GetTypeDefinitions()) {
+    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(definition, &import_data));
+  }
+  const std::optional<Function*> identity = tm.module->GetFunction("identity");
+  ASSERT_TRUE(identity.has_value());
+  const std::string before = manager.Emit();
+
+  for (std::string_view name : {"A_make_b_get_tag", "A_make_b_get_tag__1"}) {
+    SCOPED_TRACE(name);
+    ASSERT_EQ(CountOccurrences(before, absl::StrCat(" ", name, " (")), 1);
+    const absl::Status status =
+        manager.AddTypeForFunctionOutput(*identity, &import_data, name);
+    EXPECT_FALSE(status.ok()) << status;
+    EXPECT_NE(status.message().find(name), std::string_view::npos) << status;
+    EXPECT_EQ(manager.Emit(), before);
   }
 }
 
@@ -1727,9 +1792,11 @@ TEST_F(DslxToVerilogTest, SumSignedCompanionsRetainPayloadModuleIdentity) {
     EXPECT_NE(emitted.find("Message_b_Code_enum_NEG = 8'hfe"),
               std::string::npos)
         << emitted;
-    EXPECT_NE(emitted.find("Message_a_Code_value_t value;"), std::string::npos)
+    EXPECT_NE(emitted.find("Message_make_left (input Message_a_Code_value_t"),
+              std::string::npos)
         << emitted;
-    EXPECT_NE(emitted.find("Message_b_Code_value_t value;"), std::string::npos)
+    EXPECT_NE(emitted.find("Message_make_right (input Message_b_Code_value_t"),
+              std::string::npos)
         << emitted;
   }
 }
@@ -2796,7 +2863,7 @@ fn x(value: S) -> S { value }
 }
 
 // Verifies: Unrelated typedefs do not change source fields or fixed positions.
-// Catches: Root order altering the typed view interface.
+// Catches: Root order altering the view, constructor, or getter interface.
 TEST_F(DslxToVerilogTest, SumMembersIgnoreUnrelatedPackageTypedefOrder) {
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK_AND_ASSIGN(
@@ -2825,13 +2892,105 @@ TEST_F(DslxToVerilogTest, SumMembersIgnoreUnrelatedPackageTypedefOrder) {
     }
     const std::string emitted = manager.Emit();
     for (std::string_view text :
-         {"logic [7:0] Later;", "logic [7:0] value;", "logic [7:0] index_0;"}) {
+         {"logic [7:0] Later;", "logic [7:0] value;", "logic [7:0] index_0;",
+          "input logic [7:0] Later", "input logic [7:0] value",
+          "input logic [7:0] index_0", "Names_get_tag (input Names value)"}) {
       EXPECT_NE(emitted.find(text), std::string::npos) << emitted;
     }
     for (std::string_view text : {"Later__1", "value__1", "index_0__1"}) {
       EXPECT_EQ(emitted.find(text), std::string::npos) << emitted;
     }
   }
+}
+
+// Verifies: Wide padding is an explicitly sized repeat before the payload.
+// Catches: Allocating wide zero literals or changing padding or payload widths.
+TEST_F(DslxToVerilogTest, SumConstructorsEmitCompactWidePadding) {
+  constexpr std::string_view program = R"(
+pub enum Small { Empty, One(u1), Full(uN[65]) }
+// Each scalar fits the DSLX bit-count limit; the total payload is 1048576 bits.
+pub enum Wide { Empty, One(u1), Full(uN[524288][2]) }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
+                        nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+  for (const TypeDefinition& definition : tm.module->GetTypeDefinitions()) {
+    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(definition, &import_data));
+  }
+  const std::string emitted = manager.Emit();
+  for (std::string_view statement : {
+           "Small_make_empty = Small'({Small_tag_Empty, {65{1'h0}}});",
+           "Small_make_one = Small'({Small_tag_One, "
+           "64'h0000_0000_0000_0000, value});",
+           "Small_make_full = Small'({Small_tag_Full, value});",
+           "Wide_make_empty = Wide'({Wide_tag_Empty, {1048576{1'h0}}});",
+           "Wide_make_one = Wide'({Wide_tag_One, {1048575{1'h0}}, value});",
+           "Wide_make_full = Wide'({Wide_tag_Full, value});",
+       }) {
+    EXPECT_NE(emitted.find(statement), std::string::npos) << emitted;
+  }
+}
+
+// Verifies: Views keep fields that shadow constructor, type, or tag.
+// Catches: Shadowed SV symbols or renamed inputs missing in the body.
+TEST_F(DslxToVerilogTest, SumConstructorSeparatesFieldAndFunctionScopeNames) {
+  constexpr std::string_view program = R"(
+pub enum Message {
+  None,
+  Value {
+    Message_make_value: u8,
+    Message_make_value__1: u8,
+    Message: u8,
+    Message_tag_Value: u8,
+  },
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
+                        nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
+      tm.module->GetTypeDefinitions().front(), &import_data));
+  const std::string emitted = manager.Emit();
+  std::string view;
+  ASSERT_TRUE(RE2::PartialMatch(
+      emitted, R"(typedef struct packed \{([^}]+)\} Message_value_view_t;)",
+      &view))
+      << emitted;
+  for (std::string_view name : {"Message_make_value", "Message_make_value__1",
+                                "Message", "Message_tag_Value"}) {
+    EXPECT_NE(view.find(absl::StrFormat("logic [7:0] %s;", name)),
+              std::string::npos)
+        << view;
+  }
+  constexpr std::string_view identifier = "([A-Za-z_][A-Za-z0-9_$]*)";
+  const std::string declaration = absl::StrFormat(
+      R"(function automatic Message Message_make_value \(input logic \[7:0\] %s, input logic \[7:0\] %s, input logic \[7:0\] %s, input logic \[7:0\] %s\);)",
+      identifier, identifier, identifier, identifier);
+  std::vector<std::string> formals(4);
+  ASSERT_TRUE(RE2::PartialMatch(emitted, declaration, &formals[0], &formals[1],
+                                &formals[2], &formals[3]))
+      << emitted;
+  EXPECT_NE(formals[0], "Message_make_value");
+  EXPECT_EQ(formals[1], "Message_make_value__1");
+  EXPECT_NE(formals[2], "Message");
+  EXPECT_NE(formals[3], "Message_tag_Value");
+  EXPECT_EQ(std::set<std::string>(formals.begin(), formals.end()).size(), 4);
+  const std::string assignment = absl::StrFormat(
+      R"(Message_make_value\s*=\s*Message'\(\{Message_tag_Value,\s*%s,\s*%s,\s*%s,\s*%s\}\);)",
+      identifier, identifier, identifier, identifier);
+  std::vector<std::string> assigned(4);
+  ASSERT_TRUE(RE2::PartialMatch(emitted, assignment, &assigned[0], &assigned[1],
+                                &assigned[2], &assigned[3]))
+      << emitted;
+  EXPECT_EQ(assigned, formals);
 }
 
 // Verifies: Packed aggregates omit zero-width sums but keep nonzero fields.

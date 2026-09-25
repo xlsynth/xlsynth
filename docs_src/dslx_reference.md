@@ -634,7 +634,8 @@ enum Option<T: type> {
 #### SystemVerilog Export
 
 The DSLX-to-Verilog exporter generates a packed SystemVerilog type, symbolic tag
-constants, and typed payload views. For example:
+constants, typed payload views, and functions for constructing a sum and reading
+its tag. For example:
 
 ```dslx
 pub enum Message {
@@ -655,7 +656,7 @@ include a `default`:
 always_comb begin
   out = '0;
   bad_tag = 1'b0;
-  case (message.tag)
+  case (Message_get_tag(message))
     Message_tag_None: ;
     Message_tag_Byte: out = message.payload.as_byte.value;
     Message_tag_Pair: out = message.payload.as_pair.lo;
@@ -671,18 +672,23 @@ sum named `Message`, `FooBar` and `Foo_Bar` become `as_foo_bar` and
 `as_foo_bar__1`; their tag constants are `Message_tag_FooBar` and
 `Message_tag_Foo_Bar`, unless those names conflict with another package symbol.
 
-The stored tag can hold the undeclared value `2'b11` or contain `X` or `Z`; all
-reach `default` in this example. Avoid `casex`, which treats `X` and `Z` as
-wildcards, and `casez`, which treats `Z` as a wildcard. Do not treat an unknown
-or undeclared tag as `None`. To set a raw numeric tag directly, use an explicit
-enum cast such as `message.tag = Message_tag_t'(2'b11)`. For the raw payload, use
+`Message_get_tag(message)` returns the stored bits unchanged, including the
+undeclared tag `2'b11` and tags containing `X` or `Z`; all reach `default` in
+this example. Avoid `casex`, which treats `X` and `Z` as wildcards, and `casez`,
+which treats `Z` as a wildcard. Do not treat an unknown or undeclared tag as
+`None`. To set a raw numeric tag directly, use an explicit enum cast such as
+`message.tag = Message_tag_t'(2'b11)`. For the raw payload, use
 `message.payload.bits`; after checking the tag, the public view type also
 permits an explicit cast: `Message_pair_view_t'(message.payload.bits)`.
 
-Passing the complete packed value, or casting a same-width raw value with
-`Message'(raw_bits)`, preserves its padding: a `Byte` received with payload
-`16'hab5a` still has that raw payload and reads as `8'h5a` through
-`as_byte.value`. `None` has a padding-only view and nothing to read.
+Construct values with `Message_make_none()`, `Message_make_byte(8'h5a)`, or
+`Message_make_pair(8'h12, 8'h34)`. The latter two produce payloads `16'h005a`
+and `16'h1234`. A constructor clears only the padding it creates; wrapping an
+existing nested value preserves that value's padding. Passing the complete
+packed value, or casting a same-width raw value with `Message'(raw_bits)`, also
+preserves its padding: a `Byte` received with payload `16'hab5a` still has that
+raw payload and reads as `8'h5a` through `as_byte.value`. `None` has a
+padding-only view and nothing to read.
 
 Record payload views preserve DSLX field names when they are valid SystemVerilog
 identifiers, distinct within that view, and do not hide a type used in the same
@@ -694,38 +700,80 @@ part of a nonzero-width sum payload: its standalone SystemVerilog typedef
 exposes the same field names. This sum-specific rule does not change an ordinary
 record used only in a zero-width payload or not used by a sum.
 
-Icarus Verilog 13 rejects a field named `Token` in a packed struct if a package
+Icarus Verilog 13 rejects some legal SystemVerilog name combinations in generated
+packages. It rejects a field named `Token` in a packed struct if a package
 typedef named `Token` was declared first, even when the field is the struct's
-only member. If you need to compile the generated SystemVerilog with Icarus 13,
-give the DSLX field and the conflicting package type different names.
+only member. When targeting Icarus 13, give the DSLX field and the conflicting
+package type different names.
+
+For a record-shaped alternative, each constructor argument uses the generated
+view field name unless it would hide the constructor function, a tag constant
+used by that constructor, or a type referenced later in the declaration or in
+the function body. In that case, the emitter adds a numeric suffix.
+When calling a constructor with SystemVerilog named-argument syntax, use the
+argument name in the generated declaration. When calling it with positional
+arguments, follow DSLX field order. For example, `Message_make_value` returns
+the generated `Message` type, so a single DSLX field named `Message` becomes
+the constructor argument `Message__1`. Call it by name as
+`Message_make_value(.Message__1(8'h5a))`; the payload view can still use
+`message.payload.as_value.Message`. The numeric suffix can be higher if the
+first suffixed spelling is already in use. For a DSLX alternative declared with
+positional fields, constructor arguments keep the generated field name: `value`
+for an alternative declared with one field, or `index_N` for one declared with
+multiple fields. If a positional argument hides a package type, the emitter adds
+the package name to the type, such as `my_pkg::index_0`; the constructor
+argument is still named `index_0`.
+
+Icarus 13 also rejects some generated sum helpers. For example, the tag-only
+DSLX sum `pub enum value { A, B() }` generates a getter whose input declaration
+is `input value value`. The DSLX sum `pub enum index_0 { Pair(u8, u8) }`
+generates a constructor with an argument named `index_0` and a cast to that
+type qualified by its own package (such as `my_pkg::index_0`). Icarus 13
+rejects both forms; both are valid SystemVerilog and are accepted by Slang 11.
+When targeting Icarus 13, avoid these DSLX sum names.
 
 A DSLX alias for a sum gets only a SystemVerilog `typedef`. The declared sum
-owns the tag type, constants, and payload view types. For example, if a
-function's parameter and result are exported as `input_t` and
-`output_t` for a sum named `Outer`, both aliases use `Outer_tag_t` for their
-stored tag. The generated comment above each alias identifies the SystemVerilog
-name used for the sum's types; that name may include a module prefix. DSLX
-`enum` literals are also package-level names in SystemVerilog. An unrelated enum
-retains its literal names, so the exporter changes the conflicting generated sum
-name. For example, an existing `Message_tag_Item` literal can make the sum tag
+owns the tag type and constants, payload view types, and helper functions. For
+example, if a function's parameter and result are exported as `input_t` and
+`output_t` for a sum named `Outer`, values of either alias use `Outer_get_tag`,
+not `input_t_get_tag` or `output_t_get_tag`. The generated comment above each
+alias identifies the SystemVerilog name used for the sum's types and helpers;
+that name may include a module prefix. DSLX `enum` literals are also
+package-level names in SystemVerilog. An unrelated enum retains its literal
+names, so the exporter changes the conflicting generated sum name. For example,
+an existing `Message_tag_Item` literal can make the sum tag
 `Message_tag_Item__1`. An unsigned enum reused as a sum payload can instead
 have its own literals renamed to avoid package conflicts. Use the names in the
 generated package.
 
+The concrete arguments of a parametric sum determine which SystemVerilog types
+and helper functions the exporter generates. Different expressions that evaluate
+to the same argument values share those types and helpers. For example, in the
+same record argument, `xs: [u32:0, u32:1]` and `xs: u32:0..u32:2` give `xs`
+the same array. If the readable specialization suffix would be too long, the
+exporter uses a deterministic hash for that suffix. Find the resulting name in
+the `SystemVerilog sum family:` comment above the generated alias. A type
+argument may name a channel or a proc when that type is not part of any
+alternative's payload; for example, `TypeMarker<chan<u8> in>` can still export a
+sum whose only payload is `u1`. The exporter cannot export a sum whose value
+argument contains a token: independently created tokens are distinct, so they
+do not yield a stable specialization name. For example, if
+`const VALUE = V { t: token() };`, `ValueMarker<VALUE>` cannot be exported.
+
 For an alternative with multiple positional fields, the payload view names each
 field `index_N`, where `N` is its original zero-based DSLX position. Zero-width
-fields are omitted from the view; the remaining fields are not renumbered. For
-example, `Positional((), u8, (), u8)` has only
-`value.payload.as_positional.index_1` and
-`value.payload.as_positional.index_3`. An alternative with one positional field
-names it `value`.
+fields are omitted from both the view and the constructor arguments; the
+remaining fields are not renumbered. For example, `Positional((), u8, (), u8)`
+has only `value.payload.as_positional.index_1` and
+`value.payload.as_positional.index_3`; its constructor takes just the two `u8`
+values, in that order.
 
 If every alternative has a zero-width payload, no physical payload or view types
 are generated. Two alternatives such as `Empty()` and `Other()` still need a
-stored tag and have symbolic tags. A singleton with an implicit, unannotated tag
-stores no tag bits: if it has a nonzero payload, its tag type still declares its
-only symbol; if its payload is also zero width, the whole sum cannot be exported
-as a standalone type and is omitted from enclosing types.
+stored tag and have symbolic tags and constructors. A singleton with an
+implicit, unannotated tag stores no tag bits: if it has a nonzero payload, its
+tag getter returns its only symbol; if its payload is also zero width, the whole
+sum cannot be exported as a standalone type and is omitted from enclosing types.
 A singleton with an explicitly nonzero tag width keeps its stored tag.
 
 Typed sum views preserve DSLX payload signedness. When the existing standalone
