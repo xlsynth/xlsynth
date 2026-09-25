@@ -90,9 +90,7 @@ dslx::SumType MakeTestSumType(dslx::Module& module) {
   pair_members.push_back(dslx::BitsType::MakeU1());
   variants.push_back(
       dslx::SumTypeVariant::MakeTuple(*pair_variant, std::move(pair_members)));
-  return dslx::SumType(
-      *sum_def, std::move(variants),
-      dslx::SumType::SelectedZeroVariant{std::cref(*none_variant)});
+  return dslx::SumType(*sum_def, std::move(variants));
 }
 
 dslx::SumType MakeEmptySumType(dslx::Module& module) {
@@ -103,8 +101,7 @@ dslx::SumType MakeEmptySumType(dslx::Module& module) {
       kFakeSpan, sum_name, std::vector<dslx::ParametricBinding*>{},
       std::vector<dslx::SumVariant*>{}, /*is_public=*/false);
   sum_name->set_definer(sum_def);
-  return dslx::SumType(*sum_def, std::vector<dslx::SumTypeVariant>{},
-                       dslx::SumType::NoZeroVariant{});
+  return dslx::SumType(*sum_def, std::vector<dslx::SumTypeVariant>{});
 }
 
 absl::StatusOr<dslx::TypeRefTypeAnnotation*> MakeTypeAnnotation(
@@ -174,9 +171,7 @@ absl::StatusOr<dslx::SumType> MakeEnumPayloadSumType(dslx::Module& module) {
   std::vector<dslx::SumTypeVariant> variants;
   variants.push_back(dslx::SumTypeVariant::MakeTuple(
       *enum_variant, std::move(payload_members)));
-  return dslx::SumType(
-      *sum_def, std::move(variants),
-      dslx::SumType::SelectedZeroVariant{std::cref(*enum_variant)});
+  return dslx::SumType(*sum_def, std::move(variants));
 }
 
 absl::StatusOr<dslx::SumType> MakeSumWithEmptyEnumPayload(
@@ -231,9 +226,7 @@ absl::StatusOr<dslx::SumType> MakeSumWithEmptyEnumPayload(
       std::vector<dslx::InterpValue>{}));
   variants.push_back(dslx::SumTypeVariant::MakeTuple(
       *impossible_variant, std::move(payload_members)));
-  return dslx::SumType(*sum_def, std::move(variants),
-                       dslx::SumType::SelectedZeroVariant{
-                           std::cref(*sum_def->variants().front())});
+  return dslx::SumType(*sum_def, std::move(variants));
 }
 
 void ExpectValueMatchesType(const dslx::Type& type,
