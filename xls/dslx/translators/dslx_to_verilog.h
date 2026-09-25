@@ -42,20 +42,24 @@
 
 namespace xls::dslx {
 
-// Responsible for managing the conversion of DSLX types to compatible
-// Verilog types within a Verilog package.
+// Converts DSLX types to SystemVerilog types in a single package. A DSLX sum
+// declaration and its concrete parametric arguments identify one generated
+// family: its packed envelope, tag, and payload views.
+// Aliases refer to that envelope; they do not generate a second family.
+// Repeating an alias for the same family is harmless; requesting an existing
+// package name for a different family returns an error instead of renaming it.
 //
-// AddTypeFor* uses a supplied verilog_type_name as the requested typedef
-// spelling. An inferred nonparametric sum name is normally its bare DSLX
-// declaration name. Colliding declarations are module-qualified when their
-// modules are prepared together, and concrete sum specializations get distinct
-// names. A DSLX alias of a sum exported as a definition uses its declared
-// alias. For sum exports, verilog_type_name is fixed after SystemVerilog
-// identifier sanitization. Fixed aliases for ordinary function parameters and
-// outputs can also conflict with names planned for actual SystemVerilog sum
-// declarations or their generated companions, even before they are emitted.
-// A fixed-name conflict returns an error without changing the emitted package.
-// Ordinary types otherwise retain their existing naming and alias behavior.
+// For sum exports, AddTypeFor* treats a supplied verilog_type_name as fixed
+// after SystemVerilog identifier sanitization. An inferred nonparametric sum
+// normally uses its DSLX declaration name; colliding declarations are
+// module-qualified when their modules are prepared together, and concrete sum
+// specializations have distinct names. A DSLX alias of a sum exported as a
+// definition uses its declared alias. Fixed aliases for ordinary function
+// parameters and outputs can also conflict with names planned for actual
+// SystemVerilog sum declarations or their generated companions, even before
+// they are emitted. A fixed-name conflict returns an error without changing
+// the emitted package.
+//
 class DslxTypeToVerilogManager {
  public:
   // Creates an instance of this manager.
@@ -284,9 +288,8 @@ class DslxTypeToVerilogManager {
   // sum families are emitted first; recursive family construction returns an
   // error instead of exposing an unfinished envelope. Public entry points check
   // all name dependencies before a new family changes existing declarations.
-  absl::StatusOr<verilog::DataType*> SumToVastType(
-      const SumType& sum, ImportData* import_data,
-      std::optional<std::string_view> requested_alias = std::nullopt);
+  absl::StatusOr<verilog::DataType*> SumToVastType(const SumType& sum,
+                                                   ImportData* import_data);
 
   // Returns a packed payload type that preserves DSLX signedness when selected
   // through a variant view. Reuses ordinary unsigned enums and nonparametric
