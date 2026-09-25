@@ -2185,9 +2185,11 @@ absl::StatusOr<verilog::DataType*> DslxTypeToVerilogManager::SumToVastType(
   SumFamily& family = *owner;
   nominal_families.push_back(std::move(owner));
 
-  // Records the visible fields and leading padding in a variant's packed view.
+  // Records the visible fields and leading padding shared by a variant's
+  // packed view and constructor.
   struct VariantProjection {
     std::string suffix;
+    std::string constructor;
     bool has_named_fields;
     int64_t padding_width = 0;
     std::vector<verilog::Def*> fields;
@@ -2197,9 +2199,12 @@ absl::StatusOr<verilog::DataType*> DslxTypeToVerilogManager::SumToVastType(
   for (const SumTypeVariant& variant : sum.variants()) {
     VariantProjection projection;
     projection.has_named_fields = variant.is_struct();
-    // A prefix makes a keyword like Byte safe without distorting the spelling
-    // exposed after as_. Distinct source spellings can normalize alike.
+    // Prefixes make a keyword like Byte safe without distorting the spelling
+    // exposed after as_ or make_. Distinct source spellings can normalize
+    // alike.
     projection.suffix = variant_names.at(variant.variant().identifier());
+    projection.constructor = family.symbols.at(
+        absl::StrCat("constructor:", variant.variant().identifier()));
     XLS_ASSIGN_OR_RETURN(TypeDim variant_dim, variant.GetTotalBitCount());
     XLS_ASSIGN_OR_RETURN(int64_t variant_width, variant_dim.GetAsInt64());
     projection.padding_width = payload_width - variant_width;
@@ -2230,19 +2235,21 @@ absl::StatusOr<verilog::DataType*> DslxTypeToVerilogManager::SumToVastType(
   bool signed_tag = tag_width > 0 && !sum.variants().empty() &&
                     sum.GetDiscriminant(0).IsSBits();
   // SystemVerilog requires a nonzero enum width. A zero-width DSLX tag gets an
-  // unsigned one-bit enum for its only value, but no envelope bits.
+  // unsigned one-bit enum and a getter for its only value, but no envelope
+  // bits.
   auto* tag_definition = file_->Make<verilog::Enum>(
       SourceInfo(), verilog::DataKind::kLogic,
       MakeBits(std::max<int64_t>(1, tag_width), signed_tag));
+  std::vector<verilog::EnumMemberRef*> tag_values;
   for (int64_t i = 0; i < sum.variant_count(); ++i) {
     XLS_ASSIGN_OR_RETURN(Bits tag_bits, sum.GetDiscriminant(i).GetBits());
     if (tag_width == 0) {
       tag_bits = UBits(0, 1);
     }
-    tag_definition->AddMember(
+    tag_values.push_back(tag_definition->AddMember(
         family.symbols.at(
             absl::StrCat("tag:", sum.variants()[i].variant().identifier())),
-        file_->Literal(tag_bits, SourceInfo()), SourceInfo());
+        file_->Literal(tag_bits, SourceInfo()), SourceInfo()));
   }
   verilog::DataType* tag_type =
       AddNamedType(family.symbols.at("tag"), tag_definition);
@@ -2298,6 +2305,95 @@ absl::StatusOr<verilog::DataType*> DslxTypeToVerilogManager::SumToVastType(
   family.envelope = AddNamedType(
       family.name,
       file_->Make<verilog::Struct>(SourceInfo(), envelope_members));
+
+  for (int64_t i = 0; i < projections.size(); ++i) {
+    const VariantProjection& projection = projections[i];
+    top_pkg_->Add<verilog::BlankLine>(SourceInfo());
+    auto* constructor = top_pkg_->Add<verilog::VerilogFunction>(
+        SourceInfo(), projection.constructor, family.envelope);
+    std::vector<verilog::Expression*> parts;
+    if (tag_width > 0) {
+      parts.push_back(tag_values[i]->Duplicate());
+    }
+    // Keep word-sized literals readable without allocating a bitmap for wide
+    // zeros in every constructor.
+    if (projection.padding_width > 64) {
+      parts.push_back(file_->Concat(projection.padding_width,
+                                    {file_->Literal1(0, SourceInfo())},
+                                    SourceInfo()));
+    } else if (projection.padding_width > 0) {
+      parts.push_back(
+          file_->Literal(UBits(0, projection.padding_width), SourceInfo()));
+    }
+    // Formals share scope with the implicit function result and can hide
+    // following input types, or package names used in the function body.
+    std::set<std::string> body_names{projection.constructor, family.name};
+    if (tag_width > 0) {
+      body_names.insert(tag_values[i]->member()->GetName());
+    }
+    TypeUsePositions last_type_uses;
+    auto is_protected = [&](int64_t position, const std::string& name) {
+      return body_names.contains(name) ||
+             IsTypeUsedAfter(last_type_uses, name, position);
+    };
+    std::set<std::string> unchanged_formals;
+    if (projection.has_named_fields) {
+      std::vector<std::pair<std::string, verilog::DataType*>> formals;
+      for (const verilog::Def* field : projection.fields) {
+        formals.emplace_back(field->GetName(), field->data_type());
+      }
+      last_type_uses =
+          LastTypeUsePositions(formals, TypeReferenceScope::kFunctionFormal);
+      for (int64_t j = 0; j < projection.fields.size(); ++j) {
+        const std::string& name = projection.fields[j]->GetName();
+        if (!is_protected(j, name)) {
+          unchanged_formals.insert(name);
+        }
+      }
+    }
+    NameUniquer formal_names("__");
+    for (int64_t j = 0; j < projection.fields.size(); ++j) {
+      const verilog::Def* field = projection.fields[j];
+      std::string name = field->GetName();
+      if (projection.has_named_fields && is_protected(j, name)) {
+        do {
+          name = MemberName(formal_names, field->GetName());
+        } while (unchanged_formals.contains(name) || is_protected(j, name));
+      }
+      parts.push_back(constructor->AddArgument(
+          MakeMember(name, field->data_type()), SourceInfo()));
+    }
+    XLS_RET_CHECK(!parts.empty());
+    verilog::Expression* bits =
+        parts.size() == 1 ? parts.front() : file_->Concat(parts, SourceInfo());
+    verilog::DataType* cast_type = family.envelope;
+    if (!projection.has_named_fields) {
+      std::set<std::string> fixed_names;
+      for (const verilog::Def* field : projection.fields) {
+        fixed_names.insert(field->GetName());
+      }
+      cast_type = QualifySumTypeNames(cast_type, fixed_names);
+    }
+    constructor->AddStatement<verilog::BlockingAssignment>(
+        SourceInfo(), constructor->return_value_ref(),
+        file_->Make<verilog::TypeCast>(SourceInfo(), cast_type, bits));
+  }
+  top_pkg_->Add<verilog::BlankLine>(SourceInfo());
+  auto* getter = top_pkg_->Add<verilog::VerilogFunction>(
+      SourceInfo(), family.symbols.at("getter"), tag_type);
+  verilog::LogicRef* argument =
+      getter->AddArgument(MakeMember("value", family.envelope), SourceInfo());
+  verilog::Expression* result;
+  if (tag_width == 0) {
+    XLS_RET_CHECK_EQ(tag_values.size(), 1);
+    result = tag_values.front()->Duplicate();
+  } else {
+    result = file_->Make<verilog::TypeCast>(
+        SourceInfo(), tag_type,
+        file_->Slice(argument, width - 1, width - tag_width, SourceInfo()));
+  }
+  getter->AddStatement<verilog::BlockingAssignment>(
+      SourceInfo(), getter->return_value_ref(), result);
   return family.envelope;
 }
 
