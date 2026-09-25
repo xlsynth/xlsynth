@@ -173,6 +173,56 @@ cc_test(
 )
 
 cc_library(
+    name = "packed_sum_ir",
+    srcs = ["packed_sum_ir.cc"],
+    hdrs = ["packed_sum_ir.h"],
+    visibility = ["//visibility:private"],
+    deps = [
+        "//xls/common/status:ret_check",
+        "//xls/common/status:status_macros",
+        "//xls/dslx:interp_value",
+        "//xls/dslx:sum_type_encoding",
+        "//xls/dslx/type_system:type",
+        "//xls/ir",
+        "//xls/ir:bits",
+        "//xls/ir:function_builder",
+        "//xls/ir:source_location",
+        "//xls/ir:type",
+        "//xls/ir:value",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "packed_sum_ir_test",
+    srcs = ["packed_sum_ir_test.cc"],
+    deps = [
+        ":packed_sum_ir",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/common/status:status_macros",
+        "//xls/dslx:interp_value",
+        "//xls/dslx:sum_type_encoding",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
+        "//xls/dslx/frontend:pos",
+        "//xls/dslx/type_system:type",
+        "//xls/interpreter:function_interpreter",
+        "//xls/ir",
+        "//xls/ir:bits",
+        "//xls/ir:function_builder",
+        "//xls/ir:type",
+        "//xls/ir:value",
+        "@abseil-cpp//absl/status:statusor",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
     name = "proc_config_ir_converter",
     srcs = ["proc_config_ir_converter.cc"],
     hdrs = ["proc_config_ir_converter.h"],
