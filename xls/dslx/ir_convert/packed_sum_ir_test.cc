@@ -98,7 +98,7 @@ class PackedSumIrTest : public ::testing::Test {
   }
 
   absl::StatusOr<Value> Run(BValue result) {
-    XLS_ASSIGN_OR_RETURN(Function * function,
+    XLS_ASSIGN_OR_RETURN(xls::Function * function,
                          builder_.BuildWithReturnValue(result));
     XLS_ASSIGN_OR_RETURN(auto interpreted, InterpretFunction(function, {}));
     return interpreted.value;
@@ -256,7 +256,7 @@ TEST_F(PackedSumIrTest, EmptyArrayDoesNotConstructRepresentativeElements) {
   EXPECT_EQ(projected, package_.GetArrayType(
                            0, package_.GetArrayType(65536, packed_element)));
   EXPECT_EQ(unpacked.GetType(), projected);
-  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * function,
                            builder_.BuildWithReturnValue(unpacked));
   EXPECT_EQ(function->node_count(), 2);
 }
