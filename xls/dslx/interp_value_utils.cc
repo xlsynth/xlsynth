@@ -853,7 +853,8 @@ absl::StatusOr<const std::vector<InterpValue>*> ValueTraversal::ObserveSum(
     return &*existing->payload;
   } else {
     XLS_RETURN_IF_ERROR(ValidateEncodedSumShape(value, type));
-    XLS_ASSIGN_OR_RETURN(EncodedSumView view, GetEncodedSumView(value));
+    XLS_ASSIGN_OR_RETURN(EncodedSumView view,
+                         internal::GetEncodedSumView(value));
     XLS_ASSIGN_OR_RETURN(
         auto variant,
         SumTypeEncoding(type).GetVariantByTagBits(view.tag.GetBitsOrDie()));
