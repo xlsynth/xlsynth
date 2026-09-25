@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -408,6 +409,59 @@ TEST(TypeTest, SharedSumPayloadWidthUsesMaximumRecursively) {
               IsOkAndHolds(TypeDim::CreateU32(0)));
 }
 
+TEST(TypeTest, SharedSumPayloadWidthRejectsOverflow) {
+  constexpr uint32_t kLargestWidth = std::numeric_limits<uint32_t>::max();
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+
+  ArrayType near_limit(BitsType::MakeU32(), TypeDim::CreateU32(134217727));
+  ArrayType overflowing_array(BitsType::MakeU32(),
+                              TypeDim::CreateU32(134217728));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(near_limit),
+              IsOkAndHolds(TypeDim::CreateU32(kLargestWidth - 31)));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(overflowing_array),
+              overflow);
+
+  auto exact_tuple = TupleType::Create2(near_limit.CloneToUnique(),
+                                        std::make_unique<BitsType>(false, 31));
+  auto overflowing_tuple =
+      TupleType::Create2(near_limit.CloneToUnique(), BitsType::MakeU32());
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(*exact_tuple),
+              IsOkAndHolds(TypeDim::CreateU32(kLargestWidth)));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(*overflowing_tuple),
+              overflow);
+
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumDef* pair_def = CreateTupleSumDef(module, {2});
+  std::vector<std::unique_ptr<Type>> pair_members;
+  pair_members.push_back(near_limit.CloneToUnique());
+  pair_members.push_back(BitsType::MakeU32());
+  std::vector<SumTypeVariant> pair_variants;
+  pair_variants.push_back(SumTypeVariant::MakeTuple(*pair_def->variants()[0],
+                                                    std::move(pair_members)));
+  SumType overflowing_variant(*pair_def, std::move(pair_variants));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(
+                  overflowing_variant.variants()[0]),
+              overflow);
+  EXPECT_THAT(overflowing_variant.GetMaxPayloadBitCount(), overflow);
+  EXPECT_THAT(overflowing_variant.GetMaxPayloadBitCount(), overflow);
+
+  SumDef* tagged_def = CreateTupleSumDef(module, {1});
+  std::vector<std::unique_ptr<Type>> tagged_members;
+  tagged_members.push_back(exact_tuple->CloneToUnique());
+  std::vector<SumTypeVariant> tagged_variants;
+  tagged_variants.push_back(SumTypeVariant::MakeTuple(
+      *tagged_def->variants()[0], std::move(tagged_members)));
+  SumType overflowing_tag(*tagged_def, std::move(tagged_variants),
+                          TypeDim::CreateU32(1));
+  EXPECT_THAT(overflowing_tag.GetMaxPayloadBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(kLargestWidth)));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(overflowing_tag),
+              overflow);
+}
+
 TEST(TypeTest, SharedSumPayloadWidthReusesDescriptionsAndPreservesErrors) {
   FileTable file_table;
   Module module("test", std::nullopt, file_table);
@@ -795,27 +849,47 @@ TEST(TypeTest, SumZeroWidthPayloadPreservesImplicitAndExplicitTags) {
   EXPECT_THAT(tagged.GetTotalBitCount(), IsOkAndHolds(TypeDim::CreateU32(3)));
 }
 
-// Payload accumulation and tag addition use wrapping u32 dimensions. The
-// maximum must retain its unsigned value even when another payload wraps.
-TEST(TypeTest, SumWidthPreservesUnsigned32BitArithmetic) {
+TEST(TypeTest, SumWidthRejectsOverflowInPayloadOrTag) {
+  constexpr uint32_t kLargestWidth = std::numeric_limits<uint32_t>::max();
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
   FileTable file_table;
   Module module("test", /*fs_path=*/std::nullopt, file_table);
   SumDef* sum_def = CreateTupleSumDef(module, {1, 2});
-  std::vector<SumTypeVariant> variants;
-  for (const SumVariant* variant : sum_def->variants()) {
-    std::vector<std::unique_ptr<Type>> members;
-    for (int64_t i = 0; i < variant->payload_member_count(); ++i) {
+  auto make_sum = [&](uint32_t first_member_width) {
+    std::vector<SumTypeVariant> variants;
+    for (const SumVariant* variant : sum_def->variants()) {
+      std::vector<std::unique_ptr<Type>> members;
       members.push_back(std::make_unique<BitsType>(
-          false, TypeDim::CreateU32(i == 0 ? 0xffffffff : 1)));
+          false, TypeDim::CreateU32(first_member_width)));
+      if (variant->payload_member_count() == 2) {
+        members.push_back(BitsType::MakeU1());
+      }
+      variants.push_back(
+          SumTypeVariant::MakeTuple(*variant, std::move(members)));
     }
-    variants.push_back(SumTypeVariant::MakeTuple(*variant, std::move(members)));
-  }
-  SumType sum(*sum_def, std::move(variants));
-  EXPECT_THAT(sum.GetMaxPayloadBitCount(),
-              IsOkAndHolds(TypeDim::CreateU32(0xffffffff)));
-  EXPECT_THAT(sum.GetTotalBitCount(), IsOkAndHolds(TypeDim::CreateU32(0)));
-  EXPECT_THAT(sum.CloneToUnique()->AsSum().GetMaxPayloadBitCount(),
-              IsOkAndHolds(TypeDim::CreateU32(0xffffffff)));
+    return SumType(*sum_def, std::move(variants), TypeDim::CreateU32(1));
+  };
+
+  SumType exact = make_sum(kLargestWidth - 2);
+  EXPECT_THAT(exact.GetMaxPayloadBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(kLargestWidth - 1)));
+  EXPECT_THAT(exact.GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(kLargestWidth)));
+
+  SumType tag_overflows = make_sum(kLargestWidth - 1);
+  EXPECT_THAT(tag_overflows.GetMaxPayloadBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(kLargestWidth)));
+  EXPECT_THAT(tag_overflows.GetTotalBitCount(), overflow);
+  EXPECT_THAT(tag_overflows.CloneToUnique()->GetTotalBitCount(), overflow);
+
+  SumType payload_overflows = make_sum(kLargestWidth);
+  EXPECT_THAT(payload_overflows.GetMaxPayloadBitCount(), overflow);
+  EXPECT_THAT(payload_overflows.GetTotalBitCount(), overflow);
+  EXPECT_THAT(
+      payload_overflows.CloneToUnique()->AsSum().GetMaxPayloadBitCount(),
+      overflow);
 }
 
 // -- TypeDimTest
