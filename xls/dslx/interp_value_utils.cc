@@ -877,6 +877,7 @@ absl::StatusOr<InterpValue> CreatePlaceholderForSum(const SumType& type) {
   XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
   XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
                        encoding.payload_slot_bit_count());
+  XLS_RETURN_IF_ERROR(internal::GetBitCountWithSharedSumPayload(type).status());
   InterpValue tag = type.variant_count() == 0
                         ? InterpValue::MakeUBits(tag_bit_count, 0)
                         : type.GetDiscriminant(0);
