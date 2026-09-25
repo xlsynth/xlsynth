@@ -148,7 +148,7 @@ void WarnOnInappropriateConstantName(std::string_view identifier,
                                      WarningCollector* warning_collector);
 
 // Gets the total bit count of the given `type` as a u32 `InterpValue`.
-// Returns InvalidArgument for semantic sums and types containing semantic sums.
+// A semantic sum counts its tag plus its largest variant payload.
 absl::StatusOr<InterpValue> GetBitCountAsInterpValue(const Type* type);
 
 // Gets the element count of the given `type` as a u32 `InterpValue`. The
@@ -157,11 +157,12 @@ absl::StatusOr<InterpValue> GetBitCountAsInterpValue(const Type* type);
 //  kind          element count
 //  -----------------------------
 //  bits-like     total bit count
+//  semantic sum  tag plus largest variant payload bit count
 //  array         number of elements indexable by first index
 //  tuple         number of top-level members
 //  struct        number of top-level members
 //
-// Returns InvalidArgument for semantic sums and types containing semantic sums.
+// Composite counts include members or elements whose types are semantic sums.
 absl::StatusOr<InterpValue> GetElementCountAsInterpValue(const Type* type);
 
 // Gets the override value of the given `type` as a `InterpValue`. The override

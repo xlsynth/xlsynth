@@ -154,35 +154,6 @@ ValueFormatDescriptor internal::MakePackedSumValueFormatDescriptor(
 ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
     std::string_view sum_name,
     absl::Span<const ValueFormatSumVariantDescriptor> variants,
-    absl::Span<const size_t> payload_starts, size_t payload_slot_count) {
-  CHECK_EQ(variants.size(), payload_starts.size());
-  ValueFormatDescriptor vfd(ValueFormatDescriptorKind::kSum);
-  SumFormat sum_format;
-  sum_format.name = sum_name;
-
-  sum_format.variants.reserve(variants.size());
-  for (size_t i = 0; i < variants.size(); ++i) {
-    const ValueFormatSumVariantDescriptor& variant = variants[i];
-    const size_t payload_start = payload_starts[i];
-    CHECK_LE(payload_start, payload_slot_count);
-    CHECK_LE(variant.payload_formats().size(),
-             payload_slot_count - payload_start);
-    sum_format.variants.emplace_back(
-        std::string(variant.name()), variant.kind(), payload_start,
-        std::vector<std::string>(variant.field_names().begin(),
-                                 variant.field_names().end()),
-        std::vector<ValueFormatDescriptor>(variant.payload_formats().begin(),
-                                           variant.payload_formats().end()));
-  }
-  sum_format.payload_slot_count = payload_slot_count;
-  vfd.nominal_format_ =
-      std::make_shared<const SumFormat>(std::move(sum_format));
-  return vfd;
-}
-
-ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
-    std::string_view sum_name,
-    absl::Span<const ValueFormatSumVariantDescriptor> variants,
     int64_t tag_bit_count, int64_t payload_slot_bit_count,
     absl::Span<const Bits> variant_tag_bits) {
   CHECK_EQ(variants.size(), variant_tag_bits.size());
@@ -215,8 +186,7 @@ ValueFormatSumVariantView ValueFormatDescriptor::sum_variant(size_t i) const {
       std::get<std::shared_ptr<const SumFormat>>(nominal_format_)
           ->variants.at(i);
   return ValueFormatSumVariantView(
-      variant.name, variant.kind, variant.payload_start,
-      absl::MakeConstSpan(variant.field_names),
+      variant.name, variant.kind, absl::MakeConstSpan(variant.field_names),
       absl::MakeConstSpan(variant.payload_formats));
 }
 

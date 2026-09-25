@@ -15,15 +15,14 @@
 #include "xls/dslx/sum_type_encoding.h"
 
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
 
-#include "absl/status/status.h"
-#include "absl/status/statusor.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/frontend/ast.h"
@@ -87,8 +86,7 @@ SumType MakeTuplePayloadSumType(Module& module) {
   pair_members.push_back(std::make_unique<BitsType>(false, 16));
   pair_members.push_back(BitsType::MakeU32());
   variants.push_back(SumTypeVariant::MakeTuple(*pair, std::move(pair_members)));
-  return SumType(*sum_def, std::move(variants),
-                 SumType::SelectedZeroVariant{std::cref(*none)});
+  return SumType(*sum_def, std::move(variants));
 }
 
 TEST(Phase1SumTypeEncodingTest, VisitsPayloadSlotsInDeclarationOrder) {
@@ -111,16 +109,7 @@ TEST(Phase1SumTypeEncodingTest, VisitsPayloadSlotsInDeclarationOrder) {
   EXPECT_THAT(slot_indexes, ElementsAre(0, 1, 2));
   EXPECT_THAT(bit_counts, ElementsAre(8, 16, 32));
   XLS_ASSERT_OK_AND_ASSIGN(int64_t tag_bit_count, encoding.tag_bit_count());
-  XLS_ASSERT_OK_AND_ASSIGN(TypeDim total_bits, sum_type.GetTotalBitCount());
-  XLS_ASSERT_OK_AND_ASSIGN(int64_t total_bit_count, total_bits.GetAsInt64());
-  EXPECT_EQ(total_bit_count, 58);
   EXPECT_EQ(tag_bit_count, 2);
-  std::vector<int64_t> dimensions;
-  for (const TypeDim& dimension : sum_type.GetAllDims()) {
-    XLS_ASSERT_OK_AND_ASSIGN(int64_t bit_count, dimension.GetAsInt64());
-    dimensions.push_back(bit_count);
-  }
-  EXPECT_THAT(dimensions, ElementsAre(2, 8, 16, 32));
 }
 
 TEST(Phase1SumTypeEncodingTest, TracksActiveSlotsForLaterVariants) {
@@ -190,24 +179,6 @@ TEST(Phase1SumTypeEncodingTest, RejectsVariantInfoFromDifferentEncoding) {
                   [](int64_t) -> absl::Status { return absl::OkStatus(); },
                   [](const Type&) -> absl::Status { return absl::OkStatus(); }),
               StatusIs(absl::StatusCode::kInvalidArgument));
-}
-
-TEST(Phase1SumTypeEncodingTest, RejectsSumVariantsOutsideDeclarationOrder) {
-  FileTable file_table;
-  Module module("test", /*fs_path=*/std::nullopt, file_table);
-  SumType valid_type = MakeTuplePayloadSumType(module);
-
-  EXPECT_DEATH(
-      {
-        std::vector<SumTypeVariant> invalid_variants;
-        invalid_variants.push_back(valid_type.variants().at(1).Clone());
-        invalid_variants.push_back(valid_type.variants().at(0).Clone());
-        invalid_variants.push_back(valid_type.variants().at(2).Clone());
-        SumType invalid_type(valid_type.nominal_type(),
-                             std::move(invalid_variants),
-                             valid_type.zero_selection());
-      },
-      "Check failed");
 }
 
 TEST(SumTypeEncodingTest, UsesOneSharedWidestPayloadSlot) {

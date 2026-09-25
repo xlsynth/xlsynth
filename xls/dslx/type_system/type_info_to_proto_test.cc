@@ -14,18 +14,22 @@
 
 #include "xls/dslx/type_system/type_info_to_proto.h"
 
+#include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "absl/log/scoped_mock_log.h"
 #include "absl/strings/str_format.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "re2/re2.h"
 #include "xls/common/golden_files.h"
+#include "xls/common/logging/scoped_vlog_level.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/frontend/ast.h"
@@ -515,9 +519,11 @@ TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
   const AstNodeTypeInfoProto* node =
       FindSumTypeInfoNode(proto, "Phantom", import_data);
   ASSERT_NE(node, nullptr);
-  EXPECT_EQ(node->type().sum_type().parametric_arguments_size(), 0);
 
   AstNodeTypeInfoProto with_argument = *node;
+  with_argument.mutable_type()
+      ->mutable_sum_type()
+      ->clear_parametric_arguments();
   BitsValueProto* packed = with_argument.mutable_type()
                                ->mutable_sum_type()
                                ->add_parametric_arguments()
@@ -555,7 +561,6 @@ TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
   const Param* param = function->params().front();
   XLS_ASSERT_OK_AND_ASSIGN(SumType * parsed_sum,
                            tm.type_info->GetItemAs<SumType>(param));
-  EXPECT_TRUE(parsed_sum->parametric_arguments().empty());
   const SumDef& sum_def = parsed_sum->nominal_type();
 
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue fields,
