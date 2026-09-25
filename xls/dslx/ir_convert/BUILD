@@ -211,7 +211,7 @@ cc_test(
         "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:pos",
         "//xls/dslx/type_system:type",
-        "//xls/interpreter:function_interpreter",
+        "//xls/interpreter:ir_interpreter",
         "//xls/ir",
         "//xls/ir:bits",
         "//xls/ir:function_builder",
