@@ -993,9 +993,21 @@ TEST(TypeTest, PublicEnclosingSumWidthsRejectOverflow) {
                                       no_elements.CloneToUnique());
   EXPECT_THAT(later_sum->GetTotalBitCount(), overflow);
 
-  FunctionType sum_only_in_result({}, half_range->CloneToUnique());
-  EXPECT_THAT(sum_only_in_result.GetTotalBitCount(),
+  std::vector<std::unique_ptr<Type>> ordinary_params;
+  ordinary_params.push_back(
+      std::make_unique<BitsType>(false, TypeDim::CreateU32(kHalfRange)));
+  ordinary_params.push_back(
+      std::make_unique<BitsType>(false, TypeDim::CreateU32(kHalfRange)));
+  auto sum_only_in_result = std::make_unique<FunctionType>(
+      std::move(ordinary_params), half_range->CloneToUnique());
+  EXPECT_TRUE(TypeContainsSemanticSum(*sum_only_in_result));
+  EXPECT_THAT(sum_only_in_result->GetTotalBitCount(),
               IsOkAndHolds(TypeDim::CreateU32(0)));
+  auto nested_function =
+      TupleType::Create2(std::move(sum_only_in_result), BitsType::MakeU1());
+  EXPECT_TRUE(TypeContainsSemanticSum(*nested_function));
+  EXPECT_THAT(nested_function->GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(1)));
 }
 
 TEST(TypeTest, PublicNonSumWidthArithmeticIsUnchanged) {
