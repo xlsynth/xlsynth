@@ -145,8 +145,9 @@ enum Implicit { Data(u1[65535][65537]) }
 enum Explicit: u3 { Data(u1[65534][65538]) }
 fn consume(a: Implicit, b: Explicit) { () }
 )"));
-  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
-                           result.tm.module->GetFunction("consume"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Function * function,
+      result.tm.module->GetMemberOrError<Function>("consume"));
   XLS_ASSERT_OK_AND_ASSIGN(
       FunctionType * type,
       result.tm.type_info->GetItemAs<FunctionType>(function));
