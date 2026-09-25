@@ -60,6 +60,12 @@ namespace xls::dslx {
 // they are emitted. A fixed-name conflict returns an error without changing
 // the emitted package.
 //
+// Ordinary struct fields and enum literals retain their standalone spelling
+// unless an emitted sum reuses the declaration. Reused struct fields are legal
+// and distinct within their struct; enum literals in a reused declaration avoid
+// package collisions. Same-valued enum alternatives used by a sum retain their
+// names as typed package constants. A separately generated signed companion
+// does not by itself alter ordinary spellings or emit the ordinary declaration.
 class DslxTypeToVerilogManager {
  public:
   // Creates an instance of this manager.

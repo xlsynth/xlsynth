@@ -12,9 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub struct Token { x: u8 }
+pub struct PlainNested { Token: u8, nested: (Token, u8) }
+struct SignedNested { Token: s8, nested: (Token, u8) }
+pub struct index_0 { x: u8 }
+pub type value = u8;
+
 pub enum Message {
   None,
-  Named { Token: u8 },
+  Named { Token: u8, nested: (Token, u8) },
+  Ordinary(PlainNested),
+  Signed(SignedNested),
+  Direct { Token: u8, data: Token },
+  Unrelated { Token: u8 },
   One(u8),
-  Pair(u8, u8),
+  Pair(u8, index_0),
 }
+
+pub enum as_x { X_Y_View_T(u1), Y(u2) }
+pub enum as_reverse { Y(u2), Reverse_Y_View_T(u1) }
