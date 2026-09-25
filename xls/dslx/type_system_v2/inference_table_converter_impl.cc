@@ -2096,6 +2096,14 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
         std::unique_ptr<SumType> type = std::make_unique<SumType>(
             *sum_def, std::move(variants), std::move(tag_layout.first),
             std::move(tag_layout.second), std::move(concrete_parametrics));
+        // The tag and widest payload must fit together even if no sum value is
+        // constructed or constexpr evaluation of a constructor is best-effort.
+        absl::Status bit_count_status = type->GetTotalBitCount().status();
+        if (!bit_count_status.ok()) {
+          return TypeInferenceErrorStatusForAnnotation(
+              annotation->span(), annotation, bit_count_status.message(),
+              file_table_);
+        }
         std::unique_ptr<Type> result = type->CloneToUnique();
         sum_type_cache_[cache_key].push_back(std::move(type));
         return result;

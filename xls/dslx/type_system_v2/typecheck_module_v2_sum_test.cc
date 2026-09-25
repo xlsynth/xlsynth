@@ -112,6 +112,71 @@ const X = S::Unit;
 )"));
 }
 
+TEST(TypecheckV2Test, SemanticSumDeclarationRejectsTotalWidthOverflow) {
+  for (std::string_view program : {
+           R"(enum S { Unit, Huge(u1[65535][65537]) })",
+           R"(enum S: u3 { Huge(u1[65535][65537]) })",
+           R"(
+enum Inner { Data(u1[65535][65537]) }
+enum Outer { Unit, Nested(Inner) }
+)",
+       }) {
+    SCOPED_TRACE(program);
+    EXPECT_THAT(
+        program,
+        TypecheckFails(
+            AllOf(HasSubstr("TypeInferenceError: fake.x:"),
+                  HasSubstr("shared sum bit count exceeds 4294967295 bits"))));
+  }
+}
+
+TEST(TypecheckV2Test, SemanticSumDeclarationAllowsMaximumTotalWidth) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+enum Implicit { Data(u1[65535][65537]) }
+enum Explicit: u3 { Data(u1[65534][65538]) }
+fn consume(a: Implicit, b: Explicit) { () }
+)"));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                           result.tm.module->GetFunction("consume"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  ASSERT_EQ(type->params().size(), 2);
+  for (const auto& param : type->params()) {
+    EXPECT_THAT(param->GetTotalBitCount(),
+                IsOkAndHolds(TypeDim::CreateU32(4294967295)));
+  }
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumChecksTotalWidthWhenConcretized) {
+  constexpr std::string_view kDefinition = R"(
+#![feature(generics)]
+enum S<N: u32> { Unit, Payload(u1[65535][N]) }
+)";
+  XLS_EXPECT_OK(TypecheckV2(kDefinition));
+  XLS_EXPECT_OK(TypecheckV2(
+      absl::Substitute("$0\nfn consume(value: S<u32:2>) { () }", kDefinition)));
+  for (std::string_view use : {
+           "fn consume(value: S<u32:65537>) { () }",
+           R"(
+enum Outer<T: type> { Wrap(T) }
+fn consume(value: Outer<S<u32:65537>>) { () }
+)",
+       }) {
+    SCOPED_TRACE(use);
+    EXPECT_THAT(absl::Substitute("$0\n$1", kDefinition, use),
+                TypecheckFails(
+                    HasSubstr("shared sum bit count exceeds 4294967295 bits")));
+  }
+}
+
+TEST(TypecheckV2Test, SemanticSumTagErrorPrecedesTotalWidthOverflow) {
+  EXPECT_THAT(R"(
+enum S: u1 { A, B, Huge(u1[65535][65537]) }
+)",
+              TypecheckFails(HasSubstr("needs at least 2 tag bits")));
+}
+
 TEST(TypecheckV2Test, SemanticSumTupleConstructorRejectsTooFewArguments) {
   EXPECT_THAT(
       R"(
