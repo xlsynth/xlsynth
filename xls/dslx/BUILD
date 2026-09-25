@@ -535,6 +535,23 @@ cc_library(
     ],
 )
 
+cc_test(
+    name = "import_routines_test",
+    srcs = ["import_routines_test.cc"],
+    data = ["//xls/dslx/stdlib:x_files"],
+    deps = [
+        ":create_import_data",
+        ":import_data",
+        ":import_routines",
+        ":virtualizable_file_system",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/file:get_runfile_path",
+        "//xls/common/status:matchers",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@googletest//:gtest",
+    ],
+)
+
 cc_library(
     name = "mangle",
     srcs = ["mangle.cc"],

@@ -97,12 +97,12 @@ void AppendReadableChild(std::optional<std::string>& output,
 }
 
 std::optional<std::string> NominalReadable(std::string_view kind,
-                                           const AstNode& definition,
+                                           std::string_view owner,
                                            std::string_view identifier) {
   std::optional<std::string> result = std::string(kind);
-  if (definition.owner()->name().size() <= kMaxSpecializationSuffixSize &&
+  if (owner.size() <= kMaxSpecializationSuffixSize &&
       identifier.size() <= kMaxSpecializationSuffixSize) {
-    AppendReadable(result, IdentityAtom(definition.owner()->name()));
+    AppendReadable(result, IdentityAtom(owner));
     AppendReadable(result, IdentityAtom(identifier));
   } else {
     result.reset();
@@ -238,6 +238,8 @@ std::optional<bool> BindingSignedness(
 
 class IdentityBuilder::Impl {
  public:
+  explicit Impl(NominalOwner owner = {}) : owner_(std::move(owner)) {}
+
   struct Node {
     std::string digest;
     std::optional<std::string> readable;
@@ -260,6 +262,11 @@ class IdentityBuilder::Impl {
 
  private:
   using Kind = SpecializationType::Kind;
+
+  std::string_view NominalOwnerName(const AstNode& definition) const {
+    return owner_ ? owner_(definition)
+                  : std::string_view(definition.owner()->name());
+  }
 
   // Every field is length-prefixed; version, node kind and ordered child
   // fingerprints are therefore unambiguous even for arbitrary source bytes.
@@ -330,6 +337,7 @@ class IdentityBuilder::Impl {
   // the empty array has no first value. Sharing the array digest avoids walking
   // the same constant for different nominal specializations in this package.
   std::map<std::pair<int64_t, std::string>, Node> symbolic_range_nodes_;
+  NominalOwner owner_;
   size_t sum_identity_computations_ = 0;
   size_t struct_identity_computations_ = 0;
   size_t value_identity_computations_ = 0;
@@ -471,11 +479,12 @@ IdentityBuilder::Impl::Node IdentityBuilder::Impl::NominalNode(
     std::string_view kind, const AstNode& definition,
     std::string_view identifier, const std::vector<Node>& arguments) {
   Frame frame(kind);
-  frame.Add(definition.owner()->name());
+  std::string_view owner = NominalOwnerName(definition);
+  frame.Add(owner);
   frame.Add(identifier);
   frame.Add(absl::StrCat(arguments.size()));
   std::optional<std::string> readable =
-      NominalReadable(absl::StrCat(kind, ":"), definition, identifier);
+      NominalReadable(absl::StrCat(kind, ":"), owner, identifier);
   AppendReadable(readable, "[");
   for (const Node& argument : arguments) {
     frame.Add(argument.digest);
@@ -600,10 +609,11 @@ IdentityBuilder::Impl::UncachedTypeNode(const SpecializationType& type) {
       const auto& definition =
           static_cast<const EnumDef&>(*description.nominal);
       Frame frame("enum");
-      frame.Add(definition.owner()->name());
+      std::string_view owner = NominalOwnerName(definition);
+      frame.Add(owner);
       frame.Add(definition.identifier());
-      return Finish(std::move(frame), NominalReadable("enum:", definition,
-                                                      definition.identifier()));
+      return Finish(std::move(frame),
+                    NominalReadable("enum:", owner, definition.identifier()));
     }
     case Kind::kStruct:
     case Kind::kProc:
@@ -700,26 +710,38 @@ absl::StatusOr<std::string> IdentityBuilder::TypeIdentity(const Type& type) {
   return node.digest;
 }
 
+void IdentityBuilder::SetPublicNominalOwner(NominalOwner owner) {
+  public_impl_ = std::make_unique<Impl>(std::move(owner));
+}
+
 absl::StatusOr<std::string> IdentityBuilder::SpecializationName(
     const SumType& sum) {
-  return impl_->SumName(sum);
+  return (public_impl_ == nullptr ? impl_ : public_impl_)->SumName(sum);
 }
 
 absl::StatusOr<std::string> IdentityBuilder::StructSpecializationName(
     const StructType& type) {
-  return impl_->StructName(type);
+  return (public_impl_ == nullptr ? impl_ : public_impl_)->StructName(type);
 }
 
 size_t IdentityBuilder::sum_identity_computations_for_testing() const {
-  return impl_->sum_identity_computations();
+  return impl_->sum_identity_computations() +
+         (public_impl_ == nullptr ? 0
+                                  : public_impl_->sum_identity_computations());
 }
 
 size_t IdentityBuilder::struct_identity_computations_for_testing() const {
-  return impl_->struct_identity_computations();
+  return impl_->struct_identity_computations() +
+         (public_impl_ == nullptr
+              ? 0
+              : public_impl_->struct_identity_computations());
 }
 
 size_t IdentityBuilder::value_identity_computations_for_testing() const {
-  return impl_->value_identity_computations();
+  return impl_->value_identity_computations() +
+         (public_impl_ == nullptr
+              ? 0
+              : public_impl_->value_identity_computations());
 }
 
 std::string MemberName(NameUniquer& names, std::string_view name) {
