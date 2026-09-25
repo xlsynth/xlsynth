@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "absl/status/statusor.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
@@ -33,6 +34,7 @@
 #include "xls/interpreter/function_interpreter.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/function.h"
+#include "xls/ir/function_base.h"
 #include "xls/ir/function_builder.h"
 #include "xls/ir/package.h"
 #include "xls/ir/type.h"
@@ -126,6 +128,42 @@ TEST_F(PackedSumIrTest, ConstructsSignedSparseTagsAndZeroPadding) {
                                     {builder_.Literal(UBits(5, 3))}, {}));
   XLS_ASSERT_OK_AND_ASSIGN(Value result, Run(builder_.Tuple({a, b})));
   EXPECT_EQ(result, Value::Tuple({Raw(14, 4, 0xa5, 8), Raw(3, 4, 5, 8)}));
+}
+
+TEST_F(PackedSumIrTest, RejectsInactiveOverflowBeforePackingActiveArray) {
+  auto sum = Choice(Payload(std::make_unique<ArrayType>(BitsType::MakeU8(),
+                                                        TypeDim::CreateU32(3))),
+                    Payload(std::make_unique<ArrayType>(
+                        std::make_unique<BitsType>(false, 1'000'000),
+                        TypeDim::CreateU32(5'000))));
+  XLS_ASSERT_OK_AND_ASSIGN(auto first,
+                           SumTypeEncoding(*sum).GetVariant("First"));
+  BValue value = builder_.Param(
+      "value", package_.GetArrayType(3, package_.GetBitsType(8)));
+  const int64_t initial_nodes = builder_.function()->node_count();
+
+  const auto result = BuildPackedSumValue(builder_, *sum, first, {value}, {});
+  EXPECT_FALSE(result.ok());
+  EXPECT_THAT(
+      result.status().message(),
+      ::testing::HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+  EXPECT_EQ(builder_.function()->node_count(), initial_nodes);
+}
+
+TEST_F(PackedSumIrTest, RejectsCombinedTagAndSlotOverflowBeforeBuildingNodes) {
+  auto sum = Choice(Payload(BitsType::MakeU8()),
+                    Payload(std::make_unique<BitsType>(false, 4'294'967'295)));
+  XLS_ASSERT_OK_AND_ASSIGN(auto first,
+                           SumTypeEncoding(*sum).GetVariant("First"));
+  BValue value = builder_.Param("value", package_.GetBitsType(8));
+  const int64_t initial_nodes = builder_.function()->node_count();
+
+  const auto result = BuildPackedSumValue(builder_, *sum, first, {value}, {});
+  EXPECT_FALSE(result.ok());
+  EXPECT_THAT(
+      result.status().message(),
+      ::testing::HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+  EXPECT_EQ(builder_.function()->node_count(), initial_nodes);
 }
 
 TEST_F(PackedSumIrTest,

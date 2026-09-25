@@ -13,6 +13,7 @@
 // limitations under the License.
 #include "xls/dslx/ir_convert/ir_conversion_utils.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -94,6 +95,34 @@ class IrConversionUtilsSemanticSumTest : public ::testing::Test {
     sum_type_ = std::make_unique<SumType>(*sum_def, std::move(variants));
   }
 
+  std::unique_ptr<SumType> SumWithPayload(std::unique_ptr<Type> payload) {
+    const Span span = Span::Fake();
+    auto* name = module_.Make<NameDef>(span, "WithPayload", nullptr);
+    auto* annotation = module_.Make<BuiltinTypeAnnotation>(
+        span, BuiltinType::kU8,
+        module_.GetOrCreateBuiltinNameDef(BuiltinType::kU8));
+    auto* active = module_.Make<SumVariant>(
+        span, module_.Make<NameDef>(span, "Active", nullptr),
+        SumVariant::PayloadShape::kTuple,
+        std::vector<TypeAnnotation*>{annotation},
+        std::vector<StructMemberNode*>{});
+    auto* empty = module_.Make<SumVariant>(
+        span, module_.Make<NameDef>(span, "Empty", nullptr),
+        SumVariant::PayloadShape::kUnit, std::vector<TypeAnnotation*>{},
+        std::vector<StructMemberNode*>{});
+    auto* def =
+        module_.Make<SumDef>(span, name, std::vector<ParametricBinding*>{},
+                             std::vector<SumVariant*>{active, empty},
+                             /*is_public=*/false);
+    name->set_definer(def);
+    std::vector<std::unique_ptr<Type>> members;
+    members.push_back(std::move(payload));
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(SumTypeVariant::MakeTuple(*active, std::move(members)));
+    variants.push_back(SumTypeVariant::MakeUnit(*empty));
+    return std::make_unique<SumType>(*def, std::move(variants));
+  }
+
   FileTable file_table_;
   Module module_;
   Package package_{"semantic_sum"};
@@ -113,6 +142,28 @@ TEST_F(IrConversionUtilsSemanticSumTest, AggregateContainingSumIsLowered) {
   XLS_ASSERT_OK_AND_ASSIGN(xls::Type * lowered,
                            TypeToIr(&package_, *aggregate, ParametricEnv{}));
   EXPECT_EQ(lowered->ToString(), "(bits[8], (bits[0], (bits[0])))");
+}
+
+TEST_F(IrConversionUtilsSemanticSumTest,
+       TypeToIrChecksCombinedTagAndSlotWidth) {
+  constexpr int64_t kMaxWidth = 4'294'967'295;
+  const auto overflow = xls::status_testing::StatusIs(
+      absl::StatusCode::kInvalidArgument,
+      ::testing::HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+
+  auto exact = SumWithPayload(std::make_unique<BitsType>(false, kMaxWidth - 1));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Type * lowered,
+                           TypeToIr(&package_, *exact, ParametricEnv{}));
+  EXPECT_EQ(lowered->GetFlatBitCount(), kMaxWidth);
+  EXPECT_EQ(lowered->ToString(), "(bits[1], (bits[4294967294]))");
+
+  auto overflowing_tag =
+      SumWithPayload(std::make_unique<BitsType>(false, kMaxWidth));
+  EXPECT_THAT(TypeToIr(&package_, *overflowing_tag, ParametricEnv{}), overflow);
+  auto overflowing_payload = SumWithPayload(std::make_unique<ArrayType>(
+      std::make_unique<BitsType>(false, 1'000'000), TypeDim::CreateU32(5'000)));
+  EXPECT_THAT(TypeToIr(&package_, *overflowing_payload, ParametricEnv{}),
+              overflow);
 }
 
 }  // namespace xls::dslx
