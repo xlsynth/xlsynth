@@ -315,6 +315,8 @@ absl::Status ValidateEncodedSumShape(const InterpValue& value,
   XLS_ASSIGN_OR_RETURN(TypeDim payload_width, sum_type.GetMaxPayloadBitCount());
   XLS_ASSIGN_OR_RETURN(int64_t expected_payload_bit_count,
                        payload_width.GetAsInt64());
+  XLS_RETURN_IF_ERROR(
+      internal::GetBitCountWithSharedSumPayload(sum_type).status());
   XLS_ASSIGN_OR_RETURN(int64_t actual_payload_bit_count,
                        sum_view.payload_slot.GetBitCount());
   if (actual_payload_bit_count != expected_payload_bit_count) {
@@ -1013,6 +1015,7 @@ absl::StatusOr<InterpValue> AssembleKnownSumValue(
         absl::StrFormat("Sum `%s` has no constructor at index %d.",
                         type.nominal_type().identifier(), variant_index));
   }
+  XLS_RETURN_IF_ERROR(internal::GetBitCountWithSharedSumPayload(type).status());
   const SumTypeVariant& variant = type.variants().at(variant_index);
   const std::string_view variant_name = variant.variant().identifier();
   if (payload_values.size() != variant.size()) {
