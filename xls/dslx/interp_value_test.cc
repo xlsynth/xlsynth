@@ -425,7 +425,7 @@ TEST(InterpValueTest, DecodePackedSumFormatPreservesAggregateAndNestedOrder) {
               testing::ElementsAre(InterpValue::MakeUBits(2, 1)));
 }
 
-TEST(InterpValueTest, DecodePackedSumFormatDistinguishesZeroAndMissingLayout) {
+TEST(InterpValueTest, DecodePackedSumFormatAcceptsZeroWidthAndRejectsNonSum) {
   const auto zero_width = internal::MakePackedSumValueFormatDescriptor(
       "Zero", {ValueFormatSumVariantDescriptor::MakeUnit("Only")},
       /*tag_bit_count=*/0, /*payload_slot_bit_count=*/0, {Bits()});
@@ -437,12 +437,16 @@ TEST(InterpValueTest, DecodePackedSumFormatDistinguishesZeroAndMissingLayout) {
       auto decoded, internal::DecodeFormattedSumPayload(raw, zero_width));
   EXPECT_EQ(decoded.first, 0);
   EXPECT_THAT(decoded.second, testing::IsEmpty());
-  const auto no_layout =
+  const auto untyped_leaf =
       ValueFormatDescriptor::MakeLeafValue(FormatPreference::kDefault);
-  EXPECT_THAT(
-      internal::DecodeFormattedSumPayload(raw, no_layout),
-      absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
-                             testing::HasSubstr("without packed layout")));
+  const auto typed_leaf = ValueFormatDescriptor::MakeLeafValue(
+      FormatPreference::kDefault, /*bit_count=*/0, /*is_signed=*/false);
+  for (const auto& leaf : {untyped_leaf, typed_leaf}) {
+    EXPECT_THAT(
+        internal::DecodeFormattedSumPayload(raw, leaf),
+        absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                               testing::HasSubstr("without packed layout")));
+  }
 }
 
 TEST(InterpValueTest, RawSumCarrierPreservesBitsAndRejectsWrongSlotCount) {

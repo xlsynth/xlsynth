@@ -453,7 +453,7 @@ static absl::StatusOr<InterpValue> UnflattenValueForDescriptor(
 absl::StatusOr<std::pair<size_t, std::vector<InterpValue>>>
 internal::DecodeFormattedSumPayload(const InterpValue& value,
                                     const ValueFormatDescriptor& fmt_desc) {
-  if (!fmt_desc.IsSum() || !fmt_desc.flat_bit_count().has_value()) {
+  if (!fmt_desc.IsSum()) {
     return absl::InvalidArgumentError(
         "Cannot decode a formatted sum without packed layout metadata.");
   }
