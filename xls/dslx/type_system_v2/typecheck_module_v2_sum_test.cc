@@ -99,6 +99,19 @@ const X = MaybeU32::Some(u32:7);
           HasNodeWithType("X", "MaybeU32 { None | Some(uN[32]) }")));
 }
 
+TEST(TypecheckV2Test, SemanticSumUnitConstantRejectsTotalWidthOverflow) {
+  EXPECT_THAT(R"(
+enum S { Unit, Huge(u1[65535][65537]) }
+const X = S::Unit;
+)",
+              TypecheckFails(
+                  HasSubstr("shared sum bit count exceeds 4294967295 bits")));
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum S { Unit, Array(u1[3][5]) }
+const X = S::Unit;
+)"));
+}
+
 TEST(TypecheckV2Test, SemanticSumTupleConstructorRejectsTooFewArguments) {
   EXPECT_THAT(
       R"(
