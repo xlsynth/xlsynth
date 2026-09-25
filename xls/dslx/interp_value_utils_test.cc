@@ -540,6 +540,51 @@ TEST(InterpValueHelpersTest, ConstructsIndexedPackedSumAndIgnoresOnlyPadding) {
                        HasSubstr("no constructor at index 3")));
 }
 
+TEST(InterpValueHelpersTest,
+     IndexedPackedSumRejectsTotalOverflowBeforePayload) {
+  const Span span = Span::Fake();
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  auto* u1 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU1,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU1));
+  auto* inner_count =
+      module.Make<Number>(span, "65535", NumberKind::kOther, nullptr);
+  auto* outer_count =
+      module.Make<Number>(span, "65537", NumberKind::kOther, nullptr);
+  auto* inner = module.Make<ArrayTypeAnnotation>(span, u1, inner_count);
+  auto* outer = module.Make<ArrayTypeAnnotation>(span, inner, outer_count);
+  const SumType overflowing = MakeOptionalPayloadSumType(
+      module, outer,
+      std::make_unique<ArrayType>(
+          std::make_unique<ArrayType>(BitsType::MakeU1(),
+                                      TypeDim::CreateU32(65535)),
+          TypeDim::CreateU32(65537)));
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(overflowing), overflow);
+
+  // An extra unit argument and a short packed slot keep the old paths bounded.
+  EXPECT_THAT(CreateSumValue(overflowing, 0, {InterpValue::MakeU8(1)}),
+              overflow);
+  auto short_value = [](int64_t tag_width) {
+    return InterpValue::MakeTuple(
+        {InterpValue::MakeUBits(tag_width, 0),
+         InterpValue::MakeTuple({InterpValue::MakeUBits(0, 0)})});
+  };
+  EXPECT_THAT(GetSumPayloadValues(overflowing, short_value(1)), overflow);
+
+  const SumType ordinary = MakeMixedPayloadSumType(module);
+  EXPECT_THAT(CreateSumValue(ordinary, 0, {InterpValue::MakeU8(1)}),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("expected 0 payload values")));
+  EXPECT_THAT(
+      GetSumPayloadValues(ordinary, short_value(2)),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("expected a 16-bit payload slot; got 0 bits")));
+}
+
 TEST(InterpValueHelpersTest, IndexedPackedSumUsesSparseSemanticTags) {
   FileTable file_table;
   Module module("test", /*fs_path=*/std::nullopt, file_table);
