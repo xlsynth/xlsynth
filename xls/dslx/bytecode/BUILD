@@ -280,6 +280,7 @@ cc_library(
         "//xls/dslx:import_data",
         "//xls/dslx:interp_value",
         "//xls/dslx:interp_value_utils",
+        "//xls/dslx:sum_type_encoding",
         "//xls/dslx:value_format_descriptor",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:ast_utils",
