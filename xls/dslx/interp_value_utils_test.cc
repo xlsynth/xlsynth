@@ -1360,6 +1360,89 @@ TEST(InterpValueHelpersTest, MakeSumValueFormatDescriptorRejectsWidthOverflow) {
                HasSubstr("shared sum bit count exceeds 4294967295 bits")));
 }
 
+TEST(InterpValueHelpersTest,
+     MakeSumValueFormatDescriptorRejectsWidthBeforePayloadTraversal) {
+  class DescriptorSentinelBitsType : public BitsType {
+   public:
+    explicit DescriptorSentinelBitsType(bool& visited)
+        : BitsType(/*is_signed=*/false, 1), visited_(visited) {}
+
+    absl::Status Accept(TypeVisitor&) const override {
+      visited_ = true;
+      return absl::InternalError("payload descriptor sentinel reached");
+    }
+
+    std::unique_ptr<Type> CloneToUnique() const override {
+      return std::make_unique<DescriptorSentinelBitsType>(visited_);
+    }
+
+   private:
+    bool& visited_;
+  };
+
+  const Span span = Span::Fake();
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  auto* u1 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU1,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU1));
+  auto* u32 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU32,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU32));
+  auto make_sum = [&](uint32_t repeated_size, uint32_t outer_size,
+                      bool& visited) {
+    auto* repeated = module.Make<Number>(span, absl::StrCat(repeated_size),
+                                         NumberKind::kOther, u32);
+    auto* outer = module.Make<Number>(span, absl::StrCat(outer_size),
+                                      NumberKind::kOther, u32);
+    auto* inner_array = module.Make<ArrayTypeAnnotation>(span, u1, repeated);
+    auto* middle_array =
+        module.Make<ArrayTypeAnnotation>(span, inner_array, repeated);
+    auto* outer_array =
+        module.Make<ArrayTypeAnnotation>(span, middle_array, outer);
+    auto* tuple = module.Make<TupleTypeAnnotation>(
+        span, std::vector<TypeAnnotation*>{outer_array, outer_array});
+    auto make_array = [&](std::unique_ptr<Type> leaf) {
+      return std::make_unique<ArrayType>(
+          std::make_unique<ArrayType>(
+              std::make_unique<ArrayType>(std::move(leaf),
+                                          TypeDim::CreateU32(repeated_size)),
+              TypeDim::CreateU32(repeated_size)),
+          TypeDim::CreateU32(outer_size));
+    };
+    return MakeOptionalPayloadSumType(
+        module, tuple,
+        TupleType::Create2(
+            make_array(BitsType::MakeU1()),
+            make_array(std::make_unique<DescriptorSentinelBitsType>(visited))));
+  };
+
+  bool ordinary_visited = false;
+  const SumType ordinary = make_sum(2, 2, ordinary_visited);
+  EXPECT_THAT(ordinary.GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(17)));
+  EXPECT_FALSE(ordinary_visited);
+  EXPECT_THAT(MakeValueFormatDescriptor(ordinary, FormatPreference::kDefault),
+              StatusIs(absl::StatusCode::kInternal,
+                       HasSubstr("payload descriptor sentinel reached")));
+  EXPECT_TRUE(ordinary_visited);
+
+  bool overflowing_visited = false;
+  const SumType overflowing = make_sum(65536, 1073741824, overflowing_visited);
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+  EXPECT_THAT(overflowing.GetTotalBitCount(), overflow);
+  EXPECT_FALSE(overflowing_visited);
+  // Each array would produce a 2^62-bit descriptor. The sentinel stops the
+  // second array before tuple construction can add the two signed widths.
+  // No hardware values or storage proportional to their widths are created.
+  EXPECT_THAT(
+      MakeValueFormatDescriptor(overflowing, FormatPreference::kDefault),
+      overflow);
+  EXPECT_FALSE(overflowing_visited);
+}
+
 // Verifies: Production sum formatting ignores inactive padding.
 // Catches: Padding changing semantic text or the observed representation.
 TEST(InterpValueHelpersTest,
