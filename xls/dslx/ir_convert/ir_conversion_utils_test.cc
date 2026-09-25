@@ -147,7 +147,7 @@ TEST_F(IrConversionUtilsSemanticSumTest, AggregateContainingSumIsLowered) {
 TEST_F(IrConversionUtilsSemanticSumTest,
        TypeToIrChecksCombinedTagAndSlotWidth) {
   constexpr int64_t kMaxWidth = 4'294'967'295;
-  const auto overflow = xls::status_testing::StatusIs(
+  const auto overflow = absl_testing::StatusIs(
       absl::StatusCode::kInvalidArgument,
       ::testing::HasSubstr("shared sum bit count exceeds 4294967295 bits"));
 
