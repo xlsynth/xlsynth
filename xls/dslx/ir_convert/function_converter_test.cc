@@ -732,7 +732,8 @@ fn f(x: u8, y: u16) -> (E, E, E, E, bool, bool, bool, u16, u16, u32) {
   XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
                            ParseAndTypecheck(kProgram, "test_module.x",
                                              "test_module", &import_data));
-  XLS_ASSERT_OK_AND_ASSIGN(Function * function, tm.module->GetFunction("f"));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                           tm.module->GetMemberOrError<Function>("f"));
   XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<BytecodeFunction> bytecode,
                            BytecodeEmitter::Emit(&import_data, tm.type_info,
                                                  *function, ParametricEnv{}));
@@ -785,7 +786,8 @@ fn f(x: u8, y: u16) -> (E, E, E, E, bool, bool, bool, u16, u16, u32) {
                                  &import_data, bytecode.get(),
                                  {InterpValue::MakeUBits(8, test_case.x),
                                   InterpValue::MakeUBits(16, test_case.y)}));
-    EXPECT_THAT(bytecode_result.ConvertToIr(), IsOkAndHolds(expected));
+    EXPECT_THAT(bytecode_result.ConvertToIr(),
+                ::absl_testing::IsOkAndHolds(expected));
 
     const std::vector<Value> args = {Value(UBits(test_case.x, 8)),
                                      Value(UBits(test_case.y, 16))};
