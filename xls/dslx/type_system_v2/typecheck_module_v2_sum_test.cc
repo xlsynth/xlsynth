@@ -115,7 +115,7 @@ const X = S::Unit;
 TEST(TypecheckV2Test, SemanticSumDeclarationRejectsTotalWidthOverflow) {
   for (std::string_view program : {
            R"(enum S { Unit, Huge(u1[65535][65537]) })",
-           R"(enum S: u3 { Huge(u1[65535][65537]) })",
+           R"(enum S: u3 { Huge(u1[65535][65537]) = 0 })",
            R"(
 enum Inner { Data(u1[65535][65537]) }
 enum Outer { Unit, Nested(Inner) }
@@ -133,7 +133,7 @@ enum Outer { Unit, Nested(Inner) }
 TEST(TypecheckV2Test, SemanticSumDeclarationAllowsMaximumTotalWidth) {
   XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
 enum Implicit { Data(u1[65535][65537]) }
-enum Explicit: u3 { Data(u1[65534][65538]) }
+enum Explicit: u3 { Data(u1[65534][65538]) = 0 }
 fn consume(a: Implicit, b: Explicit) { () }
 )"));
   XLS_ASSERT_OK_AND_ASSIGN(
@@ -172,10 +172,11 @@ fn consume(value: Outer<S<u32:65537>>) { () }
 }
 
 TEST(TypecheckV2Test, SemanticSumTagErrorPrecedesTotalWidthOverflow) {
-  EXPECT_THAT(R"(
-enum S: u1 { A, B, Huge(u1[65535][65537]) }
+  EXPECT_THAT(
+      R"(
+enum S: u1 { A = 0, Huge(u1[65535][65537]) = 0 }
 )",
-              TypecheckFails(HasSubstr("needs at least 2 tag bits")));
+      TypecheckFails(HasSubstr("Semantic sum `S` has duplicate discriminant")));
 }
 
 TEST(TypecheckV2Test, SemanticSumTupleConstructorRejectsTooFewArguments) {
