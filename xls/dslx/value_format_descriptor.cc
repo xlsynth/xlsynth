@@ -195,7 +195,6 @@ std::optional<size_t> ValueFormatDescriptor::sum_variant_index_for_tag_bits(
   CHECK(IsSum());
   const SumFormat& sum_format =
       *std::get<std::shared_ptr<const SumFormat>>(nominal_format_);
-  // Descriptors without packed layout have no variant tag bits.
   for (size_t i = 0; i < sum_format.variant_tag_bits.size(); ++i) {
     if (sum_format.variant_tag_bits[i] == tag_bits) {
       return i;
@@ -207,10 +206,6 @@ std::optional<size_t> ValueFormatDescriptor::sum_variant_index_for_tag_bits(
 absl::StatusOr<Bits> ValueFormatDescriptor::sum_variant_tag_bits(
     size_t i) const {
   CHECK(IsSum());
-  if (!flat_bit_count().has_value()) {
-    return absl::InvalidArgumentError(
-        "Cannot look up a sum variant tag without packed layout metadata.");
-  }
   return std::get<std::shared_ptr<const SumFormat>>(nominal_format_)
       ->variant_tag_bits.at(i);
 }

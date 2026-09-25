@@ -192,17 +192,14 @@ class ValueFormatDescriptor {
         ->variants.size();
   }
   ValueFormatSumVariantView sum_variant(size_t i) const;
-  // Requires a sum with packed layout metadata, indicated by a present
-  // flat_bit_count(). Zero is a valid tag or payload-slot width.
+  // Zero is a valid tag or payload-slot width.
   int64_t sum_tag_bit_count() const {
     CHECK(IsSum());
-    CHECK(flat_bit_count().has_value());
     return std::get<std::shared_ptr<const SumFormat>>(nominal_format_)
         ->tag_bit_count;
   }
   int64_t sum_payload_slot_bit_count() const {
     CHECK(IsSum());
-    CHECK(flat_bit_count().has_value());
     return std::get<std::shared_ptr<const SumFormat>>(nominal_format_)
         ->payload_slot_bit_count;
   }
