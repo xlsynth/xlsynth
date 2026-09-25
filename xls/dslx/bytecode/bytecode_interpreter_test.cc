@@ -168,9 +168,8 @@ SumType MakeSparseBytecodeSumType(Module& module) {
 }
 
 InterpValue MakePackedBytecodeSum(uint64_t tag, uint64_t payload) {
-  return InterpValue::MakeTuple(
-      {InterpValue::MakeUBits(4, tag),
-       InterpValue::MakeTuple({InterpValue::MakeUBits(16, payload)})});
+  return internal::CreateEncodedSumTuple(InterpValue::MakeUBits(4, tag),
+                                         InterpValue::MakeUBits(16, payload));
 }
 
 absl::StatusOr<InterpValue> InterpretHandwrittenBytecode(
@@ -350,6 +349,122 @@ TEST_F(BytecodeInterpreterTest,
   EXPECT_THAT(matches({a(), a()}),
               StatusIs(absl::StatusCode::kInternal,
                        HasSubstr("No variant with tag bits")));
+}
+
+TEST_F(BytecodeInterpreterTest,
+       HandwrittenTypedEqualityAndInequalityIgnoreOnlyInactivePadding) {
+  Module module("test", /*fs_path=*/std::nullopt, import_data_->file_table());
+  SumType sum_type = MakeSparseBytecodeSumType(module);
+  const InterpValue clean = MakePackedBytecodeSum(2, 0xa5);
+  const InterpValue dirty = MakePackedBytecodeSum(2, 0xffa5);
+  auto compare = [&](Bytecode::Op op, const InterpValue& rhs, bool typed) {
+    std::vector<Bytecode> bytecodes;
+    bytecodes.push_back(Bytecode::MakeLiteral(kFakeSpan, clean));
+    bytecodes.push_back(Bytecode::MakeLiteral(kFakeSpan, rhs));
+    if (typed) {
+      bytecodes.emplace_back(kFakeSpan, op, sum_type.CloneToUnique());
+    } else {
+      bytecodes.emplace_back(kFakeSpan, op);
+    }
+    return InterpretHandwrittenBytecode(*import_data_, std::move(bytecodes));
+  };
+  for (Bytecode::Op op : {Bytecode::Op::kEq, Bytecode::Op::kNe}) {
+    SCOPED_TRACE(static_cast<int>(op));
+    const bool equality = op == Bytecode::Op::kEq;
+    EXPECT_THAT(compare(op, dirty, /*typed=*/true),
+                IsOkAndHolds(InterpValue::MakeBool(equality)));
+    EXPECT_THAT(compare(op, dirty, /*typed=*/false),
+                IsOkAndHolds(InterpValue::MakeBool(!equality)));
+    EXPECT_THAT(compare(op, MakePackedBytecodeSum(2, 0xffa4), /*typed=*/true),
+                IsOkAndHolds(InterpValue::MakeBool(!equality)));
+    EXPECT_THAT(compare(op, MakePackedBytecodeSum(9, 0xa5), /*typed=*/true),
+                IsOkAndHolds(InterpValue::MakeBool(!equality)));
+  }
+}
+
+TEST_F(BytecodeInterpreterTest,
+       HandwrittenTypedEqualityRejectsEitherMalformedNestedOperand) {
+  Module module("test", /*fs_path=*/std::nullopt, import_data_->file_table());
+  SumType sum_type = MakeSparseBytecodeSumType(module);
+  auto tuple_type =
+      TupleType::Create2(BitsType::MakeU1(), sum_type.CloneToUnique());
+  const InterpValue valid = InterpValue::MakeTuple(
+      {InterpValue::MakeBool(false), MakePackedBytecodeSum(2, 0xa5)});
+  const InterpValue invalid = InterpValue::MakeTuple(
+      {InterpValue::MakeBool(true), MakePackedBytecodeSum(3, 0)});
+  for (Bytecode::Op op : {Bytecode::Op::kEq, Bytecode::Op::kNe}) {
+    const char* operation = op == Bytecode::Op::kEq ? "Semantic sum equality"
+                                                    : "Semantic sum inequality";
+    for (bool invalid_on_left : {false, true}) {
+      SCOPED_TRACE(operation);
+      SCOPED_TRACE(invalid_on_left);
+      std::vector<Bytecode> bytecodes;
+      bytecodes.push_back(
+          Bytecode::MakeLiteral(kFakeSpan, invalid_on_left ? invalid : valid));
+      bytecodes.push_back(
+          Bytecode::MakeLiteral(kFakeSpan, invalid_on_left ? valid : invalid));
+      bytecodes.emplace_back(kFakeSpan, op, tuple_type->CloneToUnique());
+      EXPECT_THAT(
+          InterpretHandwrittenBytecode(*import_data_, std::move(bytecodes)),
+          StatusIs(absl::StatusCode::kInternal,
+                   testing::AllOf(HasSubstr(operation),
+                                  HasSubstr("No variant with tag bits"))));
+    }
+  }
+}
+
+TEST_F(BytecodeInterpreterTest,
+       HandwrittenTypedLiteralAndLoadPatternsObserveReachedNestedValues) {
+  using Item = Bytecode::MatchArmItem;
+  Module module("test", /*fs_path=*/std::nullopt, import_data_->file_table());
+  SumType sum_type = MakeSparseBytecodeSumType(module);
+  const InterpValue clean = MakePackedBytecodeSum(2, 0xa5);
+  const InterpValue dirty = MakePackedBytecodeSum(2, 0xffa5);
+  const InterpValue invalid = MakePackedBytecodeSum(3, 0);
+  auto matches = [&](bool load, const InterpValue& constant,
+                     const InterpValue& value, const Type* type,
+                     bool reach_constant) {
+    std::vector<Bytecode> bytecodes;
+    if (load) {
+      bytecodes.push_back(Bytecode::MakeLiteral(kFakeSpan, constant));
+      bytecodes.push_back(
+          Bytecode::MakeStore(kFakeSpan, Bytecode::SlotIndex(0)));
+    }
+    bytecodes.push_back(Bytecode::MakeLiteral(
+        kFakeSpan,
+        InterpValue::MakeTuple({InterpValue::MakeBool(true), value})));
+    bytecodes.emplace_back(kFakeSpan, Bytecode::Op::kBeginMatch);
+    Item item = load ? Item::MakeLoad(Bytecode::SlotIndex(0), type)
+                     : Item::MakeInterpValue(constant, type);
+    bytecodes.push_back(Bytecode::MakeMatchArm(
+        kFakeSpan, Item::MakeTuple({Item::MakeInterpValue(
+                                        InterpValue::MakeBool(reach_constant)),
+                                    std::move(item)})));
+    bytecodes.emplace_back(kFakeSpan, Bytecode::Op::kEndMatch);
+    return InterpretHandwrittenBytecode(*import_data_, std::move(bytecodes));
+  };
+  for (bool load : {false, true}) {
+    SCOPED_TRACE(load);
+    EXPECT_THAT(matches(load, clean, dirty, &sum_type, /*reach_constant=*/true),
+                IsOkAndHolds(InterpValue::MakeBool(true)));
+    EXPECT_THAT(matches(load, clean, dirty, nullptr, /*reach_constant=*/true),
+                IsOkAndHolds(InterpValue::MakeBool(false)));
+    EXPECT_THAT(
+        matches(load, MakePackedBytecodeSum(2, 0xffa4), dirty, &sum_type,
+                /*reach_constant=*/true),
+        IsOkAndHolds(InterpValue::MakeBool(false)));
+    EXPECT_THAT(matches(load, clean, invalid, &sum_type,
+                        /*reach_constant=*/false),
+                IsOkAndHolds(InterpValue::MakeBool(false)));
+    for (bool invalid_constant : {false, true}) {
+      SCOPED_TRACE(invalid_constant);
+      EXPECT_THAT(matches(load, invalid_constant ? invalid : clean,
+                          invalid_constant ? clean : invalid, &sum_type,
+                          /*reach_constant=*/true),
+                  StatusIs(absl::StatusCode::kInternal,
+                           HasSubstr("No variant with tag bits")));
+    }
+  }
 }
 
 TEST_F(BytecodeInterpreterTest, TraceBitsValueDefaultFormat) {
