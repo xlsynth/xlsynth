@@ -367,6 +367,184 @@ fn f(x: (E[2],)) -> Box { Box { item: E::None } }
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       SemanticSumPreservesConcreteTagLayout) {
+  std::string program = R"(
+enum Message: u3 {
+  Idle = 0,
+  Request(u8) = 3,
+  Response(u32) = 7,
+}
+
+fn f(x: Message) -> Message { x }
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "fake.x", "fake", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto tip,
+                           TypeInfoToProto(*tm.type_info, tm.module));
+
+  const AstNodeTypeInfoProto* sum_node =
+      FindSumTypeInfoNode(tip, "Message", import_data);
+  ASSERT_NE(sum_node, nullptr);
+  const SumTypeProto& sum_type = sum_node->type().sum_type();
+  ASSERT_TRUE(sum_type.has_tag_bit_count());
+  ASSERT_TRUE(sum_type.tag_bit_count().has_interp_value());
+  EXPECT_EQ(sum_type.tag_bit_count().interp_value().bits().bit_count(), 32);
+  EXPECT_EQ(sum_type.tag_bit_count().interp_value().bits().data(),
+            std::string("\000\000\000\003", 4));
+  ASSERT_EQ(sum_type.variants_size(), 3);
+  ASSERT_TRUE(sum_type.variants(0).has_discriminant());
+  EXPECT_EQ(sum_type.variants(0).discriminant().bits().bit_count(), 3);
+  EXPECT_EQ(sum_type.variants(0).discriminant().bits().data(),
+            std::string("\000", 1));
+  ASSERT_TRUE(sum_type.variants(1).has_discriminant());
+  EXPECT_EQ(sum_type.variants(1).discriminant().bits().bit_count(), 3);
+  EXPECT_EQ(sum_type.variants(1).discriminant().bits().data(),
+            std::string("\003", 1));
+  ASSERT_TRUE(sum_type.variants(2).has_discriminant());
+  EXPECT_EQ(sum_type.variants(2).discriminant().bits().bit_count(), 3);
+  EXPECT_EQ(sum_type.variants(2).discriminant().bits().data(),
+            std::string("\007", 1));
+  XLS_EXPECT_OK(
+      ToHumanString(*sum_node, import_data, import_data.file_table()));
+
+  auto mutate_message_types = [&](TypeInfoProto& proto, auto mutation) {
+    for (AstNodeTypeInfoProto& node : *proto.mutable_nodes()) {
+      if (node.has_type() && node.type().has_sum_type()) {
+        mutation(*node.mutable_type()->mutable_sum_type());
+      }
+    }
+  };
+
+  TypeInfoProto phase_one_layout = tip;
+  mutate_message_types(phase_one_layout, [](SumTypeProto& sum) {
+    sum.clear_tag_bit_count();
+    for (SumTypeVariantProto& variant : *sum.mutable_variants()) {
+      variant.clear_discriminant();
+    }
+  });
+  XLS_EXPECT_OK(
+      ToHumanString(phase_one_layout, import_data, import_data.file_table()));
+
+  TypeInfoProto mixed_legacy_layout = tip;
+  mutate_message_types(mixed_legacy_layout, [](SumTypeProto& sum) {
+    sum.clear_tag_bit_count();
+    sum.mutable_variants(0)->clear_discriminant();
+  });
+  EXPECT_THAT(
+      ToHumanString(mixed_legacy_layout, import_data, import_data.file_table()),
+      absl_testing::StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          ::testing::HasSubstr("Missing sum tag bit count")));
+
+  TypeInfoProto missing_discriminant = tip;
+  mutate_message_types(missing_discriminant, [](SumTypeProto& sum) {
+    sum.mutable_variants(1)->clear_discriminant();
+  });
+  EXPECT_THAT(
+      ToHumanString(missing_discriminant, import_data,
+                    import_data.file_table()),
+      absl_testing::StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          ::testing::HasSubstr("missing its bits-valued discriminant")));
+
+  TypeInfoProto wrong_discriminant_width = tip;
+  mutate_message_types(wrong_discriminant_width, [](SumTypeProto& sum) {
+    sum.mutable_variants(1)
+        ->mutable_discriminant()
+        ->mutable_bits()
+        ->set_bit_count(2);
+  });
+  EXPECT_THAT(ToHumanString(wrong_discriminant_width, import_data,
+                            import_data.file_table()),
+              absl_testing::StatusIs(
+                  absl::StatusCode::kInvalidArgument,
+                  ::testing::HasSubstr("discriminant width mismatch")));
+
+  TypeInfoProto wrong_discriminant_signedness = tip;
+  mutate_message_types(wrong_discriminant_signedness, [](SumTypeProto& sum) {
+    sum.mutable_variants(1)
+        ->mutable_discriminant()
+        ->mutable_bits()
+        ->set_is_signed(true);
+  });
+  EXPECT_THAT(ToHumanString(wrong_discriminant_signedness, import_data,
+                            import_data.file_table()),
+              absl_testing::StatusIs(
+                  absl::StatusCode::kInvalidArgument,
+                  ::testing::HasSubstr("discriminant signedness mismatch")));
+
+  TypeInfoProto duplicate_discriminant = tip;
+  mutate_message_types(duplicate_discriminant, [](SumTypeProto& sum) {
+    *sum.mutable_variants(1)->mutable_discriminant() =
+        sum.variants(0).discriminant();
+  });
+  EXPECT_THAT(
+      ToHumanString(duplicate_discriminant, import_data,
+                    import_data.file_table()),
+      absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                             ::testing::HasSubstr("duplicate discriminant")));
+
+  TypeInfoProto wrong_discriminant_value = tip;
+  mutate_message_types(wrong_discriminant_value, [](SumTypeProto& sum) {
+    sum.mutable_variants(1)->mutable_discriminant()->mutable_bits()->set_data(
+        std::string("\006", 1));
+  });
+  EXPECT_THAT(ToHumanString(wrong_discriminant_value, import_data,
+                            import_data.file_table()),
+              absl_testing::StatusIs(
+                  absl::StatusCode::kInvalidArgument,
+                  ::testing::HasSubstr("discriminant value mismatch")));
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       RoundTripsSignedSemanticSumDiscriminants) {
+  constexpr std::string_view kProgram = R"(
+enum SignedOption: s3 {
+  Empty = 0,
+  Negative(u8) = -1,
+}
+fn f(x: SignedOption) -> SignedOption { x }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "fake.x", "fake", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto proto,
+                           TypeInfoToProto(*tm.type_info, tm.module));
+  const AstNodeTypeInfoProto* node =
+      FindSumTypeInfoNode(proto, "SignedOption", import_data);
+  ASSERT_NE(node, nullptr);
+
+  const SumTypeProto& sum = node->type().sum_type();
+  ASSERT_TRUE(sum.tag_bit_count().interp_value().has_bits());
+  EXPECT_EQ(sum.tag_bit_count().interp_value().bits().bit_count(), 32);
+  EXPECT_EQ(sum.tag_bit_count().interp_value().bits().data(),
+            std::string("\0\0\0\x03", 4));
+  ASSERT_EQ(sum.variants_size(), 2);
+  ASSERT_TRUE(sum.variants(0).discriminant().has_bits());
+  const BitsValueProto& zero = sum.variants(0).discriminant().bits();
+  EXPECT_EQ(zero.bit_count(), 3);
+  EXPECT_TRUE(zero.is_signed());
+  EXPECT_EQ(zero.data(), std::string(1, '\0'));
+  ASSERT_TRUE(sum.variants(1).discriminant().has_bits());
+  const BitsValueProto& negative = sum.variants(1).discriminant().bits();
+  EXPECT_EQ(negative.bit_count(), 3);
+  EXPECT_TRUE(negative.is_signed());
+  EXPECT_EQ(negative.data(), std::string(1, '\x07'));
+
+  AstNodeTypeInfoProto from_wire;
+  ASSERT_TRUE(from_wire.ParseFromString(node->SerializeAsString()));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string human,
+      ToHumanString(from_wire, import_data, import_data.file_table()));
+  EXPECT_THAT(human, ::testing::EndsWith(
+                         " :: SignedOption { Empty | Negative(uN[8]) }"));
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        RejectsReorderedSumVariantsInProtoImport) {
   std::string program = R"(
 enum Option {
