@@ -551,6 +551,13 @@ For a fresh `Message::Request(u8:42)`, the 16-bit payload slot contains
 `0x002a`. An incoming slot of `0xff2a` represents the same semantic value, but
 a function that returns that value unchanged also returns `0xff2a` unchanged.
 
+A semantic sum's complete packed representation may contain at most
+4,294,967,295 bits, including both the tag and the shared payload slot. The
+payload slot alone may use that many bits only when the tag has zero bits. For
+example, a one-bit tag leaves at most 4,294,967,294 bits for the payload slot.
+The compiler reports an error if a constructor payload exceeds 4,294,967,295
+bits or if the tag and shared payload slot together exceed that limit.
+
 Arguments, returns, assignments, selected conditionals, tuples, structs,
 arrays and array updates, proc state, channels, and hardware boundaries preserve
 an existing sum representation bit-for-bit. This is backward incompatible with
