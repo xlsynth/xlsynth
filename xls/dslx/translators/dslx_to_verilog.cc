@@ -469,9 +469,36 @@ void DslxTypeToVerilogManager::PrepareSumNames(Module* module,
 }
 
 void DslxTypeToVerilogManager::PrepareForModules(
-    absl::Span<const std::pair<Module*, TypeInfo*>> modules) {
+    absl::Span<const std::pair<Module*, TypeInfo*>> modules,
+    const std::map<const AstNode*, std::string>& public_nominal_owners) {
+  bool has_public_nominal_owners =
+      !public_nominal_owners.empty() || !public_nominal_owners_.empty();
+  bool public_owners_changed = false;
+  for (const auto& [node, owner] : public_nominal_owners) {
+    if (owner != node->owner()->name()) {
+      public_owners_changed |=
+          public_nominal_owners_.try_emplace(node, owner).second;
+    }
+  }
+  if (public_owners_changed) {
+    sum_identities_.SetPublicNominalOwner(
+        [owners =
+             public_nominal_owners_](const AstNode& node) -> std::string_view {
+          auto entry = owners.find(&node);
+          return entry == owners.end() ? node.owner()->name() : entry->second;
+        });
+  }
+  auto public_owner = [&](const AstNode* node) -> const std::string& {
+    auto entry = public_nominal_owners_.find(node);
+    return dynamic_cast<const SumDef*>(node) == nullptr ||
+                   entry == public_nominal_owners_.end()
+               ? node->owner()->name()
+               : entry->second;
+  };
   std::map<std::string, std::vector<AstNode*>> definitions;
   std::map<std::string, std::set<std::string>> module_qualifiers;
+  std::map<std::string, std::map<std::string, std::set<std::string>>>
+      sum_module_qualifiers;
   std::vector<SumDef*> sums;
   std::map<const SumDef*, const SumType*> concrete_sums;
   OrdinaryEnumMemberGroups enum_members;
@@ -495,6 +522,10 @@ void DslxTypeToVerilogManager::PrepareForModules(
           [](const auto* value) { return value->identifier(); }, name);
       std::string sanitized = verilog::SanitizeVerilogIdentifier(identifier);
       definitions[sanitized].push_back(node);
+      const std::string& owner = public_owner(node);
+      sum_module_qualifiers[sanitized]
+                           [verilog::SanitizeVerilogIdentifier(owner)]
+                               .insert(owner);
       if (auto* sum = dynamic_cast<SumDef*>(node)) {
         sums.push_back(sum);
         std::optional<Type*> type = current_info->GetItem(sum);
@@ -518,21 +549,26 @@ void DslxTypeToVerilogManager::PrepareForModules(
   }
   for (auto& [name, nodes] : definitions) {
     std::sort(nodes.begin(), nodes.end(),
-              [](const AstNode* a, const AstNode* b) {
-                return a->owner()->name() < b->owner()->name();
+              [&](const AstNode* a, const AstNode* b) {
+                return std::make_pair(public_owner(a), a->owner()->name()) <
+                       std::make_pair(public_owner(b), b->owner()->name());
               });
     for (AstNode* node : nodes) {
-      std::string module =
-          verilog::SanitizeVerilogIdentifier(node->owner()->name());
-      if (module_qualifiers.at(module).size() != 1) {
-        module = EscapeName(node->owner()->name());
+      bool is_sum = dynamic_cast<SumDef*>(node) != nullptr;
+      const std::string& owner = public_owner(node);
+      std::string module = verilog::SanitizeVerilogIdentifier(owner);
+      const auto& qualifiers = is_sum && has_public_nominal_owners
+                                   ? sum_module_qualifiers.at(name)
+                                   : module_qualifiers;
+      if (qualifiers.at(module).size() != 1) {
+        module = EscapeName(owner);
       }
       std::string nominal = nodes.size() == 1
                                 ? name
                                 : verilog::SanitizeVerilogIdentifier(
                                       absl::StrCat(module, "_", name));
       nominal_names_.emplace(node, nominal);
-      if (dynamic_cast<SumDef*>(node) == nullptr) {
+      if (!is_sum) {
         legacy_package_names_.insert(nominal);
       }
     }
@@ -564,8 +600,11 @@ void DslxTypeToVerilogManager::PrepareForModules(
     }
   }
 
-  std::sort(sums.begin(), sums.end(), [](const SumDef* a, const SumDef* b) {
-    return SourceName(*a, a->identifier()) < SourceName(*b, b->identifier());
+  std::sort(sums.begin(), sums.end(), [&](const SumDef* a, const SumDef* b) {
+    return std::make_pair(absl::StrCat(public_owner(a), ":", a->identifier()),
+                          SourceName(*a, a->identifier())) <
+           std::make_pair(absl::StrCat(public_owner(b), ":", b->identifier()),
+                          SourceName(*b, b->identifier()));
   });
   for (SumDef* sum : sums) {
     nominal_sum_names_.emplace(sum, NewSumName(nominal_names_.at(sum)));
