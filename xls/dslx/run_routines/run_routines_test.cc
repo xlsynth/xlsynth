@@ -702,55 +702,6 @@ proc tester {
 
 // Verifies: recursive token leaves preserve complete prior argument values.
 // Catches: bit-generated tokens or callbacks seeing partial aggregates.
-TEST(QuickcheckTest, ValueGeneratorsPreservePriorValuesAcrossRecursiveLeaves) {
-  std::vector<std::unique_ptr<Type>> tuple_members;
-  tuple_members.push_back(BitsType::MakeU8());
-  tuple_members.push_back(std::make_unique<TokenType>());
-  tuple_members.push_back(BitsType::MakeU8());
-
-  std::vector<std::unique_ptr<Type>> owned_types;
-  owned_types.push_back(BitsType::MakeU8());
-  owned_types.push_back(std::make_unique<TupleType>(std::move(tuple_members)));
-  owned_types.push_back(std::make_unique<TokenType>());
-  owned_types.push_back(BitsType::MakeU8());
-  const std::vector<const Type*> types = {
-      owned_types[0].get(), owned_types[1].get(), owned_types[2].get(),
-      owned_types[3].get()};
-
-  for (bool use_compatibility_wrapper : {false, true}) {
-    SCOPED_TRACE(use_compatibility_wrapper ? "compatibility wrapper"
-                                           : "reusable generator");
-    std::mt19937_64 bit_gen{2};
-    std::vector<std::vector<InterpValue>> observed_prior;
-    auto generate_bits = [&observed_prior](absl::BitGenRef,
-                                           const BitsLikeProperties&,
-                                           absl::Span<const InterpValue> prior)
-        -> absl::StatusOr<InterpValue> {
-      observed_prior.emplace_back(prior.begin(), prior.end());
-      return InterpValue::MakeUBits(
-          8, static_cast<int64_t>(observed_prior.size()));
-    };
-
-    InterpValueGenerator generator;
-    absl::StatusOr<std::vector<InterpValue>> generated =
-        use_compatibility_wrapper
-            ? GenerateInterpValues(bit_gen, types, generate_bits)
-            : generator.GenerateValues(bit_gen, types, generate_bits);
-    XLS_ASSERT_OK_AND_ASSIGN(std::vector<InterpValue> values,
-                             std::move(generated));
-    ASSERT_EQ(values.size(), 4);
-    EXPECT_TRUE(values[2].IsToken());
-    ASSERT_EQ(values[1].GetValuesOrDie().size(), 3);
-    EXPECT_TRUE(values[1].GetValuesOrDie().at(1).IsToken());
-    EXPECT_THAT(
-        observed_prior,
-        ::testing::ElementsAre(
-            std::vector<InterpValue>{}, std::vector<InterpValue>{values[0]},
-            std::vector<InterpValue>{values[0]},
-            std::vector<InterpValue>{values[0], values[1], values[2]}));
-  }
-}
-
 TEST(QuickcheckTest, ValueGeneratorRejectsSumWidthBeforeGeneratingPayload) {
   constexpr std::string_view kProgram = R"(
 enum Generated: u1 { Active(uN[0], u1[2][3]) = 0 }
@@ -801,6 +752,55 @@ enum Generated: u1 { Active(uN[0], u1[2][3]) = 0 }
                        HasSubstr("reached the active payload")));
   EXPECT_EQ(leaf_calls, 1);
   XLS_ASSERT_OK(generator.Generate(bit_gen, ordinary, {}));
+}
+
+TEST(QuickcheckTest, ValueGeneratorsPreservePriorValuesAcrossRecursiveLeaves) {
+  std::vector<std::unique_ptr<Type>> tuple_members;
+  tuple_members.push_back(BitsType::MakeU8());
+  tuple_members.push_back(std::make_unique<TokenType>());
+  tuple_members.push_back(BitsType::MakeU8());
+
+  std::vector<std::unique_ptr<Type>> owned_types;
+  owned_types.push_back(BitsType::MakeU8());
+  owned_types.push_back(std::make_unique<TupleType>(std::move(tuple_members)));
+  owned_types.push_back(std::make_unique<TokenType>());
+  owned_types.push_back(BitsType::MakeU8());
+  const std::vector<const Type*> types = {
+      owned_types[0].get(), owned_types[1].get(), owned_types[2].get(),
+      owned_types[3].get()};
+
+  for (bool use_compatibility_wrapper : {false, true}) {
+    SCOPED_TRACE(use_compatibility_wrapper ? "compatibility wrapper"
+                                           : "reusable generator");
+    std::mt19937_64 bit_gen{2};
+    std::vector<std::vector<InterpValue>> observed_prior;
+    auto generate_bits = [&observed_prior](absl::BitGenRef,
+                                           const BitsLikeProperties&,
+                                           absl::Span<const InterpValue> prior)
+        -> absl::StatusOr<InterpValue> {
+      observed_prior.emplace_back(prior.begin(), prior.end());
+      return InterpValue::MakeUBits(
+          8, static_cast<int64_t>(observed_prior.size()));
+    };
+
+    InterpValueGenerator generator;
+    absl::StatusOr<std::vector<InterpValue>> generated =
+        use_compatibility_wrapper
+            ? GenerateInterpValues(bit_gen, types, generate_bits)
+            : generator.GenerateValues(bit_gen, types, generate_bits);
+    XLS_ASSERT_OK_AND_ASSIGN(std::vector<InterpValue> values,
+                             std::move(generated));
+    ASSERT_EQ(values.size(), 4);
+    EXPECT_TRUE(values[2].IsToken());
+    ASSERT_EQ(values[1].GetValuesOrDie().size(), 3);
+    EXPECT_TRUE(values[1].GetValuesOrDie().at(1).IsToken());
+    EXPECT_THAT(
+        observed_prior,
+        ::testing::ElementsAre(
+            std::vector<InterpValue>{}, std::vector<InterpValue>{values[0]},
+            std::vector<InterpValue>{values[0]},
+            std::vector<InterpValue>{values[0], values[1], values[2]}));
+  }
 }
 
 // Verifies that the QuickCheck mechanism can find counter-examples for a simple
