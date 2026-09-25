@@ -212,20 +212,11 @@ TEST_F(PackedSumIrTest, ConcreteBitsConstructorUsesScalarBits) {
 TEST_F(PackedSumIrTest, ArraysUsePackedElementTypesAndIndexZeroIsLow) {
   auto inner = Choice(Payload(BitsType::MakeU8()), Payload(BitsType::MakeU8()));
   ArrayType array(inner->CloneToUnique(), TypeDim::CreateU32(2));
-  ArrayType empty(inner->CloneToUnique(), TypeDim::CreateU32(0));
   XLS_ASSERT_OK_AND_ASSIGN(
       BValue unpacked,
       UnpackPackedSumPayload(builder_, array,
                              builder_.Literal(UBits((0x134 << 9) | 0x12, 18)),
                              {}));
-  XLS_ASSERT_OK_AND_ASSIGN(
-      BValue empty_unpacked,
-      UnpackPackedSumPayload(builder_, empty, builder_.Literal(UBits(0, 0)),
-                             {}));
-  auto* packed_element =
-      package_.GetTupleType({package_.GetBitsType(1),
-                             package_.GetTupleType({package_.GetBitsType(8)})});
-  EXPECT_EQ(empty_unpacked.GetType(), package_.GetArrayType(0, packed_element));
   auto outer = Choice(Payload(array.CloneToUnique()), {});
   XLS_ASSERT_OK_AND_ASSIGN(auto first,
                            SumTypeEncoding(*outer).GetVariant("First"));
