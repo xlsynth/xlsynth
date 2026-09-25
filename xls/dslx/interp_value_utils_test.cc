@@ -2303,6 +2303,33 @@ TEST(InterpValueHelpersTest, ValueToInterpValueSumPreservesMalformedTag) {
                        HasSubstr("No variant with tag bits")));
 }
 
+TEST(InterpValueHelpersTest,
+     RawSumConversionRejectsTotalOverflowBeforePayload) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const SumType overflowing = MakeSumWithMaxWidthInactiveArray(module);
+  const SumType ordinary =
+      MakeOptionalPayloadSumType(module, BuiltinType::kU8, BitsType::MakeU8());
+  const Value raw =
+      Value::Tuple({Value(UBits(0, 1)), Value::Tuple({Value(UBits(0, 0))})});
+  const InterpValue interp = internal::CreateEncodedSumTuple(
+      InterpValue::MakeUBits(1, 0), InterpValue::MakeUBits(0, 0));
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+
+  // The type and tag are exact; a short raw payload keeps the check bounded
+  // while demonstrating that the declared total must be rejected first.
+  EXPECT_THAT(ValueToInterpValue(raw, &overflowing), overflow);
+  EXPECT_THAT(ValidateInterpValueMatchesType(interp, overflowing), overflow);
+
+  const auto narrow_payload =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("expected a 8-bit payload slot; got 0 bits"));
+  EXPECT_THAT(ValueToInterpValue(raw, &ordinary), narrow_payload);
+  EXPECT_THAT(ValidateInterpValueMatchesType(interp, ordinary), narrow_payload);
+}
+
 TEST(InterpValueHelpersTest, ValueToInterpValueSumRejectsMalformedRawShape) {
   FileTable file_table;
   Module module("test", /*fs_path=*/std::nullopt, file_table);
