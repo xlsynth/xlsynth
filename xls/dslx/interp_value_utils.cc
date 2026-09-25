@@ -944,6 +944,12 @@ absl::Status ValidateInterpValueMatchesType(const InterpValue& value,
   }
 }
 
+absl::StatusOr<bool> SemanticValuesEqual(const InterpValue& lhs,
+                                         const InterpValue& rhs,
+                                         const Type& type) {
+  return internal::PackedValuesEqual(lhs, rhs, type);
+}
+
 absl::StatusOr<InterpValue> CastBitsToArray(const InterpValue& bits_value,
                                             const ArrayType& array_type) {
   XLS_ASSIGN_OR_RETURN(TypeDim element_bit_count,
