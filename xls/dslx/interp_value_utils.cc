@@ -91,6 +91,10 @@ absl::StatusOr<Bits> FlattenValueForType(const Type& type,
 absl::Status ValidateEncodedSumShape(const InterpValue& value,
                                      const SumType& sum_type);
 
+absl::StatusOr<InterpValue> DecodeRawSumValue(const SumType& sum_type,
+                                              const InterpValue& tag,
+                                              const InterpValue& payload_slot);
+
 absl::StatusOr<Bits> FlattenAggregateMembers(
     absl::Span<const std::unique_ptr<Type>> members,
     absl::Span<const InterpValue> values) {
@@ -324,17 +328,6 @@ absl::Status ValidateEncodedSumShape(const InterpValue& value,
   return absl::OkStatus();
 }
 
-absl::StatusOr<bool> IsCanonicalPlaceholderValue(const InterpValue& actual,
-                                                 const InterpValue& expected,
-                                                 const Type& type) {
-  if (!type.HasToken()) {
-    return !actual.Ne(expected);
-  }
-  XLS_ASSIGN_OR_RETURN(Value actual_value, actual.ConvertToIr());
-  XLS_ASSIGN_OR_RETURN(Value expected_value, expected.ConvertToIr());
-  return actual_value == expected_value;
-}
-
 absl::Status ValidateTupleValue(const InterpValue& value,
                                 const TupleType& tuple_type) {
   if (!value.IsTuple()) {
@@ -399,70 +392,30 @@ absl::Status ValidateArrayValue(const InterpValue& value,
   return absl::OkStatus();
 }
 
-absl::Status ValidateSumValue(const InterpValue& value,
-                              const SumType& sum_type) {
-  XLS_ASSIGN_OR_RETURN(EncodedSumView sum_view, GetEncodedSumView(value));
-  const Phase1SumTypeEncoding encoding(sum_type);
+absl::StatusOr<InterpValue> DecodeRawSumValue(const SumType& sum_type,
+                                              const InterpValue& tag,
+                                              const InterpValue& payload_slot) {
+  InterpValue raw_value = internal::CreateEncodedSumTuple(tag, payload_slot);
+  XLS_RETURN_IF_ERROR(ValidateEncodedSumShape(raw_value, sum_type));
 
-  if (!sum_view.tag.IsUBits()) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "Expected sum tag for `%s` to be unsigned bits; got `%s`.",
-        sum_type.ToString(), sum_view.tag.ToString()));
+  const SumTypeEncoding encoding(sum_type);
+  absl::StatusOr<SumTypeEncoding::VariantInfo> variant =
+      encoding.GetVariantByTagBits(tag.GetBitsOrDie());
+  if (variant.status().code() == absl::StatusCode::kNotFound) {
+    return raw_value;
   }
+  XLS_ASSIGN_OR_RETURN(SumTypeEncoding::VariantInfo valid_variant,
+                       std::move(variant));
+  XLS_ASSIGN_OR_RETURN(std::vector<InterpValue> payload_values,
+                       DecodeVariantPayloadValues(valid_variant, payload_slot));
 
-  XLS_ASSIGN_OR_RETURN(int64_t expected_tag_bit_count,
-                       encoding.tag_bit_count());
-  XLS_ASSIGN_OR_RETURN(int64_t actual_tag_bit_count,
-                       sum_view.tag.GetBitCount());
-  if (actual_tag_bit_count != expected_tag_bit_count) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "Sum `%s` expected a %d-bit tag; got %d bits.", sum_type.ToString(),
-        expected_tag_bit_count, actual_tag_bit_count));
+  for (int64_t index = 0; index < payload_values.size(); ++index) {
+    const Type& member_type = valid_variant.variant->GetMemberType(index);
+    const InterpValue& payload_value = payload_values.at(index);
+    XLS_RETURN_IF_ERROR(
+        ValidateInterpValueMatchesType(payload_value, member_type));
   }
-  if (sum_view.payload_slots.size() != encoding.payload_slot_count()) {
-    return absl::InvalidArgumentError(
-        absl::StrFormat("Sum `%s` expected %d payload slots; got %d.",
-                        sum_type.ToString(), encoding.payload_slot_count(),
-                        static_cast<int64_t>(sum_view.payload_slots.size())));
-  }
-
-  XLS_ASSIGN_OR_RETURN(uint64_t variant_index,
-                       sum_view.tag.GetBitValueUnsigned());
-  if (variant_index >= sum_type.variant_count()) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "Sum `%s` has invalid tag %d for %d variants.", sum_type.ToString(),
-        static_cast<int64_t>(variant_index), sum_type.variant_count()));
-  }
-
-  const SumTypeVariant& variant_def = sum_type.variants().at(variant_index);
-  XLS_ASSIGN_OR_RETURN(Phase1SumTypeEncoding::VariantInfo variant,
-                       encoding.GetVariant(variant_def.variant().identifier()));
-  int64_t slot_index = 0;
-  XLS_RETURN_IF_ERROR(encoding.VisitPayloadAssemblyOrder(
-      variant,
-      [&](int64_t active_index) -> absl::Status {
-        const InterpValue& slot_value = sum_view.payload_slots.at(slot_index++);
-        return ValidateInterpValueMatchesType(
-            slot_value, variant.variant->GetMemberType(active_index));
-      },
-      [&](const Type& slot_type) -> absl::Status {
-        const InterpValue& slot_value = sum_view.payload_slots.at(slot_index);
-        XLS_ASSIGN_OR_RETURN(InterpValue placeholder,
-                             CreateInternalPlaceholderValueFromType(slot_type));
-        XLS_ASSIGN_OR_RETURN(
-            bool matches_placeholder,
-            IsCanonicalPlaceholderValue(slot_value, placeholder, slot_type));
-        if (!matches_placeholder) {
-          return absl::InvalidArgumentError(absl::StrFormat(
-              "Sum `%s` has noncanonical inactive payload slot %d for "
-              "variant `%s`.",
-              sum_type.ToString(), slot_index,
-              variant_def.variant().identifier()));
-        }
-        ++slot_index;
-        return absl::OkStatus();
-      }));
-  return absl::OkStatus();
+  return raw_value;
 }
 
 absl::Status ValidateBitsLikeValue(const InterpValue& value, const Type& type,
@@ -921,8 +874,8 @@ absl::Status ValidateValue(const InterpValue& value, const Type& type,
 
 absl::Status ValidateInterpValueMatchesType(const InterpValue& value,
                                             const Type& type) {
-  if (auto* sum_type = dynamic_cast<const SumType*>(&type)) {
-    return ValidateSumValue(value, *sum_type);
+  if (dynamic_cast<const SumType*>(&type) != nullptr) {
+    return ValidateValue(value, type, SumValidation::kDeclaredConstructors);
   } else if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
     return ValidateTupleValue(value, *tuple_type);
   } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type)) {
@@ -1000,54 +953,21 @@ absl::StatusOr<InterpValue> CastBitsToEnum(const InterpValue& bits_value,
 
 namespace {
 
-// Constructs the interpreter-owned tuple carrier for an encoded semantic sum.
-InterpValue CreateEncodedSumTuple(InterpValue tag,
-                                  std::vector<InterpValue> payload_slots) {
-  return InterpValue::MakeTuple(
-      {std::move(tag), InterpValue::MakeTuple(std::move(payload_slots))});
-}
-
 enum class TypeValuePolicy { kZero, kInternalPlaceholder };
 
 absl::StatusOr<InterpValue> CreateValueFromType(const Type& type,
                                                 TypeValuePolicy policy);
 
 absl::StatusOr<InterpValue> CreatePlaceholderForSum(const SumType& type) {
-  const Phase1SumTypeEncoding encoding(type);
+  const SumTypeEncoding encoding(type);
   XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
-  if (type.variant_count() == 0) {
-    return CreateEncodedSumTuple(InterpValue::MakeUBits(tag_bit_count, 0), {});
-  }
-
-  const SumTypeVariant& first_variant = type.variants().front();
-  XLS_ASSIGN_OR_RETURN(
-      Phase1SumTypeEncoding::VariantInfo variant,
-      encoding.GetVariant(first_variant.variant().identifier()));
-
-  std::vector<InterpValue> payload_slots;
-  payload_slots.reserve(encoding.payload_slot_count());
-  XLS_RETURN_IF_ERROR(encoding.VisitPayloadAssemblyOrder(
-      variant,
-      [&](int64_t active_index) -> absl::Status {
-        XLS_ASSIGN_OR_RETURN(
-            InterpValue placeholder,
-            CreateValueFromType(variant.variant->GetMemberType(active_index),
-                                TypeValuePolicy::kInternalPlaceholder));
-        payload_slots.push_back(std::move(placeholder));
-        return absl::OkStatus();
-      },
-      [&](const Type& inactive_type) -> absl::Status {
-        XLS_ASSIGN_OR_RETURN(
-            InterpValue placeholder,
-            CreateValueFromType(inactive_type,
-                                TypeValuePolicy::kInternalPlaceholder));
-        payload_slots.push_back(std::move(placeholder));
-        return absl::OkStatus();
-      }));
-
-  return CreateEncodedSumTuple(
-      InterpValue::MakeUBits(tag_bit_count, variant.variant_index),
-      std::move(payload_slots));
+  XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                       encoding.payload_slot_bit_count());
+  InterpValue tag = type.variant_count() == 0
+                        ? InterpValue::MakeUBits(tag_bit_count, 0)
+                        : type.GetDiscriminant(0);
+  return internal::CreateEncodedSumTuple(
+      std::move(tag), InterpValue::MakeUBits(payload_slot_bit_count, 0));
 }
 
 absl::StatusOr<InterpValue> CreateValueFromType(const Type& type,
@@ -1155,10 +1075,14 @@ absl::StatusOr<InterpValue> CreateValueFromType(const Type& type,
 
 }  // namespace
 
+namespace internal {
+
 absl::StatusOr<InterpValue> CreateInternalPlaceholderValueFromType(
     const Type& type) {
   return CreateValueFromType(type, TypeValuePolicy::kInternalPlaceholder);
 }
+
+}  // namespace internal
 
 absl::StatusOr<InterpValue> CreateZeroValueFromType(const Type& type) {
   return CreateValueFromType(type, TypeValuePolicy::kZero);
@@ -1166,7 +1090,7 @@ absl::StatusOr<InterpValue> CreateZeroValueFromType(const Type& type) {
 
 namespace {
 
-enum class SumPayloadValidation { kValidate, kTrustedZero };
+enum class SumPayloadValidation { kValidate, kTrusted };
 
 absl::StatusOr<InterpValue> AssembleKnownSumValue(
     const SumType& type, int64_t variant_index, int64_t payload_slot_bit_count,
@@ -1221,53 +1145,17 @@ absl::StatusOr<InterpValue> AssembleSumValue(
     const SumType& type, std::string_view variant_name,
     absl::Span<const InterpValue> payload_values,
     SumPayloadValidation validation) {
-  const Phase1SumTypeEncoding encoding(type);
-  XLS_ASSIGN_OR_RETURN(Phase1SumTypeEncoding::VariantInfo variant,
+  const SumTypeEncoding encoding(type);
+  XLS_ASSIGN_OR_RETURN(SumTypeEncoding::VariantInfo variant,
                        encoding.GetVariant(variant_name));
-  if (payload_values.size() != variant.payload_size()) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "Sum constructor `%s` expected %d payload values; got %d.",
-        variant_name, variant.payload_size(), payload_values.size()));
-  }
-  if (validation == SumPayloadValidation::kValidate) {
-    for (int64_t active_index = 0; active_index < variant.payload_size();
-         ++active_index) {
-      XLS_RETURN_IF_ERROR(ValidateInterpValueMatchesType(
-          payload_values.at(active_index),
-          variant.variant->GetMemberType(active_index)));
-    }
-  }
-
-  std::vector<InterpValue> payload_slots;
-  payload_slots.reserve(encoding.payload_slot_count());
-  XLS_RETURN_IF_ERROR(encoding.VisitPayloadAssemblyOrder(
-      variant,
-      [&](int64_t active_index) -> absl::Status {
-        payload_slots.push_back(payload_values.at(active_index));
-        return absl::OkStatus();
-      },
-      [&](const Type& inactive_type) -> absl::Status {
-        XLS_ASSIGN_OR_RETURN(
-            InterpValue zero,
-            CreateInternalPlaceholderValueFromType(inactive_type));
-        payload_slots.push_back(std::move(zero));
-        return absl::OkStatus();
-      }));
-
-  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
-  return CreateEncodedSumTuple(
-      InterpValue::MakeUBits(tag_bit_count, variant.variant_index),
-      std::move(payload_slots));
+  XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                       encoding.payload_slot_bit_count());
+  return AssembleKnownSumValue(type, variant.variant_index,
+                               payload_slot_bit_count, payload_values,
+                               validation);
 }
 
 }  // namespace
-
-absl::StatusOr<InterpValue> CreateSumValue(
-    const SumType& type, std::string_view variant_name,
-    absl::Span<const InterpValue> payload_values) {
-  return AssembleSumValue(type, variant_name, payload_values,
-                          SumPayloadValidation::kValidate);
-}
 
 absl::StatusOr<std::vector<InterpValue>> GetSumPayloadValues(
     const SumType& type, const InterpValue& value) {
@@ -1276,6 +1164,13 @@ absl::StatusOr<std::vector<InterpValue>> GetSumPayloadValues(
                           .ObserveSum(type, value, payload)
                           .status());
   return payload;
+}
+
+absl::StatusOr<InterpValue> CreateSumValue(
+    const SumType& type, std::string_view variant_name,
+    absl::Span<const InterpValue> payload_values) {
+  return AssembleSumValue(type, variant_name, payload_values,
+                          SumPayloadValidation::kValidate);
 }
 
 absl::StatusOr<InterpValue> CreateSumValue(
@@ -1288,12 +1183,23 @@ absl::StatusOr<InterpValue> CreateSumValue(
                                payload_values, SumPayloadValidation::kValidate);
 }
 
+namespace internal {
+
 absl::StatusOr<InterpValue> CreateSumValueFromValidatedZeroPayload(
     const SumType& type, std::string_view variant_name,
     absl::Span<const InterpValue> payload_values) {
   return AssembleSumValue(type, variant_name, payload_values,
-                          SumPayloadValidation::kTrustedZero);
+                          SumPayloadValidation::kTrusted);
 }
+
+absl::StatusOr<InterpValue> CreateSumValueFromValidatedGeneratedPayload(
+    const SumType& type, int64_t variant_index, int64_t payload_slot_bit_count,
+    absl::Span<const InterpValue> payload_values) {
+  return AssembleKnownSumValue(type, variant_index, payload_slot_bit_count,
+                               payload_values, SumPayloadValidation::kTrusted);
+}
+
+}  // namespace internal
 
 absl::StatusOr<InterpValue> CreateZeroValue(const InterpValue& value) {
   switch (value.tag()) {
@@ -1355,14 +1261,8 @@ absl::StatusOr<std::optional<int64_t>> FindFirstDifferingIndex(
 absl::StatusOr<InterpValue> SignConvertValue(const Type& type,
                                              const InterpValue& value) {
   if (auto* sum_type = dynamic_cast<const SumType*>(&type)) {
-    XLS_ASSIGN_OR_RETURN(EncodedSumView sum_view, GetEncodedSumView(value));
-    if (!sum_view.tag.IsUBits()) {
-      return absl::InvalidArgumentError(absl::StrFormat(
-          "Expected sum tag for `%s` to be unsigned bits; got `%s`.",
-          sum_type->ToString(), sum_view.tag.ToString()));
-    }
-    XLS_ASSIGN_OR_RETURN(Value raw_value, value.ConvertToIr());
-    return ValueToInterpValue(raw_value, sum_type);
+    XLS_RETURN_IF_ERROR(ValidateEncodedSumShape(value, *sum_type));
+    return value;
   }
 
   if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
@@ -1444,11 +1344,9 @@ namespace {
 // Nested sums are validated by their outermost owning sum after restoration;
 // validating every intermediate subtree would make a linear chain quadratic.
 absl::StatusOr<InterpValue> ValueToInterpValueImpl(const Value& v,
-                                                   const Type* type,
-                                                   bool validate_sum) {
+                                                   const Type* type) {
   if (type != nullptr && type->IsSum()) {
     const SumType& sum_type = type->AsSum();
-    const Phase1SumTypeEncoding encoding(sum_type);
     if (v.kind() != ValueKind::kTuple || v.elements().size() != 2 ||
         v.elements().at(1).kind() != ValueKind::kTuple) {
       return absl::InvalidArgumentError(absl::StrFormat(
@@ -1456,71 +1354,23 @@ absl::StatusOr<InterpValue> ValueToInterpValueImpl(const Value& v,
           "and a payload tuple.",
           sum_type.nominal_type().identifier()));
     }
-    XLS_ASSIGN_OR_RETURN(InterpValue tag,
-                         ValueToInterpValueImpl(v.elements().at(0), nullptr,
-                                                /*validate_sum=*/false));
-    if (v.elements().at(1).elements().size() != encoding.payload_slot_count()) {
+    if (v.elements().at(1).elements().size() != 1) {
       return absl::InvalidArgumentError(absl::StrFormat(
           "Raw value for semantic sum `%s` must contain %d payload slots; got "
           "%d.",
-          sum_type.nominal_type().identifier(), encoding.payload_slot_count(),
+          sum_type.nominal_type().identifier(), 1,
           v.elements().at(1).elements().size()));
     }
-    std::vector<bool> active_slots(encoding.payload_slot_count(), false);
-    if (tag.IsUBits()) {
-      XLS_ASSIGN_OR_RETURN(uint64_t variant_index, tag.GetBitValueUnsigned());
-      if (variant_index < sum_type.variant_count()) {
-        const SumTypeVariant& variant_def =
-            sum_type.variants().at(variant_index);
-        XLS_ASSIGN_OR_RETURN(
-            Phase1SumTypeEncoding::VariantInfo variant,
-            encoding.GetVariant(variant_def.variant().identifier()));
-        XLS_RETURN_IF_ERROR(encoding.ForEachActivePayloadSlot(
-            variant,
-            [&](int64_t slot_index, int64_t, const Type&) -> absl::Status {
-              active_slots.at(slot_index) = true;
-              return absl::OkStatus();
-            }));
-      }
+    XLS_ASSIGN_OR_RETURN(InterpValue tag,
+                         ValueToInterpValueImpl(v.elements().at(0), nullptr));
+    XLS_ASSIGN_OR_RETURN(
+        InterpValue payload_slot,
+        ValueToInterpValueImpl(v.elements().at(1).elements().at(0), nullptr));
+    if (!tag.IsUBits() || !payload_slot.IsUBits()) {
+      return absl::InvalidArgumentError(
+          "Expected raw sum tag and payload slot to be unsigned bits.");
     }
-    std::vector<InterpValue> payload_members;
-    payload_members.reserve(encoding.payload_slot_count());
-    int64_t slot_index = 0;
-    XLS_RETURN_IF_ERROR(encoding.ForEachPayloadType([&](const Type& slot_type)
-                                                        -> absl::Status {
-      const Value& raw_member = v.elements().at(1).elements().at(slot_index);
-      if (active_slots.at(slot_index)) {
-        XLS_ASSIGN_OR_RETURN(InterpValue member,
-                             ValueToInterpValueImpl(raw_member, &slot_type,
-                                                    /*validate_sum=*/false));
-        payload_members.push_back(std::move(member));
-      } else {
-        // Inactive sum types can be uninhabited, so compare their opaque
-        // raw representation before restoring the canonical typed value.
-        XLS_ASSIGN_OR_RETURN(InterpValue raw_placeholder,
-                             ValueToInterpValueImpl(raw_member, nullptr,
-                                                    /*validate_sum=*/false));
-        XLS_ASSIGN_OR_RETURN(InterpValue member,
-                             CreateInternalPlaceholderValueFromType(slot_type));
-        XLS_ASSIGN_OR_RETURN(
-            bool matches_placeholder,
-            IsCanonicalPlaceholderValue(raw_placeholder, member, slot_type));
-        if (!matches_placeholder) {
-          return absl::InvalidArgumentError(absl::StrFormat(
-              "Sum `%s` has noncanonical inactive payload slot %d.",
-              sum_type.ToString(), slot_index));
-        }
-        payload_members.push_back(std::move(member));
-      }
-      ++slot_index;
-      return absl::OkStatus();
-    }));
-    InterpValue result =
-        CreateEncodedSumTuple(std::move(tag), std::move(payload_members));
-    if (validate_sum) {
-      XLS_RETURN_IF_ERROR(ValidateInterpValueMatchesType(result, sum_type));
-    }
-    return result;
+    return DecodeRawSumValue(sum_type, tag, payload_slot);
   }
 
   switch (v.kind()) {
@@ -1601,8 +1451,8 @@ absl::StatusOr<InterpValue> ValueToInterpValueImpl(const Value& v,
       std::vector<InterpValue> members;
       for (int64_t i = 0; i < v.elements().size(); ++i) {
         const Value& e = v.elements()[i];
-        XLS_ASSIGN_OR_RETURN(InterpValue iv, ValueToInterpValueImpl(
-                                                 e, get_type(i), validate_sum));
+        XLS_ASSIGN_OR_RETURN(InterpValue iv,
+                             ValueToInterpValueImpl(e, get_type(i)));
         members.push_back(iv);
       }
       if (v.kind() == ValueKind::kTuple) {
@@ -1620,7 +1470,7 @@ absl::StatusOr<InterpValue> ValueToInterpValueImpl(const Value& v,
 
 absl::StatusOr<InterpValue> ValueToInterpValue(const Value& v,
                                                const Type* type) {
-  return ValueToInterpValueImpl(v, type, /*validate_sum=*/true);
+  return ValueToInterpValueImpl(v, type);
 }
 
 absl::StatusOr<std::vector<InterpValue>> ParseArgs(std::string_view args_text) {

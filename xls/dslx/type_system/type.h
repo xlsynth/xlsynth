@@ -892,11 +892,6 @@ class SumType : public Type {
           std::vector<InterpValue> discriminants = {},
           std::vector<ParametricArgument> parametric_arguments = {});
 
-  // The inherited compiler construction path retains its storage layout until
-  // all executing consumers can move to semantic discriminants together.
-  SumType(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
-          ZeroSelection zero_selection);
-
   absl::Status Accept(TypeVisitor& v) const override {
     return v.HandleSum(*this);
   }
@@ -941,7 +936,6 @@ class SumType : public Type {
   const std::vector<SumTypeVariant>& variants() const {
     return data_->variants;
   }
-  const ZeroSelection& zero_selection() const { return zero_selection_; }
 
   int64_t variant_count() const { return data_->variants.size(); }
   TypeDim tag_bit_count() const { return data_->tag_bit_count; }
@@ -972,12 +966,9 @@ class SumType : public Type {
     bool has_token;
   };
 
-  explicit SumType(std::shared_ptr<const Data> data,
-                   ZeroSelection zero_selection)
-      : data_(std::move(data)), zero_selection_(std::move(zero_selection)) {}
+  explicit SumType(std::shared_ptr<const Data> data) : data_(std::move(data)) {}
 
   std::shared_ptr<const Data> data_;
-  ZeroSelection zero_selection_ = NoZeroVariant{};
 };
 
 // This represents the type of annotations like:

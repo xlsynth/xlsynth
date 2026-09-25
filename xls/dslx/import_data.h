@@ -207,6 +207,7 @@ class ImportData {
   // imported with type inference v2.
   absl::StatusOr<InferenceTableConverter*> GetInferenceTableConverter(
       std::string_view module_name);
+
   absl::StatusOr<Module*> GetBuiltinStubsModule() const;
 
   TypeInfoOwner& type_info_owner() { return type_info_owner_; }
