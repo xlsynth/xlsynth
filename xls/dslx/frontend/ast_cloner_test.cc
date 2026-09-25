@@ -2953,11 +2953,12 @@ fn foo<T: type>(x: T) -> T {
   TypeAnnotation* binding_annotation =
       clone_foo->parametric_bindings().at(0)->type_annotation();
   Param* param = clone_foo->params().at(0);
-  const AstNode* param_annotation_definer =
+  const auto* param_annotation =
       absl::down_cast<const TypeVariableTypeAnnotation*>(
-          param->type_annotation())
-          ->type_variable()
-          ->GetDefiner();
+          param->type_annotation());
+  EXPECT_FALSE(param_annotation->internal());
+  const AstNode* param_annotation_definer =
+      param_annotation->type_variable()->GetDefiner();
   ASSERT_EQ(binding_annotation, param_annotation_definer);
 }
 

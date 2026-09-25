@@ -800,9 +800,10 @@ class AstCloner : public AstNodeVisitor {
         new_name_def = old_def;
       }
     } else {
-      const BuiltinNameDef* old_def = std::get<BuiltinNameDef*>(n->name_def());
+      BuiltinNameDef* old_name_def = std::get<BuiltinNameDef*>(n->name_def());
+      XLS_RETURN_IF_ERROR(ReplaceOrVisit(old_name_def));
       new_name_def =
-          module(n)->GetOrCreateBuiltinNameDef(old_def->identifier());
+          absl::down_cast<BuiltinNameDef*>(old_to_new_.at(old_name_def));
     }
     old_to_new_[n] = module(n)->Make<NameRef>(n->span(), n->identifier(),
                                               new_name_def, n->in_parens());
@@ -834,11 +835,12 @@ class AstCloner : public AstNodeVisitor {
     XLS_RETURN_IF_ERROR(VisitChildren(n));
     auto* new_name_def =
         absl::down_cast<NameDef*>(old_to_new_.at(n->name_def()));
-    old_to_new_[n] = module(n)->Make<ProcMember>(
+    auto* new_proc_member = module(n)->Make<ProcMember>(
         new_name_def,
         absl::down_cast<TypeAnnotation*>(old_to_new_.at(n->type_annotation())),
         n->strictness(), n->flow_control());
-    new_name_def->set_definer(old_to_new_.at(n));
+    new_name_def->set_definer(new_proc_member);
+    old_to_new_[n] = new_proc_member;
     return absl::OkStatus();
   }
 
@@ -1028,21 +1030,19 @@ class AstCloner : public AstNodeVisitor {
     for (const StructMemberNode* member : n->members()) {
       XLS_RETURN_IF_ERROR(ReplaceOrVisit(member->name_def()));
       XLS_RETURN_IF_ERROR(ReplaceOrVisit(member->type()));
+      XLS_RETURN_IF_ERROR(ReplaceOrVisit(member->non_state_wrapped_type()));
       XLS_ASSIGN_OR_RETURN(
           TypeAnnotation * new_type,
           CastIfNotVerbatim<TypeAnnotation*>(old_to_new_.at(member->type())));
+      XLS_ASSIGN_OR_RETURN(TypeAnnotation * new_non_state_wrapped_type,
+                           CastIfNotVerbatim<TypeAnnotation*>(old_to_new_.at(
+                               member->non_state_wrapped_type())));
       XLS_ASSIGN_OR_RETURN(
           NameDef * new_name,
           CastIfNotVerbatim<NameDef*>(old_to_new_.at(member->name_def())));
       auto* new_member = m->Make<StructMemberNode>(
           member->span(), new_name, member->colon_span(), new_type);
-      if (member->non_state_wrapped_type() != member->type()) {
-        XLS_RETURN_IF_ERROR(ReplaceOrVisit(member->non_state_wrapped_type()));
-        XLS_ASSIGN_OR_RETURN(TypeAnnotation * new_non_state_wrapped_type,
-                             CastIfNotVerbatim<TypeAnnotation*>(old_to_new_.at(
-                                 member->non_state_wrapped_type())));
-        new_member->set_non_state_wrapped_type(new_non_state_wrapped_type);
-      }
+      new_member->set_non_state_wrapped_type(new_non_state_wrapped_type);
       XLS_ASSIGN_OR_RETURN(std::vector<Attribute*> new_attributes,
                            CloneAttributes(member->attributes()));
       new_member->SetAttributes(new_attributes);
@@ -1117,6 +1117,7 @@ class AstCloner : public AstNodeVisitor {
       } else {
         new_members.push_back(absl::down_cast<VerbatimNode*>(new_node));
       }
+      new_node->SetParentNonLexical(new_impl);
     }
     new_impl->set_members(new_members);
     new_impl->SetParentage();
@@ -1140,10 +1141,14 @@ class AstCloner : public AstNodeVisitor {
 
   absl::Status HandleStructMemberNode(const StructMemberNode* n) override {
     XLS_RETURN_IF_ERROR(VisitChildren(n));
+    XLS_RETURN_IF_ERROR(ReplaceOrVisit(n->non_state_wrapped_type()));
     StructMemberNode* new_struct_member = module(n)->Make<StructMemberNode>(
         n->span(), absl::down_cast<NameDef*>(old_to_new_.at(n->name_def())),
         n->colon_span(),
         absl::down_cast<TypeAnnotation*>(old_to_new_.at(n->type())));
+    new_struct_member->set_non_state_wrapped_type(
+        absl::down_cast<TypeAnnotation*>(
+            old_to_new_.at(n->non_state_wrapped_type())));
     old_to_new_[n] = new_struct_member;
     return absl::OkStatus();
   }
@@ -1210,10 +1215,14 @@ class AstCloner : public AstNodeVisitor {
       return absl::InternalError("Unexpected Conditional alternate node type.");
     }
 
-    old_to_new_[n] = module(n)->Make<Conditional>(
+    auto* new_conditional = module(n)->Make<Conditional>(
         n->span(), absl::down_cast<Expr*>(old_to_new_.at(n->test())),
         absl::down_cast<StatementBlock*>(old_to_new_.at(n->consequent())),
         new_alternate, n->in_parens(), n->HasElse(), n->IsConst());
+    for (StatementBlock* block : new_conditional->GatherBlocks()) {
+      block->SetEnclosing(new_conditional);
+    }
+    old_to_new_[n] = new_conditional;
     return absl::OkStatus();
   }
 
@@ -1321,14 +1330,18 @@ class AstCloner : public AstNodeVisitor {
 
     // A TypeRef doesn't own its referenced type definition, so we have to
     // explicitly visit it.
-    XLS_RETURN_IF_ERROR(absl::visit(Visitor{[&](auto* ref) -> absl::Status {
-                                      XLS_RETURN_IF_ERROR(ReplaceOrVisit(ref));
-                                      new_type_definition =
-                                          absl::down_cast<decltype(ref)>(
-                                              old_to_new_.at(ref));
-                                      return absl::OkStatus();
-                                    }},
-                                    n->type_definition()));
+    XLS_RETURN_IF_ERROR(absl::visit(
+        Visitor{[&](auto* ref) -> absl::Status {
+          if (source_module_ != nullptr && ref->owner() != source_module_) {
+            new_type_definition = ref;
+            return absl::OkStatus();
+          }
+          XLS_RETURN_IF_ERROR(ReplaceOrVisit(ref));
+          new_type_definition =
+              absl::down_cast<decltype(ref)>(old_to_new_.at(ref));
+          return absl::OkStatus();
+        }},
+        n->type_definition()));
 
     old_to_new_[n] = module(n)->Make<TypeRef>(n->span(), new_type_definition);
     return absl::OkStatus();
@@ -1353,7 +1366,8 @@ class AstCloner : public AstNodeVisitor {
       const TypeVariableTypeAnnotation* n) override {
     XLS_RETURN_IF_ERROR(ReplaceOrVisit(n->type_variable()));
     old_to_new_[n] = module(n)->Make<TypeVariableTypeAnnotation>(
-        absl::down_cast<const NameRef*>(old_to_new_[n->type_variable()]));
+        absl::down_cast<const NameRef*>(old_to_new_[n->type_variable()]),
+        n->internal());
     return absl::OkStatus();
   }
 
