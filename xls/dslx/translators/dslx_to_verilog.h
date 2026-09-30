@@ -44,7 +44,7 @@ namespace xls::dslx {
 
 // Converts DSLX types to SystemVerilog types in a single package. A DSLX sum
 // declaration and its concrete parametric arguments identify one generated
-// family: its packed envelope, tag, and payload views.
+// family: its packed envelope, tag, payload views, and helper functions.
 // Aliases refer to that envelope; they do not generate a second family.
 // Repeating an alias for the same family is harmless; requesting an existing
 // package name for a different family returns an error instead of renaming it.
