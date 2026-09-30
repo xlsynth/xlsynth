@@ -245,6 +245,23 @@ message EnumTypeProto {
 // the variant's identifier, shape, and member names.
 message SumTypeVariantProto {
   repeated TypeProto payload_members = 1;
+  // The concrete semantic discriminant of this source-declaration variant.
+  // Phase One records omit this field for every variant; readers recover it
+  // from the associated typechecked nominal sum, or declaration order when
+  // no concrete nominal instantiation is available.
+  optional InterpValueProto discriminant = 2;
+}
+
+// One instantiated nominal sum argument, in source-declaration order.
+message SumTypeParametricProto {
+  oneof argument_oneof {
+    InterpValueProto value = 1;
+    TypeProto type = 2;
+    // Non-bits nominal values use the declared binding type to recover their
+    // structure, signedness and enum identity. The packed image is unsigned;
+    // tuple/struct fields are MSB-first and array element zero is LSB-first.
+    BitsValueProto packed_value = 3;
+  }
 }
 
 // A nominal sum and its concrete payload types. The required source span
@@ -254,6 +271,16 @@ message SumTypeVariantProto {
 message SumTypeProto {
   optional SpanProto sum_def_span = 1;
   repeated SumTypeVariantProto variants = 2;
+  // Concrete tag width shared by the per-variant semantic discriminants.
+  // Phase One records omit this field together with every discriminant.
+  optional TypeDimProto tag_bit_count = 3;
+  // Includes phantom arguments that do not appear in any variant payload.
+  repeated SumTypeParametricProto parametric_arguments = 4;
+  // Identifies this completed description within one AstNodeTypeInfoProto.
+  // New writers assign positive IDs in first-encounter order. Older expanded
+  // records omit IDs. The logical traversal visits parametric arguments before
+  // variant payloads, independently of protobuf wire-field order.
+  optional uint64 definition_id = 5;
 }
 
 message MetaTypeProto {
@@ -294,6 +321,10 @@ message TypeProto {
     ProcTypeProto proc_type = 11;
     ModuleTypeProto module_type = 12;
     SumTypeProto sum_type = 13;
+    // Refers to a completed sum definition in this AST-node record, using the
+    // traversal described by SumTypeProto.definition_id. Forward, cyclic and
+    // cross-record references are invalid.
+    uint64 sum_type_reference = 14;
   }
 }
 

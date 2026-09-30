@@ -14,14 +14,19 @@
 
 #include "xls/dslx/type_system/type_info_to_proto.h"
 
+#include <cstdint>
 #include <filesystem>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
+#include "absl/strings/str_format.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "absl/strings/str_format.h"
 #include "re2/re2.h"
 #include "xls/common/golden_files.h"
 #include "xls/common/status/matchers.h"
@@ -30,6 +35,7 @@
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
+#include "xls/dslx/interp_value.h"
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
@@ -403,13 +409,279 @@ fn f(x: bool) -> Option {
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        SemanticSumSchemaStoresOnlyConcreteTypeFacts) {
-  EXPECT_EQ(SumTypeProto::descriptor()->field_count(), 2);
-  EXPECT_EQ(SumTypeVariantProto::descriptor()->field_count(), 1);
+  EXPECT_EQ(SumTypeProto::descriptor()->field_count(), 5);
+  EXPECT_EQ(SumTypeVariantProto::descriptor()->field_count(), 2);
   EXPECT_EQ(SumTypeProto::kSumDefSpanFieldNumber, 1);
   EXPECT_EQ(SumTypeProto::kVariantsFieldNumber, 2);
+  EXPECT_EQ(SumTypeProto::kTagBitCountFieldNumber, 3);
+  EXPECT_EQ(SumTypeProto::kParametricArgumentsFieldNumber, 4);
+  EXPECT_EQ(SumTypeProto::kDefinitionIdFieldNumber, 5);
   EXPECT_EQ(SumTypeVariantProto::kPayloadMembersFieldNumber, 1);
+  EXPECT_EQ(SumTypeVariantProto::kDiscriminantFieldNumber, 2);
   EXPECT_EQ(TypeProto::kSumTypeFieldNumber, 13);
   EXPECT_EQ(EnumTypeProto::kMembersFieldNumber, 4);
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       SharedLayoutReaderAcceptsPreparedSchemaWhileWriterRemainsExpanded) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck("enum E { A, B(u8) } fn f() -> E { E::A }", "fake.x",
+                        "fake", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto proto,
+                           TypeInfoToProto(*tm.type_info, tm.module));
+  const AstNodeTypeInfoProto* node =
+      FindSumTypeInfoNode(proto, "E", import_data);
+  ASSERT_NE(node, nullptr);
+  const SumTypeProto& old = node->type().sum_type();
+  ASSERT_EQ(old.variants_size(), 2);
+  EXPECT_FALSE(old.has_tag_bit_count());
+  EXPECT_FALSE(old.variants(0).has_discriminant());
+  EXPECT_FALSE(old.variants(1).has_discriminant());
+  XLS_ASSERT_OK(ToHumanString(*node, import_data, import_data.file_table()));
+
+  AstNodeTypeInfoProto with_layout = *node;
+  SumTypeProto* sum = with_layout.mutable_type()->mutable_sum_type();
+  BitsValueProto* width =
+      sum->mutable_tag_bit_count()->mutable_interp_value()->mutable_bits();
+  width->set_bit_count(32);
+  width->set_is_signed(false);
+  width->set_data(std::string("\0\0\0\1", 4));
+  for (int variant = 0; variant < 2; ++variant) {
+    BitsValueProto* discriminant =
+        sum->mutable_variants(variant)->mutable_discriminant()->mutable_bits();
+    discriminant->set_bit_count(1);
+    discriminant->set_is_signed(false);
+    discriminant->set_data(std::string(1, static_cast<char>(variant)));
+  }
+  XLS_ASSERT_OK(
+      ToHumanString(with_layout, import_data, import_data.file_table()));
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       DependentSumArgumentsUseEachSourceSpecialization) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(R"(#![feature(generics)]
+enum E<N: u32, V: uN[N]> { A, B() }
+fn f(x: u8, y: u8) -> u8 { x }
+fn refs(x: (u8, u8, u8)) -> u8 { u8:0 }
+)",
+                                             "fake.x", "fake", &import_data));
+  const SumDef* sum_def = tm.module->GetSumDefs().front();
+  const Function* function = tm.module->GetFunction("f").value();
+  const Function* references = tm.module->GetFunction("refs").value();
+  const Param* three_param = function->params()[0];
+  const Param* five_param = function->params()[1];
+  ASSERT_FALSE(tm.type_info->GetItem(
+      sum_def->parametric_bindings()[1]->type_annotation()));
+  tm.type_info->SetItem(sum_def->parametric_bindings()[0]->type_annotation(),
+                        std::make_unique<MetaType>(BitsType::MakeU32()));
+
+  // Install compiler-owned concrete types independently of the prepared writer,
+  // which does not emit nominal arguments yet at this stack boundary.
+  auto make_source_sum = [&](int64_t width, int64_t value) {
+    std::vector<SumTypeVariant> variants;
+    for (const SumVariant* variant : sum_def->variants()) {
+      if (variant->is_unit()) {
+        variants.push_back(SumTypeVariant::MakeUnit(*variant));
+      } else {
+        variants.push_back(SumTypeVariant::MakeTuple(*variant, {}));
+      }
+    }
+    std::vector<SumType::ParametricArgument> arguments;
+    arguments.emplace_back(InterpValue::MakeU32(width));
+    arguments.emplace_back(InterpValue::MakeUBits(width, value));
+    return std::make_unique<SumType>(
+        *sum_def, std::move(variants), TypeDim::CreateU32(1),
+        std::vector<InterpValue>{}, std::move(arguments));
+  };
+  tm.type_info->SetItem(three_param, make_source_sum(3, 5));
+  tm.type_info->SetItem(five_param, make_source_sum(5, 17));
+  std::vector<std::unique_ptr<Type>> params;
+  params.push_back(make_source_sum(3, 5));
+  params.push_back(make_source_sum(5, 17));
+  tm.type_info->SetItem(function, std::make_unique<FunctionType>(
+                                      std::move(params), BitsType::MakeU8()));
+  auto make_source_tuple = [&]() {
+    std::vector<std::unique_ptr<Type>> members;
+    members.push_back(make_source_sum(3, 5));
+    members.push_back(make_source_sum(5, 17));
+    members.push_back(make_source_sum(3, 5));
+    return std::make_unique<TupleType>(std::move(members));
+  };
+  tm.type_info->SetItem(references->params()[0], make_source_tuple());
+  std::vector<std::unique_ptr<Type>> reference_params;
+  reference_params.push_back(make_source_tuple());
+  tm.type_info->SetItem(
+      references, std::make_unique<FunctionType>(std::move(reference_params),
+                                                 make_source_sum(3, 5)));
+
+  auto set_bits = [](BitsValueProto* bits, int width, int value,
+                     bool is_signed = false) {
+    bits->set_bit_count(width);
+    bits->set_is_signed(is_signed);
+    std::string bytes((width + 7) / 8, '\0');
+    bytes.back() = static_cast<char>(value);
+    bits->set_data(bytes);
+  };
+  auto make_sum = [&](int width, int value) {
+    TypeProto type;
+    SumTypeProto* sum = type.mutable_sum_type();
+    *sum->mutable_sum_def_span() =
+        ToProto(sum_def->span(), import_data.file_table());
+    for (int i = 0; i < sum_def->variants().size(); ++i) {
+      sum->add_variants();
+    }
+    set_bits(sum->add_parametric_arguments()->mutable_value()->mutable_bits(),
+             32, width);
+    set_bits(sum->add_parametric_arguments()->mutable_value()->mutable_bits(),
+             width, value);
+    return type;
+  };
+  auto make_node = [&](const auto* node, AstNodeKindProto kind,
+                       const TypeProto& type) {
+    AstNodeTypeInfoProto result;
+    *result.mutable_span() =
+        ToProto(node->GetSpan().value(), import_data.file_table());
+    result.set_kind(kind);
+    *result.mutable_type() = type;
+    return result;
+  };
+  TypeInfoProto module;
+  *module.add_nodes() =
+      make_node(three_param, AST_NODE_KIND_PARAM, make_sum(3, 5));
+  *module.add_nodes() =
+      make_node(five_param, AST_NODE_KIND_PARAM, make_sum(5, 17));
+  TypeProto function_type;
+  *function_type.mutable_fn_type()->add_params() = make_sum(3, 5);
+  *function_type.mutable_fn_type()->add_params() = make_sum(5, 17);
+  BitsTypeProto* result = function_type.mutable_fn_type()
+                              ->mutable_return_type()
+                              ->mutable_bits_type();
+  result->set_is_signed(false);
+  set_bits(result->mutable_dim()->mutable_interp_value()->mutable_bits(), 32,
+           8);
+  *module.add_nodes() =
+      make_node(function, AST_NODE_KIND_FUNCTION, function_type);
+  TypeInfoProto parsed;
+  ASSERT_TRUE(parsed.ParseFromString(module.SerializeAsString()));
+  XLS_ASSERT_OK(ToHumanString(parsed, import_data, import_data.file_table()));
+  for (const AstNodeTypeInfoProto& node : parsed.nodes()) {
+    XLS_ASSERT_OK(ToHumanString(node, import_data, import_data.file_table()));
+  }
+
+  auto mutate_value = [&](int node_index, int arg_index, int width, int value,
+                          bool is_signed = false) {
+    AstNodeTypeInfoProto mutated = parsed.nodes(node_index);
+    set_bits(mutated.mutable_type()
+                 ->mutable_sum_type()
+                 ->mutable_parametric_arguments(arg_index)
+                 ->mutable_value()
+                 ->mutable_bits(),
+             width, value, is_signed);
+    return ToHumanString(mutated, import_data, import_data.file_table());
+  };
+  EXPECT_THAT(mutate_value(0, 1, 4, 5),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                     ::testing::HasSubstr("type mismatch")));
+  EXPECT_THAT(mutate_value(1, 1, 4, 5),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                     ::testing::HasSubstr("type mismatch")));
+  EXPECT_THAT(mutate_value(0, 1, 3, 5, true),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                     ::testing::HasSubstr("type mismatch")));
+  EXPECT_THAT(mutate_value(0, 0, 32, 5),
+              absl_testing::StatusIs(
+                  absl::StatusCode::kInvalidArgument,
+                  ::testing::HasSubstr("argument 0 does not match")));
+  EXPECT_THAT(mutate_value(0, 1, 3, 4),
+              absl_testing::StatusIs(
+                  absl::StatusCode::kInvalidArgument,
+                  ::testing::HasSubstr("argument 1 does not match")));
+
+  auto mutate_bytes = [&](std::optional<int32_t> width, std::string bytes) {
+    AstNodeTypeInfoProto mutated = parsed.nodes(0);
+    BitsValueProto* bits = mutated.mutable_type()
+                               ->mutable_sum_type()
+                               ->mutable_parametric_arguments(1)
+                               ->mutable_value()
+                               ->mutable_bits();
+    if (width.has_value()) {
+      bits->set_bit_count(*width);
+    } else {
+      bits->clear_bit_count();
+    }
+    bits->set_data(std::move(bytes));
+    return ToHumanString(mutated, import_data, import_data.file_table());
+  };
+  EXPECT_THAT(mutate_bytes(3, std::string("\xff\x05", 2)),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                     ::testing::HasSubstr("data")));
+  EXPECT_THAT(mutate_bytes(9, std::string(1, '\x05')),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                     ::testing::HasSubstr("data")));
+  EXPECT_THAT(mutate_bytes(std::numeric_limits<int32_t>::max(), ""),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                     ::testing::HasSubstr("data")));
+  EXPECT_THAT(mutate_bytes(-1, ""),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                     ::testing::HasSubstr("nonnegative")));
+  EXPECT_THAT(mutate_bytes(std::nullopt, ""),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                     ::testing::HasSubstr("nonnegative")));
+
+  // The early writer does not produce shared references. Supply the prepared
+  // representation and compare both use sites with the installed source types.
+  TypeProto tuple_type;
+  TupleTypeProto* tuple = tuple_type.mutable_tuple_type();
+  *tuple->add_members() = make_sum(3, 5);
+  tuple->mutable_members(0)->mutable_sum_type()->set_definition_id(1);
+  *tuple->add_members() = make_sum(5, 17);
+  tuple->mutable_members(1)->mutable_sum_type()->set_definition_id(2);
+  tuple->add_members()->set_sum_type_reference(1);
+  AstNodeTypeInfoProto tuple_node =
+      make_node(references->params()[0], AST_NODE_KIND_PARAM, tuple_type);
+  XLS_ASSERT_OK(
+      ToHumanString(tuple_node, import_data, import_data.file_table()));
+  AstNodeTypeInfoProto wrong_tuple = tuple_node;
+  wrong_tuple.mutable_type()
+      ->mutable_tuple_type()
+      ->mutable_members(2)
+      ->set_sum_type_reference(2);
+  EXPECT_THAT(ToHumanString(wrong_tuple, import_data, import_data.file_table()),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                     ::testing::HasSubstr("source type")));
+  AstNodeTypeInfoProto legacy = tuple_node;
+  legacy.mutable_type()
+      ->mutable_tuple_type()
+      ->mutable_members(0)
+      ->mutable_sum_type()
+      ->clear_parametric_arguments();
+  XLS_ASSERT_OK(ToHumanString(legacy, import_data, import_data.file_table()));
+  legacy.mutable_type()
+      ->mutable_tuple_type()
+      ->mutable_members(1)
+      ->set_sum_type_reference(1);
+  EXPECT_THAT(ToHumanString(legacy, import_data, import_data.file_table()),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                     ::testing::HasSubstr("source type")));
+
+  TypeProto refs_type;
+  *refs_type.mutable_fn_type()->add_params() = tuple_type;
+  refs_type.mutable_fn_type()->mutable_return_type()->set_sum_type_reference(1);
+  AstNodeTypeInfoProto refs_node =
+      make_node(references, AST_NODE_KIND_FUNCTION, refs_type);
+  XLS_ASSERT_OK(
+      ToHumanString(refs_node, import_data, import_data.file_table()));
+  refs_node.mutable_type()
+      ->mutable_fn_type()
+      ->mutable_return_type()
+      ->set_sum_type_reference(2);
+  EXPECT_THAT(ToHumanString(refs_node, import_data, import_data.file_table()),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                     ::testing::HasSubstr("source type")));
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,

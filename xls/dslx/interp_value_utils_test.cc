@@ -877,6 +877,20 @@ TEST(InterpValueHelpersTest,
   XLS_ASSERT_OK_AND_ASSIGN(
       ValueFormatDescriptor descriptor,
       MakeValueFormatDescriptor(sum_type, FormatPreference::kDefault));
+  auto repeated =
+      TupleType::Create2(sum_type.CloneToUnique(), sum_type.CloneToUnique());
+  XLS_ASSERT_OK_AND_ASSIGN(
+      ValueFormatDescriptor repeated_descriptor,
+      MakeValueFormatDescriptor(*repeated, FormatPreference::kDefault));
+  const auto repeated_elements = repeated_descriptor.tuple_elements();
+  ASSERT_EQ(repeated_elements.size(), 2);
+  EXPECT_EQ(repeated_elements[0].sum_format_identity(),
+            repeated_elements[1].sum_format_identity());
+  EXPECT_NE(descriptor.sum_format_identity(),
+            repeated_elements[0].sum_format_identity());
+  const ValueFormatDescriptor copied = repeated_elements[0];
+  EXPECT_EQ(copied.sum_format_identity(),
+            repeated_elements[0].sum_format_identity());
   ASSERT_EQ(descriptor.sum_variant_count(), 5);
   EXPECT_EQ(descriptor.sum_payload_slot_count(), 3);
   const ValueFormatSumVariantView none_view = descriptor.sum_variant(0);

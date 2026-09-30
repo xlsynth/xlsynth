@@ -22,9 +22,12 @@
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/base/optimization.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -37,18 +40,26 @@
 #include "xls/dslx/channel_direction.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/ast_node.h"
+#include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/interp_value_utils.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/type_system/type_info.pb.h"
+#include "xls/dslx/type_system/unwrap_meta_type.h"
 #include "xls/ir/bits.h"
 
 namespace xls::dslx {
 namespace {
 
 constexpr int kLegacyNameDefTreeAstNodeKindProtoValue = 21;
+
+struct SumTypeToProtoContext {
+  absl::flat_hash_map<const std::vector<SumTypeVariant>*, uint64_t>
+      definition_ids;
+};
 
 // Converts the AstNodeKind (C++ enum class) to its protobuf form.
 AstNodeKindProto ToProto(AstNodeKind kind) {
@@ -220,17 +231,21 @@ std::string U8sToString(absl::Span<const uint8_t> bs) {
   return std::string(reinterpret_cast<const char*>(bs.data()), bs.size());
 }
 
+BitsValueProto ToProto(const Bits& bits, bool is_signed) {
+  BitsValueProto proto;
+  proto.set_is_signed(is_signed);
+  proto.set_bit_count(static_cast<int32_t>(bits.bit_count()));
+  // Bits::ToBytes is little-endian; protobuf data is big-endian.
+  std::vector<uint8_t> bytes = bits.ToBytes();
+  std::reverse(bytes.begin(), bytes.end());
+  *proto.mutable_data() = U8sToString(bytes);
+  return proto;
+}
+
 absl::StatusOr<InterpValueProto> ToProto(const InterpValue& v) {
   InterpValueProto proto;
   if (v.IsBits()) {
-    BitsValueProto* bvp = proto.mutable_bits();
-    bvp->set_is_signed(v.IsSBits());
-    bvp->set_bit_count(static_cast<int32_t>(v.GetBitCount().value()));
-    // Bits::ToBytes is in little-endian format. The proto stores data in
-    // big-endian.
-    std::vector<uint8_t> bytes = v.GetBitsOrDie().ToBytes();
-    std::reverse(bytes.begin(), bytes.end());
-    *bvp->mutable_data() = U8sToString(bytes);
+    *proto.mutable_bits() = ToProto(v.GetBitsOrDie(), v.IsSBits());
   } else {
     return absl::UnimplementedError(
         "TypeInfoProto: convert InterpValue to proto: " + v.ToString());
@@ -246,7 +261,8 @@ absl::StatusOr<TypeDimProto> ToProto(const TypeDim& ctd,
 }
 
 absl::StatusOr<BitsTypeProto> ToProto(const BitsType& bits_type,
-                                      const FileTable& file_table) {
+                                      const FileTable& file_table,
+                                      SumTypeToProtoContext& context) {
   BitsTypeProto proto;
   proto.set_is_signed(bits_type.is_signed());
   XLS_ASSIGN_OR_RETURN(*proto.mutable_dim(),
@@ -255,7 +271,8 @@ absl::StatusOr<BitsTypeProto> ToProto(const BitsType& bits_type,
 }
 
 absl::StatusOr<BitsConstructorTypeProto> ToProto(
-    const BitsConstructorType& bits_type, const FileTable& file_table) {
+    const BitsConstructorType& bits_type, const FileTable& file_table,
+    SumTypeToProtoContext& context) {
   BitsConstructorTypeProto proto;
   XLS_ASSIGN_OR_RETURN(*proto.mutable_is_signed(),
                        ToProto(bits_type.is_signed(), file_table));
@@ -264,46 +281,53 @@ absl::StatusOr<BitsConstructorTypeProto> ToProto(
 
 // Forward decl since this is co-recursive with the ToProto() for Type
 // subtypes.
-absl::StatusOr<TypeProto> ToProto(const Type& type,
-                                  const FileTable& file_table);
+absl::StatusOr<TypeProto> ToProto(const Type& type, const FileTable& file_table,
+                                  SumTypeToProtoContext& context);
 
 absl::StatusOr<FunctionTypeProto> ToProto(const FunctionType& fn_type,
-                                          const FileTable& file_table) {
+                                          const FileTable& file_table,
+                                          SumTypeToProtoContext& context) {
   FunctionTypeProto proto;
   for (const std::unique_ptr<Type>& param : fn_type.params()) {
-    XLS_ASSIGN_OR_RETURN(*proto.add_params(), ToProto(*param, file_table));
+    XLS_ASSIGN_OR_RETURN(*proto.add_params(),
+                         ToProto(*param, file_table, context));
   }
   XLS_ASSIGN_OR_RETURN(*proto.mutable_return_type(),
-                       ToProto(fn_type.return_type(), file_table));
+                       ToProto(fn_type.return_type(), file_table, context));
   return proto;
 }
 
 absl::StatusOr<TupleTypeProto> ToProto(const TupleType& tuple_type,
-                                       const FileTable& file_table) {
+                                       const FileTable& file_table,
+                                       SumTypeToProtoContext& context) {
   TupleTypeProto proto;
   for (const std::unique_ptr<Type>& member : tuple_type.members()) {
-    XLS_ASSIGN_OR_RETURN(*proto.add_members(), ToProto(*member, file_table));
+    XLS_ASSIGN_OR_RETURN(*proto.add_members(),
+                         ToProto(*member, file_table, context));
   }
   return proto;
 }
 
 absl::StatusOr<TokenTypeProto> ToProto(const TokenType& token_type,
-                                       const FileTable& file_table) {
+                                       const FileTable& file_table,
+                                       SumTypeToProtoContext& context) {
   return TokenTypeProto();
 }
 
 absl::StatusOr<ModuleTypeProto> ToProto(const ModuleType& module_type,
-                                        const FileTable& file_table) {
+                                        const FileTable& file_table,
+                                        SumTypeToProtoContext& context) {
   return ModuleTypeProto();
 }
 
 absl::StatusOr<ArrayTypeProto> ToProto(const ArrayType& array_type,
-                                       const FileTable& file_table) {
+                                       const FileTable& file_table,
+                                       SumTypeToProtoContext& context) {
   ArrayTypeProto proto;
   XLS_ASSIGN_OR_RETURN(*proto.mutable_size(),
                        ToProto(array_type.size(), file_table));
   XLS_ASSIGN_OR_RETURN(*proto.mutable_element_type(),
-                       ToProto(array_type.element_type(), file_table));
+                       ToProto(array_type.element_type(), file_table, context));
   return proto;
 }
 
@@ -321,10 +345,12 @@ absl::StatusOr<T> ToProto(const StructDefBase& struct_def,
 }
 
 absl::StatusOr<StructTypeProto> ToProto(const StructType& struct_type,
-                                        const FileTable& file_table) {
+                                        const FileTable& file_table,
+                                        SumTypeToProtoContext& context) {
   StructTypeProto proto;
   for (const std::unique_ptr<Type>& member : struct_type.members()) {
-    XLS_ASSIGN_OR_RETURN(*proto.add_members(), ToProto(*member, file_table));
+    XLS_ASSIGN_OR_RETURN(*proto.add_members(),
+                         ToProto(*member, file_table, context));
   }
   XLS_ASSIGN_OR_RETURN(
       *proto.mutable_struct_def(),
@@ -333,10 +359,12 @@ absl::StatusOr<StructTypeProto> ToProto(const StructType& struct_type,
 }
 
 absl::StatusOr<ProcTypeProto> ToProto(const ProcType& proc_type,
-                                      const FileTable& file_table) {
+                                      const FileTable& file_table,
+                                      SumTypeToProtoContext& context) {
   ProcTypeProto proto;
   for (const std::unique_ptr<Type>& member : proc_type.members()) {
-    XLS_ASSIGN_OR_RETURN(*proto.add_members(), ToProto(*member, file_table));
+    XLS_ASSIGN_OR_RETURN(*proto.add_members(),
+                         ToProto(*member, file_table, context));
   }
   XLS_ASSIGN_OR_RETURN(
       *proto.mutable_proc_def(),
@@ -357,7 +385,8 @@ absl::StatusOr<EnumDefProto> ToProto(const EnumDef& enum_def,
 }
 
 absl::StatusOr<EnumTypeProto> ToProto(const EnumType& enum_type,
-                                      const FileTable& file_table) {
+                                      const FileTable& file_table,
+                                      SumTypeToProtoContext& context) {
   VLOG(5) << "Converting EnumType to proto: " << enum_type.ToString();
   EnumTypeProto proto;
   XLS_ASSIGN_OR_RETURN(*proto.mutable_enum_def(),
@@ -370,34 +399,41 @@ absl::StatusOr<EnumTypeProto> ToProto(const EnumType& enum_type,
 }
 
 absl::StatusOr<SumTypeVariantProto> ToProto(const SumTypeVariant& variant,
-                                            const FileTable& file_table) {
+                                            const FileTable& file_table,
+                                            SumTypeToProtoContext& context) {
   SumTypeVariantProto proto;
   for (int64_t i = 0; i < variant.size(); ++i) {
-    XLS_ASSIGN_OR_RETURN(*proto.add_payload_members(),
-                         ToProto(variant.GetMemberType(i), file_table));
+    XLS_ASSIGN_OR_RETURN(
+        *proto.add_payload_members(),
+        ToProto(variant.GetMemberType(i), file_table, context));
   }
   return proto;
 }
 
 absl::StatusOr<SumTypeProto> ToProto(const SumType& sum_type,
-                                     const FileTable& file_table) {
+                                     const FileTable& file_table,
+                                     SumTypeToProtoContext& context) {
   VLOG(5) << "Converting SumType to proto: " << sum_type.ToString();
   SumTypeProto proto;
   *proto.mutable_sum_def_span() =
       ToProto(sum_type.nominal_type().span(), file_table);
-  for (const SumTypeVariant& variant : sum_type.variants()) {
-    XLS_ASSIGN_OR_RETURN(*proto.add_variants(), ToProto(variant, file_table));
+  for (int64_t variant_index = 0; variant_index < sum_type.variant_count();
+       ++variant_index) {
+    XLS_ASSIGN_OR_RETURN(
+        *proto.add_variants(),
+        ToProto(sum_type.variants().at(variant_index), file_table, context));
   }
   VLOG(5) << "- proto: " << proto.ShortDebugString();
   return proto;
 }
 
 absl::StatusOr<MetaTypeProto> ToProto(const MetaType& meta_type,
-                                      const FileTable& file_table) {
+                                      const FileTable& file_table,
+                                      SumTypeToProtoContext& context) {
   VLOG(5) << "Converting MetaType to proto: " << meta_type.ToString();
   MetaTypeProto proto;
   XLS_ASSIGN_OR_RETURN(*proto.mutable_wrapped(),
-                       ToProto(*meta_type.wrapped(), file_table));
+                       ToProto(*meta_type.wrapped(), file_table, context));
   VLOG(5) << "- proto: " << proto.ShortDebugString();
   return proto;
 }
@@ -416,11 +452,13 @@ ChannelDirectionProto ToProto(ChannelDirection d) {
 }
 
 absl::StatusOr<ChannelTypeProto> ToProto(const ChannelType& channel_type,
-                                         const FileTable& file_table) {
+                                         const FileTable& file_table,
+                                         SumTypeToProtoContext& context) {
   VLOG(5) << "Converting ChannelType to proto: " << channel_type.ToString();
   ChannelTypeProto proto;
-  XLS_ASSIGN_OR_RETURN(*proto.mutable_payload(),
-                       ToProto(channel_type.payload_type(), file_table));
+  XLS_ASSIGN_OR_RETURN(
+      *proto.mutable_payload(),
+      ToProto(channel_type.payload_type(), file_table, context));
   proto.set_direction(ToProto(channel_type.direction()));
   VLOG(5) << "- proto: " << proto.ShortDebugString();
   return proto;
@@ -428,71 +466,72 @@ absl::StatusOr<ChannelTypeProto> ToProto(const ChannelType& channel_type,
 
 class ToProtoVisitor : public TypeVisitor {
  public:
-  explicit ToProtoVisitor(const FileTable& file_table)
-      : file_table_(file_table) {}
+  ToProtoVisitor(const FileTable& file_table, SumTypeToProtoContext& context)
+      : file_table_(file_table), context_(context) {}
 
   absl::Status HandleBits(const BitsType& type) override {
     XLS_ASSIGN_OR_RETURN(*proto_.mutable_bits_type(),
-                         ToProto(type, file_table_));
+                         ToProto(type, file_table_, context_));
     return absl::OkStatus();
   }
   absl::Status HandleBitsConstructor(const BitsConstructorType& type) override {
     XLS_ASSIGN_OR_RETURN(*proto_.mutable_bits_constructor_type(),
-                         ToProto(type, file_table_));
+                         ToProto(type, file_table_, context_));
     return absl::OkStatus();
   }
   absl::Status HandleFunction(const FunctionType& type) override {
-    XLS_ASSIGN_OR_RETURN(*proto_.mutable_fn_type(), ToProto(type, file_table_));
+    XLS_ASSIGN_OR_RETURN(*proto_.mutable_fn_type(),
+                         ToProto(type, file_table_, context_));
     return absl::OkStatus();
   }
   absl::Status HandleTuple(const TupleType& type) override {
     XLS_ASSIGN_OR_RETURN(*proto_.mutable_tuple_type(),
-                         ToProto(type, file_table_));
+                         ToProto(type, file_table_, context_));
     return absl::OkStatus();
   }
   absl::Status HandleArray(const ArrayType& type) override {
     XLS_ASSIGN_OR_RETURN(*proto_.mutable_array_type(),
-                         ToProto(type, file_table_));
+                         ToProto(type, file_table_, context_));
     return absl::OkStatus();
   }
   absl::Status HandleStruct(const StructType& type) override {
     XLS_ASSIGN_OR_RETURN(*proto_.mutable_struct_type(),
-                         ToProto(type, file_table_));
+                         ToProto(type, file_table_, context_));
     return absl::OkStatus();
   }
   absl::Status HandleSum(const SumType& type) override {
     XLS_ASSIGN_OR_RETURN(*proto_.mutable_sum_type(),
-                         ToProto(type, file_table_));
+                         ToProto(type, file_table_, context_));
     return absl::OkStatus();
   }
   absl::Status HandleProc(const ProcType& type) override {
     XLS_ASSIGN_OR_RETURN(*proto_.mutable_proc_type(),
-                         ToProto(type, file_table_));
+                         ToProto(type, file_table_, context_));
     return absl::OkStatus();
   }
   absl::Status HandleEnum(const EnumType& type) override {
     XLS_ASSIGN_OR_RETURN(*proto_.mutable_enum_type(),
-                         ToProto(type, file_table_));
+                         ToProto(type, file_table_, context_));
     return absl::OkStatus();
   }
   absl::Status HandleMeta(const MetaType& type) override {
     XLS_ASSIGN_OR_RETURN(*proto_.mutable_meta_type(),
-                         ToProto(type, file_table_));
+                         ToProto(type, file_table_, context_));
     return absl::OkStatus();
   }
   absl::Status HandleToken(const TokenType& type) override {
     XLS_ASSIGN_OR_RETURN(*proto_.mutable_token_type(),
-                         ToProto(type, file_table_));
+                         ToProto(type, file_table_, context_));
     return absl::OkStatus();
   }
   absl::Status HandleChannel(const ChannelType& type) override {
     XLS_ASSIGN_OR_RETURN(*proto_.mutable_channel_type(),
-                         ToProto(type, file_table_));
+                         ToProto(type, file_table_, context_));
     return absl::OkStatus();
   }
   absl::Status HandleModule(const ModuleType& type) override {
     XLS_ASSIGN_OR_RETURN(*proto_.mutable_module_type(),
-                         ToProto(type, file_table_));
+                         ToProto(type, file_table_, context_));
     return absl::OkStatus();
   }
 
@@ -501,11 +540,12 @@ class ToProtoVisitor : public TypeVisitor {
  private:
   TypeProto proto_;
   const FileTable& file_table_;
+  SumTypeToProtoContext& context_;
 };
 
-absl::StatusOr<TypeProto> ToProto(const Type& type,
-                                  const FileTable& file_table) {
-  ToProtoVisitor visitor(file_table);
+absl::StatusOr<TypeProto> ToProto(const Type& type, const FileTable& file_table,
+                                  SumTypeToProtoContext& context) {
+  ToProtoVisitor visitor(file_table, context);
   XLS_RETURN_IF_ERROR(type.Accept(visitor));
   return visitor.PopResult();
 }
@@ -518,7 +558,9 @@ absl::StatusOr<AstNodeTypeInfoProto> ToProto(const AstNode& node,
   if (std::optional<Span> maybe_span = node.GetSpan()) {
     *proto.mutable_span() = ToProto(maybe_span.value(), file_table);
   }
-  XLS_ASSIGN_OR_RETURN(*proto.mutable_type(), ToProto(type, file_table));
+  SumTypeToProtoContext context;
+  XLS_ASSIGN_OR_RETURN(*proto.mutable_type(),
+                       ToProto(type, file_table, context));
   return proto;
 }
 
@@ -532,18 +574,21 @@ absl::Span<const uint8_t> ToU8Span(const std::string& s) {
                                    s.size());
 }
 
+Bits FromProto(const BitsValueProto& proto) {
+  std::vector<uint8_t> bytes;
+  for (uint8_t byte : ToU8Span(proto.data())) {
+    bytes.push_back(byte);
+  }
+  // Bits::FromBytes expects data in little-endian format.
+  std::reverse(bytes.begin(), bytes.end());
+  return Bits::FromBytes(bytes, proto.bit_count());
+}
+
 absl::StatusOr<InterpValue> FromProto(const InterpValueProto& ivp) {
   switch (ivp.value_oneof_case()) {
     case InterpValueProto::ValueOneofCase::kBits: {
-      std::vector<uint8_t> bytes;
-      for (uint8_t i8 : ToU8Span(ivp.bits().data())) {
-        bytes.push_back(i8);
-      }
-      // Bits::FromBytes expects data in little-endian format.
-      std::reverse(bytes.begin(), bytes.end());
-      return InterpValue::MakeBits(
-          ivp.bits().is_signed(),
-          Bits::FromBytes(bytes, ivp.bits().bit_count()));
+      return InterpValue::MakeBits(ivp.bits().is_signed(),
+                                   FromProto(ivp.bits()));
     }
     default:
       break;
@@ -672,40 +717,340 @@ absl::StatusOr<std::unique_ptr<Type>> ScalarTypeFromProto(
   }
 }
 
-// Typechecking currently permits only bits-like values, numeric enums, and
-// empty semantic sums as sum payload members. Use Type equality for scalar
-// members so alternate bits-like representations retain their existing
-// equivalence.
-absl::StatusOr<bool> SumPayloadTypeMatchesProto(const TypeProto& proto,
-                                                const Type& expected_type,
-                                                const ImportData& import_data,
-                                                FileTable& file_table) {
-  if (proto.has_sum_type()) {
-    XLS_ASSIGN_OR_RETURN(const SumDef* sum_def,
-                         import_data.FindSumDef(FromProto(
-                             proto.sum_type().sum_def_span(), file_table)));
-    const auto* expected_sum = dynamic_cast<const SumType*>(&expected_type);
-    return expected_sum != nullptr &&
-           &expected_sum->nominal_type() == sum_def &&
-           expected_sum->variants().empty() &&
-           proto.sum_type().variants().empty();
+// The dump records type descriptions, not all the facts required to restore
+// compiler types. Retain validated sum facts for source comparisons without
+// constructing SumType or expanding its shared graph.
+using SumProtoParametricArgument = std::variant<InterpValue, const TypeProto*>;
+
+struct ValidatedSumProto {
+  const SumDef* definition;
+  const SumType* source_type;
+  TypeDim tag_bit_count;
+  std::vector<InterpValue> discriminants;
+  std::vector<SumProtoParametricArgument> parametric_arguments;
+};
+
+struct SumTypeFromProtoContext {
+  // A null entry reserves an ID until its full definition has been validated.
+  // Forward references and references to incomplete definitions are invalid.
+  absl::flat_hash_map<uint64_t, const SumTypeProto*> definitions;
+  absl::flat_hash_map<const SumTypeProto*, ValidatedSumProto> sums;
+  absl::flat_hash_set<
+      std::pair<const SumTypeProto*, const std::vector<SumTypeVariant>*>>
+      matching_sum_pairs;
+  absl::flat_hash_set<uint64_t> referenced_ids;
+  absl::flat_hash_map<uint64_t, int64_t> human_ids;
+};
+
+// This scan only selects definitions needing a short human label. It does not
+// register reference targets; validation still follows the serialized order.
+void CollectSumReferenceIds(const TypeProto& proto,
+                            absl::flat_hash_set<uint64_t>& ids) {
+  switch (proto.type_oneof_case()) {
+    case TypeProto::TypeOneofCase::kSumTypeReference:
+      ids.insert(proto.sum_type_reference());
+      break;
+    case TypeProto::TypeOneofCase::kSumType:
+      for (const SumTypeParametricProto& argument :
+           proto.sum_type().parametric_arguments()) {
+        if (argument.has_type()) {
+          CollectSumReferenceIds(argument.type(), ids);
+        }
+      }
+      for (const SumTypeVariantProto& variant : proto.sum_type().variants()) {
+        for (const TypeProto& member : variant.payload_members()) {
+          CollectSumReferenceIds(member, ids);
+        }
+      }
+      break;
+    case TypeProto::TypeOneofCase::kTupleType:
+      for (const TypeProto& member : proto.tuple_type().members()) {
+        CollectSumReferenceIds(member, ids);
+      }
+      break;
+    case TypeProto::TypeOneofCase::kArrayType:
+      CollectSumReferenceIds(proto.array_type().element_type(), ids);
+      break;
+    case TypeProto::TypeOneofCase::kStructType:
+      for (const TypeProto& member : proto.struct_type().members()) {
+        CollectSumReferenceIds(member, ids);
+      }
+      break;
+    case TypeProto::TypeOneofCase::kProcType:
+      for (const TypeProto& member : proto.proc_type().members()) {
+        CollectSumReferenceIds(member, ids);
+      }
+      break;
+    case TypeProto::TypeOneofCase::kFnType:
+      for (const TypeProto& param : proto.fn_type().params()) {
+        CollectSumReferenceIds(param, ids);
+      }
+      CollectSumReferenceIds(proto.fn_type().return_type(), ids);
+      break;
+    case TypeProto::TypeOneofCase::kMetaType:
+      CollectSumReferenceIds(proto.meta_type().wrapped(), ids);
+      break;
+    case TypeProto::TypeOneofCase::kChannelType:
+      CollectSumReferenceIds(proto.channel_type().payload(), ids);
+      break;
+    default:
+      break;
+  }
+}
+
+absl::StatusOr<const SumTypeProto*> ResolveSumReference(
+    uint64_t id, const SumTypeFromProtoContext& context) {
+  auto it = context.definitions.find(id);
+  if (id == 0 || it == context.definitions.end()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Unresolved sum reference %d in this AST-node record.", id));
+  } else if (it->second == nullptr) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Sum reference %d refers to an incomplete definition (cycle).", id));
+  } else {
+    return it->second;
+  }
+}
+
+absl::StatusOr<bool> SumPayloadTypeMatchesProto(
+    const TypeProto& proto, const Type& expected_type,
+    const ImportData& import_data, FileTable& file_table,
+    SumTypeFromProtoContext& context);
+
+template <typename ProtoRange>
+absl::StatusOr<bool> SourceMembersMatch(
+    const ProtoRange& protos,
+    absl::Span<const std::unique_ptr<Type>> expected_types,
+    const ImportData& import_data, FileTable& file_table,
+    SumTypeFromProtoContext& context) {
+  bool matches = protos.size() == expected_types.size();
+  for (int64_t i = 0; matches && i < protos.size(); ++i) {
+    XLS_ASSIGN_OR_RETURN(
+        matches, SumPayloadTypeMatchesProto(protos[i], *expected_types[i],
+                                            import_data, file_table, context));
+  }
+  return matches;
+}
+
+// Compare resolved descriptions with the actual source types. Text equality
+// loses nominal identity and phantom arguments. Memoizing each successful pair
+// keeps nested shared sums bounded without accepting a different instantiation.
+absl::StatusOr<bool> SumPayloadTypeMatchesProto(
+    const TypeProto& proto, const Type& expected_type,
+    const ImportData& import_data, FileTable& file_table,
+    SumTypeFromProtoContext& context) {
+  if (proto.has_sum_type() || proto.has_sum_type_reference()) {
+    const SumTypeProto* sum;
+    if (proto.has_sum_type()) {
+      sum = &proto.sum_type();
+    } else {
+      XLS_ASSIGN_OR_RETURN(
+          sum, ResolveSumReference(proto.sum_type_reference(), context));
+    }
+    const auto* expected = dynamic_cast<const SumType*>(&expected_type);
+    const ValidatedSumProto& validated = context.sums.at(sum);
+    if (expected == nullptr ||
+        validated.definition != &expected->nominal_type()) {
+      return false;
+    } else {
+      const auto pair = std::make_pair(sum, &expected->variants());
+      if (context.matching_sum_pairs.contains(pair)) {
+        return true;
+      } else {
+        // Phase One parametric records omit both arguments and layout. Validate
+        // the payloads they record without inventing arguments or requiring the
+        // legacy fallback layout to equal the current concrete layout.
+        const bool legacy_parametric =
+            validated.parametric_arguments.empty() &&
+            !validated.definition->parametric_bindings().empty();
+        bool matches = sum->variants_size() == expected->variant_count();
+        if (!legacy_parametric) {
+          matches = matches &&
+                    validated.tag_bit_count == expected->tag_bit_count() &&
+                    validated.parametric_arguments.size() ==
+                        expected->parametric_arguments().size();
+          for (int64_t i = 0;
+               matches && i < validated.parametric_arguments.size(); ++i) {
+            const SumProtoParametricArgument& argument =
+                validated.parametric_arguments[i];
+            const SumType::ParametricArgument& expected_argument =
+                expected->parametric_arguments()[i];
+            if (const auto* value = std::get_if<InterpValue>(&argument)) {
+              const auto* expected_value =
+                  std::get_if<InterpValue>(&expected_argument);
+              matches = expected_value != nullptr && *value == *expected_value;
+            } else if (const auto* expected_type =
+                           std::get_if<std::unique_ptr<const Type>>(
+                               &expected_argument)) {
+              XLS_ASSIGN_OR_RETURN(
+                  matches,
+                  SumPayloadTypeMatchesProto(
+                      *std::get<const TypeProto*>(argument), **expected_type,
+                      import_data, file_table, context));
+            } else {
+              matches = false;
+            }
+          }
+        }
+        for (int64_t i = 0; matches && i < sum->variants_size(); ++i) {
+          const SumTypeVariantProto& variant = sum->variants(i);
+          const SumTypeVariant& expected_variant = expected->variants()[i];
+          matches = validated.definition->variants()[i] ==
+                        &expected_variant.variant() &&
+                    variant.payload_members_size() == expected_variant.size() &&
+                    (legacy_parametric || validated.discriminants[i] ==
+                                              expected->GetDiscriminant(i));
+          for (int64_t j = 0; matches && j < variant.payload_members_size();
+               ++j) {
+            XLS_ASSIGN_OR_RETURN(
+                matches,
+                SumPayloadTypeMatchesProto(variant.payload_members(j),
+                                           expected_variant.GetMemberType(j),
+                                           import_data, file_table, context));
+          }
+        }
+        if (matches) {
+          context.matching_sum_pairs.insert(pair);
+        }
+        return matches;
+      }
+    }
   } else if (proto.has_bits_type() || proto.has_bits_constructor_type() ||
              proto.has_enum_type() ||
              (proto.has_array_type() &&
               proto.array_type().element_type().has_bits_constructor_type())) {
+    // Preserve alternate bits-like representations and numeric enum identity.
     XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> type,
                          ScalarTypeFromProto(proto, import_data, file_table));
     return *type == expected_type;
+  } else if (proto.has_tuple_type()) {
+    const auto* expected = dynamic_cast<const TupleType*>(&expected_type);
+    if (expected == nullptr) {
+      return false;
+    } else {
+      return SourceMembersMatch(proto.tuple_type().members(),
+                                expected->members(), import_data, file_table,
+                                context);
+    }
+  } else if (proto.has_array_type()) {
+    if (!expected_type.IsArray()) {
+      return false;
+    } else {
+      const ArrayType& expected = expected_type.AsArray();
+      XLS_ASSIGN_OR_RETURN(TypeDim size,
+                           FromProto(proto.array_type().size(), file_table));
+      if (size != expected.size()) {
+        return false;
+      } else {
+        return SumPayloadTypeMatchesProto(proto.array_type().element_type(),
+                                          expected.element_type(), import_data,
+                                          file_table, context);
+      }
+    }
+  } else if (proto.has_struct_type()) {
+    const auto* expected = dynamic_cast<const StructType*>(&expected_type);
+    XLS_ASSIGN_OR_RETURN(
+        const StructDef* definition,
+        import_data.FindStructDef(
+            FromProto(proto.struct_type().struct_def().span(), file_table)));
+    if (expected == nullptr || definition != &expected->nominal_type()) {
+      return false;
+    } else {
+      return SourceMembersMatch(proto.struct_type().members(),
+                                expected->members(), import_data, file_table,
+                                context);
+    }
+  } else if (proto.has_proc_type()) {
+    const auto* expected = dynamic_cast<const ProcType*>(&expected_type);
+    XLS_ASSIGN_OR_RETURN(const ProcDef* definition,
+                         import_data.FindProcDef(FromProto(
+                             proto.proc_type().proc_def().span(), file_table)));
+    if (expected == nullptr || definition != &expected->nominal_type()) {
+      return false;
+    } else {
+      return SourceMembersMatch(proto.proc_type().members(),
+                                expected->members(), import_data, file_table,
+                                context);
+    }
+  } else if (proto.has_fn_type()) {
+    const auto* expected = dynamic_cast<const FunctionType*>(&expected_type);
+    if (expected == nullptr) {
+      return false;
+    } else {
+      XLS_ASSIGN_OR_RETURN(
+          bool params_match,
+          SourceMembersMatch(proto.fn_type().params(), expected->params(),
+                             import_data, file_table, context));
+      if (!params_match) {
+        return false;
+      } else {
+        return SumPayloadTypeMatchesProto(proto.fn_type().return_type(),
+                                          expected->return_type(), import_data,
+                                          file_table, context);
+      }
+    }
+  } else if (proto.has_meta_type()) {
+    if (!expected_type.IsMeta()) {
+      return false;
+    } else {
+      return SumPayloadTypeMatchesProto(proto.meta_type().wrapped(),
+                                        *expected_type.AsMeta().wrapped(),
+                                        import_data, file_table, context);
+    }
   } else {
-    return false;
+    return proto.has_token_type() && expected_type.IsToken();
   }
 }
 
-// Formats the dump directly: it does not contain all the facts needed to create
-// compiler types (for example, a sum's evaluated zero selection).
+// A dependent annotation need not have a type in the declaration's root
+// TypeInfo. Its value in the source node's concrete specialization supplies the
+// type after earlier arguments have been checked against that specialization.
+absl::StatusOr<const InterpValue*> GetSourceSumParametricValue(
+    const SumType& source, int64_t argument_index,
+    absl::Span<const SumProtoParametricArgument> prior_arguments,
+    const ImportData& import_data, FileTable& file_table,
+    SumTypeFromProtoContext& context) {
+  for (int64_t i = 0; i < prior_arguments.size(); ++i) {
+    const SumProtoParametricArgument& argument = prior_arguments[i];
+    const SumType::ParametricArgument& expected =
+        source.parametric_arguments()[i];
+    bool matches = false;
+    if (const auto* value = std::get_if<InterpValue>(&argument)) {
+      const auto* expected_value = std::get_if<InterpValue>(&expected);
+      matches = expected_value != nullptr && *value == *expected_value;
+    } else if (const auto* expected_type =
+                   std::get_if<std::unique_ptr<const Type>>(&expected)) {
+      XLS_ASSIGN_OR_RETURN(
+          matches, SumPayloadTypeMatchesProto(
+                       *std::get<const TypeProto*>(argument), **expected_type,
+                       import_data, file_table, context));
+    }
+    if (!matches) {
+      return absl::InvalidArgumentError(absl::StrFormat(
+          "Sum `%s` nominal parametric argument %d does not match its source "
+          "specialization.",
+          source.nominal_type().identifier(), i));
+    }
+  }
+  const auto* value =
+      std::get_if<InterpValue>(&source.parametric_arguments()[argument_index]);
+  if (value == nullptr) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Sum `%s` nominal parametric argument %d is not a value in its source "
+        "specialization.",
+        source.nominal_type().identifier(), argument_index));
+  } else {
+    return value;
+  }
+}
+
+// Formats validated descriptions directly. Legacy records omit concrete facts
+// needed by compilation; formatting must not fabricate replacement SumTypes.
 absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
                                           const ImportData& import_data,
-                                          FileTable& file_table) {
+                                          FileTable& file_table,
+                                          SumTypeFromProtoContext& context,
+                                          const Type* source_type) {
   switch (ctp.type_oneof_case()) {
     case TypeProto::TypeOneofCase::kBitsType:
     case TypeProto::TypeOneofCase::kBitsConstructorType:
@@ -715,29 +1060,55 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
       return type->ToString();
     }
     case TypeProto::TypeOneofCase::kTupleType: {
+      const auto* source = dynamic_cast<const TupleType*>(source_type);
       std::vector<std::string> members;
-      for (const TypeProto& member : ctp.tuple_type().members()) {
-        XLS_ASSIGN_OR_RETURN(std::string text,
-                             ToHumanString(member, import_data, file_table));
+      for (int64_t i = 0; i < ctp.tuple_type().members_size(); ++i) {
+        XLS_ASSIGN_OR_RETURN(
+            std::string text,
+            ToHumanString(ctp.tuple_type().members(i), import_data, file_table,
+                          context,
+                          source != nullptr && i < source->size()
+                              ? &source->GetMemberType(i)
+                              : nullptr));
         members.push_back(std::move(text));
       }
       return absl::StrCat("(", absl::StrJoin(members, ", "), ")");
     }
     case TypeProto::TypeOneofCase::kArrayType: {
       const ArrayTypeProto& array = ctp.array_type();
+      const auto* source = dynamic_cast<const ArrayType*>(source_type);
       if (array.element_type().has_meta_type()) {
         return absl::InvalidArgumentError(
             "Array element cannot be a meta-type.");
       } else {
         XLS_ASSIGN_OR_RETURN(
             std::string element,
-            ToHumanString(array.element_type(), import_data, file_table));
+            ToHumanString(
+                array.element_type(), import_data, file_table, context,
+                source == nullptr ? nullptr : &source->element_type()));
         XLS_ASSIGN_OR_RETURN(TypeDim size, FromProto(array.size(), file_table));
         return absl::StrCat(element, "[", size.ToString(), "]");
       }
     }
     case TypeProto::TypeOneofCase::kSumType: {
       const SumTypeProto& stp = ctp.sum_type();
+      if (stp.has_definition_id()) {
+        if (stp.definition_id() == 0) {
+          return absl::InvalidArgumentError(
+              "Sum definition ID must be positive.");
+        } else if (!context.definitions.emplace(stp.definition_id(), nullptr)
+                        .second) {
+          return absl::InvalidArgumentError(absl::StrFormat(
+              "Duplicate sum definition ID %d.", stp.definition_id()));
+        }
+      }
+      std::string human_prefix;
+      if (stp.has_definition_id() &&
+          context.referenced_ids.contains(stp.definition_id())) {
+        const int64_t human_id = context.human_ids.size() + 1;
+        context.human_ids.emplace(stp.definition_id(), human_id);
+        human_prefix = absl::StrCat("@", human_id, "=");
+      }
       if (!stp.has_sum_def_span()) {
         return absl::InvalidArgumentError(
             "Sum type is missing its source definition span.");
@@ -747,14 +1118,20 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
           import_data.FindSumDef(FromProto(stp.sum_def_span(), file_table)));
       XLS_ASSIGN_OR_RETURN(const TypeInfo* root_type_info,
                            import_data.GetRootTypeInfoForNode(sum_def));
+      const auto* source_sum = dynamic_cast<const SumType*>(source_type);
+      if (source_sum != nullptr && &source_sum->nominal_type() != sum_def) {
+        source_sum = nullptr;
+      }
       const SumType* expected_sum_type = nullptr;
       if (std::optional<Type*> nominal_type = root_type_info->GetItem(sum_def);
           nominal_type.has_value()) {
-        const Type* type = *nominal_type;
-        if (type->IsMeta()) {
-          type = type->AsMeta().wrapped().get();
+        const Type* concrete_nominal_type = *nominal_type;
+        if (auto* meta_type =
+                dynamic_cast<const MetaType*>(concrete_nominal_type);
+            meta_type != nullptr) {
+          concrete_nominal_type = meta_type->wrapped().get();
         }
-        expected_sum_type = dynamic_cast<const SumType*>(type);
+        expected_sum_type = dynamic_cast<const SumType*>(concrete_nominal_type);
       }
       if (stp.variants_size() != sum_def->variants().size()) {
         return absl::InvalidArgumentError(absl::StrFormat(
@@ -762,8 +1139,162 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
             sum_def->identifier(), stp.variants_size(),
             sum_def->variants().size()));
       }
+      const bool has_legacy_layout =
+          !stp.has_tag_bit_count() &&
+          std::none_of(stp.variants().begin(), stp.variants().end(),
+                       [](const SumTypeVariantProto& variant) {
+                         return variant.has_discriminant();
+                       });
+      std::vector<SumProtoParametricArgument> parametric_arguments;
+      std::vector<std::string> argument_text;
+      if ((!has_legacy_layout || stp.parametric_arguments_size() != 0) &&
+          stp.parametric_arguments_size() !=
+              sum_def->parametric_bindings().size()) {
+        return absl::InvalidArgumentError(absl::StrFormat(
+            "Sum parametric argument count mismatch for `%s`; proto count=%d "
+            "AST count=%d.",
+            sum_def->identifier(), stp.parametric_arguments_size(),
+            sum_def->parametric_bindings().size()));
+      }
+      parametric_arguments.reserve(stp.parametric_arguments_size());
+      for (int64_t argument_index = 0;
+           argument_index < stp.parametric_arguments_size(); ++argument_index) {
+        const SumTypeParametricProto& argument =
+            stp.parametric_arguments(argument_index);
+        const ParametricBinding* binding =
+            sum_def->parametric_bindings()[argument_index];
+        const bool expects_type =
+            binding->type_annotation()->IsAnnotation<GenericTypeAnnotation>();
+        if (expects_type != argument.has_type()) {
+          return absl::InvalidArgumentError(absl::StrFormat(
+              "Sum `%s` nominal parametric argument %d must contain a %s.",
+              sum_def->identifier(), argument_index,
+              expects_type ? "type" : "value"));
+        }
+        if (argument.has_value()) {
+          absl::StatusOr<Type*> annotation_type =
+              root_type_info->GetItemOrError(binding->type_annotation());
+          auto type_mismatch = [&](std::string_view detail) {
+            return absl::InvalidArgumentError(absl::StrFormat(
+                "Sum `%s` nominal parametric argument %d type mismatch: %s",
+                sum_def->identifier(), argument_index, detail));
+          };
+          auto value_mismatch = [&]() {
+            return absl::InvalidArgumentError(absl::StrFormat(
+                "Sum `%s` nominal parametric argument %d does not match its "
+                "source specialization.",
+                sum_def->identifier(), argument_index));
+          };
+          XLS_ASSIGN_OR_RETURN(
+              InterpValue value, [&]() -> absl::StatusOr<InterpValue> {
+                if (annotation_type.ok()) {
+                  XLS_ASSIGN_OR_RETURN(const Type* binding_type,
+                                       UnwrapMetaType(**annotation_type));
+                  XLS_ASSIGN_OR_RETURN(InterpValue value,
+                                       FromProto(argument.value()));
+                  absl::Status status =
+                      ValidateInterpValueMatchesType(value, *binding_type);
+                  if (!status.ok()) {
+                    return type_mismatch(status.message());
+                  } else {
+                    return value;
+                  }
+                } else if (absl::IsNotFound(annotation_type.status()) &&
+                           source_sum != nullptr &&
+                           source_sum->parametric_arguments().size() ==
+                               sum_def->parametric_bindings().size()) {
+                  XLS_ASSIGN_OR_RETURN(
+                      const InterpValue* source_value,
+                      GetSourceSumParametricValue(
+                          *source_sum, argument_index, parametric_arguments,
+                          import_data, file_table, context));
+                  if (!source_value->IsBits()) {
+                    return type_mismatch(
+                        "expected a packed source specialization value");
+                  }
+                  const BitsValueProto& bits = argument.value().bits();
+                  if (!argument.value().has_bits() || !bits.has_bit_count() ||
+                      bits.bit_count() < 0) {
+                    return type_mismatch(
+                        "scalar value requires a nonnegative bit count");
+                  } else if (bits.data().size() !=
+                             (static_cast<int64_t>(bits.bit_count()) + 7) / 8) {
+                    return type_mismatch(
+                        "scalar value data does not match its bit count");
+                  }
+                  XLS_ASSIGN_OR_RETURN(InterpValue value,
+                                       FromProto(argument.value()));
+                  XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> binding_type,
+                                       Type::FromInterpValue(*source_value));
+                  absl::Status status =
+                      ValidateInterpValueMatchesType(value, *binding_type);
+                  if (!status.ok()) {
+                    return type_mismatch(status.message());
+                  } else if (value != *source_value) {
+                    return value_mismatch();
+                  } else {
+                    return value;
+                  }
+                } else {
+                  return annotation_type.status();
+                }
+              }());
+          argument_text.push_back(value.ToString());
+          parametric_arguments.emplace_back(std::move(value));
+        } else if (argument.has_type()) {
+          const Type* source_argument = nullptr;
+          if (source_sum != nullptr &&
+              argument_index < source_sum->parametric_arguments().size()) {
+            if (const auto* type = std::get_if<std::unique_ptr<const Type>>(
+                    &source_sum->parametric_arguments()[argument_index])) {
+              source_argument = type->get();
+            }
+          }
+          XLS_ASSIGN_OR_RETURN(
+              std::string type,
+              ToHumanString(argument.type(), import_data, file_table, context,
+                            source_argument));
+          argument_text.push_back(std::move(type));
+          parametric_arguments.emplace_back(&argument.type());
+        } else {
+          return absl::InvalidArgumentError(absl::StrFormat(
+              "Sum `%s` contains a missing nominal parametric argument.",
+              sum_def->identifier()));
+        }
+      }
+      XLS_ASSIGN_OR_RETURN(
+          TypeDim tag_bit_count, [&]() -> absl::StatusOr<TypeDim> {
+            if (stp.has_tag_bit_count()) {
+              return FromProto(stp.tag_bit_count(), file_table);
+            } else if (has_legacy_layout && expected_sum_type != nullptr) {
+              return expected_sum_type->tag_bit_count();
+            } else if (has_legacy_layout) {
+              // Phase One stored declaration-order tags with at least one bit,
+              // but no concrete nominal arguments or layout metadata.
+              const int64_t variant_count = stp.variants_size();
+              return TypeDim::CreateU32(
+                  variant_count <= 1
+                      ? 1
+                      : Bits::MinBitCountUnsigned(variant_count - 1));
+            } else {
+              return absl::InvalidArgumentError(
+                  absl::StrFormat("Missing sum tag bit count for `%s`.",
+                                  sum_def->identifier()));
+            }
+          }());
+      XLS_ASSIGN_OR_RETURN(int64_t expected_tag_width,
+                           tag_bit_count.GetAsInt64());
+      if (expected_sum_type != nullptr &&
+          tag_bit_count != expected_sum_type->tag_bit_count()) {
+        return absl::InvalidArgumentError(absl::StrFormat(
+            "Sum tag bit count mismatch for `%s`.", sum_def->identifier()));
+      }
       std::vector<std::string> variants;
       variants.reserve(stp.variants_size());
+      std::vector<InterpValue> discriminants;
+      discriminants.reserve(stp.variants_size());
+      absl::flat_hash_set<Bits> seen_discriminants;
+      seen_discriminants.reserve(stp.variants_size());
       for (int64_t i = 0; i < sum_def->variants().size(); ++i) {
         const SumVariant* variant = sum_def->variants()[i];
         const SumTypeVariantProto& variant_proto = stp.variants(i);
@@ -772,9 +1303,16 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
         payload_members.reserve(variant_proto.payload_members_size());
         int64_t payload_index = 0;
         for (const TypeProto& member_proto : variant_proto.payload_members()) {
+          const Type* source_member = nullptr;
+          if (source_sum != nullptr && i < source_sum->variant_count() &&
+              payload_index < source_sum->variants()[i].size()) {
+            source_member =
+                &source_sum->variants()[i].GetMemberType(payload_index);
+          }
           XLS_ASSIGN_OR_RETURN(
               std::string payload_member,
-              ToHumanString(member_proto, import_data, file_table));
+              ToHumanString(member_proto, import_data, file_table, context,
+                            source_member));
           if (member_proto.has_meta_type()) {
             return absl::InvalidArgumentError(absl::StrFormat(
                 "Sum variant `%s` has an invalid meta-type payload member.",
@@ -786,7 +1324,7 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
             XLS_ASSIGN_OR_RETURN(
                 bool matches,
                 SumPayloadTypeMatchesProto(member_proto, expected_member,
-                                           import_data, file_table));
+                                           import_data, file_table, context));
             if (!matches) {
               return absl::InvalidArgumentError(absl::StrFormat(
                   "Sum variant `%s` payload type mismatch at index %d; proto "
@@ -816,21 +1354,118 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
                                           absl::StrJoin(payload_members, ", "),
                                           " }"));
         }
+        XLS_ASSIGN_OR_RETURN(
+            InterpValue discriminant, [&]() -> absl::StatusOr<InterpValue> {
+              if (has_legacy_layout && expected_sum_type != nullptr) {
+                return expected_sum_type->GetDiscriminant(i);
+              } else if (has_legacy_layout) {
+                return InterpValue::MakeUBits(expected_tag_width, i);
+              } else if (!variant_proto.has_discriminant() ||
+                         !variant_proto.discriminant().has_bits()) {
+                return absl::InvalidArgumentError(absl::StrFormat(
+                    "Sum variant `%s` is missing its bits-valued "
+                    "discriminant.",
+                    variant->identifier()));
+              } else {
+                return FromProto(variant_proto.discriminant());
+              }
+            }());
+        XLS_ASSIGN_OR_RETURN(int64_t actual_tag_width,
+                             discriminant.GetBitCount());
+        if (actual_tag_width != expected_tag_width) {
+          return absl::InvalidArgumentError(absl::StrFormat(
+              "Sum variant `%s` discriminant width mismatch; expected %d "
+              "bits, got %d.",
+              variant->identifier(), expected_tag_width, actual_tag_width));
+        }
+        if (!discriminants.empty() &&
+            discriminant.IsSigned() != discriminants.front().IsSigned()) {
+          return absl::InvalidArgumentError(absl::StrFormat(
+              "Sum variant `%s` discriminant signedness mismatch.",
+              variant->identifier()));
+        }
+        if (expected_sum_type != nullptr &&
+            discriminant.IsSigned() !=
+                expected_sum_type->GetDiscriminant(i).IsSigned()) {
+          return absl::InvalidArgumentError(absl::StrFormat(
+              "Sum variant `%s` discriminant signedness mismatch.",
+              variant->identifier()));
+        }
+        if (!seen_discriminants.insert(discriminant.GetBitsOrDie()).second) {
+          return absl::InvalidArgumentError(
+              absl::StrFormat("Sum variant `%s` has a duplicate discriminant.",
+                              variant->identifier()));
+        }
+        if (expected_sum_type != nullptr &&
+            discriminant.GetBitsOrDie() !=
+                expected_sum_type->GetDiscriminant(i).GetBitsOrDie()) {
+          return absl::InvalidArgumentError(
+              absl::StrFormat("Sum variant `%s` discriminant value mismatch.",
+                              variant->identifier()));
+        }
+        discriminants.push_back(std::move(discriminant));
       }
-      return absl::StrCat(sum_def->identifier(), " { ",
-                          absl::StrJoin(variants, " | "), " }");
+      context.sums.emplace(
+          &stp, ValidatedSumProto{sum_def, source_sum, std::move(tag_bit_count),
+                                  std::move(discriminants),
+                                  std::move(parametric_arguments)});
+      if (stp.has_definition_id()) {
+        context.definitions.at(stp.definition_id()) = &stp;
+      }
+      return absl::StrCat(
+          human_prefix, sum_def->identifier(),
+          argument_text.empty()
+              ? ""
+              : absl::StrCat("<", absl::StrJoin(argument_text, ", "), ">"),
+          " { ", absl::StrJoin(variants, " | "), " }");
+    }
+    case TypeProto::TypeOneofCase::kSumTypeReference: {
+      const uint64_t id = ctp.sum_type_reference();
+      XLS_ASSIGN_OR_RETURN(const SumTypeProto* definition,
+                           ResolveSumReference(id, context));
+      if (source_type != nullptr) {
+        XLS_ASSIGN_OR_RETURN(bool matches, SumPayloadTypeMatchesProto(
+                                               ctp, *source_type, import_data,
+                                               file_table, context));
+        const ValidatedSumProto& target = context.sums.at(definition);
+        const auto* source_sum = dynamic_cast<const SumType*>(source_type);
+        const int64_t binding_count =
+            target.definition->parametric_bindings().size();
+        // Legacy definitions omit specialization arguments. If both positions
+        // have concrete source types, they still must describe the same sum;
+        // the omitted arguments are not added to the formatted legacy output.
+        if (matches && target.parametric_arguments.empty() &&
+            binding_count > 0 && target.source_type != nullptr &&
+            source_sum != nullptr &&
+            target.source_type->parametric_arguments().size() ==
+                binding_count &&
+            source_sum->parametric_arguments().size() == binding_count) {
+          matches = *target.source_type == *source_sum;
+        }
+        if (!matches) {
+          return absl::InvalidArgumentError(absl::StrFormat(
+              "Sum reference %d type mismatch against its source type.", id));
+        }
+      }
+      return absl::StrCat("@", context.human_ids.at(id));
     }
     case TypeProto::TypeOneofCase::kFnType: {
       const FunctionTypeProto& ftp = ctp.fn_type();
+      const auto* source = dynamic_cast<const FunctionType*>(source_type);
       std::vector<std::string> params;
-      for (const TypeProto& param : ftp.params()) {
-        XLS_ASSIGN_OR_RETURN(std::string text,
-                             ToHumanString(param, import_data, file_table));
+      for (int64_t i = 0; i < ftp.params_size(); ++i) {
+        XLS_ASSIGN_OR_RETURN(
+            std::string text,
+            ToHumanString(ftp.params(i), import_data, file_table, context,
+                          source != nullptr && i < source->GetParamCount()
+                              ? source->params()[i].get()
+                              : nullptr));
         params.push_back(std::move(text));
       }
       XLS_ASSIGN_OR_RETURN(
           std::string return_type,
-          ToHumanString(ftp.return_type(), import_data, file_table));
+          ToHumanString(ftp.return_type(), import_data, file_table, context,
+                        source == nullptr ? nullptr : &source->return_type()));
       return absl::StrCat("(", absl::StrJoin(params, ", "), ") -> ",
                           return_type);
     }
@@ -839,6 +1474,7 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
     }
     case TypeProto::TypeOneofCase::kStructType:
     case TypeProto::TypeOneofCase::kProcType: {
+      const auto* source = dynamic_cast<const StructTypeBase*>(source_type);
       const StructDefBase* definition;
       if (ctp.has_struct_type()) {
         XLS_ASSIGN_OR_RETURN(
@@ -849,6 +1485,9 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
         XLS_ASSIGN_OR_RETURN(
             definition, import_data.FindProcDef(FromProto(
                             ctp.proc_type().proc_def().span(), file_table)));
+      }
+      if (source != nullptr && &source->struct_def_base() != definition) {
+        source = nullptr;
       }
       const auto& member_protos = ctp.has_struct_type()
                                       ? ctp.struct_type().members()
@@ -869,7 +1508,10 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
           } else {
             XLS_ASSIGN_OR_RETURN(
                 std::string text,
-                ToHumanString(member, import_data, file_table));
+                ToHumanString(member, import_data, file_table, context,
+                              source != nullptr && i < source->size()
+                                  ? &source->GetMemberType(i)
+                                  : nullptr));
             members.push_back(
                 absl::StrCat(definition->GetMemberName(i), ": ", text));
           }
@@ -881,9 +1523,12 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
       }
     }
     case TypeProto::TypeOneofCase::kMetaType: {
+      const auto* source = dynamic_cast<const MetaType*>(source_type);
       XLS_ASSIGN_OR_RETURN(
           std::string wrapped,
-          ToHumanString(ctp.meta_type().wrapped(), import_data, file_table));
+          ToHumanString(ctp.meta_type().wrapped(), import_data, file_table,
+                        context,
+                        source == nullptr ? nullptr : source->wrapped().get()));
       return absl::StrCat("typeof(", wrapped, ")");
     }
     case TypeProto::TypeOneofCase::kModuleType:
@@ -899,6 +1544,27 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
       "TypeProto->Type "
       "conversion: " +
       ctp.ShortDebugString());
+}
+
+absl::StatusOr<std::string> ToHumanString(
+    const TypeProto& ctp, const ImportData& import_data, FileTable& file_table,
+    const Type* source_type, bool require_full_source_match = false) {
+  SumTypeFromProtoContext context;
+  CollectSumReferenceIds(ctp, context.referenced_ids);
+  XLS_ASSIGN_OR_RETURN(
+      std::string result,
+      ToHumanString(ctp, import_data, file_table, context, source_type));
+  if (require_full_source_match) {
+    XLS_RET_CHECK(source_type != nullptr);
+    XLS_ASSIGN_OR_RETURN(
+        bool matches, SumPayloadTypeMatchesProto(ctp, *source_type, import_data,
+                                                 file_table, context));
+    if (!matches) {
+      return absl::InvalidArgumentError(
+          "TypeInfo record does not match this source type.");
+    }
+  }
+  return result;
 }
 
 absl::StatusOr<AstNodeKind> FromProto(AstNodeKindProto p) {
@@ -1082,21 +1748,55 @@ absl::StatusOr<AstNodeKind> FromProto(AstNodeKindProto p) {
 absl::StatusOr<std::string> ToHumanString(const AstNodeTypeInfoProto& antip,
                                           const ImportData& import_data,
                                           FileTable& file_table) {
-  XLS_ASSIGN_OR_RETURN(std::string type_str,
-                       ToHumanString(antip.type(), import_data, file_table));
-  XLS_ASSIGN_OR_RETURN(AstNodeKind kind, FromProto(antip.kind()));
-
   // TODO: https://github.com/google/xls/issues/3930 - This use of FindNode is
   // brittle because there can be nodes fabricated in type inference mapped to
   // the same span as the node from which the proto node was generated. We
   // should either do it another way or fix TIv2 to strictly use `Span::None()`
   // to avoid such collisions.
-  XLS_ASSIGN_OR_RETURN(
-      const AstNode* n,
-      import_data.FindNode(kind, FromProto(antip.span(), file_table)));
+  absl::StatusOr<const AstNode*> source_node =
+      [&]() -> absl::StatusOr<const AstNode*> {
+    XLS_ASSIGN_OR_RETURN(AstNodeKind kind, FromProto(antip.kind()));
+    return import_data.FindNode(kind, FromProto(antip.span(), file_table));
+  }();
+  const Type* source_type = nullptr;
+  const TypeInfo* source_type_info = nullptr;
+  if (source_node.ok() && *source_node != nullptr) {
+    absl::StatusOr<const TypeInfo*> type_info =
+        import_data.GetRootTypeInfoForNode(*source_node);
+    if (type_info.ok()) {
+      source_type_info = *type_info;
+      source_type = source_type_info->GetItem(*source_node).value_or(nullptr);
+    }
+  }
+  absl::StatusOr<std::string> type_str =
+      ToHumanString(antip.type(), import_data, file_table, source_type);
+  if (!type_str.ok() && source_type_info != nullptr) {
+    const AstNode* first = *source_node;
+    // The writer can emit several real TypeInfo entries for the same module,
+    // kind, and span, which are the only node identifiers in the saved format.
+    // Try the other entries only after the first fails, and require the whole
+    // description to match so an unrelated type cannot bypass reference checks.
+    for (const auto& [candidate, candidate_type] : source_type_info->dict()) {
+      if (candidate != first && candidate->owner() == first->owner() &&
+          candidate->kind() == first->kind() &&
+          candidate->GetSpan() == first->GetSpan() &&
+          !candidate->owner()->IsSyntheticNode(candidate)) {
+        absl::StatusOr<std::string> candidate_str = ToHumanString(
+            antip.type(), import_data, file_table, candidate_type.get(),
+            /*require_full_source_match=*/true);
+        if (candidate_str.ok()) {
+          type_str = std::move(candidate_str);
+          break;
+        }
+      }
+    }
+  }
+  XLS_ASSIGN_OR_RETURN(std::string result_type_str, std::move(type_str));
+  XLS_ASSIGN_OR_RETURN(const AstNode* n, std::move(source_node));
   std::string node_str = n == nullptr ? std::string("") : n->ToString();
   return absl::StrFormat("%s: %s :: `%s` :: %s", ToHumanString(antip.span()),
-                         ToHumanString(antip.kind()), node_str, type_str);
+                         ToHumanString(antip.kind()), node_str,
+                         result_type_str);
 }
 
 absl::StatusOr<TypeInfoProto> TypeInfoToProto(const TypeInfo& type_info,
