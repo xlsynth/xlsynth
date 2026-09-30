@@ -67,14 +67,14 @@ std::filesystem::path GetManifestPath() {
       .value();
 }
 
-absl::StatusOr<bool> TypeIsInhabited(const dslx::Type& type);
+absl::StatusOr<bool> OracleTypeIsInhabited(const dslx::Type& type);
 
 // Returns whether every payload member of a variant can hold a value.
-absl::StatusOr<bool> SumVariantIsInhabited(
+absl::StatusOr<bool> OracleSumVariantIsInhabited(
     const dslx::SumTypeVariant& variant) {
   for (int64_t i = 0; i < variant.size(); ++i) {
     XLS_ASSIGN_OR_RETURN(bool member_is_inhabited,
-                         TypeIsInhabited(variant.GetMemberType(i)));
+                         OracleTypeIsInhabited(variant.GetMemberType(i)));
     if (!member_is_inhabited) {
       return false;
     }
@@ -83,7 +83,7 @@ absl::StatusOr<bool> SumVariantIsInhabited(
 }
 
 // Recursively classifies the type forms exercised by the value generator.
-absl::StatusOr<bool> TypeIsInhabited(const dslx::Type& type) {
+absl::StatusOr<bool> OracleTypeIsInhabited(const dslx::Type& type) {
   if (dslx::GetBitsLike(type).has_value()) {
     return true;
   }
@@ -92,7 +92,8 @@ absl::StatusOr<bool> TypeIsInhabited(const dslx::Type& type) {
   }
   if (auto* tuple_type = dynamic_cast<const dslx::TupleType*>(&type)) {
     for (const std::unique_ptr<dslx::Type>& member : tuple_type->members()) {
-      XLS_ASSIGN_OR_RETURN(bool member_is_inhabited, TypeIsInhabited(*member));
+      XLS_ASSIGN_OR_RETURN(bool member_is_inhabited,
+                           OracleTypeIsInhabited(*member));
       if (!member_is_inhabited) {
         return false;
       }
@@ -104,12 +105,12 @@ absl::StatusOr<bool> TypeIsInhabited(const dslx::Type& type) {
     if (size == 0) {
       return true;
     }
-    return TypeIsInhabited(array_type->element_type());
+    return OracleTypeIsInhabited(array_type->element_type());
   }
   if (auto* sum_type = dynamic_cast<const dslx::SumType*>(&type)) {
     for (const dslx::SumTypeVariant& variant : sum_type->variants()) {
       XLS_ASSIGN_OR_RETURN(bool variant_is_inhabited,
-                           SumVariantIsInhabited(variant));
+                           OracleSumVariantIsInhabited(variant));
       if (variant_is_inhabited) {
         return true;
       }
@@ -139,7 +140,7 @@ absl::Status VerifyGeneratedSumValue(const dslx::SumType& sum_type,
   }
   const dslx::SumTypeVariant& variant = sum_type.variants().at(variant_index);
   XLS_ASSIGN_OR_RETURN(bool variant_is_inhabited,
-                       SumVariantIsInhabited(variant));
+                       OracleSumVariantIsInhabited(variant));
   if (!variant_is_inhabited) {
     return absl::FailedPreconditionError(
         absl::StrCat("Generated uninhabited sum variant '",
