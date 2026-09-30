@@ -46,7 +46,8 @@ using ::absl_testing::StatusIs;
 using ::testing::Eq;
 using ::testing::HasSubstr;
 
-SumType MakeMixedPayloadSumType(Module& module) {
+SumType MakeMixedPayloadSumType(Module& module, SumDef** sum_def_out = nullptr,
+                                int64_t wide_bit_count = 16) {
   const Span kFakeSpan = Span::Fake();
 
   auto* sum_name = module.Make<NameDef>(kFakeSpan, "Example", nullptr);
@@ -57,9 +58,20 @@ SumType MakeMixedPayloadSumType(Module& module) {
   auto* u8_type = module.Make<BuiltinTypeAnnotation>(
       kFakeSpan, BuiltinType::kU8,
       module.GetOrCreateBuiltinNameDef(dslx::BuiltinType::kU8));
-  auto* u16_type = module.Make<BuiltinTypeAnnotation>(
-      kFakeSpan, BuiltinType::kU16,
-      module.GetOrCreateBuiltinNameDef(dslx::BuiltinType::kU16));
+  TypeAnnotation* wide_type;
+  if (wide_bit_count == 16) {
+    wide_type = module.Make<BuiltinTypeAnnotation>(
+        kFakeSpan, BuiltinType::kU16,
+        module.GetOrCreateBuiltinNameDef(dslx::BuiltinType::kU16));
+  } else {
+    auto* unsigned_bits = module.Make<BuiltinTypeAnnotation>(
+        kFakeSpan, BuiltinType::kUN,
+        module.GetOrCreateBuiltinNameDef(BuiltinType::kUN));
+    wide_type = module.Make<ArrayTypeAnnotation>(
+        kFakeSpan, unsigned_bits,
+        module.Make<Number>(kFakeSpan, absl::StrCat(wide_bit_count),
+                            NumberKind::kOther, nullptr));
+  }
 
   auto* none = module.Make<SumVariant>(
       kFakeSpan, none_name, SumVariant::PayloadShape::kUnit,
@@ -67,13 +79,17 @@ SumType MakeMixedPayloadSumType(Module& module) {
   auto* byte = module.Make<SumVariant>(
       kFakeSpan, byte_name, SumVariant::PayloadShape::kTuple,
       std::vector<TypeAnnotation*>{u8_type}, std::vector<StructMemberNode*>{});
-  auto* wide = module.Make<SumVariant>(
-      kFakeSpan, wide_name, SumVariant::PayloadShape::kTuple,
-      std::vector<TypeAnnotation*>{u16_type}, std::vector<StructMemberNode*>{});
+  auto* wide = module.Make<SumVariant>(kFakeSpan, wide_name,
+                                       SumVariant::PayloadShape::kTuple,
+                                       std::vector<TypeAnnotation*>{wide_type},
+                                       std::vector<StructMemberNode*>{});
   auto* sum_def = module.Make<SumDef>(
       kFakeSpan, sum_name, std::vector<ParametricBinding*>{},
       std::vector<SumVariant*>{none, byte, wide}, /*is_public=*/false);
   sum_name->set_definer(sum_def);
+  if (sum_def_out != nullptr) {
+    *sum_def_out = sum_def;
+  }
 
   std::vector<SumTypeVariant> variants;
   variants.push_back(SumTypeVariant::MakeUnit(*none));
@@ -81,7 +97,8 @@ SumType MakeMixedPayloadSumType(Module& module) {
   byte_members.push_back(BitsType::MakeU8());
   variants.push_back(SumTypeVariant::MakeTuple(*byte, std::move(byte_members)));
   std::vector<std::unique_ptr<Type>> wide_members;
-  wide_members.push_back(std::make_unique<BitsType>(/*is_signed=*/false, 16));
+  wide_members.push_back(
+      std::make_unique<BitsType>(/*is_signed=*/false, wide_bit_count));
   variants.push_back(SumTypeVariant::MakeTuple(*wide, std::move(wide_members)));
   return SumType(*sum_def, std::move(variants),
                  SumType::SelectedZeroVariant{std::cref(*none)});
@@ -504,6 +521,390 @@ TEST(InterpValueHelpersTest, CreatesSumWithBitsConstructorPayload) {
       result.GetValuesOrDie().at(1).GetValuesOrDie();
   ASSERT_EQ(slots.size(), 1);
   EXPECT_EQ(slots.at(0).GetBitValueUnsigned().value(), 7);
+}
+
+TEST(InterpValueHelpersTest, ConstructsIndexedPackedSumAndIgnoresOnlyPadding) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const SumType sum_type = MakeMixedPayloadSumType(module);
+  auto packed = [](uint64_t tag, uint64_t payload) {
+    return InterpValue::MakeTuple(
+        {InterpValue::MakeUBits(2, tag),
+         InterpValue::MakeTuple({InterpValue::MakeUBits(16, payload)})});
+  };
+
+  EXPECT_THAT(CreateSumValue(sum_type, 0, {}), IsOkAndHolds(packed(0, 0)));
+  EXPECT_THAT(CreateSumValue(sum_type, 1, {InterpValue::MakeU8(0x5a)}),
+              IsOkAndHolds(packed(1, 0x5a)));
+  EXPECT_THAT(CreateSumValue(sum_type, 2, {InterpValue::MakeUBits(16, 0xbeef)}),
+              IsOkAndHolds(packed(2, 0xbeef)));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, packed(1, 0xff5a)),
+              IsOkAndHolds(testing::ElementsAre(InterpValue::MakeU8(0x5a))));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, packed(0, 0xffff)),
+              IsOkAndHolds(testing::IsEmpty()));
+  EXPECT_THAT(
+      CreateSumValue(sum_type, 1, {InterpValue::MakeUBits(16, 7)}),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("expected 8")));
+  EXPECT_THAT(CreateSumValue(sum_type, 0, {InterpValue::MakeU8(7)}),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("expected 0 payload values")));
+  EXPECT_THAT(CreateSumValue(sum_type, 3, {}),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("no constructor at index 3")));
+}
+
+TEST(InterpValueHelpersTest, PackedSumReadsActiveBitsAcrossWordBoundary) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const SumType sum_type = MakeMixedPayloadSumType(
+      module, /*sum_def_out=*/nullptr, /*wide_bit_count=*/65);
+  const InterpValue payload = InterpValue::MakeUnsigned(
+      UBits(0x12345678000000a5, 65).UpdateWithSet(64, true));
+  auto packed = [&](uint64_t tag) {
+    return InterpValue::MakeTuple(
+        {InterpValue::MakeUBits(2, tag), InterpValue::MakeTuple({payload})});
+  };
+
+  EXPECT_THAT(GetSumPayloadValues(sum_type, packed(0)),
+              IsOkAndHolds(testing::IsEmpty()));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, packed(1)),
+              IsOkAndHolds(testing::ElementsAre(InterpValue::MakeU8(0xa5))));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, packed(2)),
+              IsOkAndHolds(testing::ElementsAre(payload)));
+}
+
+TEST(InterpValueHelpersTest, PackedOperationsRejectTotalOverflowBeforePayload) {
+  const Span span = Span::Fake();
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  auto* u1 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU1,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU1));
+  auto* inner_count =
+      module.Make<Number>(span, "65535", NumberKind::kOther, nullptr);
+  auto* outer_count =
+      module.Make<Number>(span, "65537", NumberKind::kOther, nullptr);
+  auto* inner = module.Make<ArrayTypeAnnotation>(span, u1, inner_count);
+  auto* outer = module.Make<ArrayTypeAnnotation>(span, inner, outer_count);
+  const SumType overflowing = MakeOptionalPayloadSumType(
+      module, outer,
+      std::make_unique<ArrayType>(
+          std::make_unique<ArrayType>(BitsType::MakeU1(),
+                                      TypeDim::CreateU32(65535)),
+          TypeDim::CreateU32(65537)));
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+  EXPECT_THAT(internal::GetBitCountWithSharedSumPayload(overflowing), overflow);
+
+  // An extra unit argument and a short packed slot keep the old paths bounded.
+  EXPECT_THAT(CreateSumValue(overflowing, 0, {InterpValue::MakeU8(1)}),
+              overflow);
+  auto short_value = [](int64_t tag_width) {
+    return InterpValue::MakeTuple(
+        {InterpValue::MakeUBits(tag_width, 0),
+         InterpValue::MakeTuple({InterpValue::MakeUBits(0, 0)})});
+  };
+  EXPECT_THAT(GetSumPayloadValues(overflowing, short_value(1)), overflow);
+
+  const SumType ordinary = MakeMixedPayloadSumType(module);
+  EXPECT_THAT(CreateSumValue(ordinary, 0, {InterpValue::MakeU8(1)}),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("expected 0 payload values")));
+  EXPECT_THAT(
+      GetSumPayloadValues(ordinary, short_value(2)),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("expected a 16-bit payload slot; got 0 bits")));
+
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue empty, InterpValue::MakeArray({}));
+  const ArrayType invalid_empty(overflowing.CloneToUnique(),
+                                TypeDim::CreateU32(0));
+  const ArrayType valid_empty(ordinary.CloneToUnique(), TypeDim::CreateU32(0));
+  EXPECT_THAT(internal::PackedValuesEqual(empty, empty, invalid_empty),
+              overflow);
+  EXPECT_THAT(internal::PackedValuesEqual(empty, empty, valid_empty),
+              IsOkAndHolds(true));
+}
+
+TEST(InterpValueHelpersTest, IndexedPackedSumUsesSparseSemanticTags) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const SumType implicit = MakeMixedPayloadSumType(module);
+  std::vector<SumTypeVariant> variants;
+  for (const SumTypeVariant& variant : implicit.variants()) {
+    variants.push_back(variant.Clone());
+  }
+  const SumType sum_type(
+      implicit.nominal_type(), std::move(variants), TypeDim::CreateU32(3),
+      {InterpValue::MakeUBits(3, 5), InterpValue::MakeUBits(3, 1),
+       InterpValue::MakeUBits(3, 7)});
+  auto packed = [](uint64_t tag, uint64_t payload) {
+    return InterpValue::MakeTuple(
+        {InterpValue::MakeUBits(3, tag),
+         InterpValue::MakeTuple({InterpValue::MakeUBits(16, payload)})});
+  };
+
+  EXPECT_THAT(CreateSumValue(sum_type, 0, {}), IsOkAndHolds(packed(5, 0)));
+  EXPECT_THAT(CreateSumValue(sum_type, 1, {InterpValue::MakeU8(0xa6)}),
+              IsOkAndHolds(packed(1, 0xa6)));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, packed(5, 0)),
+              IsOkAndHolds(testing::IsEmpty()));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, packed(1, 0xa6)),
+              IsOkAndHolds(testing::ElementsAre(InterpValue::MakeU8(0xa6))));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, packed(0, 0)),
+              StatusIs(absl::StatusCode::kNotFound, HasSubstr("No variant")));
+}
+
+TEST(InterpValueHelpersTest, IndexedPackedSumEncodesNestedPayloadOrder) {
+  const Span span = Span::Fake();
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  auto* u4 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU4,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU4));
+  auto* u32 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU32,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU32));
+  auto* dimension = module.Make<Number>(span, "2", NumberKind::kOther, u32);
+  auto* array_annotation =
+      module.Make<ArrayTypeAnnotation>(span, u4, dimension);
+  auto* tuple_annotation = module.Make<TupleTypeAnnotation>(
+      span, std::vector<TypeAnnotation*>{u4, array_annotation});
+  auto* empty_tuple_annotation =
+      module.Make<TupleTypeAnnotation>(span, std::vector<TypeAnnotation*>{});
+  auto* token_annotation = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kToken,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kToken));
+  auto* sum_name = module.Make<NameDef>(span, "Example", nullptr);
+  auto* none = module.Make<SumVariant>(
+      span, module.Make<NameDef>(span, "None", nullptr),
+      SumVariant::PayloadShape::kUnit, std::vector<TypeAnnotation*>{},
+      std::vector<StructMemberNode*>{});
+  auto* some = module.Make<SumVariant>(
+      span, module.Make<NameDef>(span, "Some", nullptr),
+      SumVariant::PayloadShape::kTuple,
+      std::vector<TypeAnnotation*>{u4, tuple_annotation, u4,
+                                   empty_tuple_annotation, token_annotation},
+      std::vector<StructMemberNode*>{});
+  auto* sum_def = module.Make<SumDef>(
+      span, sum_name, std::vector<ParametricBinding*>{},
+      std::vector<SumVariant*>{none, some}, /*is_public=*/false);
+  sum_name->set_definer(sum_def);
+
+  const BitsType nibble_type(/*is_signed=*/false, 4);
+  std::vector<std::unique_ptr<Type>> tuple_members;
+  tuple_members.push_back(nibble_type.CloneToUnique());
+  tuple_members.push_back(std::make_unique<ArrayType>(
+      nibble_type.CloneToUnique(), TypeDim::CreateU32(2)));
+  std::vector<std::unique_ptr<Type>> payload_members;
+  payload_members.push_back(nibble_type.CloneToUnique());
+  payload_members.push_back(
+      std::make_unique<TupleType>(std::move(tuple_members)));
+  payload_members.push_back(nibble_type.CloneToUnique());
+  payload_members.push_back(
+      std::make_unique<TupleType>(std::vector<std::unique_ptr<Type>>{}));
+  payload_members.push_back(std::make_unique<TokenType>());
+  std::vector<SumTypeVariant> variants;
+  variants.push_back(SumTypeVariant::MakeUnit(*none));
+  variants.push_back(
+      SumTypeVariant::MakeTuple(*some, std::move(payload_members)));
+  const SumType sum_type(*sum_def, std::move(variants));
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue array,
+      InterpValue::MakeArray(
+          {InterpValue::MakeUBits(4, 3), InterpValue::MakeUBits(4, 4)}));
+  const std::vector<InterpValue> payload = {
+      InterpValue::MakeUBits(4, 1),
+      InterpValue::MakeTuple({InterpValue::MakeUBits(4, 2), array}),
+      InterpValue::MakeUBits(4, 5), InterpValue::MakeTuple({}),
+      InterpValue::MakeToken()};
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue encoded,
+                           CreateSumValue(sum_type, 1, payload));
+
+  // Variant and tuple members are MSB first; array element zero is LSB first.
+  EXPECT_EQ(
+      encoded,
+      InterpValue::MakeTuple(
+          {InterpValue::MakeUBits(1, 1),
+           InterpValue::MakeTuple({InterpValue::MakeUBits(20, 0x12435)})}));
+  XLS_ASSERT_OK_AND_ASSIGN(std::vector<InterpValue> decoded,
+                           GetSumPayloadValues(sum_type, encoded));
+  ASSERT_EQ(decoded.size(), payload.size());
+  EXPECT_EQ(decoded[0], payload[0]);
+  EXPECT_EQ(decoded[1], payload[1]);
+  EXPECT_EQ(decoded[2], payload[2]);
+  EXPECT_EQ(decoded[3], payload[3]);
+  EXPECT_TRUE(decoded[4].IsToken());
+}
+
+TEST(InterpValueHelpersTest, ShallowPackedObservationChecksShapeAndOuterTag) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const SumType sum_type = MakeMixedPayloadSumType(module);
+  auto packed = [](const InterpValue& tag, const InterpValue& payload) {
+    return InterpValue::MakeTuple({tag, InterpValue::MakeTuple({payload})});
+  };
+
+  EXPECT_THAT(
+      GetSumPayloadValues(sum_type, packed(InterpValue::MakeU8(1),
+                                           InterpValue::MakeUBits(16, 0))),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("2-bit tag")));
+  EXPECT_THAT(GetSumPayloadValues(sum_type, packed(InterpValue::MakeUBits(2, 1),
+                                                   InterpValue::MakeU8(0))),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("16-bit payload slot")));
+  EXPECT_THAT(
+      GetSumPayloadValues(sum_type, packed(InterpValue::MakeSBits(2, 1),
+                                           InterpValue::MakeUBits(16, 0))),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("to be unsigned bits")));
+  EXPECT_THAT(
+      GetSumPayloadValues(sum_type, packed(InterpValue::MakeUBits(2, 3),
+                                           InterpValue::MakeUBits(16, 0))),
+      StatusIs(absl::StatusCode::kNotFound, HasSubstr("No variant")));
+
+  EnumDef* enum_def = nullptr;
+  const SumType enum_sum = MakeEnumPayloadSumType(module, &enum_def);
+  EXPECT_THAT(
+      GetSumPayloadValues(enum_sum, packed(InterpValue::MakeUBits(1, 0),
+                                           InterpValue::MakeUBits(2, 2))),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("expected a declared member")));
+}
+
+TEST(InterpValueHelpersTest, MatchObservationPreservesUnobservedNestedTag) {
+  const Span span = Span::Fake();
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumDef* inner_def = nullptr;
+  const SumType inner_type = MakeMixedPayloadSumType(module, &inner_def);
+  auto* annotation = module.Make<TypeRefTypeAnnotation>(
+      span, module.Make<TypeRef>(span, inner_def), std::vector<ExprOrType>{});
+  const SumType outer_type = MakeOptionalPayloadSumType(
+      module, annotation, inner_type.CloneToUnique());
+  const InterpValue invalid_inner = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(2, 3),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(16, 0xff5a)})});
+  const InterpValue outer = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(1, 1),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(18, 0x3ff5a)})});
+  EXPECT_THAT(CreateSumValue(outer_type, 1, {invalid_inner}),
+              IsOkAndHolds(outer));
+  EXPECT_THAT(GetSumPayloadValues(outer_type, outer),
+              IsOkAndHolds(testing::ElementsAre(invalid_inner)));
+
+  internal::MatchValueObservation observation;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      const std::vector<InterpValue>* first,
+      observation.GetSumPayloadValues(outer_type, outer, {}));
+  EXPECT_THAT(*first, testing::ElementsAre(invalid_inner));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      const std::vector<InterpValue>* again,
+      observation.GetSumPayloadValues(outer_type, outer, {}));
+  EXPECT_EQ(first, again);
+  EXPECT_THAT(observation.GetSumPayloadValues(inner_type, first->at(0), {0}),
+              StatusIs(absl::StatusCode::kNotFound, HasSubstr("No variant")));
+  EXPECT_THAT(*first, testing::ElementsAre(invalid_inner));
+
+  const InterpValue valid_outer = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(1, 1),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(18, 0x1005a)})});
+  for (int i = 0; i < 2; ++i) {
+    EXPECT_THAT(observation.EqualsConstant(valid_outer, outer, outer_type, {}),
+                StatusIs(absl::StatusCode::kNotFound, HasSubstr("No variant")));
+  }
+  EXPECT_THAT(*first, testing::ElementsAre(invalid_inner));
+}
+
+TEST(InterpValueHelpersTest, PackedEqualityIgnoresOnlyInactiveBits) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumDef* inner_def = nullptr;
+  const SumType inner_type = MakeMixedPayloadSumType(module, &inner_def);
+  auto* annotation = module.Make<TypeRefTypeAnnotation>(
+      Span::Fake(), module.Make<TypeRef>(Span::Fake(), inner_def),
+      std::vector<ExprOrType>{});
+  const SumType outer_type = MakeOptionalPayloadSumType(
+      module, annotation, inner_type.CloneToUnique());
+  auto packed = [](int64_t tag, int64_t payload) {
+    return InterpValue::MakeTuple(
+        {InterpValue::MakeUBits(1, tag),
+         InterpValue::MakeTuple({InterpValue::MakeUBits(18, payload)})});
+  };
+  const InterpValue byte = packed(1, 0x1005a);
+  const InterpValue padded_byte = packed(1, 0x1ff5a);
+  const InterpValue malformed = packed(1, 0x3ff5a);
+
+  EXPECT_TRUE(byte.Ne(padded_byte));
+  EXPECT_THAT(internal::PackedValuesEqual(byte, padded_byte, outer_type),
+              IsOkAndHolds(true));
+  EXPECT_THAT(internal::PackedValuesEqual(byte, packed(1, 0x1005b), outer_type),
+              IsOkAndHolds(false));
+  EXPECT_THAT(internal::PackedValuesEqual(byte, packed(1, 0x2005a), outer_type),
+              IsOkAndHolds(false));
+  EXPECT_THAT(
+      internal::PackedValuesEqual(packed(0, 0), packed(0, 0x3ff5a), outer_type),
+      IsOkAndHolds(true));
+  EXPECT_THAT(internal::PackedValuesEqual(packed(0, 0), malformed, outer_type),
+              StatusIs(absl::StatusCode::kNotFound, HasSubstr("No variant")));
+  EXPECT_THAT(internal::PackedValuesEqual(malformed, byte, outer_type),
+              StatusIs(absl::StatusCode::kNotFound, HasSubstr("No variant")));
+
+  internal::MatchValueObservation observation;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      const std::vector<InterpValue>* first,
+      observation.GetSumPayloadValues(outer_type, padded_byte, {}));
+  EXPECT_THAT(observation.EqualsConstant(byte, padded_byte, outer_type, {}),
+              IsOkAndHolds(true));
+  EXPECT_THAT(observation.EqualsConstant(packed(1, 0x1005b), padded_byte,
+                                         outer_type, {}),
+              IsOkAndHolds(false));
+  EXPECT_THAT(
+      observation.EqualsConstant(malformed, padded_byte, outer_type, {}),
+      StatusIs(absl::StatusCode::kNotFound, HasSubstr("No variant")));
+  EXPECT_THAT(observation.GetSumPayloadValues(outer_type, padded_byte, {}),
+              IsOkAndHolds(first));
+}
+
+TEST(InterpValueHelpersTest, PackedEqualityChecksBothCompleteAggregates) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const SumType sum_type = MakeMixedPayloadSumType(module);
+  std::vector<std::unique_ptr<Type>> members;
+  members.push_back(BitsType::MakeU8());
+  members.push_back(std::make_unique<ArrayType>(sum_type.CloneToUnique(),
+                                                TypeDim::CreateU32(1)));
+  const TupleType type(std::move(members));
+  auto aggregate = [](int64_t prefix, int64_t sum_tag) {
+    InterpValue sum = InterpValue::MakeTuple(
+        {InterpValue::MakeUBits(2, sum_tag),
+         InterpValue::MakeTuple({InterpValue::MakeUBits(16, 0)})});
+    return InterpValue::MakeTuple(
+        {InterpValue::MakeU8(prefix), InterpValue::MakeArray({sum}).value()});
+  };
+
+  EXPECT_THAT(
+      internal::PackedValuesEqual(aggregate(1, 0), aggregate(2, 0), type),
+      IsOkAndHolds(false));
+  EXPECT_THAT(
+      internal::PackedValuesEqual(aggregate(1, 0), aggregate(2, 3), type),
+      StatusIs(absl::StatusCode::kNotFound, HasSubstr("No variant")));
+  EXPECT_THAT(
+      internal::PackedValuesEqual(aggregate(1, 3), aggregate(2, 0), type),
+      StatusIs(absl::StatusCode::kNotFound, HasSubstr("No variant")));
+
+  EnumDef* enum_def = nullptr;
+  const SumType enum_sum = MakeEnumPayloadSumType(module, &enum_def);
+  const InterpValue invalid_enum = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(1, 0),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(2, 2)})});
+  const InterpValue none = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(1, 1),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(2, 2)})});
+  EXPECT_THAT(internal::PackedValuesEqual(none, invalid_enum, enum_sum),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("expected a declared member")));
 }
 
 TEST(InterpValueHelpersTest, CreatesActiveAndInactiveTokenSumPayloads) {
@@ -1262,6 +1663,174 @@ TEST(InterpValueHelpersTest, ValueToInterpValueEnum) {
   EXPECT_THAT(ValueToInterpValue(Value(UBits(3, 32)), &enum_type),
               IsOkAndHolds(Eq(InterpValue::MakeEnum(
                   UBits(3, 32), /*is_signed=*/false, &enum_def))));
+}
+
+TEST(InterpValueHelpersTest, UnflattenUsesOneSumPayloadAndPreservesRawBits) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumType sum_type = MakeMixedPayloadSumType(module);
+
+  const auto packed_sum = [](int64_t tag, int64_t payload) {
+    return internal::CreateEncodedSumTuple(InterpValue::MakeUBits(2, tag),
+                                           InterpValue::MakeUBits(16, payload));
+  };
+  EXPECT_THAT(internal::UnflattenValueForType(sum_type, UBits(0, 18)),
+              IsOkAndHolds(packed_sum(/*tag=*/0, /*payload=*/0)));
+  // The Byte constructor uses only eight bits; its existing padding survives.
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue byte, internal::UnflattenValueForType(
+                                                 sum_type, UBits(0x1ab5a, 18)));
+  EXPECT_EQ(byte, packed_sum(/*tag=*/1, /*payload=*/0xab5a));
+  XLS_ASSERT_OK_AND_ASSIGN(internal::EncodedSumView byte_view,
+                           internal::GetEncodedSumView(byte));
+  EXPECT_TRUE(byte_view.tag.IsUBits());
+  EXPECT_TRUE(byte_view.payload_slot.IsUBits());
+  EXPECT_THAT(internal::UnflattenValueForType(sum_type, UBits(0x2beef, 18)),
+              IsOkAndHolds(packed_sum(/*tag=*/2, /*payload=*/0xbeef)));
+  // Decoding also transports undeclared tags without observing them.
+  EXPECT_THAT(internal::UnflattenValueForType(sum_type, UBits(0x3ffff, 18)),
+              IsOkAndHolds(packed_sum(/*tag=*/3, /*payload=*/0xffff)));
+  EXPECT_THAT(internal::UnflattenValueForType(sum_type, UBits(0, 17)),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("expected 18 bits; got 17")));
+  EXPECT_THAT(internal::UnflattenValueForType(sum_type, UBits(0, 19)),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("expected 18 bits; got 19")));
+}
+
+TEST(InterpValueHelpersTest, UnflattenUsesSemanticSumTagWidth) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const SumType shape = MakeMixedPayloadSumType(module);
+  std::vector<SumTypeVariant> sparse_variants;
+  for (const SumTypeVariant& variant : shape.variants()) {
+    sparse_variants.push_back(variant.Clone());
+  }
+  const SumType sparse(
+      shape.nominal_type(), std::move(sparse_variants), TypeDim::CreateU32(3),
+      {InterpValue::MakeUBits(3, 5), InterpValue::MakeUBits(3, 1),
+       InterpValue::MakeUBits(3, 6)});
+  EXPECT_THAT(
+      internal::UnflattenValueForType(sparse, UBits(0x6a5a5, 19)),
+      IsOkAndHolds(internal::CreateEncodedSumTuple(
+          InterpValue::MakeUBits(3, 6), InterpValue::MakeUBits(16, 0xa5a5))));
+
+  const Span span = Span::Fake();
+  auto* only = module.Make<SumVariant>(
+      span, module.Make<NameDef>(span, "Only", nullptr),
+      SumVariant::PayloadShape::kUnit, std::vector<TypeAnnotation*>{},
+      std::vector<StructMemberNode*>{});
+  auto* singleton_def = module.Make<SumDef>(
+      span, module.Make<NameDef>(span, "Singleton", nullptr),
+      std::vector<ParametricBinding*>{}, std::vector<SumVariant*>{only},
+      /*is_public=*/false);
+  singleton_def->name_def()->set_definer(singleton_def);
+  std::vector<SumTypeVariant> singleton_variants;
+  singleton_variants.push_back(SumTypeVariant::MakeUnit(*only));
+  const SumType singleton(*singleton_def, std::move(singleton_variants));
+  EXPECT_THAT(internal::UnflattenValueForType(singleton, Bits(0)),
+              IsOkAndHolds(internal::CreateEncodedSumTuple(
+                  InterpValue::MakeUBits(0, 0), InterpValue::MakeUBits(0, 0))));
+}
+
+TEST(InterpValueHelpersTest, UnflattenNestedSumTupleIsMostSignificantFirst) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumType sum_type = MakeMixedPayloadSumType(module);
+  std::vector<std::unique_ptr<Type>> members;
+  members.push_back(std::make_unique<BitsType>(/*is_signed=*/true, 4));
+  members.push_back(sum_type.CloneToUnique());
+  members.push_back(std::make_unique<BitsType>(/*is_signed=*/false, 1));
+  TupleType tuple(std::move(members));
+
+  // The tuple stores [s4, tag2, payload16, u1], from MSB to LSB.
+  const Bits bits = UBits((0xdu << 19) | (1u << 17) | (0xa5u << 1) | 1u, 23);
+  InterpValue expected = InterpValue::MakeTuple(
+      {InterpValue::MakeSBits(4, -3),
+       internal::CreateEncodedSumTuple(InterpValue::MakeUBits(2, 1),
+                                       InterpValue::MakeUBits(16, 0xa5)),
+       InterpValue::MakeBool(true)});
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue actual,
+                           internal::UnflattenValueForType(tuple, bits));
+  EXPECT_EQ(actual, expected);
+  EXPECT_TRUE(actual.GetValuesOrDie().front().IsSBits());
+}
+
+TEST(InterpValueHelpersTest, UnflattenNestedSumArrayIsLeastSignificantFirst) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumType sum_type = MakeMixedPayloadSumType(module);
+  ArrayType array(sum_type.CloneToUnique(), TypeDim::CreateU32(2));
+
+  // Each element is [tag2, payload16]; element zero occupies the low 18 bits.
+  const Bits bits = UBits((uint64_t{2} << 34) | (uint64_t{0xbeef} << 18) |
+                              (uint64_t{1} << 16) | 0x5a,
+                          36);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue expected,
+      InterpValue::MakeArray(
+          {internal::CreateEncodedSumTuple(InterpValue::MakeUBits(2, 1),
+                                           InterpValue::MakeUBits(16, 0x5a)),
+           internal::CreateEncodedSumTuple(
+               InterpValue::MakeUBits(2, 2),
+               InterpValue::MakeUBits(16, 0xbeef))}));
+  EXPECT_THAT(internal::UnflattenValueForType(array, bits),
+              IsOkAndHolds(expected));
+}
+
+TEST(InterpValueHelpersTest, UnflattenAggregatePreservesZeroWidthMembers) {
+  std::vector<std::unique_ptr<Type>> members;
+  members.push_back(BitsType::MakeU8());
+  members.push_back(
+      std::make_unique<TupleType>(std::vector<std::unique_ptr<Type>>{}));
+  members.push_back(std::make_unique<TokenType>());
+  TupleType tuple(std::move(members));
+
+  const Bits bits = UBits(0xa5, 8);
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue actual,
+                           internal::UnflattenValueForType(tuple, bits));
+  const auto& values = actual.GetValuesOrDie();
+  ASSERT_EQ(values.size(), 3);
+  EXPECT_EQ(values[0], InterpValue::MakeUBits(8, 0xa5));
+  EXPECT_EQ(values[1], InterpValue::MakeTuple({}));
+  EXPECT_TRUE(values[2].IsToken());
+}
+
+TEST(InterpValueHelpersTest, UnflattenEmptyArrayIgnoresOversizedElement) {
+  auto element = std::make_unique<ArrayType>(
+      std::make_unique<ArrayType>(BitsType::MakeU1(),
+                                  TypeDim::CreateU32(65536)),
+      TypeDim::CreateU32(65536));
+  ArrayType array(std::move(element), TypeDim::CreateU32(0));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue empty, InterpValue::MakeArray({}));
+  EXPECT_THAT(internal::UnflattenValueForType(array, Bits(0)),
+              IsOkAndHolds(empty));
+  EXPECT_THAT(internal::UnflattenValueForType(array, Bits(1)),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("expected 0 bits; got 1")));
+}
+
+TEST(InterpValueHelpersTest, UnflattenOrdinaryLeavesPreservesTheirType) {
+  const InterpValue unsigned_value = InterpValue::MakeUBits(8, 0x5a);
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue flat, unsigned_value.Flatten());
+  EXPECT_THAT(
+      internal::UnflattenValueForType(*BitsType::MakeU8(), flat.GetBitsOrDie()),
+      IsOkAndHolds(unsigned_value));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue token, internal::UnflattenValueForType(TokenType(), Bits(0)));
+  EXPECT_TRUE(token.IsToken());
+
+  EnumDef enum_def(/*owner=*/nullptr, /*span=*/Span::Fake(),
+                   /*name_def=*/nullptr, /*type=*/{}, /*values=*/{},
+                   /*is_public=*/false);
+  EnumType enum_type(enum_def, TypeDim::CreateU32(2), /*is_signed=*/true, {});
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue enum_value,
+      internal::UnflattenValueForType(enum_type, UBits(3, 2)));
+  std::optional<InterpValue::EnumData> enum_data = enum_value.GetEnumData();
+  ASSERT_TRUE(enum_data.has_value());
+  EXPECT_EQ(enum_data->value, UBits(3, 2));
+  EXPECT_TRUE(enum_data->is_signed);
+  EXPECT_EQ(enum_data->def, &enum_def);
 }
 
 TEST(InterpValueHelpersTest, GetLeafChannelReferences) {
