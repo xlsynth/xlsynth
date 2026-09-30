@@ -115,6 +115,18 @@ const AstNodeTypeInfoProto* FindParameterNode(const TypeInfoProto& tip) {
   return nullptr;
 }
 
+const AstNodeTypeInfoProto* FindParameterNode(const TypeInfoProto& tip,
+                                              const Param& parameter,
+                                              FileTable& file_table) {
+  for (const AstNodeTypeInfoProto& node : tip.nodes()) {
+    if (node.kind() == AST_NODE_KIND_PARAM &&
+        FromProto(node.span(), file_table) == parameter.GetSpan().value()) {
+      return &node;
+    }
+  }
+  return nullptr;
+}
+
 struct SerializedSumCounts {
   int64_t definitions = 0;
   int64_t references = 0;
@@ -756,6 +768,253 @@ fn bool_value(x: Flag<true>) -> Flag<true> { x }
   XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto tip,
                            TypeInfoToProto(*tm.type_info, tm.module));
   XLS_EXPECT_OK(ToHumanString(tip, import_data, import_data.file_table()));
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       WriterRoundTripsDependentWidthSumArguments) {
+  constexpr std::string_view kProgram = R"(#![feature(generics)]
+enum E<N: u32, V: uN[N]> { A, B(u1) }
+fn f(three: E<u32:3, u3:5>, five: E<u32:5, u5:17>) -> u1 { u1:0 }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "fake.x", "fake", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                           tm.module->GetMemberOrError<Function>("f"));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto written,
+                           TypeInfoToProto(*tm.type_info, tm.module));
+  TypeInfoProto parsed;
+  ASSERT_TRUE(parsed.ParseFromString(written.SerializeAsString()));
+  EXPECT_THAT(ToHumanString(parsed, import_data, import_data.file_table()),
+              absl_testing::IsOk());
+
+  struct TestCase {
+    int index;
+    int width;
+    int value;
+  };
+  const TestCase kCases[] = {{0, 3, 5}, {1, 5, 17}};
+  for (const auto [index, width, value] : kCases) {
+    SCOPED_TRACE(width);
+    const Param* parameter = function->params()[index];
+    XLS_ASSERT_OK_AND_ASSIGN(Type * source_type,
+                             tm.type_info->GetItemOrError(parameter));
+    const AstNodeTypeInfoProto* node =
+        FindParameterNode(parsed, *parameter, import_data.file_table());
+    ASSERT_NE(node, nullptr);
+    ASSERT_TRUE(node->type().has_sum_type());
+    const SumTypeProto& sum = node->type().sum_type();
+    ASSERT_EQ(sum.parametric_arguments_size(), 2);
+    const BitsValueProto& first = sum.parametric_arguments(0).value().bits();
+    EXPECT_EQ(first.bit_count(), 32);
+    EXPECT_FALSE(first.is_signed());
+    EXPECT_EQ(first.data(),
+              std::string("\0\0\0", 3) + static_cast<char>(width));
+    const BitsValueProto& second = sum.parametric_arguments(1).value().bits();
+    EXPECT_EQ(second.bit_count(), width);
+    EXPECT_FALSE(second.is_signed());
+    EXPECT_EQ(second.data(), std::string(1, static_cast<char>(value)));
+    EXPECT_THAT(ToHumanString(*node, import_data, import_data.file_table()),
+                absl_testing::IsOkAndHolds(
+                    ::testing::EndsWith(" :: " + source_type->ToString())));
+    auto mutate = [&](int argument_index, const BitsValueProto& invalid) {
+      AstNodeTypeInfoProto bad = *node;
+      *bad.mutable_type()
+           ->mutable_sum_type()
+           ->mutable_parametric_arguments(argument_index)
+           ->mutable_value()
+           ->mutable_bits() = invalid;
+      return ToHumanString(bad, import_data, import_data.file_table());
+    };
+    BitsValueProto wrong_width = second;
+    wrong_width.set_bit_count(width + 1);
+    wrong_width.set_data(std::string(1, static_cast<char>(value)));
+    EXPECT_THAT(mutate(1, wrong_width),
+                absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                       ::testing::HasSubstr("type mismatch")));
+    BitsValueProto wrong_signedness = second;
+    wrong_signedness.set_is_signed(true);
+    EXPECT_THAT(mutate(1, wrong_signedness),
+                absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                       ::testing::HasSubstr("type mismatch")));
+    BitsValueProto wrong_value = second;
+    wrong_value.set_data(std::string(1, static_cast<char>(value ^ 1)));
+    EXPECT_THAT(mutate(1, wrong_value),
+                absl_testing::StatusIs(
+                    absl::StatusCode::kInvalidArgument,
+                    ::testing::HasSubstr("argument 1 does not match")));
+    BitsValueProto wrong_first = first;
+    wrong_first.set_data(std::string("\0\0\0", 3) +
+                         static_cast<char>(width + 1));
+    EXPECT_THAT(mutate(0, wrong_first),
+                absl_testing::StatusIs(
+                    absl::StatusCode::kInvalidArgument,
+                    ::testing::HasSubstr("argument 0 does not match")));
+  }
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       RejectsOverlongDependentScalarSumArgumentBytes) {
+  constexpr std::string_view kProgram = R"(#![feature(generics)]
+enum E<N: u32, V: uN[N]> { A, B(u1) }
+fn f(value: E<u32:5, u5:17>) -> u1 { u1:0 }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "fake.x", "fake", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto written,
+                           TypeInfoToProto(*tm.type_info, tm.module));
+  TypeInfoProto parsed;
+  ASSERT_TRUE(parsed.ParseFromString(written.SerializeAsString()));
+  const AstNodeTypeInfoProto* node = FindParameterNode(parsed);
+  ASSERT_NE(node, nullptr);
+  XLS_EXPECT_OK(ToHumanString(*node, import_data, import_data.file_table()));
+  AstNodeTypeInfoProto bad = *node;
+  BitsValueProto* bits = bad.mutable_type()
+                             ->mutable_sum_type()
+                             ->mutable_parametric_arguments(1)
+                             ->mutable_value()
+                             ->mutable_bits();
+  ASSERT_EQ(bits->bit_count(), 5);
+  ASSERT_EQ(bits->data(), std::string(1, '\x11'));
+  bits->set_data(std::string("\xff\x11", 2));
+  EXPECT_THAT(ToHumanString(bad, import_data, import_data.file_table()),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       RejectsShortAndInvalidWidthDependentScalarSumArgumentBytes) {
+  constexpr std::string_view kProgram = R"(#![feature(generics)]
+enum E<N: u32, V: uN[N]> { A, B(u1) }
+fn f(value: E<u32:5, u5:17>) -> u1 { u1:0 }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "fake.x", "fake", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto written,
+                           TypeInfoToProto(*tm.type_info, tm.module));
+  TypeInfoProto parsed;
+  ASSERT_TRUE(parsed.ParseFromString(written.SerializeAsString()));
+  const AstNodeTypeInfoProto* node = FindParameterNode(parsed);
+  ASSERT_NE(node, nullptr);
+  XLS_EXPECT_OK(ToHumanString(*node, import_data, import_data.file_table()));
+  for (std::optional<int32_t> width :
+       {std::optional<int32_t>(9), std::optional<int32_t>(-1),
+        std::optional<int32_t>(),
+        std::optional<int32_t>(std::numeric_limits<int32_t>::max())}) {
+    SCOPED_TRACE(width.has_value() ? std::to_string(*width) : "unset");
+    AstNodeTypeInfoProto bad = *node;
+    BitsValueProto* bits = bad.mutable_type()
+                               ->mutable_sum_type()
+                               ->mutable_parametric_arguments(1)
+                               ->mutable_value()
+                               ->mutable_bits();
+    ASSERT_EQ(bits->bit_count(), 5);
+    ASSERT_EQ(bits->data(), std::string(1, '\x11'));
+    if (width.has_value()) {
+      bits->set_bit_count(*width);
+    } else {
+      bits->clear_bit_count();
+    }
+    EXPECT_THAT(ToHumanString(bad, import_data, import_data.file_table()),
+                absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+  }
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       WriterRoundTripsDependentPackedSumArguments) {
+  struct TestCase {
+    std::string_view type;
+    std::string_view argument;
+    int packed_width;
+    std::string packed_bytes;
+  };
+  const TestCase kCases[] = {
+      {"u3[2]", "{u3[2]:[5, 2]}", 6, std::string(1, '\x15')},
+      {"u5[2]", "{u5[2]:[17, 3]}", 10, std::string("\0\x71", 2)},
+      {"u3[0]", "{u3[0]:[]}", 0, ""},
+      {"(u3, s2)", "{(u3:5, s2:-1)}", 5, std::string(1, '\x17')},
+      {"Record", "RECORD", 8, std::string(1, '\x57')},
+  };
+  auto check = [&](const TestCase& test_case) {
+    const std::string program = absl::StrFormat(
+        "#![feature(generics)]\n"
+        "struct Record { fields: (u3[2], s2), empty: u8[0] }\n"
+        "const RECORD = Record { fields: (u3[2]:[5, 2], s2:-1), "
+        "empty: u8[0]:[] };\n"
+        "enum E<T: type, V: T> { A, B(u1) }\n"
+        "fn f(value: E<%s, %s>) -> u1 { u1:0 }\n",
+        test_case.type, test_case.argument);
+    ImportData import_data = CreateImportDataForTest();
+    XLS_ASSERT_OK_AND_ASSIGN(
+        TypecheckedModule tm,
+        ParseAndTypecheck(program, "fake.x", "fake", &import_data));
+    XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                             tm.module->GetMemberOrError<Function>("f"));
+    XLS_ASSERT_OK_AND_ASSIGN(Type * source_type, tm.type_info->GetItemOrError(
+                                                     function->params()[0]));
+    XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto written,
+                             TypeInfoToProto(*tm.type_info, tm.module));
+    TypeInfoProto parsed;
+    ASSERT_TRUE(parsed.ParseFromString(written.SerializeAsString()));
+    const AstNodeTypeInfoProto* node = FindParameterNode(parsed);
+    ASSERT_NE(node, nullptr);
+    ASSERT_TRUE(node->type().has_sum_type());
+    const SumTypeProto& sum = node->type().sum_type();
+    ASSERT_EQ(sum.parametric_arguments_size(), 2);
+    ASSERT_TRUE(sum.parametric_arguments(1).has_packed_value());
+    const BitsValueProto& packed = sum.parametric_arguments(1).packed_value();
+    EXPECT_EQ(packed.bit_count(), test_case.packed_width);
+    EXPECT_FALSE(packed.is_signed());
+    EXPECT_EQ(packed.data(), test_case.packed_bytes);
+    EXPECT_THAT(ToHumanString(*node, import_data, import_data.file_table()),
+                absl_testing::IsOkAndHolds(
+                    ::testing::EndsWith(" :: " + source_type->ToString())));
+    EXPECT_THAT(ToHumanString(parsed, import_data, import_data.file_table()),
+                absl_testing::IsOk());
+
+    auto mutate = [&](const BitsValueProto& invalid) {
+      AstNodeTypeInfoProto bad = *node;
+      *bad.mutable_type()
+           ->mutable_sum_type()
+           ->mutable_parametric_arguments(1)
+           ->mutable_packed_value() = invalid;
+      return ToHumanString(bad, import_data, import_data.file_table());
+    };
+    BitsValueProto wrong_width = packed;
+    wrong_width.set_bit_count(test_case.packed_width + 1);
+    std::string wrong_width_data = test_case.packed_bytes;
+    if (wrong_width_data.size() < (test_case.packed_width + 8) / 8) {
+      wrong_width_data.insert(0, 1, '\0');
+    }
+    wrong_width.set_data(wrong_width_data);
+    EXPECT_THAT(mutate(wrong_width),
+                absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                       ::testing::HasSubstr("type mismatch")));
+    BitsValueProto wrong_signedness = packed;
+    wrong_signedness.set_is_signed(true);
+    EXPECT_THAT(
+        mutate(wrong_signedness),
+        absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                               ::testing::HasSubstr("unsigned bit count")));
+    if (!test_case.packed_bytes.empty()) {
+      BitsValueProto wrong_value = packed;
+      std::string wrong_value_data = test_case.packed_bytes;
+      wrong_value_data.back() ^= 1;
+      wrong_value.set_data(wrong_value_data);
+      EXPECT_THAT(mutate(wrong_value),
+                  absl_testing::StatusIs(
+                      absl::StatusCode::kInvalidArgument,
+                      ::testing::HasSubstr("source specialization")));
+    }
+  };
+  for (const TestCase& test_case : kCases) {
+    SCOPED_TRACE(test_case.argument);
+    check(test_case);
+  }
 }
 
 // Verifies: imported phantom sum arguments can be humanized.
@@ -1470,6 +1729,51 @@ TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
   EXPECT_EQ(EnumTypeProto::kMembersFieldNumber, 4);
 }
 
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       PhantomTypeArgumentsStillSerializeCompleteStructMembers) {
+  constexpr std::string_view kProgram = R"(#![feature(generics)]
+struct Pair<T: type> { a: T, b: T }
+enum Marker<T: type> { Only(u1) }
+fn identity(value: Marker<Pair<Pair<u8>>>) -> Marker<Pair<Pair<u8>>> { value }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "fake.x", "fake", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto proto,
+                           TypeInfoToProto(*tm.type_info, tm.module));
+  const AstNodeTypeInfoProto* parameter = FindParameterNode(proto);
+  ASSERT_NE(parameter, nullptr);
+  ASSERT_TRUE(parameter->type().has_sum_type());
+  ASSERT_EQ(parameter->type().sum_type().parametric_arguments_size(), 1);
+  const TypeProto& argument =
+      parameter->type().sum_type().parametric_arguments(0).type();
+  ASSERT_TRUE(argument.has_struct_type());
+  ASSERT_EQ(argument.struct_type().members_size(), 2);
+  for (const TypeProto& inner : argument.struct_type().members()) {
+    ASSERT_TRUE(inner.has_struct_type());
+    ASSERT_EQ(inner.struct_type().members_size(), 2);
+    for (const TypeProto& leaf : inner.struct_type().members()) {
+      EXPECT_TRUE(leaf.has_bits_type());
+    }
+  }
+  XLS_ASSERT_OK(
+      ToHumanString(*parameter, import_data, import_data.file_table()));
+
+  AstNodeTypeInfoProto truncated = *parameter;
+  truncated.mutable_type()
+      ->mutable_sum_type()
+      ->mutable_parametric_arguments(0)
+      ->mutable_type()
+      ->mutable_struct_type()
+      ->mutable_members(0)
+      ->mutable_struct_type()
+      ->mutable_members()
+      ->RemoveLast();
+  EXPECT_FALSE(
+      ToHumanString(truncated, import_data, import_data.file_table()).ok());
+}
+
 // These are legal source types with 8 (unary) or 8+depth (binary) packed bits.
 // Both paths compare references with source types; the non-generic outer also
 // compares the complete payload. These checks must preserve sharing.
@@ -1553,6 +1857,77 @@ TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       CollidingSourceAnnotationsKeepSumReferencesTiedToOneWholeSourceType) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(NestedSumProgram(4, /*binary=*/false,
+                                         /*outer_sum=*/false),
+                        "fake.x", "fake", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(SumDef * definition,
+                           tm.module->GetMemberOrError<SumDef>("Wrap"));
+  const std::string declaration_span =
+      ToProto(definition->span(), import_data.file_table()).SerializeAsString();
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto written,
+                           TypeInfoToProto(*tm.type_info, tm.module));
+  TypeInfoProto parsed;
+  ASSERT_TRUE(parsed.ParseFromString(written.SerializeAsString()));
+
+  int colliding_nodes = 0;
+  const AstNodeTypeInfoProto* nested = nullptr;
+  for (const AstNodeTypeInfoProto& node : parsed.nodes()) {
+    if (node.kind() != AST_NODE_KIND_TYPE_ANNOTATION ||
+        node.span().SerializeAsString() != declaration_span ||
+        !node.type().has_meta_type() ||
+        !node.type().meta_type().wrapped().has_sum_type()) {
+      continue;
+    }
+    ++colliding_nodes;
+    XLS_EXPECT_OK(ToHumanString(node, import_data, import_data.file_table()));
+    const SumTypeProto& sum = node.type().meta_type().wrapped().sum_type();
+    if (sum.parametric_arguments_size() == 1 &&
+        sum.parametric_arguments(0).type().has_sum_type() &&
+        sum.parametric_arguments(0)
+                .type()
+                .sum_type()
+                .parametric_arguments_size() == 1 &&
+        sum.parametric_arguments(0)
+            .type()
+            .sum_type()
+            .parametric_arguments(0)
+            .type()
+            .has_sum_type()) {
+      nested = &node;
+    }
+  }
+  ASSERT_GE(colliding_nodes, 2);
+  ASSERT_NE(nested, nullptr);
+
+  AstNodeTypeInfoProto bad = *nested;
+  SumTypeProto* outer = bad.mutable_type()
+                            ->mutable_meta_type()
+                            ->mutable_wrapped()
+                            ->mutable_sum_type();
+  const SumTypeProto& argument =
+      outer->parametric_arguments(0).type().sum_type();
+  const SumTypeProto& inner =
+      argument.parametric_arguments(0).type().sum_type();
+  ASSERT_NE(argument.definition_id(), inner.definition_id());
+  ASSERT_EQ(outer->variants_size(), 1);
+  ASSERT_EQ(outer->variants(0).payload_members_size(), 1);
+  ASSERT_EQ(outer->variants(0).payload_members(0).sum_type_reference(),
+            argument.definition_id());
+  // Both IDs have been defined, but Wrap<T>'s payload must match the same T
+  // that appears in this record's nominal argument, even at an ambiguous span.
+  outer->mutable_variants(0)
+      ->mutable_payload_members(0)
+      ->set_sum_type_reference(inner.definition_id());
+  EXPECT_THAT(ToHumanString(bad, import_data, import_data.file_table()),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                     ::testing::HasSubstr("type mismatch")));
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        SumReferencesPreservePhantomValueAndTypeArguments) {
   constexpr std::string_view kProgram = R"(#![feature(generics)]
 enum Phantom<N: u32> { Only() }
@@ -1590,6 +1965,122 @@ fn identity(x: Inputs) -> Inputs { x }
   EXPECT_THAT(human, ::testing::HasSubstr("Phantom<u32:2>"));
   EXPECT_THAT(human, ::testing::HasSubstr("@2=PhantomType<uN[8]>"));
   EXPECT_THAT(human, ::testing::HasSubstr("PhantomType<uN[16]>"));
+}
+
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       StructuralSumReferencesMatchDependentSourceSpecializations) {
+  constexpr std::string_view kProgram = R"(#![feature(generics)]
+enum E<N: u32, V: uN[N]> { A, B(u1) }
+fn tuple(x: (E<u32:3, u3:5>, E<u32:5, u5:17>, E<u32:3, u3:5>)) -> u1 { u1:0 }
+fn distinct(x: E<u32:3, u3:5>, y: E<u32:5, u5:17>) -> E<u32:3, u3:5> { x }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "fake.x", "fake", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * tuple_function,
+                           tm.module->GetMemberOrError<Function>("tuple"));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * distinct_function,
+                           tm.module->GetMemberOrError<Function>("distinct"));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto written,
+                           TypeInfoToProto(*tm.type_info, tm.module));
+  TypeInfoProto parsed;
+  ASSERT_TRUE(parsed.ParseFromString(written.SerializeAsString()));
+  XLS_EXPECT_OK(ToHumanString(parsed, import_data, import_data.file_table()));
+  const AstNodeTypeInfoProto* tuple_node = FindParameterNode(
+      parsed, *tuple_function->params()[0], import_data.file_table());
+  ASSERT_NE(tuple_node, nullptr);
+  const TupleTypeProto& tuple = tuple_node->type().tuple_type();
+  ASSERT_EQ(tuple.members_size(), 3);
+  ASSERT_TRUE(tuple.members(0).has_sum_type());
+  ASSERT_TRUE(tuple.members(1).has_sum_type());
+  ASSERT_TRUE(tuple.members(2).has_sum_type_reference());
+  const uint64_t tuple_three = tuple.members(0).sum_type().definition_id();
+  const uint64_t tuple_five = tuple.members(1).sum_type().definition_id();
+  ASSERT_NE(tuple_three, tuple_five);
+  EXPECT_EQ(tuple.members(2).sum_type_reference(), tuple_three);
+  EXPECT_THAT(ToHumanString(*tuple_node, import_data, import_data.file_table()),
+              absl_testing::IsOkAndHolds(
+                  ::testing::AllOf(::testing::HasSubstr("@1=E<u32:3, u3:5>"),
+                                   ::testing::HasSubstr("E<u32:5, u5:17>"),
+                                   ::testing::EndsWith(", @1)"))));
+
+  auto expect_wrong_reference = [&](const AstNodeTypeInfoProto& bad) {
+    EXPECT_THAT(ToHumanString(bad, import_data, import_data.file_table()),
+                absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+  };
+  AstNodeTypeInfoProto legacy_target = *tuple_node;
+  SumTypeProto* legacy = legacy_target.mutable_type()
+                             ->mutable_tuple_type()
+                             ->mutable_members(0)
+                             ->mutable_sum_type();
+  legacy->clear_tag_bit_count();
+  legacy->clear_parametric_arguments();
+  for (SumTypeVariantProto& variant : *legacy->mutable_variants()) {
+    variant.clear_discriminant();
+  }
+  EXPECT_THAT(
+      ToHumanString(legacy_target, import_data, import_data.file_table()),
+      absl_testing::IsOkAndHolds(
+          ::testing::AllOf(::testing::HasSubstr("@1=E { A | B(uN[1]) }"),
+                           ::testing::HasSubstr("E<u32:5, u5:17>"),
+                           ::testing::EndsWith(", @1)"))));
+  AstNodeTypeInfoProto wrong_legacy_target = legacy_target;
+  wrong_legacy_target.mutable_type()
+      ->mutable_tuple_type()
+      ->mutable_members(1)
+      ->set_sum_type_reference(tuple_three);
+  expect_wrong_reference(wrong_legacy_target);
+
+  AstNodeTypeInfoProto wrong_tuple_definition = *tuple_node;
+  wrong_tuple_definition.mutable_type()
+      ->mutable_tuple_type()
+      ->mutable_members(1)
+      ->set_sum_type_reference(tuple_three);
+  expect_wrong_reference(wrong_tuple_definition);
+  AstNodeTypeInfoProto wrong_tuple_reference = *tuple_node;
+  wrong_tuple_reference.mutable_type()
+      ->mutable_tuple_type()
+      ->mutable_members(2)
+      ->set_sum_type_reference(tuple_five);
+  expect_wrong_reference(wrong_tuple_reference);
+
+  const AstNodeTypeInfoProto* function_node = nullptr;
+  for (const AstNodeTypeInfoProto& node : parsed.nodes()) {
+    if (node.kind() == AST_NODE_KIND_FUNCTION &&
+        FromProto(node.span(), import_data.file_table()) ==
+            distinct_function->GetSpan().value()) {
+      function_node = &node;
+    }
+  }
+  ASSERT_NE(function_node, nullptr);
+  const FunctionTypeProto& function = function_node->type().fn_type();
+  ASSERT_EQ(function.params_size(), 2);
+  ASSERT_TRUE(function.params(0).has_sum_type());
+  ASSERT_TRUE(function.params(1).has_sum_type());
+  ASSERT_TRUE(function.return_type().has_sum_type_reference());
+  const uint64_t function_three = function.params(0).sum_type().definition_id();
+  const uint64_t function_five = function.params(1).sum_type().definition_id();
+  ASSERT_NE(function_three, function_five);
+  EXPECT_EQ(function.return_type().sum_type_reference(), function_three);
+  EXPECT_THAT(
+      ToHumanString(*function_node, import_data, import_data.file_table()),
+      absl_testing::IsOkAndHolds(
+          ::testing::AllOf(::testing::HasSubstr("@1=E<u32:3, u3:5>"),
+                           ::testing::HasSubstr("E<u32:5, u5:17>"),
+                           ::testing::EndsWith(" -> @1"))));
+  AstNodeTypeInfoProto wrong_function_parameter = *function_node;
+  wrong_function_parameter.mutable_type()
+      ->mutable_fn_type()
+      ->mutable_params(1)
+      ->set_sum_type_reference(function_three);
+  expect_wrong_reference(wrong_function_parameter);
+  AstNodeTypeInfoProto wrong_function_return = *function_node;
+  wrong_function_return.mutable_type()
+      ->mutable_fn_type()
+      ->mutable_return_type()
+      ->set_sum_type_reference(function_five);
+  expect_wrong_reference(wrong_function_return);
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
