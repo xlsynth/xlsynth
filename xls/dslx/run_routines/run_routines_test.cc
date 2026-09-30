@@ -18,24 +18,32 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/random/bit_gen_ref.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
+#include "absl/types/span.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "re2/re2.h"
 #include "xls/common/file/filesystem.h"
 #include "xls/common/file/temp_file.h"
 #include "xls/common/status/matchers.h"
+#include "xls/dslx/create_import_data.h"
 #include "xls/dslx/default_dslx_stdlib_path.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/import_data.h"
+#include "xls/dslx/interp_value.h"
+#include "xls/dslx/interp_value_generator.h"
+#include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/run_routines/ir_test_runner.h"
 #include "xls/dslx/run_routines/run_comparator.h"
 #include "xls/dslx/type_system/type.h"
@@ -693,6 +701,109 @@ proc tester {
       HasSubstr("The program being interpreted failed! Proc failed on "
                 "'unexpected_fail', but expected to fail on 'my_fail'"));
   EXPECT_THAT(result, IsTestResult(TestResult::kSomeFailed, 1, 0, 1));
+}
+
+TEST(QuickcheckTest, ValueGeneratorRejectsSumWidthBeforeGeneratingPayload) {
+  constexpr std::string_view kProgram = R"(
+enum Generated: u1 { Active(uN[0], u1[2][3]) = 0 }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test.x", "test", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(SumDef * sum_def,
+                           tm.module->GetMemberOrError<SumDef>("Generated"));
+  auto make_sum = [&](uint32_t inner_size, uint32_t outer_size) {
+    std::vector<std::unique_ptr<Type>> payload;
+    payload.push_back(std::make_unique<BitsType>(false, 0));
+    payload.push_back(std::make_unique<ArrayType>(
+        std::make_unique<ArrayType>(std::make_unique<BitsType>(false, 1),
+                                    TypeDim::CreateU32(inner_size)),
+        TypeDim::CreateU32(outer_size)));
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(SumTypeVariant::MakeTuple(*sum_def->variants().front(),
+                                                 std::move(payload)));
+    return SumType(*sum_def, std::move(variants), TypeDim::CreateU32(1));
+  };
+  SumType overflow = make_sum(65535, 65537);
+  XLS_ASSERT_OK_AND_ASSIGN(TypeDim payload_width,
+                           overflow.GetMaxPayloadBitCount());
+  XLS_ASSERT_OK_AND_ASSIGN(int64_t payload_bits, payload_width.GetAsInt64());
+  ASSERT_EQ(payload_bits, 4294967295);
+
+  int leaf_calls = 0;
+  auto stop_before_array =
+      [&](absl::BitGenRef, const BitsLikeProperties&,
+          absl::Span<const InterpValue>) -> absl::StatusOr<InterpValue> {
+    ++leaf_calls;
+    return absl::AbortedError("reached the active payload");
+  };
+  std::mt19937_64 bit_gen{2};
+  InterpValueGenerator generator;
+  // The first leaf has no bits and safely stops the old traversal before it
+  // can enter the enormous second member. Its callback must not run at all.
+  EXPECT_THAT(generator.Generate(bit_gen, overflow, {}, stop_before_array),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("shared sum bit count exceeds")));
+  EXPECT_EQ(leaf_calls, 0);
+
+  SumType ordinary = make_sum(2, 3);
+  EXPECT_THAT(generator.Generate(bit_gen, ordinary, {}, stop_before_array),
+              StatusIs(absl::StatusCode::kAborted,
+                       HasSubstr("reached the active payload")));
+  EXPECT_EQ(leaf_calls, 1);
+  XLS_ASSERT_OK(generator.Generate(bit_gen, ordinary, {}));
+}
+
+// Verifies: recursive token leaves preserve complete prior argument values.
+// Catches: bit-generated tokens or callbacks seeing partial aggregates.
+TEST(QuickcheckTest, ValueGeneratorsPreservePriorValuesAcrossRecursiveLeaves) {
+  std::vector<std::unique_ptr<Type>> tuple_members;
+  tuple_members.push_back(BitsType::MakeU8());
+  tuple_members.push_back(std::make_unique<TokenType>());
+  tuple_members.push_back(BitsType::MakeU8());
+
+  std::vector<std::unique_ptr<Type>> owned_types;
+  owned_types.push_back(BitsType::MakeU8());
+  owned_types.push_back(std::make_unique<TupleType>(std::move(tuple_members)));
+  owned_types.push_back(std::make_unique<TokenType>());
+  owned_types.push_back(BitsType::MakeU8());
+  const std::vector<const Type*> types = {
+      owned_types[0].get(), owned_types[1].get(), owned_types[2].get(),
+      owned_types[3].get()};
+
+  for (bool use_compatibility_wrapper : {false, true}) {
+    SCOPED_TRACE(use_compatibility_wrapper ? "compatibility wrapper"
+                                           : "reusable generator");
+    std::mt19937_64 bit_gen{2};
+    std::vector<std::vector<InterpValue>> observed_prior;
+    auto generate_bits = [&observed_prior](absl::BitGenRef,
+                                           const BitsLikeProperties&,
+                                           absl::Span<const InterpValue> prior)
+        -> absl::StatusOr<InterpValue> {
+      observed_prior.emplace_back(prior.begin(), prior.end());
+      return InterpValue::MakeUBits(
+          8, static_cast<int64_t>(observed_prior.size()));
+    };
+
+    InterpValueGenerator generator;
+    absl::StatusOr<std::vector<InterpValue>> generated =
+        use_compatibility_wrapper
+            ? GenerateInterpValues(bit_gen, types, generate_bits)
+            : generator.GenerateValues(bit_gen, types, generate_bits);
+    XLS_ASSERT_OK_AND_ASSIGN(std::vector<InterpValue> values,
+                             std::move(generated));
+    ASSERT_EQ(values.size(), 4);
+    EXPECT_TRUE(values[2].IsToken());
+    ASSERT_EQ(values[1].GetValuesOrDie().size(), 3);
+    EXPECT_TRUE(values[1].GetValuesOrDie().at(1).IsToken());
+    EXPECT_THAT(
+        observed_prior,
+        ::testing::ElementsAre(
+            std::vector<InterpValue>{}, std::vector<InterpValue>{values[0]},
+            std::vector<InterpValue>{values[0]},
+            std::vector<InterpValue>{values[0], values[1], values[2]}));
+  }
 }
 
 // Verifies that the QuickCheck mechanism can find counter-examples for a simple
