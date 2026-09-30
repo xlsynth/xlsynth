@@ -83,6 +83,8 @@ absl::StatusOr<BValue> BuildPackedSumValue(
 
 // Reconstructs one packed member without checking sum tags or padding. Callers
 // can slice out only the members that their operation needs to observe. The
+// first array element occupies the least-significant bits, unlike the first
+// tuple or struct member, which occupies the most-significant bits. The
 // resolver supplies the canonical IR element type for every array, even if
 // empty.
 absl::StatusOr<BValue> UnpackPackedSumPayload(
