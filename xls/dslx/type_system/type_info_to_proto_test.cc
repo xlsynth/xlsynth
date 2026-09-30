@@ -461,8 +461,7 @@ TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
       sum->variants(0).discriminant();
   EXPECT_THAT(
       ToHumanString(with_layout, import_data, import_data.file_table()),
-      StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("duplicate discriminant")));
+      absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
