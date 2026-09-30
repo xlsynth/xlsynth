@@ -33,6 +33,54 @@ package(
 )
 
 cc_library(
+    name = "verilog_sum_naming",
+    srcs = ["verilog_sum_naming.cc"],
+    hdrs = ["verilog_sum_naming.h"],
+    visibility = ["//visibility:private"],
+    deps = [
+        "//xls/codegen/vast",
+        "//xls/common/status:status_macros",
+        "//xls/dslx:channel_direction",
+        "//xls/dslx:interp_value",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
+        "//xls/dslx/type_system:type",
+        "//xls/dslx/type_system_v2:type_annotation_utils",
+        "//xls/ir:bits",
+        "//xls/ir:name_uniquer",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/strings:str_format",
+        "@abseil-cpp//absl/types:span",
+        "@boringssl//:crypto",
+    ],
+)
+
+cc_test(
+    name = "verilog_sum_naming_test",
+    srcs = ["verilog_sum_naming_test.cc"],
+    deps = [
+        ":verilog_sum_naming",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/common/status:status_macros",
+        "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
+        "//xls/dslx:interp_value",
+        "//xls/dslx:parse_and_typecheck",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
+        "//xls/dslx/type_system:type",
+        "//xls/dslx/type_system:type_info",
+        "//xls/ir:name_uniquer",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
     name = "dslx_to_verilog",
     srcs = ["dslx_to_verilog.cc"],
     hdrs = ["dslx_to_verilog.h"],
