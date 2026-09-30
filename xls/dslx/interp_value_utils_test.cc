@@ -885,10 +885,10 @@ TEST(InterpValueHelpersTest, PackedEqualityChecksBothCompleteAggregates) {
   };
 
   EXPECT_THAT(internal::PackedValuesEqual(aggregate(1, 1, 0x005a),
-                                        aggregate(1, 1, 0xff5a), type),
+                                          aggregate(1, 1, 0xff5a), type),
               IsOkAndHolds(true));
   EXPECT_THAT(internal::PackedValuesEqual(aggregate(1, 1, 0x005a),
-                                        aggregate(1, 1, 0xff5b), type),
+                                          aggregate(1, 1, 0xff5b), type),
               IsOkAndHolds(false));
 
   EXPECT_THAT(
