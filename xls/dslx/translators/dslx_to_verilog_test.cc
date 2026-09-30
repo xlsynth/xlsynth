@@ -19,10 +19,11 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/strings/str_format.h"
+#include "gtest/gtest.h"
 #include "re2/re2.h"
 #include "xls/common/golden_files.h"
 #include "xls/common/status/matchers.h"
@@ -138,6 +139,103 @@ type AliasType1 = Point[1];
   ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
 }
 
+TEST_F(DslxToVerilogTest, SemanticSumTypeDefinition) {
+  constexpr std::string_view program =
+      R"(
+pub enum MaybeWord {
+  None,
+  Some(u32),
+  Pair { lo: u8, hi: u8 },
+}
+
+pub enum ExplicitTagWidth : u5 {
+  None = 0,
+  Some(u8) = 1,
+}
+
+pub enum Singleton {
+  Only(u16),
+}
+)";
+
+  dslx::ImportData import_data = dslx::CreateImportDataForTest();
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      dslx::ParseAndTypecheck(program, "test_module.x", "test_module",
+                              &import_data, nullptr));
+
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+
+  for (const TypeDefinition& def : tm.module->GetTypeDefinitions()) {
+    XLS_ASSERT_OK(type_to_verilog.AddTypeForTypeDefinition(def, &import_data));
+  }
+
+  ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
+}
+
+TEST_F(DslxToVerilogTest, NestedSumFunctionParameterAndOutput) {
+  constexpr std::string_view program = R"(
+enum Inner { A(u8), B(u8) }
+enum Outer { A(Inner), B(Inner) }
+fn identity(x: Outer) -> Outer { x }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
+                        nullptr));
+  Function* function = tm.module->GetFunction("identity").value();
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+
+  // Function annotations use a different token-check/export entry point from
+  // public type definitions. Exercise both consumers of the shared sum type.
+  XLS_ASSERT_OK(type_to_verilog.AddTypeForFunctionParam(function, &import_data,
+                                                        "x", "input_t"));
+  XLS_ASSERT_OK(type_to_verilog.AddTypeForFunctionOutput(function, &import_data,
+                                                         "output_t"));
+  const std::string emitted = type_to_verilog.Emit();
+  EXPECT_NE(emitted.find("input_t"), std::string::npos) << emitted;
+  EXPECT_NE(emitted.find("output_t"), std::string::npos) << emitted;
+  EXPECT_NE(emitted.find("logic [8:0] payload;"), std::string::npos) << emitted;
+}
+
+TEST_F(DslxToVerilogTest, OmitsZeroWidthSemanticSumFromPackedAggregate) {
+  constexpr std::string_view program = R"(
+enum Marker {
+  Only(),
+}
+
+pub struct Wrapper {
+  marker: Marker,
+  nested: (Marker, u8),
+  value: u8,
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
+                        nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+  const std::vector<TypeDefinition> definitions =
+      tm.module->GetTypeDefinitions();
+  ASSERT_EQ(definitions.size(), 2);
+  XLS_ASSERT_OK(
+      type_to_verilog.AddTypeForTypeDefinition(definitions[1], &import_data));
+
+  const std::string emitted = type_to_verilog.Emit();
+  EXPECT_EQ(emitted.find("} Marker;"), std::string::npos) << emitted;
+  EXPECT_EQ(emitted.find(" marker;"), std::string::npos) << emitted;
+  EXPECT_EQ(emitted.find(" index_0;"), std::string::npos) << emitted;
+  EXPECT_NE(emitted.find("logic [7:0] index_1;"), std::string::npos) << emitted;
+  EXPECT_NE(emitted.find("logic [7:0] value;"), std::string::npos) << emitted;
+}
+
 TEST_F(DslxToVerilogTest, NestedTypeDefinition) {
   constexpr std::string_view program =
       R"(
@@ -181,33 +279,6 @@ struct TopType {
   }
 
   ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
-}
-
-TEST_F(DslxToVerilogTest, SemanticSumsAreRejectedInPhase1) {
-  constexpr std::string_view program =
-      R"(
-pub enum MaybeWord {
-  None,
-  Some(u32),
-}
-)";
-
-  dslx::ImportData import_data = dslx::CreateImportDataForTest();
-
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      dslx::ParseAndTypecheck(program, "test_module.x", "test_module",
-                              &import_data, nullptr));
-
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-
-  for (const TypeDefinition& def : tm.module->GetTypeDefinitions()) {
-    EXPECT_THAT(type_to_verilog.AddTypeForTypeDefinition(def, &import_data),
-                absl_testing::StatusIs(
-                    absl::StatusCode::kUnimplemented,
-                    ::testing::HasSubstr("Semantic sum type annotation")));
-  }
 }
 
 TEST_F(DslxToVerilogTest, TypeWithNestedTuple) {

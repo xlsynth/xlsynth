@@ -16,7 +16,11 @@ load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
-load("//xls/build_rules:xls_dslx_rules.bzl", "xls_dslx_to_verilog_package")
+load(
+    "//xls/build_rules:xls_dslx_rules.bzl",
+    "xls_dslx_library",
+    "xls_dslx_to_verilog_package",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -122,4 +126,23 @@ diff_test(
     name = "dslx_to_verilog_main_memory_proc_test",
     file1 = "testdata/memory_proc_pkg.sv",
     file2 = ":memory_proc_pkg.sv",
+)
+
+xls_dslx_library(
+    name = "semantic_sum_dslx",
+    srcs = ["testdata/semantic_sum_pkg.x"],
+)
+
+xls_dslx_to_verilog_package(
+    name = "semantic_sum_pkg",
+    library = ":semantic_sum_dslx",
+    lint_waivers = ["struct-union-name-style"],
+    namespace = "semantic_sum",
+    package_file = "semantic_sum_pkg.sv",
+)
+
+diff_test(
+    name = "dslx_to_verilog_main_semantic_sum_test",
+    file1 = "testdata/semantic_sum_pkg.sv",
+    file2 = ":semantic_sum_pkg.sv",
 )
