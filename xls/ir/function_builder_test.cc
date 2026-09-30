@@ -1124,6 +1124,35 @@ TEST(FunctionBuilderTest, Trace) {
   EXPECT_EQ(f->return_value()->As<Trace>()->format(), format);
 }
 
+TEST(FunctionBuilderTest, TraceWithConditionalFormatSection) {
+  Package p("p");
+  FunctionBuilder b("f", &p);
+
+  BValue guard = b.Param("guard", p.GetBitsType(1));
+  BValue value = b.Param("value", p.GetBitsType(17));
+  b.Trace(b.Param("tkn", p.GetTokenType()), b.Param("cond", p.GetBitsType(1)),
+          {guard, value}, "prefix {?}value = {}{/}");
+
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, b.Build());
+  EXPECT_EQ(OperandsExpectedByFormat(f->return_value()->As<Trace>()->format()),
+            2);
+  EXPECT_EQ(StepsToXlsFormatString(f->return_value()->As<Trace>()->format()),
+            "prefix {?}value = {}{/}");
+}
+
+TEST(FunctionBuilderTest, TraceRejectsNonBooleanConditionalGuard) {
+  Package p("p");
+  FunctionBuilder b("f", &p);
+
+  BValue guard = b.Param("guard", p.GetBitsType(2));
+  b.Trace(b.Param("tkn", p.GetTokenType()), b.Param("cond", p.GetBitsType(1)),
+          {guard}, "{?}value{/}");
+
+  EXPECT_THAT(b.Build().status(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Conditional trace guard must be bits[1]")));
+}
+
 TEST(FunctionBuilderTest, TraceWithVerbosity) {
   Package p("p");
   FunctionBuilder b("f", &p);

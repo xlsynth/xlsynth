@@ -4221,6 +4221,66 @@ TEST_P(IrEvaluatorTestBase, EmptyTraceTest) {
               ElementsAre(""));
 }
 
+TEST_P(IrEvaluatorTestBase, TraceEscapedBraces) {
+  Package package("escaped_trace_test");
+  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                           ParseAndGetFunction(&package, R"(
+fn f(tkn: token, cond: bits[1], value: bits[32]) -> token {
+  ret trace.1: token = trace(tkn, cond, format="{{}} {{{{}}}} {{{}}}", data_operands=[value])
+}
+)"));
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpreterResult<Value> result,
+      RunWithEvents(function,
+                    {Value::Token(), Value(UBits(1, 1)), Value(UBits(7, 32))}));
+  EXPECT_EQ(result.value, Value::Token());
+  EXPECT_THAT(result.events.GetAssertMessages(), ElementsAre());
+  EXPECT_THAT(result.events.GetTraceMessageStrings(),
+              ElementsAre("{} {{}} {7}"));
+}
+
+TEST_P(IrEvaluatorTestBase, NestedConditionalTraceSectionsEmitOneEvent) {
+  Package package("conditional_trace_test");
+  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                           ParseAndGetFunction(&package, R"(
+fn f(tkn: token, cond: bits[1], outer: bits[1], inner: bits[1], value: bits[8]) -> token {
+  ret trace.1: token = trace(tkn, cond, format="prefix{?} outer{?} {}{/}{/} suffix", data_operands=[outer, inner, value])
+}
+)"));
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpreterResult<Value> all_active,
+      RunWithEvents(function,
+                    {Value::Token(), Value(UBits(1, 1)), Value(UBits(1, 1)),
+                     Value(UBits(1, 1)), Value(UBits(42, 8))}));
+  EXPECT_THAT(all_active.events.GetTraceMessageStrings(),
+              ElementsAre("prefix outer 42 suffix"));
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpreterResult<Value> inner_inactive,
+      RunWithEvents(function,
+                    {Value::Token(), Value(UBits(1, 1)), Value(UBits(1, 1)),
+                     Value(UBits(0, 1)), Value(UBits(42, 8))}));
+  EXPECT_THAT(inner_inactive.events.GetTraceMessageStrings(),
+              ElementsAre("prefix outer suffix"));
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpreterResult<Value> outer_inactive,
+      RunWithEvents(function,
+                    {Value::Token(), Value(UBits(1, 1)), Value(UBits(0, 1)),
+                     Value(UBits(1, 1)), Value(UBits(42, 8))}));
+  EXPECT_THAT(outer_inactive.events.GetTraceMessageStrings(),
+              ElementsAre("prefix suffix"));
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpreterResult<Value> trace_inactive,
+      RunWithEvents(function,
+                    {Value::Token(), Value(UBits(0, 1)), Value(UBits(1, 1)),
+                     Value(UBits(1, 1)), Value(UBits(42, 8))}));
+  EXPECT_THAT(trace_inactive.events.GetTraceMessageStrings(), ElementsAre());
+}
+
 TEST_P(IrEvaluatorTestBase, ThreeStringTraceTest) {
   Package p("empty_trace_test");
 
@@ -4229,7 +4289,7 @@ TEST_P(IrEvaluatorTestBase, ThreeStringTraceTest) {
   auto p0 = b.Param("tkn", p.GetTokenType());
   auto p1 = b.Param("cnd", p.GetBitsType(1));
   std::vector<BValue> args = {};
-  std::vector<FormatStep> format = {"hello", " ", "world!"};
+  std::vector<FormatStep> format = {"{{hello", " ", "world!}}"};
   b.Trace(p0, p1, args, format);
 
   XLS_ASSERT_OK_AND_ASSIGN(Function * f, b.Build());
@@ -4243,7 +4303,7 @@ TEST_P(IrEvaluatorTestBase, ThreeStringTraceTest) {
   EXPECT_EQ(print_trace_result.value, Value::Token());
   EXPECT_THAT(print_trace_result.events.GetAssertMessages(), ElementsAre());
   EXPECT_THAT(print_trace_result.events.GetTraceMessageStrings(),
-              ElementsAre("hello world!"));
+              ElementsAre("{hello world!}"));
 }
 
 TEST_P(IrEvaluatorTestBase, TupleTraceTest) {

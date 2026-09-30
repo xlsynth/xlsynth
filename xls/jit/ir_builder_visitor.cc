@@ -1852,14 +1852,18 @@ absl::Status IrBuilderVisitor::HandleTrace(Trace* trace_op) {
                    trace_op->package()->GetBitsType(1));
 
   size_t operand_index = 2;
+  std::vector<llvm::BasicBlock*> conditional_join_blocks;
+  int64_t conditional_index = 0;
   for (const FormatStep& step : trace_op->format()) {
     if (std::holds_alternative<std::string>(step)) {
       XLS_RETURN_IF_ERROR(InvokeStringStepCallback(
-          &print_builder, std::get<std::string>(step), buffer_ptr,
+          &print_builder,
+          UnescapeFormatStringLiteral(std::get<std::string>(step)), buffer_ptr,
           node_context.GetInstanceContextArg()));
-    } else {
+    } else if (std::holds_alternative<FormatPreference>(step)) {
       xls::Node* o = trace_op->operand(operand_index);
-      llvm::Value* operand = node_context.LoadOperand(operand_index);
+      llvm::Value* operand =
+          node_context.LoadOperand(operand_index, &print_builder);
       AllocaBuffer alloca =
           node_context.CreateAlloca(print_builder, operand->getType());
       print_builder.CreateStore(operand, alloca.value());
@@ -1871,8 +1875,31 @@ absl::Status IrBuilderVisitor::HandleTrace(Trace* trace_op) {
           alloca.value(), buffer_ptr, jit_runtime_ptr,
           node_context.GetInstanceContextArg()));
       alloca.CleanUp(print_builder);
+    } else if (std::get<FormatControl>(step) ==
+               FormatControl::kBeginConditional) {
+      llvm::Value* guard =
+          Truthiness(node_context.LoadOperand(operand_index, &print_builder),
+                     print_builder);
+      ++operand_index;
+      llvm::BasicBlock* guarded_block = llvm::BasicBlock::Create(
+          ctx(), absl::StrCat(trace_name, "_guard_", conditional_index),
+          node_context.llvm_function());
+      llvm::BasicBlock* join_block = llvm::BasicBlock::Create(
+          ctx(), absl::StrCat(trace_name, "_guard_join_", conditional_index),
+          node_context.llvm_function());
+      ++conditional_index;
+      print_builder.CreateCondBr(guard, guarded_block, join_block);
+      conditional_join_blocks.push_back(join_block);
+      print_builder.SetInsertPoint(guarded_block);
+    } else {
+      XLS_RET_CHECK(!conditional_join_blocks.empty());
+      llvm::BasicBlock* join_block = conditional_join_blocks.back();
+      conditional_join_blocks.pop_back();
+      print_builder.CreateBr(join_block);
+      print_builder.SetInsertPoint(join_block);
     }
   }
+  XLS_RET_CHECK(conditional_join_blocks.empty());
 
   XLS_RETURN_IF_ERROR(InvokeRecordTraceCallback(
       &print_builder, trace_op->verbosity(), buffer_ptr, events_ptr,
