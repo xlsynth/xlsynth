@@ -4617,8 +4617,7 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
       absl::c_any_of(entries, [](const ParsedEntry& entry) {
         return entry.payload_shape != SumVariant::PayloadShape::kUnit;
       });
-  const bool is_semantic_sum =
-      has_payload_syntax || (entries.empty() && type_annotation == nullptr);
+  const bool is_semantic_sum = has_payload_syntax || entries.empty();
   const bool has_discriminants = absl::c_any_of(
       entries,
       [](const ParsedEntry& entry) { return entry.discriminant != nullptr; });
@@ -4661,14 +4660,6 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
         absl::StrFormat(
             "Semantic sum `%s` must use either all implicit or all explicit "
             "discriminants.",
-            name_def->identifier()));
-  } else if (type_annotation != nullptr && !entries.empty() &&
-             !all_have_discriminants) {
-    return ParseErrorStatus(
-        name_def->span(),
-        absl::StrFormat(
-            "Semantic sum `%s` with a tag type annotation requires explicit "
-            "discriminants on every variant.",
             name_def->identifier()));
   }
 
