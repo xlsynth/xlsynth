@@ -2208,12 +2208,14 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
               sum_type_info->NoteConstExpr(binding->name_def(), *value);
               values.emplace(binding->identifier(), *value);
             } else {
+              const auto* argument = std::get<TypeAnnotation*>(
+                  resolved_parametrics.at(binding->name_def()));
+              // Capture caller values before entering the sum's context.
+              // Otherwise uN[R.n] could bind to this sum's different R.
               XLS_ASSIGN_OR_RETURN(
                   const TypeAnnotation* type,
-                  CleanseGenericTypeArgument(
-                      parametric_context, *parent_type_info,
-                      std::get<TypeAnnotation*>(
-                          resolved_parametrics.at(binding->name_def()))));
+                  CleanseGenericTypeArgument(parametric_context,
+                                             *parent_type_info, argument));
               values.emplace(binding->identifier(),
                              InterpValue::MakeTypeReference(type));
               tag_type_parametrics.emplace(binding->name_def(),
@@ -3415,8 +3417,8 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
   // helper, we instead turn `uN[A]` into `uN[5]` before adding it to `T` in
   // this scenario.
   absl::StatusOr<const TypeAnnotation*> CleanseGenericTypeArgument(
-      std::optional<const ParametricContext*> parametric_context,
-      const TypeInfo& ti, const TypeAnnotation* type) {
+      std::optional<const ParametricContext*> parametric_context, TypeInfo& ti,
+      const TypeAnnotation* type) {
     XLS_ASSIGN_OR_RETURN(
         type, resolver_->ResolveIndirectTypeAnnotations(
                   parametric_context, /*context_node=*/std::nullopt, type,
@@ -3447,6 +3449,29 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
                 /*update_span=*/false);
           }
           values.emplace(def, *literal);
+        } else if (std::optional<Type*> binding_type = ti.GetItem(def);
+                   binding_type.has_value() &&
+                   ((*binding_type)->IsTuple() || (*binding_type)->IsStruct() ||
+                    (*binding_type)->IsSum() ||
+                    ((*binding_type)->IsArray() &&
+                     !GetBitsLike(**binding_type).has_value()))) {
+          XLS_ASSIGN_OR_RETURN(
+              (std::optional<const TypeAnnotation*> resolved_annotation),
+              resolver_->ResolveAndUnifyTypeAnnotationsForNode(
+                  parametric_context, def));
+          XLS_RET_CHECK(resolved_annotation.has_value());
+          // A captured record can itself have a caller-dependent type, such
+          // as Width<N>. Freeze its annotation as well as its value without
+          // expanding the members of the generic argument being passed.
+          XLS_ASSIGN_OR_RETURN(
+              const TypeAnnotation* binding_annotation,
+              CleanseGenericTypeArgument(parametric_context, ti,
+                                         *resolved_annotation));
+          XLS_ASSIGN_OR_RETURN(NameRef * captured_value,
+                               table_.MakeParametricValueReference(
+                                   *ref->owner(), binding_annotation,
+                                   **binding_type, *value, ti));
+          values.emplace(def, captured_value);
         }
       }
     }
