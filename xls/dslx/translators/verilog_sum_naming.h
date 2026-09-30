@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -57,6 +58,8 @@ std::string SignedArrayCompanionKey(int64_t width);
 // tuple or array.
 class IdentityBuilder {
  public:
+  using NominalOwner = std::function<std::string_view(const AstNode&)>;
+
   IdentityBuilder();
   ~IdentityBuilder();
   IdentityBuilder(IdentityBuilder&&) noexcept;
@@ -67,9 +70,16 @@ class IdentityBuilder {
   // The key is a fixed-length semantic fingerprint, not a public spelling.
   absl::StatusOr<std::string> TypeIdentity(const Type& type);
 
+  // Uses these nominal source-owner spellings for readable and hashed public
+  // suffixes only; TypeIdentity continues to use compiler module identities.
+  // Configure before requesting public names. The callback must keep any
+  // returned view alive until it is called again.
+  void SetPublicNominalOwner(NominalOwner owner);
+
   // An unambiguous short specialization keeps its readable suffix; otherwise
-  // the suffix contains the complete semantic fingerprint. Empty arguments
-  // have an empty suffix. Callers prepend the declaration's public name.
+  // the suffix contains a complete fingerprint using public nominal owners.
+  // Empty arguments have an empty suffix. Callers prepend the declaration's
+  // public name.
   absl::StatusOr<std::string> SpecializationName(const SumType& sum);
   absl::StatusOr<std::string> StructSpecializationName(const StructType& type);
 
@@ -83,6 +93,7 @@ class IdentityBuilder {
  private:
   class Impl;
   std::unique_ptr<Impl> impl_;
+  std::unique_ptr<Impl> public_impl_;
 };
 
 // Convenience wrappers for a single independent query. Package generation
