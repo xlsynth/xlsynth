@@ -540,7 +540,8 @@ TEST_F(PackedSumIrTest, ConcreteBitsConstructorUsesScalarBits) {
 }
 
 TEST_F(PackedSumIrTest, ArraysUsePackedElementTypesAndIndexZeroIsLow) {
-  auto inner = Choice(Payload(BitsType::MakeU8()), Payload(BitsType::MakeU8()));
+  auto inner = Choice(Payload(std::make_unique<BitsType>(false, 4)),
+                      Payload(BitsType::MakeU8()));
   ArrayType array(inner->CloneToUnique(), TypeDim::CreateU32(2));
   xls::Type* packed_element =
       package_.GetTupleType({package_.GetBitsType(1),
@@ -566,12 +567,26 @@ TEST_F(PackedSumIrTest, ArraysUsePackedElementTypesAndIndexZeroIsLow) {
   XLS_ASSERT_OK_AND_ASSIGN(
       BValue repacked,
       BuildPackedSumValue(builder_, encoding, first, {unpacked}, {}));
-  XLS_ASSERT_OK_AND_ASSIGN(Value result,
-                           Run(builder_.Tuple({unpacked, repacked})));
+  // The first element's high payload bits are inactive. The second element's
+  // active value must still be compared at its own packed offset.
+  XLS_ASSERT_OK_AND_ASSIGN(
+      BValue equal,
+      BuildPackedSumEquality(
+          builder_, *outer, repacked,
+          builder_.Literal(Raw(0, 1, (0x134 << 9) | 0xf2, 18)), {}));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      BValue different_second,
+      BuildPackedSumEquality(
+          builder_, *outer, repacked,
+          builder_.Literal(Raw(0, 1, (0x135 << 9) | 0x12, 18)), {}));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Value result,
+      Run(builder_.Tuple({unpacked, repacked, equal, different_second})));
   EXPECT_EQ(
       result,
       Value::Tuple({Value::ArrayOrDie({Raw(0, 1, 0x12, 8), Raw(1, 1, 0x34, 8)}),
-                    Raw(0, 1, (0x134 << 9) | 0x12, 18)}));
+                    Raw(0, 1, (0x134 << 9) | 0x12, 18), Value::Bool(true),
+                    Value::Bool(false)}));
 }
 
 TEST_F(PackedSumIrTest, EmptyArrayDoesNotConstructRepresentativeElements) {
