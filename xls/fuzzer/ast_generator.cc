@@ -33,6 +33,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/casts.h"
 #include "absl/container/btree_set.h"
 #include "absl/container/flat_hash_set.h"
@@ -1877,7 +1878,8 @@ TypedExpr AstGenerator::GenerateNumberWithType(
   return TypedExpr{GenerateNumberFromBits(value, type), type};
 }
 
-absl::StatusOr<TypedExpr> AstGenerator::GenerateRetval(Context* ctx) {
+absl::StatusOr<TypedExpr> AstGenerator::GenerateRetval(Context* ctx,
+                                                       int64_t max_bit_count) {
   XLS_ASSIGN_OR_RETURN(int64_t retval_count, GenerateNaryOperandCount(ctx, 0));
 
   std::vector<TypedExpr> env_params;
@@ -1907,8 +1909,7 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRetval(Context* ctx) {
 
     // See if the value we selected is going to push us over the "aggregate type
     // width" limit.
-    if ((total_bit_count + GetTypeBitCount(expr.type) >
-         options_.max_width_aggregate_types)) {
+    if (total_bit_count + GetTypeBitCount(expr.type) > max_bit_count) {
       continue;
     }
 
@@ -2262,260 +2263,538 @@ absl::Status AstGenerator::GenerateImportedSumStatements(
   return absl::OkStatus();
 }
 
-absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
-    Context* ctx, std::vector<Statement*>* statements) {
-  XLS_RET_CHECK(!ctx->is_generating_proc);
-  XLS_RET_CHECK(statements != nullptr);
-
-  NameDef* sum_name_def = MakeNameDef(GenSym());
-  NameDef* unit_variant_name_def = MakeNameDef(GenSym());
-  NameDef* active_variant_name_def = MakeNameDef(GenSym());
-
-  std::vector<SumVariant*> variants;
-  variants.reserve(2);
-  variants.push_back(module_->Make<SumVariant>(
-      fake_span_, unit_variant_name_def, SumVariant::PayloadShape::kUnit,
-      std::vector<TypeAnnotation*>{}, std::vector<StructMemberNode*>{}));
-
-  std::optional<TypeAnnotation*> payload_type;
-  if (options_.max_width_bits_types > 0) {
-    int64_t payload_width = absl::Uniform<int64_t>(
-        absl::IntervalClosed, bit_gen_, 1,
-        std::min<int64_t>(options_.max_width_bits_types, 8));
-    payload_type = MakeTypeAnnotation(
-        /*is_signed=*/options_.emit_signed_types && RandomBool(0.5),
-        payload_width, /*use_xn=*/RandomBool(0.05));
-    variants.push_back(module_->Make<SumVariant>(
-        fake_span_, active_variant_name_def, SumVariant::PayloadShape::kTuple,
-        std::vector<TypeAnnotation*>{*payload_type},
-        std::vector<StructMemberNode*>{}));
+Expr* AstGenerator::MakeSumConstructor(SumDef* definition, int64_t variant,
+                                       absl::Span<Expr* const> payloads) {
+  SumVariant* member = definition->variants().at(variant);
+  auto* ref = module_->Make<ColonRef>(
+      fake_span_, MakeTypeRefTypeAnnotation(definition), member->identifier());
+  if (member->is_unit()) {
+    return ref;
+  } else if (member->is_tuple()) {
+    return module_->Make<Invocation>(
+        fake_span_, ref, std::vector<Expr*>(payloads.begin(), payloads.end()));
   } else {
+    std::vector<std::pair<std::string, Expr*>> fields;
+    for (int64_t i = 0; i < payloads.size(); ++i) {
+      fields.emplace_back(
+          member->struct_members().at(i)->name_def()->identifier(),
+          payloads[i]);
+    }
+    return module_->Make<StructInstance>(
+        fake_span_, MakeTypeRefTypeAnnotation(TypeDefinition(ref)), fields);
+  }
+}
+
+PatternTree AstGenerator::MakeSumPattern(
+    SumDef* definition, int64_t variant,
+    absl::Span<const PatternTree> payloads) {
+  SumVariant* member = definition->variants().at(variant);
+  auto* ref = module_->Make<ColonRef>(
+      fake_span_, MakeTypeRefTypeAnnotation(definition), member->identifier());
+  if (member->is_unit()) {
+    return ref;
+  } else if (member->is_tuple()) {
+    return module_->Make<SumVariantPayloadPattern>(
+        fake_span_, ref,
+        PatternTree{module_->Make<TuplePattern>(
+            fake_span_,
+            std::vector<PatternTree>(payloads.begin(), payloads.end()))});
+  } else {
+    std::vector<StructPattern::Field> fields;
+    for (int64_t i = 0; i < payloads.size(); ++i) {
+      fields.emplace_back(
+          member->struct_members().at(i)->name_def()->identifier(),
+          payloads[i]);
+    }
+    return module_->Make<SumVariantPayloadPattern>(
+        fake_span_, ref,
+        PatternTree{module_->Make<StructPattern>(fake_span_, fields)});
+  }
+}
+
+absl::StatusOr<AstGenerator::RequiredSum>
+AstGenerator::GenerateRequiredSumParameters(std::vector<Param*>* params) {
+  // Reserve space for two complete sums, scalar extraction, and two arm
+  // markers. Tiny budgets still exercise a zero-bit inhabited singleton.
+  const bool empty_only = options_.max_width_bits_types == 0 ||
+                          options_.max_width_aggregate_types < 16;
+  const int64_t marker_width =
+      empty_only ? 0 : std::min<int64_t>(2, options_.max_width_bits_types);
+  const int64_t variant_count =
+      empty_only ? 1
+                 : absl::Uniform<int64_t>(
+                       absl::IntervalClosed, bit_gen_, 1,
+                       std::min<int64_t>(4, int64_t{1} << marker_width));
+  const bool explicit_tags = RandomBool(0.5);
+  const int64_t tag_width =
+      variant_count == 1 ? 0
+      : explicit_tags
+          ? absl::Uniform<int64_t>(
+                absl::IntervalClosed, bit_gen_, CeilOfLog2(variant_count),
+                std::min<int64_t>({16, options_.max_width_bits_types,
+                                   options_.max_width_aggregate_types / 8}))
+          : CeilOfLog2(variant_count);
+  const bool signed_tags =
+      tag_width > 0 && options_.emit_signed_types && RandomBool(0.5);
+  TypeAnnotation* tag_type =
+      explicit_tags
+          ? MakeTypeAnnotation(signed_tags, tag_width, /*use_xn=*/false)
+          : nullptr;
+  const int64_t payload_budget = empty_only
+                                     ? 0
+                                     : (options_.max_width_aggregate_types -
+                                        2 * tag_width - 2 * marker_width) /
+                                           3;
+  const int64_t scalar_width =
+      empty_only ? 0
+                 : absl::Uniform<int64_t>(
+                       absl::IntervalClosed, bit_gen_, 1,
+                       std::min<int64_t>({16, options_.max_width_bits_types,
+                                          payload_budget / 2}));
+  TypeAnnotation* scalar_type =
+      MakeTypeAnnotation(options_.emit_signed_types && RandomBool(0.5),
+                         scalar_width, /*use_xn=*/false);
+  TypeAnnotation* small_type = MakeTypeAnnotation(
+      /*is_signed=*/false,
+      empty_only ? 0 : std::max<int64_t>(1, scalar_width / 2),
+      /*use_xn=*/false);
+
+  auto make_fields = [&](absl::Span<TypeAnnotation* const> types) {
+    std::vector<StructMemberNode*> fields;
+    for (TypeAnnotation* type : types) {
+      fields.push_back(module_->Make<StructMemberNode>(
+          fake_span_, MakeNameDef(GenSym()), fake_span_, type));
+    }
+    return fields;
+  };
+  std::vector<SumVariant*> variants;
+  std::set<int64_t> used_tags;
+  int64_t max_payload_width = 0;
+  for (int64_t i = 0; i < variant_count; ++i) {
+    // A scalar first variant supplies an independent equality/extraction
+    // oracle. The remaining cases are finite templates, not recursive type
+    // generation.
+    int64_t shape = i == 0 ? 1 : absl::Uniform<int64_t>(bit_gen_, 0, 9);
+    SumVariant::PayloadShape payload_shape = SumVariant::PayloadShape::kTuple;
+    std::vector<TypeAnnotation*> types;
+    if (empty_only || (i != 0 && shape == 1)) {
+      // An explicit empty tuple differs from a bare unit constructor.
+    } else if (i == 0) {
+      types = {scalar_type};
+    } else if (shape == 0) {
+      payload_shape = SumVariant::PayloadShape::kUnit;
+    } else if (shape == 2) {
+      payload_shape = SumVariant::PayloadShape::kStruct;
+    } else if (shape == 3 || shape == 4) {
+      types = {scalar_type, small_type};
+      if (shape == 4) {
+        payload_shape = SumVariant::PayloadShape::kStruct;
+      }
+    } else if (shape == 5) {
+      types = {MakeTupleType({scalar_type, small_type})};
+    } else if (shape == 6) {
+      // Use a literal dimension: these declarations precede generated
+      // constants.
+      types = {module_->Make<ArrayTypeAnnotation>(fake_span_, small_type,
+                                                  MakeNumber(2, nullptr))};
+    } else if (shape == 7) {
+      auto* name = MakeNameDef(GenSym());
+      auto* structure = module_->Make<StructDef>(
+          fake_span_, name, std::vector<ParametricBinding*>{},
+          make_fields({scalar_type, small_type}), /*is_public=*/false);
+      name->set_definer(structure);
+      XLS_RETURN_IF_ERROR(module_->AddTop(structure, nullptr));
+      auto* type = MakeTypeRefTypeAnnotation(structure);
+      type_bit_counts_[type->ToString()] =
+          scalar_width + GetTypeBitCount(small_type);
+      types = {type};
+    } else {
+      auto* name = MakeNameDef(GenSym());
+      auto* nested = module_->Make<SumDef>(
+          fake_span_, name, std::vector<ParametricBinding*>{},
+          std::vector<SumVariant*>{
+              module_->Make<SumVariant>(fake_span_, MakeNameDef(GenSym()),
+                                        SumVariant::PayloadShape::kUnit,
+                                        std::vector<TypeAnnotation*>{},
+                                        std::vector<StructMemberNode*>{}),
+              module_->Make<SumVariant>(
+                  fake_span_, MakeNameDef(GenSym()),
+                  SumVariant::PayloadShape::kTuple,
+                  std::vector<TypeAnnotation*>{small_type},
+                  std::vector<StructMemberNode*>{})},
+          /*is_public=*/false);
+      name->set_definer(nested);
+      sum_defs_.push_back(nested);
+      auto* type = MakeTypeRefTypeAnnotation(nested);
+      type_bit_counts_[type->ToString()] = 1 + GetTypeBitCount(small_type);
+      types = {type};
+    }
+    int64_t payload_width = 0;
+    for (TypeAnnotation* type : types) {
+      payload_width += GetTypeBitCount(type);
+    }
+    max_payload_width = std::max(max_payload_width, payload_width);
+    std::optional<Expr*> tag;
+    if (explicit_tags) {
+      int64_t value;
+      do {
+        value = absl::Uniform<int64_t>(bit_gen_, 0, int64_t{1} << tag_width);
+      } while (!used_tags.insert(value).second);
+      if (signed_tags && value >= (int64_t{1} << (tag_width - 1))) {
+        value -= int64_t{1} << tag_width;
+      }
+      tag = GenerateNumber(value, tag_type);
+    }
     variants.push_back(module_->Make<SumVariant>(
-        fake_span_, active_variant_name_def, SumVariant::PayloadShape::kTuple,
-        std::vector<TypeAnnotation*>{}, std::vector<StructMemberNode*>{}));
+        fake_span_, MakeNameDef(GenSym()), payload_shape,
+        payload_shape == SumVariant::PayloadShape::kTuple
+            ? types
+            : std::vector<TypeAnnotation*>{},
+        payload_shape == SumVariant::PayloadShape::kStruct
+            ? make_fields(types)
+            : std::vector<StructMemberNode*>{},
+        tag));
+  }
+  auto* name = MakeNameDef(GenSym());
+  auto* definition = module_->Make<SumDef>(
+      fake_span_, name, std::vector<ParametricBinding*>{}, variants,
+      /*is_public=*/false, tag_type);
+  name->set_definer(definition);
+  sum_defs_.push_back(definition);
+  auto* type = MakeTypeRefTypeAnnotation(definition);
+  type_bit_counts_[type->ToString()] = tag_width + max_payload_width;
+  auto add_param = [&](TypeAnnotation* type) {
+    Param* param = GenerateParam({.type = type}).param;
+    params->push_back(param);
+    return param;
+  };
+  RequiredSum result{.definition = definition, .input = add_param(type)};
+  if (!empty_only) {
+    result.selector = add_param(MakeTypeAnnotation(
+        /*is_signed=*/false, marker_width, /*use_xn=*/false));
+    result.other_payload = add_param(scalar_type);
+  }
+  for (SumVariant* variant : variants) {
+    std::vector<Expr*> payloads;
+    for (int64_t i = 0; i < variant->payload_member_count(); ++i) {
+      TypeAnnotation* payload_type =
+          variant->is_tuple() ? variant->tuple_members().at(i)
+                              : variant->struct_members().at(i)->type();
+      StructDef* payload_struct = nullptr;
+      if (auto* ref = dynamic_cast<TypeRefTypeAnnotation*>(payload_type);
+          ref != nullptr && std::holds_alternative<StructDef*>(
+                                ref->type_ref()->type_definition())) {
+        payload_struct =
+            std::get<StructDef*>(ref->type_ref()->type_definition());
+      }
+      if (payload_struct != nullptr) {
+        // The source runner cannot sign-convert a direct struct parameter.
+        // This template has scalar fields, so construct the struct from those
+        // runtime inputs while retaining its nominal type inside the sum.
+        std::vector<std::pair<std::string, Expr*>> fields;
+        for (StructMemberNode* member : payload_struct->members()) {
+          fields.emplace_back(
+              member->name(),
+              MakeNameRef(add_param(member->type())->name_def()));
+        }
+        payloads.push_back(
+            module_->Make<StructInstance>(fake_span_, payload_type, fields));
+      } else {
+        payloads.push_back(MakeNameRef(add_param(payload_type)->name_def()));
+      }
+    }
+    result.payloads.push_back(std::move(payloads));
+  }
+  generated_required_sum_ = true;
+  return result;
+}
+
+absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumResult(
+    Context* ctx, std::vector<Statement*>* statements) {
+  XLS_RET_CHECK(ctx->required_sum.has_value());
+  const RequiredSum& sum = *ctx->required_sum;
+  SumDef* definition = sum.definition;
+  auto* sum_type = MakeTypeRefTypeAnnotation(definition);
+  auto append_binding = [&](Expr* expr, TypeAnnotation* type,
+                            bool is_const = false) {
+    auto* name = MakeNameDef(GenSym());
+    auto* let = module_->Make<Let>(fake_span_, name, type, expr, is_const);
+    name->set_definer(let);
+    statements->push_back(module_->Make<Statement>(let));
+    return name;
+  };
+  auto append_assert_eq = [&](Expr* actual, Expr* expected) {
+    statements->push_back(module_->Make<Statement>(
+        module_->Make<Invocation>(fake_span_, MakeBuiltinNameRef("assert_eq"),
+                                  std::vector<Expr*>{actual, expected})));
+  };
+  auto binop = [&](BinopKind kind, Expr* lhs, Expr* rhs) {
+    return module_->Make<Binop>(fake_span_, kind, lhs, rhs, fake_span_);
+  };
+  auto wildcard_pattern = [&](int64_t variant) {
+    return MakeSumPattern(
+        definition, variant,
+        std::vector<PatternTree>(
+            definition->variants().at(variant)->payload_member_count(),
+            PatternTree{module_->Make<WildcardPattern>(fake_span_)}));
+  };
+
+  // Reconstruct each active runtime payload. Returning the complete value lets
+  // differential runners observe extraction, including aggregate/nested
+  // payloads.
+  std::vector<MatchArm*> transport_arms;
+  for (int64_t i = 0; i < definition->variants().size(); ++i) {
+    std::vector<PatternTree> patterns;
+    std::vector<Expr*> values;
+    for (int64_t j = 0; j < sum.payloads[i].size(); ++j) {
+      auto* name = MakeNameDef(GenSym());
+      patterns.push_back(name);
+      values.push_back(MakeNameRef(name));
+    }
+    transport_arms.push_back(module_->Make<MatchArm>(
+        fake_span_,
+        std::vector<PatternTree>{MakeSumPattern(definition, i, patterns)},
+        MakeSumConstructor(definition, i, values)));
+  }
+  auto* transported = append_binding(
+      module_->Make<Match>(fake_span_, MakeNameRef(sum.input->name_def()),
+                           transport_arms),
+      sum_type);
+  append_assert_eq(MakeNameRef(transported),
+                   MakeNameRef(sum.input->name_def()));
+
+  if (sum.selector == nullptr) {
+    append_assert_eq(MakeNameRef(transported),
+                     MakeSumConstructor(definition, 0, {}));
+    return TypedExpr{.expr = MakeNameRef(transported), .type = sum_type};
   }
 
-  auto* sum_def = module_->Make<SumDef>(
-      fake_span_, sum_name_def, std::vector<ParametricBinding*>{},
-      std::move(variants), /*is_public=*/false);
-  sum_name_def->set_definer(sum_def);
-  sum_defs_.push_back(sum_def);
-  generated_required_sum_ = true;
+  TypeAnnotation* marker_type = sum.selector->type_annotation();
+  TypeAnnotation* scalar_type = sum.other_payload->type_annotation();
+  Expr* lhs = sum.payloads.front().front();
+  auto* rhs = sum.other_payload->name_def();
+  auto marker = [&](int64_t value) {
+    return GenerateNumber(value, marker_type);
+  };
+  auto selected_is = [&](int64_t variant) {
+    return binop(BinopKind::kEq, MakeNameRef(sum.selector->name_def()),
+                 marker(variant));
+  };
+  auto scalar_constructor = [&](Expr* value) {
+    return MakeSumConstructor(definition, 0, {value});
+  };
 
-  NameDef* imported_value_name_def = nullptr;
   if (options_.require_cross_module_sum_type) {
-    XLS_RET_CHECK(imported_float32_name_def_ != nullptr);
-    XLS_RET_CHECK(payload_type.has_value());
-
-    auto* imported_type_ref = module_->Make<ColonRef>(
+    auto* imported_ref = module_->Make<ColonRef>(
         fake_span_, MakeNameRef(imported_float32_name_def_), "F32");
     auto* imported_type =
-        MakeTypeRefTypeAnnotation(TypeDefinition(imported_type_ref));
-    auto* sign_type = MakeTypeAnnotation(/*is_signed=*/false, /*width=*/1,
-                                         /*use_xn=*/false);
-    auto* exponent_type = MakeTypeAnnotation(/*is_signed=*/false, /*width=*/8,
-                                             /*use_xn=*/false);
-    auto* fraction_type = MakeTypeAnnotation(/*is_signed=*/false, /*width=*/23,
-                                             /*use_xn=*/false);
+        MakeTypeRefTypeAnnotation(TypeDefinition(imported_ref));
     auto* imported_value = module_->Make<StructInstance>(
         fake_span_, imported_type,
         std::vector<std::pair<std::string, Expr*>>{
-            {"sign",
-             GenerateNumber(absl::Uniform<int64_t>(bit_gen_, 0, 2), sign_type)},
+            {"sign", GenerateNumber(absl::Uniform<int64_t>(bit_gen_, 0, 2),
+                                    MakeTypeAnnotation(false, 1, false))},
             {"bexp", GenerateNumber(absl::Uniform<int64_t>(bit_gen_, 0, 256),
-                                    exponent_type)},
+                                    MakeTypeAnnotation(false, 8, false))},
             {"fraction",
              GenerateNumber(absl::Uniform<int64_t>(bit_gen_, 0, 1 << 23),
-                            fraction_type)},
-        });
-    imported_value_name_def =
-        module_->Make<NameDef>(fake_span_, GenSym(), imported_value);
-    statements->push_back(module_->Make<Statement>(module_->Make<Let>(
-        fake_span_, imported_value_name_def, imported_type, imported_value,
-        /*is_const=*/false)));
-    XLS_RETURN_IF_ERROR(
-        GenerateImportedSumStatements(imported_value_name_def, statements));
-  }
-
-  auto make_constructor_ref = [&](NameDef* variant_name_def) {
-    return module_->Make<ColonRef>(fake_span_,
-                                   MakeTypeRefTypeAnnotation(sum_def),
-                                   variant_name_def->identifier());
-  };
-  auto make_sum_expr = [&](NameDef* variant_name_def,
-                           SumVariant::PayloadShape payload_shape,
-                           std::optional<TypeAnnotation*> want_payload_type)
-      -> absl::StatusOr<Expr*> {
-    ColonRef* constructor_ref = make_constructor_ref(variant_name_def);
-    if (!want_payload_type.has_value()) {
-      if (payload_shape == SumVariant::PayloadShape::kTuple) {
-        return module_->Make<Invocation>(fake_span_, constructor_ref,
-                                         std::vector<Expr*>{});
-      }
-      return constructor_ref;
-    }
-    if (imported_value_name_def != nullptr) {
-      auto* fraction = module_->Make<Attr>(
-          fake_span_, MakeNameRef(imported_value_name_def), "fraction");
-      auto* payload_value =
-          module_->Make<Cast>(fake_span_, fraction, *want_payload_type);
-      return module_->Make<Invocation>(fake_span_, constructor_ref,
-                                       std::vector<Expr*>{payload_value});
-    } else {
-      XLS_ASSIGN_OR_RETURN(TypedExpr payload_value,
-                           GenerateExprOfType(ctx, *want_payload_type));
-      return module_->Make<Invocation>(fake_span_, constructor_ref,
-                                       std::vector<Expr*>{payload_value.expr});
-    }
-  };
-  XLS_ASSIGN_OR_RETURN(
-      Expr * active_sum_expr,
-      make_sum_expr(active_variant_name_def,
-                    sum_def->variants().back()->payload_shape(), payload_type));
-
-  std::string sum_identifier = GenSym();
-  auto* sum_binding =
-      module_->Make<NameDef>(fake_span_, sum_identifier, active_sum_expr);
-  statements->push_back(module_->Make<Statement>(
-      module_->Make<Let>(fake_span_, sum_binding,
-                         MakeTypeRefTypeAnnotation(sum_def), active_sum_expr,
-                         /*is_const=*/false)));
-
-  auto* active_sum_ref = MakeNameRef(sum_binding);
-  XLS_ASSIGN_OR_RETURN(
-      Expr * unit_sum_expr,
-      make_sum_expr(unit_variant_name_def,
-                    sum_def->variants().front()->payload_shape(),
-                    std::nullopt));
-  auto append_assert_eq = [&](Expr* lhs, Expr* rhs) {
-    statements->push_back(module_->Make<Statement>(
-        module_->Make<Invocation>(fake_span_, MakeBuiltinNameRef("assert_eq"),
-                                  std::vector<Expr*>{lhs, rhs})));
-  };
-
-  auto* eq_expr =
-      module_->Make<Binop>(fake_span_, BinopKind::kEq, active_sum_ref,
-                           MakeNameRef(sum_binding), fake_span_);
-  auto* eq_binding = module_->Make<NameDef>(fake_span_, GenSym(), eq_expr);
-  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
-      fake_span_, eq_binding, MakeBoolTypeAnnotation(), eq_expr,
-      /*is_const=*/false)));
-  append_assert_eq(MakeNameRef(eq_binding), MakeBool(true));
-
-  auto* ne_expr =
-      module_->Make<Binop>(fake_span_, BinopKind::kNe, MakeNameRef(sum_binding),
-                           unit_sum_expr, fake_span_);
-  auto* ne_binding = module_->Make<NameDef>(fake_span_, GenSym(), ne_expr);
-  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
-      fake_span_, ne_binding, MakeBoolTypeAnnotation(), ne_expr,
-      /*is_const=*/false)));
-  append_assert_eq(MakeNameRef(ne_binding), MakeBool(true));
-
-  append_assert_eq(MakeNameRef(sum_binding), MakeNameRef(sum_binding));
-
-  auto* match_result_type =
-      MakeTypeAnnotation(/*is_signed=*/false, /*width=*/32,
-                         /*use_xn=*/false);
-  auto* nested_tuple_expr = module_->Make<XlsTuple>(
-      fake_span_, std::vector<Expr*>{MakeNameRef(sum_binding), MakeBool(true)},
-      /*has_trailing_comma=*/false);
-
-  std::vector<MatchArm*> match_arms;
-  if (payload_type.has_value()) {
-    auto* first_payload_name = MakeNameDef(GenSym());
-    auto* first_constructor_pattern = module_->Make<SumVariantPayloadPattern>(
-        fake_span_, make_constructor_ref(active_variant_name_def),
-        PatternTree{module_->Make<TuplePattern>(
-            fake_span_, std::vector<PatternTree>{first_payload_name})});
-    match_arms.push_back(module_->Make<MatchArm>(
+                            MakeTypeAnnotation(false, 23, false))}});
+    NameDef* imported = append_binding(imported_value, imported_type);
+    XLS_RETURN_IF_ERROR(GenerateImportedSumStatements(imported, statements));
+    auto* fraction = module_->Make<Cast>(
+        fake_span_,
+        module_->Make<Attr>(fake_span_, MakeNameRef(imported), "fraction"),
+        scalar_type);
+    NameDef* original_fraction = append_binding(fraction, scalar_type);
+    NameDef* fraction_payload = MakeNameDef(GenSym());
+    std::vector<MatchArm*> fraction_arms{module_->Make<MatchArm>(
         fake_span_,
         std::vector<PatternTree>{
-            module_->Make<TuplePattern>(fake_span_,
-                                        std::vector<PatternTree>{
-                                            first_constructor_pattern,
-                                            MakeBool(true),
-                                        })},
-        module_->Make<Cast>(
-            fake_span_,
-            module_->Make<Binop>(fake_span_, BinopKind::kEq,
-                                 MakeNameRef(first_payload_name),
-                                 MakeNameRef(first_payload_name), fake_span_),
-            match_result_type)));
-
-    auto* second_payload_name = MakeNameDef(GenSym());
-    auto* second_constructor_pattern = module_->Make<SumVariantPayloadPattern>(
-        fake_span_, make_constructor_ref(active_variant_name_def),
-        PatternTree{module_->Make<TuplePattern>(
-            fake_span_, std::vector<PatternTree>{second_payload_name})});
-    match_arms.push_back(module_->Make<MatchArm>(
-        fake_span_,
-        std::vector<PatternTree>{module_->Make<TuplePattern>(
-            fake_span_,
-            std::vector<PatternTree>{
-                second_constructor_pattern,
-                module_->Make<WildcardPattern>(fake_span_),
-            })},
-        module_->Make<Cast>(
-            fake_span_,
-            module_->Make<Binop>(fake_span_, BinopKind::kEq,
-                                 MakeNameRef(second_payload_name),
-                                 MakeNameRef(second_payload_name), fake_span_),
-            match_result_type)));
-  } else {
-    auto* active_constructor_pattern = module_->Make<SumVariantPayloadPattern>(
-        fake_span_, make_constructor_ref(active_variant_name_def),
-        PatternTree{module_->Make<TuplePattern>(fake_span_,
-                                                std::vector<PatternTree>{})});
-    match_arms.push_back(module_->Make<MatchArm>(
-        fake_span_,
-        std::vector<PatternTree>{module_->Make<TuplePattern>(
-            fake_span_,
-            std::vector<PatternTree>{
-                active_constructor_pattern,
-                module_->Make<WildcardPattern>(fake_span_),
-            })},
-        GenerateNumber(/*value=*/1, match_result_type)));
-  }
-  match_arms.push_back(module_->Make<MatchArm>(
-      fake_span_,
-      std::vector<PatternTree>{module_->Make<TuplePattern>(
+            MakeSumPattern(definition, 0, {PatternTree{fraction_payload}})},
+        MakeNameRef(fraction_payload))};
+    if (definition->variants().size() > 1) {
+      fraction_arms.push_back(module_->Make<MatchArm>(
           fake_span_,
-          std::vector<PatternTree>{
-              make_constructor_ref(unit_variant_name_def),
-              module_->Make<WildcardPattern>(fake_span_),
-          })},
-      GenerateNumber(/*value=*/0, match_result_type)));
+          std::vector<PatternTree>{module_->Make<WildcardPattern>(fake_span_)},
+          GenerateNumber(0, scalar_type)));
+    }
+    NameDef* extracted_fraction = append_binding(
+        module_->Make<Match>(fake_span_,
+                             scalar_constructor(MakeNameRef(original_fraction)),
+                             fraction_arms),
+        scalar_type);
+    append_assert_eq(MakeNameRef(extracted_fraction),
+                     MakeNameRef(original_fraction));
+  }
 
-  auto* match_expr =
-      module_->Make<Match>(fake_span_, nested_tuple_expr, match_arms);
-  auto* match_binding =
-      module_->Make<NameDef>(fake_span_, GenSym(), match_expr);
-  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
-      fake_span_, match_binding, match_result_type, match_expr,
-      /*is_const=*/false)));
-  append_assert_eq(MakeNameRef(match_binding),
-                   GenerateNumber(/*value=*/1, match_result_type));
+  append_assert_eq(binop(BinopKind::kEq, scalar_constructor(lhs),
+                         scalar_constructor(MakeNameRef(rhs))),
+                   binop(BinopKind::kEq, lhs, MakeNameRef(rhs)));
+  append_assert_eq(binop(BinopKind::kNe, scalar_constructor(lhs),
+                         scalar_constructor(module_->Make<Unop>(
+                             fake_span_, UnopKind::kInvert, lhs, fake_span_))),
+                   MakeBool(true));
 
-  auto* observers_ok_expr =
-      module_->Make<Binop>(fake_span_, BinopKind::kAnd, MakeNameRef(eq_binding),
-                           MakeNameRef(ne_binding), fake_span_);
-  auto* match_is_expected_expr = module_->Make<Binop>(
-      fake_span_, BinopKind::kEq, MakeNameRef(match_binding),
-      GenerateNumber(/*value=*/1, match_result_type), fake_span_);
-  auto* predicate_expr =
-      module_->Make<Binop>(fake_span_, BinopKind::kAnd, observers_ok_expr,
-                           match_is_expected_expr, fake_span_);
-  auto* predicate_binding =
-      module_->Make<NameDef>(fake_span_, GenSym(), predicate_expr);
-  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
-      fake_span_, predicate_binding, MakeBoolTypeAnnotation(), predicate_expr,
-      /*is_const=*/false)));
-  append_assert_eq(MakeNameRef(predicate_binding), MakeBool(true));
+  const int64_t count = definition->variants().size();
+  Expr* selected = nullptr;
+  Expr* expected_index = nullptr;
+  for (int64_t i = count - 1; i >= 0; --i) {
+    Expr* constructor = MakeSumConstructor(definition, i, sum.payloads[i]);
+    if (selected == nullptr) {
+      selected = constructor;
+      expected_index = marker(i);
+    } else {
+      selected = MakeSel(selected_is(i), constructor, selected);
+      expected_index = MakeSel(selected_is(i), marker(i), expected_index);
+    }
+  }
+  NameDef* constructed = append_binding(selected, sum_type);
+  NameDef* expected_arm = append_binding(expected_index, marker_type);
 
-  return TypedExpr{.expr = MakeNameRef(predicate_binding),
-                   .type = MakeBoolTypeAnnotation(),
-                   .last_delaying_op = LastDelayingOp::kNone,
-                   .min_stage = 1};
+  auto* payload_binding = MakeNameDef(GenSym());
+  std::vector<MatchArm*> extraction_arms{module_->Make<MatchArm>(
+      fake_span_,
+      std::vector<PatternTree>{
+          MakeSumPattern(definition, 0, {PatternTree{payload_binding}})},
+      MakeNameRef(payload_binding))};
+  if (count > 1) {
+    extraction_arms.push_back(module_->Make<MatchArm>(
+        fake_span_,
+        std::vector<PatternTree>{module_->Make<WildcardPattern>(fake_span_)},
+        GenerateNumber(0, scalar_type)));
+  }
+  NameDef* extracted =
+      append_binding(module_->Make<Match>(fake_span_, MakeNameRef(constructed),
+                                          extraction_arms),
+                     scalar_type);
+  append_assert_eq(
+      MakeNameRef(extracted),
+      MakeSel(binop(BinopKind::kEq, MakeNameRef(expected_arm), marker(0)), lhs,
+              GenerateNumber(0, scalar_type)));
+
+  // Choose one small arm family per program. Every expected marker is derived
+  // from the scalar selector/payload, never another sum observer.
+  const int64_t pattern_kind = absl::Uniform<int64_t>(bit_gen_, 0, 5);
+  std::vector<MatchArm*> arms;
+  Expr* expected_marker = MakeNameRef(expected_arm);
+  if (pattern_kind == 0) {
+    std::vector<int64_t> order;
+    for (int64_t i = 0; i < count; ++i) {
+      order.push_back(i);
+    }
+    absl::c_shuffle(order, bit_gen_);
+    for (int64_t i : order) {
+      arms.push_back(module_->Make<MatchArm>(
+          fake_span_, std::vector<PatternTree>{wildcard_pattern(i)},
+          marker(i)));
+    }
+  } else if (pattern_kind == 1 && count > 1) {
+    arms.push_back(module_->Make<MatchArm>(
+        fake_span_,
+        std::vector<PatternTree>{wildcard_pattern(0), wildcard_pattern(1)},
+        marker(0)));
+    for (int64_t i = 2; i < count; ++i) {
+      arms.push_back(module_->Make<MatchArm>(
+          fake_span_, std::vector<PatternTree>{wildcard_pattern(i)},
+          marker(i)));
+    }
+    expected_marker =
+        MakeSel(binop(BinopKind::kLe, MakeNameRef(expected_arm), marker(1)),
+                marker(0), MakeNameRef(expected_arm));
+  } else if (pattern_kind == 2) {
+    arms.push_back(module_->Make<MatchArm>(
+        fake_span_, std::vector<PatternTree>{wildcard_pattern(0)}, marker(0)));
+    if (count > 1) {
+      arms.push_back(module_->Make<MatchArm>(
+          fake_span_,
+          std::vector<PatternTree>{module_->Make<WildcardPattern>(fake_span_)},
+          marker(1)));
+    }
+    expected_marker =
+        MakeSel(binop(BinopKind::kEq, MakeNameRef(expected_arm), marker(0)),
+                marker(0), marker(1));
+  } else {
+    PatternTree special;
+    Expr* payload_matches;
+    if (pattern_kind == 3) {
+      NameDef* constant = append_binding(
+          scalar_constructor(GenerateNumber(0, scalar_type)), sum_type,
+          /*is_const=*/true);
+      special = MakeNameRef(constant);
+      payload_matches =
+          binop(BinopKind::kEq, lhs, GenerateNumber(0, scalar_type));
+    } else {
+      const int64_t width = GetTypeBitCount(scalar_type);
+      const bool is_signed = BitsTypeIsSigned(scalar_type).value();
+      const int64_t limit = std::min<int64_t>(
+          3, (int64_t{1} << (width - (is_signed ? 1 : 0))) - 1);
+      auto* range = module_->Make<Range>(
+          fake_span_, GenerateNumber(0, scalar_type), /*inclusive_end=*/true,
+          GenerateNumber(limit, scalar_type));
+      special = MakeSumPattern(definition, 0, {PatternTree{range}});
+      payload_matches =
+          binop(BinopKind::kAnd,
+                binop(BinopKind::kGe, lhs, GenerateNumber(0, scalar_type)),
+                binop(BinopKind::kLe, lhs, GenerateNumber(limit, scalar_type)));
+    }
+    arms.push_back(module_->Make<MatchArm>(
+        fake_span_, std::vector<PatternTree>{special}, marker(1)));
+    arms.push_back(module_->Make<MatchArm>(
+        fake_span_,
+        std::vector<PatternTree>{module_->Make<WildcardPattern>(fake_span_)},
+        marker(0)));
+    expected_marker = module_->Make<Cast>(
+        fake_span_,
+        binop(BinopKind::kAnd,
+              binop(BinopKind::kEq, MakeNameRef(expected_arm), marker(0)),
+              payload_matches),
+        marker_type);
+  }
+  // Invalid values are absent from source arguments. The dedicated raw lane
+  // exercises this terminal arm; here its syntax and valid-arm ordering vary.
+  NameDef* raw = RandomBool(0.5) ? MakeNameDef(GenSym()) : nullptr;
+  Expr* invalid_result = marker(0);
+  if (raw != nullptr) {
+    invalid_result =
+        module_->Make<Cast>(fake_span_, MakeNameRef(raw), marker_type);
+  }
+  arms.push_back(module_->Make<MatchArm>(
+      fake_span_,
+      std::vector<PatternTree>{module_->Make<InvalidPattern>(fake_span_, raw)},
+      invalid_result));
+  NameDef* matched = append_binding(
+      module_->Make<Match>(fake_span_, MakeNameRef(constructed), arms),
+      marker_type);
+  append_assert_eq(MakeNameRef(matched), expected_marker);
+
+  auto block = [&](Expr* value) {
+    return module_->Make<StatementBlock>(
+        fake_span_, std::vector<Statement*>{module_->Make<Statement>(value)},
+        /*trailing_semi=*/false);
+  };
+  std::variant<StatementBlock*, Conditional*> alternate =
+      block(marker(count - 1));
+  // At least one if-let is emitted for a singleton; larger cases exercise
+  // chained else-if-let and the final ordinary else on runtime inputs.
+  for (int64_t i = std::max<int64_t>(0, count - 2); i >= 0; --i) {
+    alternate = module_->Make<Conditional>(fake_span_, MakeNameRef(constructed),
+                                           block(marker(i)), alternate,
+                                           wildcard_pattern(i));
+  }
+  NameDef* if_let =
+      append_binding(std::get<Conditional*>(alternate), marker_type);
+  append_assert_eq(MakeNameRef(if_let), MakeNameRef(expected_arm));
+
+  return TypedExpr{
+      .expr = module_->Make<XlsTuple>(
+          fake_span_,
+          std::vector<Expr*>{MakeNameRef(transported), MakeNameRef(constructed),
+                             MakeNameRef(extracted), MakeNameRef(matched),
+                             MakeNameRef(if_let)},
+          /*has_trailing_comma=*/false),
+      .type = MakeTupleType(
+          {sum_type, sum_type, scalar_type, marker_type, marker_type}),
+      .min_stage = 1};
 }
 
 std::optional<TypedExpr> AstGenerator::ChooseEnvValueOptional(
@@ -3205,24 +3484,23 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateBody(int64_t call_depth,
 
   std::vector<Statement*> statements;
   statements.reserve(body_size + 4);
-  std::optional<TypedExpr> required_sum_predicate;
+  std::optional<TypedExpr> required_sum_result;
   if (options_.require_sum_type && !ctx->is_generating_proc &&
       call_depth == 0) {
-    XLS_ASSIGN_OR_RETURN(required_sum_predicate,
-                         GenerateRequiredSumPredicate(ctx, &statements));
+    XLS_ASSIGN_OR_RETURN(required_sum_result,
+                         GenerateRequiredSumResult(ctx, &statements));
     if (options_.max_width_bits_types == 0) {
-      // The required-sum predicate already exercises the unit-only sum path in
+      // The required-sum result already exercises the unit-only sum path in
       // this configuration, so avoid generating extra expressions that may
       // require bits-typed intermediates.
-      statements.push_back(
-          module_->Make<Statement>(required_sum_predicate->expr));
+      statements.push_back(module_->Make<Statement>(required_sum_result->expr));
       auto* block = module_->Make<StatementBlock>(fake_span_, statements,
                                                   /*trailing_semi=*/false);
       return TypedExpr{
           .expr = block,
-          .type = required_sum_predicate->type,
-          .last_delaying_op = required_sum_predicate->last_delaying_op,
-          .min_stage = required_sum_predicate->min_stage};
+          .type = required_sum_result->type,
+          .last_delaying_op = required_sum_result->last_delaying_op,
+          .min_stage = required_sum_result->min_stage};
     }
   }
   for (int64_t i = 0; i < body_size; ++i) {
@@ -3258,26 +3536,27 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateBody(int64_t call_depth,
   }
 
   // Done building up the body; finish with the retval.
+  const int64_t available_return_bits =
+      options_.max_width_aggregate_types -
+      (required_sum_result.has_value()
+           ? GetTypeBitCount(required_sum_result->type)
+           : 0);
+  XLS_RET_CHECK_GE(available_return_bits, 0);
   XLS_ASSIGN_OR_RETURN(TypedExpr retval,
                        ctx->is_generating_proc
                            ? GenerateProcNextFunctionRetval(ctx)
-                           : GenerateRetval(ctx));
-  if (required_sum_predicate.has_value()) {
-    std::string retval_identifier = GenSym();
-    auto* retval_binding =
-        module_->Make<NameDef>(fake_span_, retval_identifier, retval.expr);
-    statements.push_back(module_->Make<Statement>(
-        module_->Make<Let>(fake_span_, retval_binding, retval.type, retval.expr,
-                           /*is_const=*/false)));
+                           : GenerateRetval(ctx, available_return_bits));
+  if (required_sum_result.has_value()) {
     retval = TypedExpr{
-        .expr =
-            MakeSel(required_sum_predicate->expr, MakeNameRef(retval_binding),
-                    MakeNameRef(retval_binding)),
-        .type = retval.type,
+        .expr = module_->Make<XlsTuple>(
+            fake_span_,
+            std::vector<Expr*>{retval.expr, required_sum_result->expr},
+            /*has_trailing_comma=*/false),
+        .type = MakeTupleType({retval.type, required_sum_result->type}),
         .last_delaying_op = ComposeDelayingOps(
-            required_sum_predicate->last_delaying_op, retval.last_delaying_op),
+            required_sum_result->last_delaying_op, retval.last_delaying_op),
         .min_stage =
-            std::max(required_sum_predicate->min_stage, retval.min_stage)};
+            std::max(required_sum_result->min_stage, retval.min_stage)};
   }
   statements.push_back(module_->Make<Statement>(retval.expr));
 
@@ -3412,6 +3691,11 @@ absl::StatusOr<AnnotatedFunction> AstGenerator::GenerateFunction(
   for (ParametricBinding* pb : parametric_bindings) {
     context.env[pb->identifier()] =
         TypedExpr{MakeNameRef(pb->name_def()), pb->type_annotation()};
+  }
+
+  if (call_depth == 0 && options_.require_sum_type) {
+    XLS_ASSIGN_OR_RETURN(context.required_sum,
+                         GenerateRequiredSumParameters(&params));
   }
 
   XLS_ASSIGN_OR_RETURN(TypedExpr retval, GenerateBody(call_depth, &context));
