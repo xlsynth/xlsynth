@@ -3550,7 +3550,7 @@ proc Counter {
                HasSubstr("Cannot format an expression with channel type")));
 }
 
-TEST_F(TypecheckV2Test, BadTraceFmtWithUseOfSemanticSum) {
+TEST_F(TypecheckV2Test, TraceFmtWithUseOfSemanticSum) {
   constexpr std::string_view kProgram =
       R"(
 enum Option {
@@ -3563,13 +3563,10 @@ fn main(x: Option) {
 }
 )";
 
-  EXPECT_THAT(
-      Typecheck(kProgram),
-      StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("Formatting semantic sum values is not supported")));
+  XLS_ASSERT_OK(Typecheck(kProgram));
 }
 
-TEST_F(TypecheckV2Test, BadTraceFmtWithAggregateContainingSemanticSum) {
+TEST_F(TypecheckV2Test, TraceFmtWithAggregateContainingSemanticSum) {
   constexpr std::string_view kProgram =
       R"(
 enum Option {
@@ -3586,10 +3583,7 @@ fn main(x: Wrapper) {
 }
 )";
 
-  EXPECT_THAT(
-      Typecheck(kProgram),
-      StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("Formatting semantic sum values is not supported")));
+  XLS_ASSERT_OK(Typecheck(kProgram));
 }
 
 TEST_F(TypecheckV2Test, BadTraceFmtWithUseOfFunction) {

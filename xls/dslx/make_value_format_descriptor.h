@@ -24,7 +24,15 @@ namespace xls::dslx {
 
 // Builds owned formatting metadata, sharing repeated immutable sum descriptions
 // within this call. The result does not retain Type or AST pointers.
+// Channel types, including channel arrays, are rejected.
 absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
+    const Type& type, FormatPreference field_preference);
+
+// Builds formatting metadata for traced call arguments and return values.
+// Channels and entire channel arrays are opaque handle leaves, even inside
+// aggregates. Other types use MakeValueFormatDescriptor's construction.
+// This does not describe the channels' payload messages.
+absl::StatusOr<ValueFormatDescriptor> MakeTraceCallFormatDescriptor(
     const Type& type, FormatPreference field_preference);
 
 }  // namespace xls::dslx
