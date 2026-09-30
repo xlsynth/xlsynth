@@ -27,15 +27,19 @@
 namespace xls::dslx {
 
 // Converts the given type information object to protobuf form for
-// serialization. Sum-valued nominal arguments, including sums nested in
-// aggregates, must use shared-payload InterpValue storage.
+// serialization. Shared sums use definitions and references local to each
+// AstNodeTypeInfoProto; ordinary type encodings are unchanged.
+// Sum-valued nominal arguments, including sums nested in aggregates, must use
+// shared-payload InterpValue storage.
 absl::StatusOr<TypeInfoProto> TypeInfoToProto(const TypeInfo& type_info,
                                               const Module* module);
 
 // Formats a serialized AST node's type information for debugging and testing.
 // `import_data` must contain typechecked modules from the source snapshot used
 // to produce the proto. Spans locate nodes; they do not verify source content.
-// This API produces debugging text; it does not restore TypeInfo for compilation.
+// This API produces debugging text; it does not restore TypeInfo for
+// compilation. Reads both legacy expanded sums and node-local shared
+// descriptions.
 absl::StatusOr<std::string> ToHumanString(const AstNodeTypeInfoProto& antip,
                                           const ImportData& import_data,
                                           FileTable& file_table);
