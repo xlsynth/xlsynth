@@ -733,10 +733,9 @@ cc_test(
     srcs = ["semantic_sum_raw_boundary_fuzz_test.cc"],
     data = [":semantic_sum_phase1_seed_corpus_files"],
     deps = [
+        ":semantic_sum_fuzz_main",
         ":semantic_sum_seed_corpus",
-        "//xls/common:xls_gunit_main",
         "//xls/common/file:get_runfile_path",
-        "//xls/common/fuzzing:fuzztest",
         "//xls/common/status:matchers",
         "//xls/common/status:status_macros",
         "//xls/dslx:create_import_data",
@@ -751,6 +750,7 @@ cc_test(
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",
+        "@com_google_fuzztest//fuzztest",
         "@googletest//:gtest",
     ],
 )
@@ -760,11 +760,10 @@ cc_test(
     srcs = ["semantic_sum_inhabitance_fuzz_test.cc"],
     data = [":semantic_sum_phase1_seed_corpus_files"],
     deps = [
+        ":semantic_sum_fuzz_main",
         ":semantic_sum_seed_corpus",
         ":value_generator",
-        "//xls/common:xls_gunit_main",
         "//xls/common/file:get_runfile_path",
-        "//xls/common/fuzzing:fuzztest",
         "//xls/common/status:matchers",
         "//xls/common/status:status_macros",
         "//xls/dslx:create_import_data",
@@ -783,6 +782,7 @@ cc_test(
         "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",
         "@abseil-cpp//absl/types:span",
+        "@com_google_fuzztest//fuzztest",
         "@googletest//:gtest",
     ],
 )
@@ -792,10 +792,9 @@ cc_test(
     srcs = ["semantic_sum_typeinfo_layout_fuzz_test.cc"],
     data = [":semantic_sum_phase1_seed_corpus_files"],
     deps = [
+        ":semantic_sum_fuzz_main",
         ":semantic_sum_seed_corpus",
-        "//xls/common:xls_gunit_main",
         "//xls/common/file:get_runfile_path",
-        "//xls/common/fuzzing:fuzztest",
         "//xls/common/status:matchers",
         "//xls/common/status:status_macros",
         "//xls/dslx:create_import_data",
@@ -810,8 +809,21 @@ cc_test(
         "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",
         "@abseil-cpp//absl/strings:str_format",
+        "@com_google_fuzztest//fuzztest",
         "@googletest//:gtest",
     ],
+)
+
+cc_library(
+    name = "semantic_sum_fuzz_main",
+    testonly = True,
+    srcs = ["semantic_sum_fuzz_main.cc"],
+    deps = [
+        "//xls/common:gunit_init_xls",
+        "@com_google_fuzztest//fuzztest:init_fuzztest",
+        "@googletest//:gtest",
+    ],
+    alwayslink = True,
 )
 
 cc_library(
@@ -974,10 +986,15 @@ cc_test(
         "//xls/dslx:command_line_utils",
         "//xls/dslx:create_import_data",
         "//xls/dslx:import_data",
+        "//xls/dslx:interp_value",
         "//xls/dslx:parse_and_typecheck",
         "//xls/dslx:virtualizable_file_system",
+        "//xls/dslx/exhaustiveness:match_exhaustiveness_checker",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:pos",
+        "//xls/dslx/type_system:type",
+        "//xls/dslx/type_system:type_info",
+        "//xls/ir:bits",
         "@abseil-cpp//absl/log",
         "@abseil-cpp//absl/log:check",
         "@abseil-cpp//absl/status",
@@ -1156,7 +1173,7 @@ cc_library(
         "//xls/common/status:status_macros",
         "//xls/data_structures:inline_bitmap",
         "//xls/dslx:interp_value",
-        "//xls/dslx:interp_value_utils",
+        "//xls/dslx:interp_value_generator",
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:ast_utils",
         "//xls/dslx/frontend:module",
