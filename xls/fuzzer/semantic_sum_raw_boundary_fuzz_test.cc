@@ -151,20 +151,16 @@ absl::StatusOr<RawBoundaryContext> LoadRawBoundaryContext(
 // Reads the enum payload bits from the active slot of a raw sum tuple.
 absl::StatusOr<Bits> ExtractEnumPayloadBitsFromRawValue(
     const RawBoundaryContext& context, const Value& raw_value) {
-  const dslx::Phase1SumTypeEncoding encoding(*context.sum_type);
-  XLS_ASSIGN_OR_RETURN(dslx::Phase1SumTypeEncoding::VariantInfo variant,
-                       encoding.GetVariant(context.enum_variant_name));
   const Value& payload_tuple = raw_value.elements().at(1);
-  const Value& payload_value = payload_tuple.elements().at(
-      variant.payload_start + context.enum_payload_index);
-  return payload_value.bits();
+  const Value& payload_slot = payload_tuple.elements().at(0);
+  return payload_slot.bits().Slice(0, context.enum_bit_count);
 }
 
 // Interprets payload bits as a declared member of the seed's enum type.
 absl::StatusOr<dslx::InterpValue> MakeSemanticEnumPayloadValue(
     const RawBoundaryContext& context, const Bits& bits) {
-  const dslx::Phase1SumTypeEncoding encoding(*context.sum_type);
-  XLS_ASSIGN_OR_RETURN(dslx::Phase1SumTypeEncoding::VariantInfo variant,
+  const dslx::SumTypeEncoding encoding(*context.sum_type);
+  XLS_ASSIGN_OR_RETURN(dslx::SumTypeEncoding::VariantInfo variant,
                        encoding.GetVariant(context.enum_variant_name));
   auto* enum_type = dynamic_cast<const dslx::EnumType*>(
       &variant.variant->GetMemberType(context.enum_payload_index));
@@ -181,38 +177,16 @@ absl::StatusOr<dslx::InterpValue> MakeSemanticEnumPayloadValue(
 // Builds one otherwise well-formed raw sum with an undeclared enum payload.
 absl::StatusOr<Value> MakeInvalidEnumRawValue(const RawBoundaryContext& context,
                                               uint64_t invalid_member_value) {
-  const dslx::Phase1SumTypeEncoding encoding(*context.sum_type);
-  XLS_ASSIGN_OR_RETURN(dslx::Phase1SumTypeEncoding::VariantInfo variant,
+  const dslx::SumTypeEncoding encoding(*context.sum_type);
+  XLS_ASSIGN_OR_RETURN(dslx::SumTypeEncoding::VariantInfo variant,
                        encoding.GetVariant(context.enum_variant_name));
   XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
-  std::vector<Value> payload_slots;
-  payload_slots.reserve(encoding.payload_slot_count());
-  XLS_RETURN_IF_ERROR(encoding.VisitPayloadAssemblyOrder(
-      variant,
-      [&](int64_t active_index) -> absl::Status {
-        if (active_index == context.enum_payload_index) {
-          payload_slots.push_back(
-              Value(UBits(invalid_member_value, context.enum_bit_count)));
-        } else {
-          XLS_ASSIGN_OR_RETURN(
-              dslx::InterpValue zero,
-              dslx::CreateZeroValueFromType(
-                  variant.variant->GetMemberType(active_index)));
-          XLS_ASSIGN_OR_RETURN(Value zero_value, zero.ConvertToIr());
-          payload_slots.push_back(std::move(zero_value));
-        }
-        return absl::OkStatus();
-      },
-      [&](const dslx::Type& inactive_type) -> absl::Status {
-        XLS_ASSIGN_OR_RETURN(dslx::InterpValue zero,
-                             dslx::CreateZeroValueFromType(inactive_type));
-        XLS_ASSIGN_OR_RETURN(Value zero_value, zero.ConvertToIr());
-        payload_slots.push_back(std::move(zero_value));
-        return absl::OkStatus();
-      }));
-  return Value::TupleOwned(
-      std::vector<Value>{Value(UBits(variant.variant_index, tag_bit_count)),
-                         Value::TupleOwned(std::move(payload_slots))});
+  XLS_ASSIGN_OR_RETURN(int64_t payload_slot_bit_count,
+                       encoding.payload_slot_bit_count());
+  return Value::TupleOwned(std::vector<Value>{
+      Value(UBits(variant.variant_index, tag_bit_count)),
+      Value::TupleOwned(
+          {Value(UBits(invalid_member_value, payload_slot_bit_count))})});
 }
 
 // Applies the manifest outcome contract to one reviewed raw IR value.
