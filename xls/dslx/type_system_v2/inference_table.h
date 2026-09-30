@@ -174,14 +174,20 @@ struct ParametricStructDetails {
   const ParametricEnv env;
 };
 
+// A concrete sum instance whose tag annotation or discriminants need typing.
+struct ParametricSumDetails {
+  const SumDef* sum_def;
+  ParametricEnv env;
+};
+
 // Identifies either an invocation of a parametric function, or a
-// parameterization of a parametric struct, with enough context to determine
-// what its effective parametric value expressions must be. These are dealt out
-// by an `InferenceTable`.
+// parameterization of a parametric struct or sum, with enough context to
+// determine what its effective parametric value expressions must be. These are
+// dealt out by an `InferenceTable`.
 class ParametricContext {
  public:
-  using Details =
-      std::variant<ParametricInvocationDetails, ParametricStructDetails>;
+  using Details = std::variant<ParametricInvocationDetails,
+                               ParametricStructDetails, ParametricSumDetails>;
 
   ParametricContext(uint64_t id, const AstNode* node, Details details,
                     TypeInfo* type_info,
@@ -200,19 +206,17 @@ class ParametricContext {
   }
 
   // The node that motivated the creation of this context. For a parametric
-  // invocation, it is an `Invocation` node. For a struct, it may be a
-  // `StructInstance`, `ColonRef`, or other node that establishes the use of a
-  // parameterization of the struct.
+  // invocation, it is an `Invocation` node. For a struct or sum, it is a node
+  // that establishes a use of the concrete nominal type.
   const AstNode* node() const { return node_; }
 
-  // The details about the context, which depend on whether it is for a function
-  // or struct.
+  // The details about the function, struct, or sum instance.
   const Details& details() const { return details_; }
 
   // Derived type info for this parametric context.
   TypeInfo* type_info() const { return type_info_; }
 
-  // Returns whether this context is for an invocation as opposed to a struct.
+  // Returns whether this context is for a function invocation.
   bool is_invocation() const {
     return std::holds_alternative<ParametricInvocationDetails>(details_);
   }
@@ -244,18 +248,23 @@ class ParametricContext {
   }
   void SetSelfType(const TypeAnnotation* self_type) { self_type_ = self_type; }
 
-  // Returns the parametric bindings of the function or struct that this context
-  // is for.
+  // Returns the bindings of the declaration this context instantiates.
   std::vector<const ParametricBinding*> parametric_bindings() const {
     std::vector<const ParametricBinding*> result;
-    // Note: this is due to the interface disparity between structs and
-    // functions.
-    absl::c_copy(is_invocation()
-                     ? std::get<ParametricInvocationDetails>(details_)
-                           .callee->parametric_bindings()
-                     : std::get<ParametricStructDetails>(details_)
-                           .struct_or_proc_def->parametric_bindings(),
-                 std::back_inserter(result));
+    absl::visit(Visitor{[&](const ParametricInvocationDetails& details) {
+                          absl::c_copy(details.callee->parametric_bindings(),
+                                       std::back_inserter(result));
+                        },
+                        [&](const ParametricStructDetails& details) {
+                          absl::c_copy(
+                              details.struct_or_proc_def->parametric_bindings(),
+                              std::back_inserter(result));
+                        },
+                        [&](const ParametricSumDetails& details) {
+                          absl::c_copy(details.sum_def->parametric_bindings(),
+                                       std::back_inserter(result));
+                        }},
+                details_);
     return result;
   }
 
@@ -293,19 +302,29 @@ class ParametricContext {
   std::optional<InterpValue> GetEnvValue(const NameDef* binding) const {
     if (invocation_env_.has_value()) {
       return invocation_env_->GetValue(binding);
-    }
-    if (std::holds_alternative<ParametricStructDetails>(details_)) {
+    } else if (std::holds_alternative<ParametricStructDetails>(details_)) {
       return std::get<ParametricStructDetails>(details_).env.GetValue(binding);
+    } else if (std::holds_alternative<ParametricSumDetails>(details_)) {
+      return std::get<ParametricSumDetails>(details_).env.GetValue(binding);
+    } else {
+      return std::nullopt;
     }
-    return std::nullopt;
   }
 
   std::optional<const StructDefBase*> target_struct() const {
-    if (std::holds_alternative<ParametricStructDetails>(details_)) {
-      return std::get<ParametricStructDetails>(details_).struct_or_proc_def;
-    }
-    return std::get<ParametricInvocationDetails>(details_)
-        .target_struct_or_proc_def;
+    return absl::visit(Visitor{[](const ParametricInvocationDetails& details)
+                                   -> std::optional<const StructDefBase*> {
+                                 return details.target_struct_or_proc_def;
+                               },
+                               [](const ParametricStructDetails& details)
+                                   -> std::optional<const StructDefBase*> {
+                                 return details.struct_or_proc_def;
+                               },
+                               [](const ParametricSumDetails&)
+                                   -> std::optional<const StructDefBase*> {
+                                 return std::nullopt;
+                               }},
+                       details_);
   }
 
  private:
@@ -320,6 +339,10 @@ class ParametricContext {
             },
             [](const ParametricStructDetails& details) -> std::string {
               return absl::StrCat(details.struct_or_proc_def->identifier(),
+                                  ", parametrics: ", details.env.ToString());
+            },
+            [](const ParametricSumDetails& details) -> std::string {
+              return absl::StrCat(details.sum_def->identifier(),
                                   ", parametrics: ", details.env.ToString());
             }},
         details);
@@ -497,6 +520,14 @@ class InferenceTable {
       ParametricEnv parametric_env, const TypeAnnotation* self_type,
       std::optional<const ParametricContext*> parent_context,
       absl::FunctionRef<absl::StatusOr<TypeInfo*>()> type_info_factory) = 0;
+
+  // Registers an instance-local typing context. The sum concretizer's completed
+  // type cache owns reuse; this operation does not add a separate context
+  // cache.
+  virtual absl::StatusOr<const ParametricContext*> AddParametricSumContext(
+      const SumDef* sum_def, const AstNode* node, ParametricEnv parametric_env,
+      TypeInfo* type_info,
+      std::optional<const ParametricContext*> parent_context) = 0;
 
   // Returns the expression for the value of the given parametric in the given
   // invocation, if the parametric has an explicit or default expression. If it
