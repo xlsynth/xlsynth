@@ -16,7 +16,6 @@
 
 #include <cstdlib>
 #include <filesystem>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -184,8 +183,7 @@ dslx::SumType MakeSampleRunnerChoiceType(dslx::Module& module) {
   variants.push_back(
       dslx::SumTypeVariant::MakeTuple(*wide, std::move(wide_members)));
 
-  return dslx::SumType(*choice_def, std::move(variants),
-                       dslx::SumType::SelectedZeroVariant{std::cref(*none)});
+  return dslx::SumType(*choice_def, std::move(variants));
 }
 
 absl::StatusOr<dslx::InterpValue> SignedInterpValueFromIrString(

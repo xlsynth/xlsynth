@@ -20,8 +20,8 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -79,6 +79,49 @@ StructType CreateSimpleStruct(Module& module) {
   members.push_back(BitsType::MakeU8());
   members.push_back(BitsType::MakeU1());
   return StructType(std::move(members), *struct_def);
+}
+
+// Count leaf comparisons through clones of independently built sum graphs.
+class EqualityCountingBitsType : public BitsType {
+ public:
+  explicit EqualityCountingBitsType(int64_t& comparison_count)
+      : BitsType(false, 1), comparison_count_(comparison_count) {}
+
+  bool operator==(const Type& other) const override {
+    ++comparison_count_;
+    return BitsType::operator==(other);
+  }
+
+  std::unique_ptr<Type> CloneToUnique() const override {
+    return std::make_unique<EqualityCountingBitsType>(comparison_count_);
+  }
+
+ private:
+  int64_t& comparison_count_;
+};
+
+// Creates tuple constructors whose members are u8. Concrete payload Types are
+// supplied separately by the tests, including deliberately invalid dimensions.
+SumDef* CreateTupleSumDef(Module& module,
+                          const std::vector<int64_t>& member_counts) {
+  auto* u8 = module.Make<BuiltinTypeAnnotation>(
+      kFakeSpan, BuiltinType::kU8,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU8));
+  std::vector<SumVariant*> variants;
+  for (int64_t i = 0; i < member_counts.size(); ++i) {
+    variants.push_back(module.Make<SumVariant>(
+        kFakeSpan,
+        module.Make<NameDef>(kFakeSpan, "Case" + std::to_string(i), nullptr),
+        SumVariant::PayloadShape::kTuple,
+        std::vector<TypeAnnotation*>(member_counts[i], u8),
+        std::vector<StructMemberNode*>{}));
+  }
+  auto* sum_def = module.Make<SumDef>(
+      kFakeSpan, module.Make<NameDef>(kFakeSpan, "S", nullptr),
+      std::vector<ParametricBinding*>{}, std::move(variants),
+      /*is_public=*/false);
+  sum_def->name_def()->set_definer(sum_def);
+  return sum_def;
 }
 
 TEST(TypeTest, TestU32) {
@@ -171,10 +214,13 @@ TEST(TypeTest, TestEnum) {
   EXPECT_EQ("MyEnum", t.ToString());
   EXPECT_EQ("MyEnum", t.ToInlayHintString());
   EXPECT_EQ("<no-file>:MyEnum", t.ToStringFullyQualified(file_table));
+
+  ArrayType array(t.CloneToUnique(), TypeDim::CreateU32(2));
+  EXPECT_EQ("MyEnum[2]", array.ToString());
+  EXPECT_EQ("<no-file>:MyEnum[2]", array.ToStringFullyQualified(file_table));
 }
 
-TEST(TypeTest, ZeroSelectionDoesNotChangeSumIdentityOrFormatting) {
-  static_assert(!std::is_default_constructible_v<SumType::ZeroSelection>);
+TEST(TypeTest, FrozenDiscriminantsPreserveClonedIdentityAndFormatting) {
   FileTable file_table;
   Module module("test", /*fs_path=*/std::nullopt, file_table);
   auto* name = module.Make<NameDef>(kFakeSpan, "E", nullptr);
@@ -190,21 +236,20 @@ TEST(TypeTest, ZeroSelectionDoesNotChangeSumIdentityOrFormatting) {
       module.Make<SumDef>(kFakeSpan, name, std::vector<ParametricBinding*>{},
                           std::vector<SumVariant*>{a, b}, /*is_public=*/false);
   name->set_definer(def);
-  auto make_type = [&](SumType::ZeroSelection selection) {
-    std::vector<SumTypeVariant> variants;
-    variants.push_back(SumTypeVariant::MakeUnit(*a));
-    variants.push_back(SumTypeVariant::MakeUnit(*b));
-    return SumType(*def, std::move(variants), selection);
-  };
-
-  SumType first = make_type(SumType::SelectedZeroVariant{std::cref(*a)});
-  SumType second = make_type(SumType::SelectedZeroVariant{std::cref(*b)});
-  SumType absent = make_type(SumType::NoZeroVariant{});
-  EXPECT_EQ(first, second);
-  EXPECT_EQ(first, absent);
-  EXPECT_EQ(first.ToString(), "E { A | B }");
-  EXPECT_EQ(second.ToString(), first.ToString());
-  EXPECT_EQ(absent.ToString(), first.ToString());
+  std::vector<SumTypeVariant> variants;
+  variants.push_back(SumTypeVariant::MakeUnit(*a));
+  variants.push_back(SumTypeVariant::MakeUnit(*b));
+  SumType original(
+      *def, std::move(variants), TypeDim::CreateU32(1),
+      {InterpValue::MakeUBits(1, 1), InterpValue::MakeUBits(1, 0)});
+  std::unique_ptr<Type> clone = original.CloneToUnique();
+  EXPECT_EQ(original, *clone);
+  EXPECT_EQ(original.ToString(), "E { A | B }");
+  EXPECT_EQ(clone->ToString(), original.ToString());
+  const auto& cloned_sum = dynamic_cast<const SumType&>(*clone);
+  EXPECT_EQ(cloned_sum.GetDiscriminant(0), original.GetDiscriminant(0));
+  EXPECT_EQ(cloned_sum.GetDiscriminant(1), original.GetDiscriminant(1));
+  EXPECT_EQ(&cloned_sum.variants(), &original.variants());
 }
 
 TEST(TypeTest, FunctionTypeU32ToS32) {
@@ -287,6 +332,313 @@ TEST(TypeTest, EmptyStructTypeIsNotUnit) {
   EXPECT_EQ(s.ToStringFullyQualified(file_table), "relpath/to/test.x:S {}");
 }
 
+// N0 has no values and both alternatives of Ni contain the same Ni-1
+// description. Root still has the two values of its live u1 alternative.
+TEST(TypeTest, SharedEmptySumGraphInhabitanceFindsLiveAlternative) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumDef* empty_def = CreateTupleSumDef(module, {});
+  SumDef* binary_def = CreateTupleSumDef(module, {1, 1});
+  for (int64_t depth : {4, 12}) {
+    SCOPED_TRACE(depth);
+    std::unique_ptr<Type> empty =
+        std::make_unique<SumType>(*empty_def, std::vector<SumTypeVariant>{});
+    for (int64_t level = 0; level < depth; ++level) {
+      std::vector<SumTypeVariant> variants;
+      for (const SumVariant* variant : binary_def->variants()) {
+        std::vector<std::unique_ptr<Type>> members;
+        members.push_back(empty->CloneToUnique());
+        variants.push_back(
+            SumTypeVariant::MakeTuple(*variant, std::move(members)));
+      }
+      empty = std::make_unique<SumType>(*binary_def, std::move(variants));
+    }
+    EXPECT_THAT(TypeIsInhabited(*empty), IsOkAndHolds(false));
+    EXPECT_THAT(TypeIsInhabited(*empty->CloneToUnique()), IsOkAndHolds(false));
+
+    std::vector<SumTypeVariant> variants;
+    std::vector<std::unique_ptr<Type>> dead_members;
+    dead_members.push_back(empty->CloneToUnique());
+    variants.push_back(SumTypeVariant::MakeTuple(*binary_def->variants()[0],
+                                                 std::move(dead_members)));
+    std::vector<std::unique_ptr<Type>> live_members;
+    live_members.push_back(BitsType::MakeU1());
+    variants.push_back(SumTypeVariant::MakeTuple(*binary_def->variants()[1],
+                                                 std::move(live_members)));
+    SumType root(*binary_def, std::move(variants));
+    EXPECT_THAT(TypeIsInhabited(root), IsOkAndHolds(true));
+    EXPECT_THAT(SumVariantIsInhabited(root.variants()[0]), IsOkAndHolds(false));
+    EXPECT_THAT(SumVariantIsInhabited(root.variants()[1]), IsOkAndHolds(true));
+  }
+}
+
+// Wrap<T> reaches T through both its type argument and its payload.
+// Independently built graphs must not revisit the same pair exponentially,
+// including when an ordinary aggregate lies between the sum and its child.
+TEST(TypeTest, SumEqualityReusesSharedPairsThroughArgumentsAndPayloads) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumDef* wrapper_def = CreateTupleSumDef(module, {1});
+  int64_t comparison_count = 0;
+  auto make_chain = [&](int64_t depth) {
+    std::unique_ptr<Type> current =
+        std::make_unique<EqualityCountingBitsType>(comparison_count);
+    for (int64_t i = 0; i < depth; ++i) {
+      std::vector<SumType::ParametricArgument> arguments;
+      arguments.emplace_back(current->CloneToUnique());
+      std::vector<std::unique_ptr<Type>> members;
+      members.push_back(std::make_unique<ArrayType>(
+          TupleType::Create2(current->CloneToUnique(), BitsType::MakeU1()),
+          TypeDim::CreateU32(1)));
+      std::vector<SumTypeVariant> variants;
+      variants.push_back(SumTypeVariant::MakeTuple(*wrapper_def->variants()[0],
+                                                   std::move(members)));
+      current = std::make_unique<SumType>(
+          *wrapper_def, std::move(variants), std::nullopt,
+          std::vector<InterpValue>{}, std::move(arguments));
+    }
+    return current;
+  };
+  for (int64_t depth : {4, 12}) {
+    SCOPED_TRACE(depth);
+    auto lhs = make_chain(depth);
+    auto rhs = make_chain(depth);
+    for (int64_t repetition = 0; repetition < 2; ++repetition) {
+      comparison_count = 0;
+      EXPECT_EQ(*lhs, *rhs);
+      EXPECT_GT(comparison_count, 0);
+      EXPECT_LE(comparison_count, 2);
+    }
+    comparison_count = 0;
+    EXPECT_EQ(*lhs, *lhs->CloneToUnique());
+    EXPECT_EQ(comparison_count, 0);
+  }
+}
+
+// Reusing an equal pair must not conflate a later comparison of the same left
+// description with a different right description, even for the same SumDef.
+TEST(TypeTest, SumEqualityDistinguishesBothDescriptionsInARepeatedPair) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumDef* wrapper_def = CreateTupleSumDef(module, {1});
+  auto wrap = [&](std::unique_ptr<Type> payload) {
+    std::vector<std::unique_ptr<Type>> members;
+    members.push_back(std::move(payload));
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(SumTypeVariant::MakeTuple(*wrapper_def->variants()[0],
+                                                 std::move(members)));
+    return std::make_unique<SumType>(*wrapper_def, std::move(variants));
+  };
+  auto lhs_child = wrap(BitsType::MakeU1());
+  auto rhs_child = wrap(BitsType::MakeU1());
+  auto different_child = wrap(BitsType::MakeU8());
+  auto lhs = wrap(TupleType::Create2(lhs_child->CloneToUnique(),
+                                     lhs_child->CloneToUnique()));
+  auto rhs = wrap(TupleType::Create2(rhs_child->CloneToUnique(),
+                                     different_child->CloneToUnique()));
+  EXPECT_NE(*lhs, *rhs);
+  EXPECT_NE(*rhs, *lhs);
+  EXPECT_EQ(*lhs_child, *rhs_child);
+  EXPECT_NE(*lhs_child, *different_child);
+}
+
+TEST(TypeTest, SumEqualityPreservesNominalPhantomAndDiscriminantIdentity) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  Module other_module("other", std::nullopt, file_table);
+  SumDef* sum_def = CreateTupleSumDef(module, {0});
+  SumDef* other_def = CreateTupleSumDef(other_module, {0});
+  auto make_sum = [](const SumDef& def, uint32_t value_argument,
+                     int64_t type_argument_width, uint32_t discriminant) {
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(SumTypeVariant::MakeTuple(*def.variants()[0], {}));
+    std::vector<SumType::ParametricArgument> arguments;
+    arguments.emplace_back(InterpValue::MakeU32(value_argument));
+    arguments.emplace_back(
+        std::make_unique<BitsType>(false, type_argument_width));
+    return std::make_unique<SumType>(
+        def, std::move(variants), TypeDim::CreateU32(1),
+        std::vector<InterpValue>{InterpValue::MakeUBits(1, discriminant)},
+        std::move(arguments));
+  };
+  auto sum = make_sum(*sum_def, 7, 8, 0);
+  EXPECT_EQ(*sum, *make_sum(*sum_def, 7, 8, 0));
+  EXPECT_NE(*sum, *make_sum(*other_def, 7, 8, 0));
+  EXPECT_NE(*sum, *make_sum(*sum_def, 9, 8, 0));
+  EXPECT_NE(*sum, *make_sum(*sum_def, 7, 16, 0));
+  EXPECT_NE(*sum, *make_sum(*sum_def, 7, 8, 1));
+  EXPECT_NE(*sum, *BitsType::MakeU1());
+}
+
+// Two concrete instances of the same nominal sum can have different payload
+// domains. Reusing an answer must follow the description, not the declaration.
+TEST(TypeTest, SumInhabitanceDistinguishesConcreteDescriptions) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumDef* empty_def = CreateTupleSumDef(module, {});
+  SumDef* wrapper_def = CreateTupleSumDef(module, {1});
+  auto wrap = [&](std::unique_ptr<Type> payload) {
+    std::vector<std::unique_ptr<Type>> members;
+    members.push_back(std::move(payload));
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(SumTypeVariant::MakeTuple(*wrapper_def->variants()[0],
+                                                 std::move(members)));
+    return std::make_unique<SumType>(*wrapper_def, std::move(variants));
+  };
+  auto live = wrap(BitsType::MakeU1());
+  auto dead = wrap(
+      std::make_unique<SumType>(*empty_def, std::vector<SumTypeVariant>{}));
+  auto live_then_dead =
+      TupleType::Create2(live->CloneToUnique(), dead->CloneToUnique());
+  EXPECT_THAT(TypeIsInhabited(*live_then_dead), IsOkAndHolds(false));
+
+  SumDef* choice_def = CreateTupleSumDef(module, {1, 1});
+  std::vector<SumTypeVariant> variants;
+  std::vector<std::unique_ptr<Type>> dead_members;
+  dead_members.push_back(dead->CloneToUnique());
+  variants.push_back(SumTypeVariant::MakeTuple(*choice_def->variants()[0],
+                                               std::move(dead_members)));
+  std::vector<std::unique_ptr<Type>> live_members;
+  live_members.push_back(live->CloneToUnique());
+  variants.push_back(SumTypeVariant::MakeTuple(*choice_def->variants()[1],
+                                               std::move(live_members)));
+  SumType choice(*choice_def, std::move(variants));
+  EXPECT_THAT(TypeIsInhabited(choice), IsOkAndHolds(true));
+}
+
+TEST(TypeTest, SumInhabitancePreservesZeroLengthArrays) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumDef* empty_def = CreateTupleSumDef(module, {});
+  SumType empty(*empty_def, {});
+  SumDef* choice_def = CreateTupleSumDef(module, {1, 1});
+  std::vector<SumTypeVariant> variants;
+  for (int64_t size : {0, 1}) {
+    std::vector<std::unique_ptr<Type>> members;
+    members.push_back(TupleType::Create2(
+        BitsType::MakeU1(),
+        std::make_unique<ArrayType>(empty.CloneToUnique(),
+                                    TypeDim::CreateU32(size))));
+    variants.push_back(SumTypeVariant::MakeTuple(*choice_def->variants()[size],
+                                                 std::move(members)));
+  }
+  SumType choice(*choice_def, std::move(variants));
+  EXPECT_THAT(TypeIsInhabited(choice), IsOkAndHolds(true));
+  EXPECT_THAT(SumVariantIsInhabited(choice.variants()[0]), IsOkAndHolds(true));
+  EXPECT_THAT(SumVariantIsInhabited(choice.variants()[1]), IsOkAndHolds(false));
+}
+
+TEST(TypeTest, SumInhabitancePreservesShortCircuitAndErrors) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumDef* empty_def = CreateTupleSumDef(module, {});
+  SumType empty(*empty_def, {});
+  ArrayType invalid_array(BitsType::MakeU1(),
+                          TypeDim(InterpValue::MakeTuple({})));
+  const auto invalid_size =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("Cannot convert non-bits type to int64_t"));
+  EXPECT_THAT(TypeIsInhabited(invalid_array), invalid_size);
+  ArrayType zero_elements(invalid_array.CloneToUnique(), TypeDim::CreateU32(0));
+  EXPECT_THAT(TypeIsInhabited(zero_elements), IsOkAndHolds(true));
+  auto dead_tuple =
+      TupleType::Create2(empty.CloneToUnique(), invalid_array.CloneToUnique());
+  EXPECT_THAT(TypeIsInhabited(*dead_tuple), IsOkAndHolds(false));
+  auto invalid_tuple =
+      TupleType::Create2(invalid_array.CloneToUnique(), empty.CloneToUnique());
+  EXPECT_THAT(TypeIsInhabited(*invalid_tuple), invalid_size);
+
+  SumDef* choice_def = CreateTupleSumDef(module, {2, 1});
+  auto make_choice = [&](std::unique_ptr<Type> first,
+                         std::unique_ptr<Type> second,
+                         std::unique_ptr<Type> alternative) {
+    std::vector<SumTypeVariant> variants;
+    std::vector<std::unique_ptr<Type>> first_members;
+    first_members.push_back(std::move(first));
+    first_members.push_back(std::move(second));
+    variants.push_back(SumTypeVariant::MakeTuple(*choice_def->variants()[0],
+                                                 std::move(first_members)));
+    std::vector<std::unique_ptr<Type>> second_members;
+    second_members.push_back(std::move(alternative));
+    variants.push_back(SumTypeVariant::MakeTuple(*choice_def->variants()[1],
+                                                 std::move(second_members)));
+    return SumType(*choice_def, std::move(variants));
+  };
+  SumType live_first = make_choice(BitsType::MakeU1(), BitsType::MakeU1(),
+                                   invalid_tuple->CloneToUnique());
+  EXPECT_THAT(TypeIsInhabited(live_first), IsOkAndHolds(true));
+  EXPECT_THAT(SumVariantIsInhabited(live_first.variants()[1]), invalid_size);
+  SumType dead_first = make_choice(
+      empty.CloneToUnique(), invalid_array.CloneToUnique(), BitsType::MakeU1());
+  EXPECT_THAT(SumVariantIsInhabited(dead_first.variants()[0]),
+              IsOkAndHolds(false));
+  EXPECT_THAT(TypeIsInhabited(dead_first), IsOkAndHolds(true));
+  SumType invalid_first = make_choice(
+      invalid_array.CloneToUnique(), empty.CloneToUnique(), BitsType::MakeU1());
+  EXPECT_THAT(TypeIsInhabited(invalid_first), invalid_size);
+}
+
+TEST(TypeTest, SumTokenSummaryPreservesPayloadAndPhantomDistinction) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumDef* payload_def = CreateTupleSumDef(module, {1});
+  std::vector<std::unique_ptr<Type>> members;
+  members.push_back(std::make_unique<ArrayType>(
+      TupleType::Create2(BitsType::MakeU8(), std::make_unique<TokenType>()),
+      TypeDim::CreateU32(1)));
+  std::vector<SumTypeVariant> variants;
+  variants.push_back(SumTypeVariant::MakeTuple(*payload_def->variants()[0],
+                                               std::move(members)));
+  SumType with_token(*payload_def, std::move(variants));
+  EXPECT_TRUE(with_token.HasToken());
+  EXPECT_TRUE(with_token.CloneToUnique()->HasToken());
+
+  SumDef* phantom_def = CreateTupleSumDef(module, {0});
+  std::vector<SumTypeVariant> phantom_variants;
+  phantom_variants.push_back(
+      SumTypeVariant::MakeTuple(*phantom_def->variants()[0], {}));
+  std::vector<SumType::ParametricArgument> arguments;
+  arguments.emplace_back(with_token.CloneToUnique());
+  SumType phantom(*phantom_def, std::move(phantom_variants), std::nullopt, {},
+                  std::move(arguments));
+  EXPECT_FALSE(phantom.HasToken());
+  EXPECT_FALSE(phantom.CloneToUnique()->HasToken());
+}
+
+TEST(TypeTest, SumTextReferencesRespectSharingAndNominalArguments) {
+  FileTable file_table;
+  Module module("test", std::nullopt, file_table);
+  SumDef* sum_def = CreateTupleSumDef(module, {0});
+  auto make_sum = [&](uint32_t phantom) {
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(SumTypeVariant::MakeTuple(*sum_def->variants()[0], {}));
+    std::vector<SumType::ParametricArgument> arguments;
+    arguments.emplace_back(InterpValue::MakeU32(phantom));
+    return std::make_unique<SumType>(*sum_def, std::move(variants),
+                                     std::nullopt, std::vector<InterpValue>{},
+                                     std::move(arguments));
+  };
+  std::unique_ptr<SumType> first = make_sum(1);
+  EXPECT_EQ(first->ToString(), "S<u32:1> { Case0() }");
+  std::vector<std::unique_ptr<Type>> members;
+  members.push_back(first->CloneToUnique());
+  members.push_back(make_sum(2));
+  members.push_back(first->CloneToUnique());
+  TupleType shared(std::move(members));
+  EXPECT_EQ(shared.ToString(),
+            "(@1=S<u32:1> { Case0() }, S<u32:2> { Case0() }, @1)");
+  auto independently_owned = TupleType::Create2(make_sum(1), make_sum(1));
+  EXPECT_EQ(independently_owned->ToString(),
+            "(S<u32:1> { Case0() }, S<u32:1> { Case0() })");
+  std::vector<std::unique_ptr<Type>> params;
+  params.push_back(
+      TupleType::Create2(first->CloneToUnique(), first->CloneToUnique()));
+  FunctionType function(std::move(params), first->CloneToUnique());
+  EXPECT_EQ(function.ToStringFullyQualified(file_table),
+            "((@1=S<u32:1> { Case0() }, @1)) -> "
+            "<no-file>:S<u32:1> { Case0() }");
+}
+
 // -- TypeDimTest
 
 TEST(TypeDimTest, TestArithmetic) {
@@ -346,6 +698,42 @@ TEST(TypeTest, TestEqualityOfBitsConstructorTypeArrays) {
   EXPECT_EQ(array_s8_0, array_s8_1);
   EXPECT_NE(array_u8_0, array_s8_0);
   EXPECT_NE(array_u8_1, array_s8_1);
+}
+
+// Verifies: equal bit arguments select the same sum cache bucket.
+// Catches: hashing a value tag or xN notation as semantic identity.
+TEST(TypeTest, SumArgumentHashUsesSemanticBitEquality) {
+  std::vector<SumType::ParametricArgument> lhs;
+  lhs.emplace_back(InterpValue::MakeU32(7));
+  lhs.emplace_back(BitsType::MakeU8());
+  std::vector<SumType::ParametricArgument> rhs;
+  rhs.emplace_back(InterpValue::MakeSBits(32, 7));
+  rhs.emplace_back(std::make_unique<ArrayType>(
+      std::make_unique<BitsConstructorType>(TypeDim::CreateBool(false)),
+      TypeDim::CreateU32(8)));
+
+  ASSERT_EQ(std::get<InterpValue>(lhs[0]), std::get<InterpValue>(rhs[0]));
+  ASSERT_EQ(*std::get<std::unique_ptr<const Type>>(lhs[1]),
+            *std::get<std::unique_ptr<const Type>>(rhs[1]));
+  EXPECT_EQ(SumType::HashParametricArguments(lhs),
+            SumType::HashParametricArguments(rhs));
+}
+
+// Verifies: equal eager arrays and symbolic ranges select the same sum bucket.
+// Catches: hashing an array's storage representation instead of its elements.
+TEST(TypeTest, SumArgumentHashUsesLogicalArrayValues) {
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue array,
+                           InterpValue::MakeArray({InterpValue::MakeU32(1),
+                                                   InterpValue::MakeU32(2)}));
+  InterpValue range = InterpValue::MakeSymbolicRange(InterpValue::MakeU32(1),
+                                                     InterpValue::MakeU32(3));
+  ASSERT_EQ(array, range);
+  std::vector<SumType::ParametricArgument> lhs;
+  lhs.emplace_back(std::move(array));
+  std::vector<SumType::ParametricArgument> rhs;
+  rhs.emplace_back(std::move(range));
+  EXPECT_EQ(SumType::HashParametricArguments(lhs),
+            SumType::HashParametricArguments(rhs));
 }
 
 }  // namespace

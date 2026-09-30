@@ -46,7 +46,10 @@ cc_library(
         "//xls/ir:bits_ops",
         "@abseil-cpp//absl/algorithm:container",
         "@abseil-cpp//absl/base",
+        "@abseil-cpp//absl/cleanup",
         "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/container:flat_hash_set",
+        "@abseil-cpp//absl/hash",
         "@abseil-cpp//absl/log",
         "@abseil-cpp//absl/log:check",
         "@abseil-cpp//absl/memory",
@@ -449,6 +452,7 @@ cc_library(
     deps = [
         ":type",
         "//xls/common/status:status_macros",
+        "//xls/dslx:interp_value",
         "@abseil-cpp//absl/status",
     ],
 )
@@ -461,6 +465,9 @@ cc_test(
         ":zip_types",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
+        "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
+        "//xls/dslx/frontend:pos",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/strings:str_format",
         "@abseil-cpp//absl/types:span",
