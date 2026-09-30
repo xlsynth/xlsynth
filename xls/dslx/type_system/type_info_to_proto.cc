@@ -552,8 +552,16 @@ class ToProtoVisitor : public TypeVisitor {
     return absl::OkStatus();
   }
   absl::Status HandleSum(const SumType& type) override {
-    XLS_ASSIGN_OR_RETURN(*proto_.mutable_sum_type(),
-                         ToProto(type, file_table_, context_));
+    auto [it, inserted] = context_.definition_ids.emplace(
+        &type.variants(), context_.definition_ids.size() + 1);
+    const uint64_t id = it->second;
+    if (inserted) {
+      XLS_ASSIGN_OR_RETURN(*proto_.mutable_sum_type(),
+                           ToProto(type, file_table_, context_));
+      proto_.mutable_sum_type()->set_definition_id(id);
+    } else {
+      proto_.set_sum_type_reference(id);
+    }
     return absl::OkStatus();
   }
   absl::Status HandleProc(const ProcType& type) override {
