@@ -38,10 +38,10 @@
 #include "xls/data_structures/inline_bitmap.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/ast_utils.h"
-#include "xls/dslx/interp_value_utils.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/interp_value_generator.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/bits_ops.h"
@@ -78,18 +78,6 @@ absl::StatusOr<InterpValue> GenerateBitValue(
   XLS_ASSIGN_OR_RETURN(int64_t bit_count, bits_like.size.GetAsInt64());
   XLS_ASSIGN_OR_RETURN(bool is_signed, bits_like.is_signed.GetAsBool());
   return GenerateBitValue(bit_gen, bit_count, is_signed);
-}
-
-absl::StatusOr<InterpValue> GenerateEnumValue(
-    absl::BitGenRef bit_gen, const dslx::EnumType& enum_type) {
-  if (enum_type.members().empty()) {
-    return absl::InvalidArgumentError(
-        "Cannot generate an InterpValue for an empty enum type.");
-  }
-
-  size_t member_index =
-      absl::Uniform(bit_gen, size_t{0}, enum_type.members().size());
-  return dslx::CastBitsToEnum(enum_type.members().at(member_index), enum_type);
 }
 
 // Evaluates the given `Expr*` (holding the declaration of e.g. an
@@ -165,8 +153,7 @@ AnnotationInhabitance SumVariantAnnotationInhabitance(
     if (member_inhabitance == AnnotationInhabitance::kUninhabited) {
       return AnnotationInhabitance::kUninhabited;
     }
-    has_unknown_member |=
-        member_inhabitance == AnnotationInhabitance::kUnknown;
+    has_unknown_member |= member_inhabitance == AnnotationInhabitance::kUnknown;
   }
   return has_unknown_member ? AnnotationInhabitance::kUnknown
                             : AnnotationInhabitance::kInhabited;
@@ -476,7 +463,8 @@ absl::StatusOr<Expr*> GenerateDslxConstant(absl::BitGenRef bit_gen,
                 bit_gen, size_t{0}, potentially_inhabited_variants.size());
             dslx::SumVariant* variant =
                 potentially_inhabited_variants.at(variant_index);
-            auto* sum_type_ref = module->Make<dslx::TypeRef>(fake_span, sum_def);
+            auto* sum_type_ref =
+                module->Make<dslx::TypeRef>(fake_span, sum_def);
             auto* sum_type_annotation =
                 module->Make<dslx::TypeRefTypeAnnotation>(
                     fake_span, sum_type_ref, std::vector<dslx::ExprOrType>{});
@@ -490,9 +478,9 @@ absl::StatusOr<Expr*> GenerateDslxConstant(absl::BitGenRef bit_gen,
               args.reserve(variant->tuple_members().size());
               for (dslx::TypeAnnotation* member_type :
                    variant->tuple_members()) {
-                XLS_ASSIGN_OR_RETURN(Expr * member_value,
-                                     GenerateDslxConstant(bit_gen, module,
-                                                          member_type));
+                XLS_ASSIGN_OR_RETURN(
+                    Expr * member_value,
+                    GenerateDslxConstant(bit_gen, module, member_type));
                 args.push_back(member_value);
               }
               return module->Make<dslx::Invocation>(fake_span, constructor_ref,
@@ -508,11 +496,10 @@ absl::StatusOr<Expr*> GenerateDslxConstant(absl::BitGenRef bit_gen,
                     fake_span, constructor_type_ref,
                     std::vector<dslx::ExprOrType>{});
             for (dslx::StructMemberNode* member : variant->struct_members()) {
-              XLS_ASSIGN_OR_RETURN(Expr * member_value,
-                                   GenerateDslxConstant(bit_gen, module,
-                                                        member->type()));
-              members.push_back(
-                  std::make_pair(member->name(), member_value));
+              XLS_ASSIGN_OR_RETURN(
+                  Expr * member_value,
+                  GenerateDslxConstant(bit_gen, module, member->type()));
+              members.push_back(std::make_pair(member->name(), member_value));
             }
             return module->Make<dslx::StructInstance>(
                 fake_span, constructor_type_annotation, members);
@@ -572,111 +559,17 @@ static absl::StatusOr<InterpValue> GenerateBitsLikeInterpValue(
   return InterpValue::MakeBits(tag, Bits::FromBitmap(std::move(bitmap)));
 }
 
-static absl::StatusOr<InterpValue> GenerateSumInterpValue(
-    absl::BitGenRef bit_gen, const dslx::SumType& sum_type,
-    absl::Span<const InterpValue> prior) {
-  if (sum_type.variants().empty()) {
-    return absl::InvalidArgumentError(
-        "Cannot generate an InterpValue for an empty sum type.");
-  }
-
-  std::vector<int64_t> inhabited_variant_indices;
-  inhabited_variant_indices.reserve(sum_type.variants().size());
-  for (int64_t i = 0; i < sum_type.variants().size(); ++i) {
-    XLS_ASSIGN_OR_RETURN(bool variant_is_inhabited,
-                         SumVariantIsInhabited(sum_type.variants().at(i)));
-    if (variant_is_inhabited) {
-      inhabited_variant_indices.push_back(i);
-    }
-  }
-  if (inhabited_variant_indices.empty()) {
-    return absl::InvalidArgumentError(
-        "Cannot generate an InterpValue for an uninhabited sum type.");
-  }
-
-  size_t inhabited_variant_choice =
-      absl::Uniform(bit_gen, size_t{0}, inhabited_variant_indices.size());
-  int64_t variant_index =
-      inhabited_variant_indices.at(inhabited_variant_choice);
-  const dslx::SumTypeVariant& variant = sum_type.variants().at(variant_index);
-
-  std::vector<InterpValue> payload_values;
-  payload_values.reserve(variant.size());
-  for (int64_t i = 0; i < variant.size(); ++i) {
-    XLS_ASSIGN_OR_RETURN(InterpValue member_value,
-                         GenerateInterpValue(bit_gen, variant.GetMemberType(i),
-                                             prior));
-    payload_values.push_back(std::move(member_value));
-  }
-
-  return dslx::CreateSumValue(sum_type, variant.variant().identifier(),
-                              payload_values);
-}
-
 absl::StatusOr<InterpValue> GenerateInterpValue(
     absl::BitGenRef bit_gen, const dslx::Type& arg_type,
     absl::Span<const InterpValue> prior) {
-  XLS_RET_CHECK(!arg_type.IsMeta()) << arg_type.ToString();
-  XLS_RET_CHECK(dynamic_cast<const dslx::BitsConstructorType*>(&arg_type) ==
-                nullptr)
-      << "`BitsConstructorType`s are not valid InterpValue types.";
-
-  if (auto* channel_type = dynamic_cast<const dslx::ChannelType*>(&arg_type)) {
-    // For channels, the argument must be of its payload type.
-    return GenerateInterpValue(bit_gen, channel_type->payload_type(), prior);
-  }
-  if (auto* tuple_type = dynamic_cast<const dslx::TupleType*>(&arg_type)) {
-    std::vector<InterpValue> members;
-    for (const std::unique_ptr<dslx::Type>& t : tuple_type->members()) {
-      XLS_ASSIGN_OR_RETURN(InterpValue member,
-                           GenerateInterpValue(bit_gen, *t, prior));
-      members.push_back(member);
-    }
-    return InterpValue::MakeTuple(members);
-  }
-  if (auto* sum_type = dynamic_cast<const dslx::SumType*>(&arg_type)) {
-    return GenerateSumInterpValue(bit_gen, *sum_type, prior);
-  }
-  if (auto* enum_type = dynamic_cast<const dslx::EnumType*>(&arg_type)) {
-    return GenerateEnumValue(bit_gen, *enum_type);
-  }
-
-  // Note: we have to test for BitsLike before ArrayType because
-  // array-of-bits-constructor looks like an array but is actually bits-like.
-  std::optional<dslx::BitsLikeProperties> bits_like = GetBitsLike(arg_type);
-  if (bits_like.has_value()) {
-    return GenerateBitsLikeInterpValue(bit_gen, bits_like.value(), prior);
-  }
-
-  if (auto* array_type = dynamic_cast<const dslx::ArrayType*>(&arg_type)) {
-    std::vector<InterpValue> elements;
-    const dslx::Type& element_type = array_type->element_type();
-    XLS_ASSIGN_OR_RETURN(int64_t array_size, array_type->size().GetAsInt64());
-    for (int64_t i = 0; i < array_size; ++i) {
-      XLS_ASSIGN_OR_RETURN(InterpValue element,
-                           GenerateInterpValue(bit_gen, element_type, prior));
-      elements.push_back(element);
-    }
-    return InterpValue::MakeArray(std::move(elements));
-  }
-
-  return absl::UnimplementedError("Unsupported type for GenerateInterpValue");
+  return dslx::GenerateInterpValue(bit_gen, arg_type, prior,
+                                   GenerateBitsLikeInterpValue);
 }
 
 absl::StatusOr<std::vector<InterpValue>> GenerateInterpValues(
     absl::BitGenRef bit_gen, absl::Span<const dslx::Type* const> arg_types) {
-  std::vector<InterpValue> args;
-  for (const dslx::Type* arg_type : arg_types) {
-    XLS_RET_CHECK(arg_type != nullptr);
-    XLS_RET_CHECK(!arg_type->IsMeta());
-    XLS_RET_CHECK(dynamic_cast<const dslx::BitsConstructorType*>(arg_type) ==
-                  nullptr)
-        << "`BitsConstructorType`s are not valid parameter types.";
-    XLS_ASSIGN_OR_RETURN(InterpValue arg,
-                         GenerateInterpValue(bit_gen, *arg_type, args));
-    args.push_back(std::move(arg));
-  }
-  return args;
+  return dslx::GenerateInterpValues(bit_gen, arg_types,
+                                    GenerateBitsLikeInterpValue);
 }
 
 }  // namespace xls
