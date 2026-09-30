@@ -15,6 +15,7 @@
 #ifndef XLS_DSLX_MAKE_VALUE_FORMAT_DESCRIPTOR_H_
 #define XLS_DSLX_MAKE_VALUE_FORMAT_DESCRIPTOR_H_
 
+#include "absl/functional/function_ref.h"
 #include "absl/status/statusor.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/value_format_descriptor.h"
@@ -34,6 +35,29 @@ absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
 // This does not describe the channels' payload messages.
 absl::StatusOr<ValueFormatDescriptor> MakeTraceCallFormatDescriptor(
     const Type& type, FormatPreference field_preference);
+
+// Supplies owned enum descriptors so a caller can reuse expensive immutable
+// enum tables across separate aggregate builds. Called synchronously for enum
+// leaves only; neither the provider nor borrowed Type pointers are retained.
+using EnumFormatDescriptorProvider =
+    absl::FunctionRef<absl::StatusOr<ValueFormatDescriptor>(const EnumType&)>;
+
+absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
+    const Type& type, FormatPreference field_preference,
+    EnumFormatDescriptorProvider enum_format_provider);
+
+// Allows a single owner to share default-format sum descriptions when the
+// same nested sum is reached through separately constructed root descriptors.
+// The provider is called synchronously only for nested sums; the root sum is
+// built locally so its owner can publish the completed descriptor afterward.
+// Both providers must describe types in the same owner using default format.
+using NestedSumFormatDescriptorProvider =
+    absl::FunctionRef<absl::StatusOr<ValueFormatDescriptor>(const SumType&)>;
+
+absl::StatusOr<ValueFormatDescriptor>
+MakeDefaultValueFormatDescriptorWithNestedSumProvider(
+    const Type& type, EnumFormatDescriptorProvider enum_format_provider,
+    NestedSumFormatDescriptorProvider nested_sum_format_provider);
 
 }  // namespace xls::dslx
 
