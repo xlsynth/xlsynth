@@ -1034,6 +1034,33 @@ fn selected_second(value: u1) -> bool { value == value }
   EXPECT_EQ(comparator.invocation_count(), 2);
 }
 
+// Negative test: reject an empty input domain while executing a valid property.
+TEST(QuickcheckTest, RunsInhabitedPropertyAfterRejectingUninhabitedProperty) {
+  constexpr std::string_view kProgram = R"(
+enum Never {}
+
+#[quickcheck(test_count=1)]
+fn uninhabited(_value: Never) -> bool { true }
+
+#[quickcheck(test_count=1)]
+fn inhabited(value: u1) -> bool { value == value }
+)";
+  CountingRunComparator comparator(CompareMode::kJit);
+  ParseAndTestOptions options;
+  options.vfs_factory = [kProgram] {
+    return std::make_unique<UniformContentFilesystem>(kProgram, "test.x");
+  };
+  options.quickcheck_runner = &comparator;
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kSomeFailed, 2, 0, 1));
+  ASSERT_EQ(result.GetFailureMessages().size(), 1);
+  EXPECT_THAT(
+      result.GetFailureMessages().front(),
+      HasSubstr("quickcheck of `uninhabited` rejected all input samples"));
+  EXPECT_EQ(comparator.invocation_count(), 1);
+}
+
 TEST_P(RunRoutinesTest, EmptySemanticSum) {
   constexpr const char* kProgram = R"(
 enum EmptyEnum: u2 {
