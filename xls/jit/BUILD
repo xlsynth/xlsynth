@@ -593,6 +593,24 @@ cc_library(
 )
 
 cc_test(
+    name = "function_jit_packed_test",
+    srcs = ["function_jit_packed_test.cc"],
+    deps = [
+        ":function_jit",
+        ":jit_evaluator_options",
+        "//xls/common:xls_gunit_main",
+        "//xls/common/status:matchers",
+        "//xls/interpreter:evaluator_options",
+        "//xls/ir",
+        "//xls/ir:bits",
+        "//xls/ir:function_builder",
+        "//xls/ir:value",
+        "//xls/ir:value_view",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_test(
     name = "function_jit_test",
     timeout = "long",
     srcs = ["function_jit_test.cc"],
