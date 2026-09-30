@@ -27,12 +27,12 @@
 #include <variant>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/base/macros.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/log/log.h"
 #include "absl/strings/str_format.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "llvm/include/llvm/ADT/StringRef.h"
 #include "llvm/include/llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/include/llvm/ExecutionEngine/Orc/LLJIT.h"
@@ -44,9 +44,14 @@
 #include "xls/common/logging/log_lines.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/default_dslx_stdlib_path.h"
+#include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/interp_value.h"
+#include "xls/dslx/type_system/type.h"
+#include "xls/dslx/type_system/type_info.h"
 #include "xls/jit/aot_entrypoint.pb.h"
 #include "xls/jit/jit_buffer.h"
 #include "xls/public/c_api_dslx.h"
+#include "xls/public/c_api_dslx_internal.h"
 #include "xls/public/c_api_format_preference.h"
 #include "xls/public/c_api_ir_analysis.h"
 #include "xls/public/c_api_ir_builder.h"
@@ -252,6 +257,18 @@ fn call() -> bits[32] { id(bits[32]:0x0) }
   xls_dslx_function_specialization_request requests[] = {
       {.function_name = "id", .specialized_name = "id_N32", .env = env},
   };
+
+  char* missing_context_error = nullptr;
+  xls_dslx_typechecked_module* missing_context_result = nullptr;
+  absl::Cleanup free_missing_context_error(
+      [&] { xls_c_str_free(missing_context_error); });
+  EXPECT_FALSE(xls_dslx_typechecked_module_insert_function_specializations(
+      tm, requests, /*request_count=*/1, /*import_data=*/nullptr,
+      "specialize_module.missing_context", &missing_context_error,
+      &missing_context_result));
+  EXPECT_EQ(missing_context_result, nullptr);
+  ASSERT_NE(missing_context_error, nullptr);
+  EXPECT_THAT(missing_context_error, HasSubstr("ImportData must be provided"));
 
   char* specialize_error = nullptr;
   struct xls_dslx_typechecked_module* specialized_tm = nullptr;
@@ -2162,8 +2179,8 @@ type Box8 = Box<u32:8>;
   ASSERT_NE(value_type, nullptr);
   xls_dslx_type_dim* is_signed = nullptr;
   xls_dslx_type_dim* size = nullptr;
-  ASSERT_TRUE(xls_dslx_type_is_bits_like(
-      const_cast<xls_dslx_type*>(value_type), &is_signed, &size));
+  ASSERT_TRUE(xls_dslx_type_is_bits_like(const_cast<xls_dslx_type*>(value_type),
+                                         &is_signed, &size));
   absl::Cleanup free_type_dims([&] {
     xls_dslx_type_dim_free(is_signed);
     xls_dslx_type_dim_free(size);
@@ -2324,6 +2341,1265 @@ TEST(XlsCApiTest, DslxModuleMembers) {
         [&] { xls_c_str_free(interp_value_str); });
     EXPECT_EQ(std::string_view{interp_value_str}, "u32:42");
   }
+}
+
+TEST(XlsCApiTest, DslxSemanticSumConstExprUsesConstructorFormatting) {
+  constexpr const char* kProgram = R"(
+enum Inner {
+  None,
+  Some(u8),
+}
+
+enum Outer {
+  Wrap(Inner),
+  Record { value: Inner },
+}
+
+const DIRECT: Inner = Inner::Some(u8:42);
+const NESTED: Outer = Outer::Wrap(Inner::Some(u8:7));
+const RECORD: Outer = Outer::Record { value: Inner::Some(u8:9) };
+const TUPLE: (Inner, u8) = (Inner::Some(u8:3), u8:4);
+const ARRAY: Inner[2] = [Inner::None, Inner::Some(u8:5)];
+)";
+
+  const char* additional_search_paths[] = {};
+  xls_dslx_import_data* import_data = xls_dslx_import_data_create(
+      std::string{xls::kDefaultDslxStdlibPath}.c_str(), additional_search_paths,
+      0);
+  ASSERT_NE(import_data, nullptr);
+  absl::Cleanup free_import_data(
+      [&] { xls_dslx_import_data_free(import_data); });
+
+  char* error = nullptr;
+  absl::Cleanup free_error([&] { xls_c_str_free(error); });
+  xls_dslx_typechecked_module* module_owner = nullptr;
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kProgram, "sum.x", "sum",
+                                           import_data, &error, &module_owner))
+      << (error == nullptr ? "unknown error" : error);
+  absl::Cleanup free_module([&] {
+    if (module_owner != nullptr) {
+      xls_dslx_typechecked_module_free(module_owner);
+    }
+  });
+
+  xls_dslx_module* module =
+      xls_dslx_typechecked_module_get_module(module_owner);
+  xls_dslx_type_info* type_info =
+      xls_dslx_typechecked_module_get_type_info(module_owner);
+  xls_dslx_interp_value* retained_clone = nullptr;
+  absl::Cleanup free_clone([&] {
+    if (retained_clone != nullptr) {
+      xls_dslx_interp_value_free(retained_clone);
+    }
+  });
+
+  const std::vector<std::pair<int64_t, std::string_view>> expected = {
+      {2, "Inner::Some(u8:42)"},
+      {3, "Outer::Wrap(Inner::Some(u8:7))"},
+      {4, "Outer::Record {\n    value: Inner::Some(u8:9)\n}"},
+      {5, "(\n    Inner::Some(u8:3),\n    u8:4\n)"},
+      {6, "[\n    Inner::None,\n    Inner::Some(u8:5)\n]"},
+  };
+  for (const auto& [member_index, expected_text] : expected) {
+    SCOPED_TRACE(member_index);
+    xls_dslx_module_member* member =
+        xls_dslx_module_get_member(module, member_index);
+    xls_dslx_constant_def* constant =
+        xls_dslx_module_member_get_constant_def(member);
+    ASSERT_NE(constant, nullptr);
+    xls_dslx_interp_value* value = nullptr;
+    ASSERT_TRUE(xls_dslx_type_info_get_const_expr(
+        type_info, xls_dslx_constant_def_get_value(constant), &error, &value))
+        << (error == nullptr ? "unknown error" : error);
+    absl::Cleanup free_value([&] { xls_dslx_interp_value_free(value); });
+
+    char* formatted = xls_dslx_interp_value_to_string(value);
+    ASSERT_NE(formatted, nullptr);
+    absl::Cleanup free_formatted([&] { xls_c_str_free(formatted); });
+    EXPECT_EQ(std::string_view(formatted), expected_text);
+    if (member_index == 2) {
+      retained_clone = xls_dslx_interp_value_clone(value);
+      ASSERT_NE(retained_clone, nullptr);
+    }
+  }
+
+  xls_dslx_typechecked_module_free(module_owner);
+  module_owner = nullptr;
+  char* clone_text = xls_dslx_interp_value_to_string(retained_clone);
+  ASSERT_NE(clone_text, nullptr);
+  absl::Cleanup free_clone_text([&] { xls_c_str_free(clone_text); });
+  EXPECT_STREQ(clone_text, "Inner::Some(u8:42)");
+
+  xls_dslx_interp_value* scalar =
+      xls_dslx_interp_value_make_ubits(/*bit_count=*/8, /*value=*/4);
+  ASSERT_NE(scalar, nullptr);
+  absl::Cleanup free_scalar([&] { xls_dslx_interp_value_free(scalar); });
+
+  xls_dslx_interp_value* tuple_elements[] = {scalar, retained_clone};
+  xls_dslx_interp_value* tuple = nullptr;
+  ASSERT_TRUE(xls_dslx_interp_value_make_tuple(/*element_count=*/2,
+                                               tuple_elements, &error, &tuple));
+  absl::Cleanup free_tuple([&] { xls_dslx_interp_value_free(tuple); });
+  char* tuple_text = xls_dslx_interp_value_to_string(tuple);
+  absl::Cleanup free_tuple_text([&] { xls_c_str_free(tuple_text); });
+  EXPECT_STREQ(tuple_text, "(\n    u8:4,\n    Inner::Some(u8:42)\n)");
+
+  xls_dslx_interp_value* array_elements[] = {retained_clone, retained_clone};
+  xls_dslx_interp_value* array = nullptr;
+  ASSERT_TRUE(xls_dslx_interp_value_make_array(/*element_count=*/2,
+                                               array_elements, &error, &array));
+  absl::Cleanup free_array([&] { xls_dslx_interp_value_free(array); });
+  char* array_text = xls_dslx_interp_value_to_string(array);
+  absl::Cleanup free_array_text([&] { xls_c_str_free(array_text); });
+  EXPECT_STREQ(array_text,
+               "[\n    Inner::Some(u8:42),\n    Inner::Some(u8:42)\n]");
+}
+
+TEST(XlsCApiTest, DslxSemanticSumBindingViewsRetainConstructorFormatting) {
+  constexpr const char* kProgram = R"(
+enum Maybe {
+  None,
+  Some(u8),
+}
+
+const VALUE: Maybe = Maybe::Some(u8:42);
+
+enum Other {
+  None,
+  Some(u8),
+}
+
+const OTHER: Other = Other::Some(u8:7);
+)";
+
+  const char* additional_search_paths[] = {};
+  xls_dslx_import_data* import_data = xls_dslx_import_data_create(
+      std::string{xls::kDefaultDslxStdlibPath}.c_str(), additional_search_paths,
+      0);
+  ASSERT_NE(import_data, nullptr);
+  absl::Cleanup free_import_data(
+      [&] { xls_dslx_import_data_free(import_data); });
+
+  char* error = nullptr;
+  absl::Cleanup free_error([&] { xls_c_str_free(error); });
+  xls_dslx_typechecked_module* module_owner = nullptr;
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kProgram, "sum.x", "sum",
+                                           import_data, &error, &module_owner))
+      << (error == nullptr ? "unknown error" : error);
+  absl::Cleanup free_module(
+      [&] { xls_dslx_typechecked_module_free(module_owner); });
+  xls_dslx_module* module =
+      xls_dslx_typechecked_module_get_module(module_owner);
+  xls_dslx_type_info* type_info =
+      xls_dslx_typechecked_module_get_type_info(module_owner);
+  xls_dslx_constant_def* constant = xls_dslx_module_member_get_constant_def(
+      xls_dslx_module_get_member(module, 1));
+  ASSERT_NE(constant, nullptr);
+
+  xls_dslx_interp_value* owned_value = nullptr;
+  ASSERT_TRUE(xls_dslx_type_info_get_const_expr(
+      type_info, xls_dslx_constant_def_get_value(constant), &error,
+      &owned_value));
+  absl::Cleanup free_value([&] { xls_dslx_interp_value_free(owned_value); });
+
+  xls_dslx_parametric_env_item items[] = {{"VALUE", owned_value}};
+  xls_dslx_parametric_env* env = nullptr;
+  ASSERT_TRUE(xls_dslx_parametric_env_create(items, 1, &error, &env));
+  absl::Cleanup free_env([&] {
+    if (env != nullptr) {
+      xls_dslx_parametric_env_free(env);
+    }
+  });
+
+  char* env_text = xls_dslx_parametric_env_to_string(env);
+  absl::Cleanup free_env_text([&] { xls_c_str_free(env_text); });
+  EXPECT_STREQ(env_text, "{VALUE: Maybe::Some(u8:42)}");
+
+  xls_dslx_interp_value* borrowed =
+      xls_dslx_parametric_env_get_binding_value(env, 0);
+  ASSERT_NE(borrowed, nullptr);
+  char* borrowed_text = xls_dslx_interp_value_to_string(borrowed);
+  absl::Cleanup free_borrowed_text([&] { xls_c_str_free(borrowed_text); });
+  EXPECT_STREQ(borrowed_text, "Maybe::Some(u8:42)");
+
+  xls_dslx_parametric_env* cloned_env = xls_dslx_parametric_env_clone(env);
+  ASSERT_NE(cloned_env, nullptr);
+  absl::Cleanup free_cloned_env(
+      [&] { xls_dslx_parametric_env_free(cloned_env); });
+  char* cloned_env_text = xls_dslx_parametric_env_to_string(cloned_env);
+  absl::Cleanup free_cloned_env_text([&] { xls_c_str_free(cloned_env_text); });
+  EXPECT_STREQ(cloned_env_text, "{VALUE: Maybe::Some(u8:42)}");
+  xls_dslx_interp_value* cloned_binding =
+      xls_dslx_parametric_env_get_binding_value(cloned_env, 0);
+  char* cloned_binding_text = xls_dslx_interp_value_to_string(cloned_binding);
+  absl::Cleanup free_cloned_binding_text(
+      [&] { xls_c_str_free(cloned_binding_text); });
+  EXPECT_STREQ(cloned_binding_text, "Maybe::Some(u8:42)");
+
+  xls_dslx_interp_value* retained_clone = xls_dslx_interp_value_clone(borrowed);
+  ASSERT_NE(retained_clone, nullptr);
+  absl::Cleanup free_retained_clone(
+      [&] { xls_dslx_interp_value_free(retained_clone); });
+  xls_dslx_parametric_env_free(env);
+  env = nullptr;
+  char* retained_text = xls_dslx_interp_value_to_string(retained_clone);
+  absl::Cleanup free_retained_text([&] { xls_c_str_free(retained_text); });
+  EXPECT_STREQ(retained_text, "Maybe::Some(u8:42)");
+  char* surviving_env_text = xls_dslx_parametric_env_to_string(cloned_env);
+  absl::Cleanup free_surviving_env_text(
+      [&] { xls_c_str_free(surviving_env_text); });
+  EXPECT_STREQ(surviving_env_text, "{VALUE: Maybe::Some(u8:42)}");
+  char* surviving_binding_text =
+      xls_dslx_interp_value_to_string(cloned_binding);
+  absl::Cleanup free_surviving_binding_text(
+      [&] { xls_c_str_free(surviving_binding_text); });
+  EXPECT_STREQ(surviving_binding_text, "Maybe::Some(u8:42)");
+
+  xls_dslx_constant_def* other_constant =
+      xls_dslx_module_member_get_constant_def(
+          xls_dslx_module_get_member(module, 3));
+  ASSERT_NE(other_constant, nullptr);
+  xls_dslx_interp_value* other_value = nullptr;
+  ASSERT_TRUE(xls_dslx_type_info_get_const_expr(
+      type_info, xls_dslx_constant_def_get_value(other_constant), &error,
+      &other_value));
+  absl::Cleanup free_other_value(
+      [&] { xls_dslx_interp_value_free(other_value); });
+
+  xls_dslx_parametric_env_item duplicate_items[] = {{"DUPLICATE", owned_value},
+                                                    {"DUPLICATE", other_value}};
+  xls_dslx_parametric_env* duplicate_env = nullptr;
+  ASSERT_TRUE(xls_dslx_parametric_env_create(duplicate_items, 2, &error,
+                                             &duplicate_env));
+  absl::Cleanup free_duplicate_env(
+      [&] { xls_dslx_parametric_env_free(duplicate_env); });
+
+  auto binding_texts = [](const xls_dslx_parametric_env* source) {
+    std::vector<std::string> result;
+    for (int64_t i = 0; i < xls_dslx_parametric_env_get_binding_count(source);
+         ++i) {
+      char* text = xls_dslx_interp_value_to_string(
+          xls_dslx_parametric_env_get_binding_value(source, i));
+      result.emplace_back(text);
+      xls_c_str_free(text);
+    }
+    return result;
+  };
+  EXPECT_THAT(binding_texts(duplicate_env),
+              ::testing::UnorderedElementsAre("Maybe::Some(u8:42)",
+                                              "Other::Some(u8:7)"));
+
+  xls_dslx_parametric_env* duplicate_clone =
+      xls_dslx_parametric_env_clone(duplicate_env);
+  ASSERT_NE(duplicate_clone, nullptr);
+  absl::Cleanup free_duplicate_clone(
+      [&] { xls_dslx_parametric_env_free(duplicate_clone); });
+  EXPECT_THAT(binding_texts(duplicate_clone),
+              ::testing::UnorderedElementsAre("Maybe::Some(u8:42)",
+                                              "Other::Some(u8:7)"));
+}
+
+// Verifies: enum keys retain exact dimensions and sign across equal clones.
+// Catches: numeric-only dimensions or signedness changing cache reuse.
+TEST(XlsCApiTest, DslxEnumMetadataUsesExactTypeDimensions) {
+  auto* owner = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  ASSERT_NE(owner, nullptr);
+  absl::Cleanup free_owner([&] { xls_dslx_import_data_free(owner); });
+  char* error = nullptr;
+  absl::Cleanup free_error([&] { xls_c_str_free(error); });
+  xls_dslx_typechecked_module* module_owner = nullptr;
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(
+      "enum E : u8 { A = 0 } const VALUE = E::A; "
+      "enum Marker { Here() } const MARKER = Marker::Here();",
+      "enum_dimensions.x", "enum_dimensions", owner, &error, &module_owner))
+      << error;
+  absl::Cleanup free_module(
+      [&] { xls_dslx_typechecked_module_free(module_owner); });
+  auto* module = xls_dslx_typechecked_module_get_module(module_owner);
+  auto* type_info = xls_dslx_typechecked_module_get_type_info(module_owner);
+  auto* constant = xls_dslx_module_member_get_constant_def(
+      xls_dslx_module_get_member(module, 1));
+  ASSERT_NE(constant, nullptr);
+  auto* expr = xls_dslx_constant_def_get_value(constant);
+  auto* cpp_expr = reinterpret_cast<xls::dslx::Expr*>(expr);
+  auto* cpp_type_info = reinterpret_cast<xls::dslx::TypeInfo*>(type_info);
+  auto type = cpp_type_info->GetItem(cpp_expr);
+  ASSERT_TRUE(type.has_value());
+  const xls::dslx::EnumType original((*type)->AsEnum());
+  xls_dslx_interp_value* first = nullptr;
+  ASSERT_TRUE(
+      xls_dslx_type_info_get_const_expr(type_info, expr, &error, &first))
+      << error;
+  absl::Cleanup free_first([&] { xls_dslx_interp_value_free(first); });
+  auto metadata = xls::GetDslxValueMetadataForTesting(first).lock();
+  ASSERT_NE(metadata, nullptr);
+  auto* marker_constant = xls_dslx_module_member_get_constant_def(
+      xls_dslx_module_get_member(module, 3));
+  ASSERT_NE(marker_constant, nullptr);
+  xls_dslx_interp_value* marker = nullptr;
+  ASSERT_TRUE(xls_dslx_type_info_get_const_expr(
+      type_info, xls_dslx_constant_def_get_value(marker_constant), &error,
+      &marker))
+      << error;
+  absl::Cleanup free_marker([&] { xls_dslx_interp_value_free(marker); });
+  xls_dslx_interp_value* first_fields[] = {marker, first};
+  xls_dslx_interp_value* first_tuple = nullptr;
+  ASSERT_TRUE(
+      xls_dslx_interp_value_make_tuple(2, first_fields, &error, &first_tuple))
+      << error;
+  absl::Cleanup free_first_tuple(
+      [&] { xls_dslx_interp_value_free(first_tuple); });
+
+  struct EnumCase {
+    const char* name;
+    xls::dslx::TypeDim size;
+    bool is_signed;
+    bool equal;
+  };
+  const EnumCase cases[] = {
+      {"different bit count", xls::dslx::TypeDim::CreateU32(16), false, false},
+      {"different dimension width",
+       xls::dslx::TypeDim(xls::dslx::InterpValue::MakeU64(8)), false, false},
+      {"signed enum", xls::dslx::TypeDim::CreateU32(8), true, false},
+      {"signed dimension value",
+       xls::dslx::TypeDim(xls::dslx::InterpValue::MakeSBits(32, 8)), false,
+       true}};
+  for (const auto& test_case : cases) {
+    SCOPED_TRACE(test_case.name);
+    auto replacement = std::make_unique<xls::dslx::EnumType>(
+        original.nominal_type(), test_case.size.Clone(), test_case.is_signed,
+        original.members());
+    ASSERT_EQ(original == *replacement, test_case.equal);
+    cpp_type_info->SetItem(cpp_expr, std::move(replacement));
+    xls_dslx_interp_value* value = nullptr;
+    ASSERT_TRUE(
+        xls_dslx_type_info_get_const_expr(type_info, expr, &error, &value))
+        << error;
+    absl::Cleanup free_value([&] { xls_dslx_interp_value_free(value); });
+    auto current = xls::GetDslxValueMetadataForTesting(value).lock();
+    ASSERT_NE(current, nullptr);
+    EXPECT_EQ(metadata == current, test_case.equal);
+
+    // Sum-bearing composition observes the nominal identity, not merely the
+    // descriptor address; ordinary enum arrays intentionally allow mixed types.
+    xls_dslx_interp_value* fields[] = {marker, value};
+    xls_dslx_interp_value* tuple = nullptr;
+    ASSERT_TRUE(xls_dslx_interp_value_make_tuple(2, fields, &error, &tuple))
+        << error;
+    absl::Cleanup free_tuple([&] { xls_dslx_interp_value_free(tuple); });
+    xls_dslx_interp_value* elements[] = {first_tuple, tuple};
+    xls_dslx_interp_value* array = nullptr;
+    char* array_error = nullptr;
+    absl::Cleanup free_array([&] {
+      xls_dslx_interp_value_free(array);
+      xls_c_str_free(array_error);
+    });
+    EXPECT_EQ(
+        xls_dslx_interp_value_make_array(2, elements, &array_error, &array),
+        test_case.equal);
+    if (!test_case.equal) {
+      EXPECT_EQ(array, nullptr);
+      EXPECT_THAT(
+          array_error,
+          HasSubstr("Sum-bearing array elements have incompatible DSLX types"));
+    }
+  }
+  cpp_type_info->SetItem(cpp_expr, original.CloneToUnique());
+  xls_dslx_interp_value* equal_clone = nullptr;
+  ASSERT_TRUE(
+      xls_dslx_type_info_get_const_expr(type_info, expr, &error, &equal_clone))
+      << error;
+  absl::Cleanup free_clone([&] { xls_dslx_interp_value_free(equal_clone); });
+  EXPECT_EQ(metadata, xls::GetDslxValueMetadataForTesting(equal_clone).lock());
+}
+
+TEST(XlsCApiTest, DslxSumMetadataUsesFullEqualityAfterHashMatch) {
+  constexpr const char* kProgram = R"(
+enum Maybe { None, Some(u8) }
+const VALUE: Maybe = Maybe::None;
+)";
+  xls_dslx_import_data* owner = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  ASSERT_NE(owner, nullptr);
+  absl::Cleanup free_owner([&] { xls_dslx_import_data_free(owner); });
+  char* error = nullptr;
+  absl::Cleanup free_error([&] { xls_c_str_free(error); });
+  xls_dslx_typechecked_module* module_owner = nullptr;
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kProgram, "metadata_collision.x",
+                                        "metadata_collision", owner, &error,
+                                        &module_owner))
+      << error;
+  absl::Cleanup free_module(
+      [&] { xls_dslx_typechecked_module_free(module_owner); });
+  auto* module = xls_dslx_typechecked_module_get_module(module_owner);
+  auto* type_info = xls_dslx_typechecked_module_get_type_info(module_owner);
+  auto* constant = xls_dslx_module_member_get_constant_def(
+      xls_dslx_module_get_member(module, 1));
+  ASSERT_NE(constant, nullptr);
+  auto* expr = xls_dslx_constant_def_get_value(constant);
+  auto* cpp_expr = reinterpret_cast<xls::dslx::Expr*>(expr);
+  auto* cpp_type_info = reinterpret_cast<xls::dslx::TypeInfo*>(type_info);
+  auto type = cpp_type_info->GetItem(cpp_expr);
+  ASSERT_TRUE(type.has_value());
+  auto* sum = dynamic_cast<const xls::dslx::SumType*>(*type);
+  ASSERT_NE(sum, nullptr);
+  const xls::dslx::SumType original(*sum);
+
+  // A different concrete tag width preserves the declaration and argument hash
+  // but not full Type equality. Inject these descriptions at the metadata
+  // boundary to force a routing-key collision without a production test hook.
+  std::vector<xls::dslx::SumTypeVariant> variants;
+  for (const auto& variant : original.variants()) {
+    variants.push_back(variant.Clone());
+  }
+  auto different = std::make_unique<xls::dslx::SumType>(
+      original.nominal_type(), std::move(variants),
+      xls::dslx::TypeDim::CreateU32(2));
+  ASSERT_EQ(&original.nominal_type(), &different->nominal_type());
+  ASSERT_EQ(original.parametric_arguments_hash(),
+            different->parametric_arguments_hash());
+  ASSERT_FALSE(original == *different);
+
+  xls_dslx_interp_value* values[3] = {};
+  absl::Cleanup free_values([&] {
+    for (auto* value : values) {
+      xls_dslx_interp_value_free(value);
+    }
+  });
+  ASSERT_TRUE(xls_dslx_type_info_get_const_expr(type_info, expr, &error,
+                                             &values[0]))
+      << error;
+  cpp_type_info->SetItem(cpp_expr, std::move(different));
+  ASSERT_TRUE(xls_dslx_type_info_get_const_expr(type_info, expr, &error,
+                                             &values[1]))
+      << error;
+  cpp_type_info->SetItem(cpp_expr, original.CloneToUnique());
+  ASSERT_TRUE(xls_dslx_type_info_get_const_expr(type_info, expr, &error,
+                                             &values[2]))
+      << error;
+
+  auto first_metadata = xls::GetDslxValueMetadataForTesting(values[0]).lock();
+  auto different_metadata = xls::GetDslxValueMetadataForTesting(values[1]).lock();
+  ASSERT_NE(first_metadata, nullptr);
+  ASSERT_NE(different_metadata, nullptr);
+  EXPECT_NE(first_metadata, different_metadata);
+  EXPECT_EQ(first_metadata,
+            xls::GetDslxValueMetadataForTesting(values[2]).lock());
+}
+
+TEST(XlsCApiTest, DslxSumBearingStructMetadataUsesFullEqualityAfterHashMatch) {
+  constexpr const char* kProgram = R"(
+enum Maybe { None, Some(u8) }
+struct Wrapper { value: Maybe }
+const VALUE = Wrapper { value: Maybe::None };
+)";
+  xls_dslx_import_data* owner = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  ASSERT_NE(owner, nullptr);
+  absl::Cleanup free_owner([&] { xls_dslx_import_data_free(owner); });
+  char* error = nullptr;
+  absl::Cleanup free_error([&] { xls_c_str_free(error); });
+  xls_dslx_typechecked_module* module_owner = nullptr;
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(
+      kProgram, "struct_metadata_collision.x", "struct_metadata_collision",
+      owner, &error, &module_owner))
+      << error;
+  absl::Cleanup free_module(
+      [&] { xls_dslx_typechecked_module_free(module_owner); });
+  auto* module = xls_dslx_typechecked_module_get_module(module_owner);
+  auto* type_info = xls_dslx_typechecked_module_get_type_info(module_owner);
+  auto* constant = xls_dslx_module_member_get_constant_def(
+      xls_dslx_module_get_member(module, 2));
+  ASSERT_NE(constant, nullptr);
+  auto* expr = xls_dslx_constant_def_get_value(constant);
+  auto* cpp_expr = reinterpret_cast<xls::dslx::Expr*>(expr);
+  auto* cpp_type_info = reinterpret_cast<xls::dslx::TypeInfo*>(type_info);
+  auto type = cpp_type_info->GetItem(cpp_expr);
+  ASSERT_TRUE(type.has_value());
+  auto* structure = dynamic_cast<const xls::dslx::StructType*>(*type);
+  ASSERT_NE(structure, nullptr);
+  auto original = structure->CloneToUnique();
+  auto* sum =
+      dynamic_cast<const xls::dslx::SumType*>(&structure->GetMemberType(0));
+  ASSERT_NE(sum, nullptr);
+
+  // The nested sum's tag width changes full Type equality without changing
+  // either the struct declaration or its complete cache fingerprint.
+  std::vector<xls::dslx::SumTypeVariant> variants;
+  for (const auto& variant : sum->variants()) {
+    variants.push_back(variant.Clone());
+  }
+  std::vector<std::unique_ptr<xls::dslx::Type>> members;
+  members.push_back(std::make_unique<xls::dslx::SumType>(
+      sum->nominal_type(), std::move(variants),
+      xls::dslx::TypeDim::CreateU32(2)));
+  auto different = std::make_unique<xls::dslx::StructType>(
+      std::move(members), structure->nominal_type(),
+      structure->nominal_type_dims_by_identifier());
+  ASSERT_EQ(&structure->nominal_type(), &different->nominal_type());
+  ASSERT_EQ(xls::dslx::HashTypeForSumCache(*original),
+            xls::dslx::HashTypeForSumCache(*different));
+  ASSERT_FALSE(*original == *different);
+
+  xls_dslx_interp_value* values[3] = {};
+  absl::Cleanup free_values([&] {
+    for (auto* value : values) {
+      xls_dslx_interp_value_free(value);
+    }
+  });
+  ASSERT_TRUE(
+      xls_dslx_type_info_get_const_expr(type_info, expr, &error, &values[0]))
+      << error;
+  cpp_type_info->SetItem(cpp_expr, std::move(different));
+  ASSERT_TRUE(
+      xls_dslx_type_info_get_const_expr(type_info, expr, &error, &values[1]))
+      << error;
+  auto equal = original->CloneToUnique();
+  ASSERT_TRUE(*original == *equal);
+  cpp_type_info->SetItem(cpp_expr, std::move(equal));
+  ASSERT_TRUE(
+      xls_dslx_type_info_get_const_expr(type_info, expr, &error, &values[2]))
+      << error;
+
+  // Struct descriptors are rebuilt, so test their nominal identities through
+  // C array composition rather than comparing descriptor addresses.
+  xls_dslx_interp_value* incompatible[] = {values[0], values[1]};
+  xls_dslx_interp_value* rejected = nullptr;
+  char* array_error = nullptr;
+  absl::Cleanup free_rejected([&] {
+    xls_dslx_interp_value_free(rejected);
+    xls_c_str_free(array_error);
+  });
+  EXPECT_FALSE(xls_dslx_interp_value_make_array(2, incompatible, &array_error,
+                                                &rejected));
+  EXPECT_EQ(rejected, nullptr);
+  EXPECT_THAT(
+      array_error,
+      HasSubstr("Sum-bearing array elements have incompatible DSLX types"));
+
+  xls_dslx_interp_value* compatible[] = {values[0], values[2]};
+  xls_dslx_interp_value* array = nullptr;
+  absl::Cleanup free_array([&] { xls_dslx_interp_value_free(array); });
+  ASSERT_TRUE(xls_dslx_interp_value_make_array(2, compatible, &error, &array))
+      << error;
+  auto* retained = xls_dslx_interp_value_clone(array);
+  ASSERT_NE(retained, nullptr);
+  absl::Cleanup free_retained([&] { xls_dslx_interp_value_free(retained); });
+  xls_dslx_interp_value_free(array);
+  array = nullptr;
+  for (auto*& value : values) {
+    xls_dslx_interp_value_free(value);
+    value = nullptr;
+  }
+  original.reset();
+  xls_dslx_typechecked_module_free(module_owner);
+  module_owner = nullptr;
+  xls_dslx_import_data_free(owner);
+  owner = nullptr;
+
+  char* text = xls_dslx_interp_value_to_string(retained);
+  absl::Cleanup free_text([&] { xls_c_str_free(text); });
+  EXPECT_STREQ(text,
+               "[\n"
+               "    Wrapper {\n"
+               "        value: Maybe::None\n"
+               "    },\n"
+               "    Wrapper {\n"
+               "        value: Maybe::None\n"
+               "    }\n"
+               "]");
+}
+
+TEST(XlsCApiTest,
+     DslxConstExprMetadataDistinguishesBitsFromNominalAndEmptyValues) {
+  constexpr const char* kProgram = R"(
+type ByteAlias = u8;
+enum Plain : u2 { A = 1 }
+enum Marker { Present() }
+const UNSIGNED = u32:7;
+const SIGNED = s8:-2;
+const ZERO = uN[0]:0;
+const ALIAS: ByteAlias = u8:3;
+const ENUM = Plain::A;
+const SUM = Marker::Present();
+const EMPTY = u8[0]:[];
+const NESTED_EMPTY = ([EMPTY],);
+)";
+  struct MetadataCase {
+    const char* name;
+    bool needs_metadata;
+  };
+  constexpr MetadataCase kCases[] = {
+      {"UNSIGNED", false}, {"SIGNED", false}, {"ZERO", false},
+      {"ALIAS", false},    {"ENUM", true},    {"SUM", true},
+      {"EMPTY", true},     {"NESTED_EMPTY", true}};
+  xls_dslx_import_data* owner = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  ASSERT_NE(owner, nullptr);
+  absl::Cleanup free_owner([&] { xls_dslx_import_data_free(owner); });
+  char* error = nullptr;
+  absl::Cleanup free_error([&] { xls_c_str_free(error); });
+  xls_dslx_typechecked_module* module_owner = nullptr;
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(
+      kProgram, "metadata_bits.x", "metadata_bits", owner, &error,
+      &module_owner))
+      << error;
+  absl::Cleanup free_module(
+      [&] { xls_dslx_typechecked_module_free(module_owner); });
+  auto* module = xls_dslx_typechecked_module_get_module(module_owner);
+  auto* type_info = xls_dslx_typechecked_module_get_type_info(module_owner);
+  int64_t member_index = 3;
+  for (const MetadataCase& test_case : kCases) {
+    SCOPED_TRACE(test_case.name);
+    auto* constant = xls_dslx_module_member_get_constant_def(
+        xls_dslx_module_get_member(module, member_index++));
+    ASSERT_NE(constant, nullptr);
+    char* name = xls_dslx_constant_def_get_name(constant);
+    absl::Cleanup free_name([&] { xls_c_str_free(name); });
+    EXPECT_STREQ(name, test_case.name);
+    xls_dslx_interp_value* value = nullptr;
+    absl::Cleanup free_value([&] { xls_dslx_interp_value_free(value); });
+    ASSERT_TRUE(xls_dslx_type_info_get_const_expr(
+        type_info, xls_dslx_constant_def_get_value(constant), &error, &value))
+        << error;
+    ASSERT_NE(value, nullptr);
+    EXPECT_EQ(!xls::GetDslxValueMetadataForTesting(value).expired(),
+              test_case.needs_metadata);
+  }
+}
+
+TEST(XlsCApiTest, DslxSemanticSumArraysRequireCompatibleElementTypes) {
+  constexpr const char* kProgram = R"(
+#![feature(generics)]
+enum Maybe { None, Some(u8) }
+enum Other { None, Some(u8) }
+enum Phantom<N: u32, T: type> { Only() }
+type ByteAlias = u8;
+const FIRST: Maybe = Maybe::Some(u8:42);
+const EMPTY: Maybe = Maybe::None;
+const SECOND: Other = Other::Some(u8:7);
+const ONE: Phantom<u32:1, u8> = Phantom<u32:1, u8>::Only();
+const TWO: Phantom<u32:2, u8> = Phantom<u32:2, u8>::Only();
+const WIDER: Phantom<u32:1, u16> = Phantom<u32:1, u16>::Only();
+const SAME: Phantom<u32:1, ByteAlias> = Phantom<u32:1, ByteAlias>::Only();
+)";
+  xls_dslx_import_data* import_data = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  ASSERT_NE(import_data, nullptr);
+  absl::Cleanup free_import_data([&] {
+    if (import_data != nullptr) {
+      xls_dslx_import_data_free(import_data);
+    }
+  });
+  char* error = nullptr;
+  absl::Cleanup free_error([&] { xls_c_str_free(error); });
+  xls_dslx_typechecked_module* module_owner = nullptr;
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kProgram, "array_types.x",
+                                           "array_types", import_data, &error,
+                                           &module_owner))
+      << (error == nullptr ? "unknown error" : error);
+  absl::Cleanup free_module([&] {
+    if (module_owner != nullptr) {
+      xls_dslx_typechecked_module_free(module_owner);
+    }
+  });
+  xls_dslx_module* module =
+      xls_dslx_typechecked_module_get_module(module_owner);
+  xls_dslx_type_info* type_info =
+      xls_dslx_typechecked_module_get_type_info(module_owner);
+  std::vector<xls_dslx_interp_value*> values;
+  absl::Cleanup free_values([&] {
+    for (xls_dslx_interp_value* value : values) {
+      xls_dslx_interp_value_free(value);
+    }
+  });
+  for (int64_t member_index : {4, 5, 6, 7, 8, 9, 10}) {
+    xls_dslx_constant_def* constant = xls_dslx_module_member_get_constant_def(
+        xls_dslx_module_get_member(module, member_index));
+    ASSERT_NE(constant, nullptr);
+    xls_dslx_interp_value* value = nullptr;
+    ASSERT_TRUE(xls_dslx_type_info_get_const_expr(
+        type_info, xls_dslx_constant_def_get_value(constant), &error, &value));
+    ASSERT_NE(value, nullptr);
+    values.push_back(value);
+  }
+  values.push_back(xls_dslx_interp_value_make_ubits(8, 7));
+  ASSERT_NE(values.back(), nullptr);
+
+  // The retained values must carry their own identity and formatting. Freeing
+  // only the typechecked-module wrapper would leave the AST owner alive.
+  xls_dslx_typechecked_module_free(module_owner);
+  module_owner = nullptr;
+  xls_dslx_import_data_free(import_data);
+  import_data = nullptr;
+  values.push_back(xls_dslx_interp_value_clone(values[0]));
+  ASSERT_NE(values.back(), nullptr);
+
+  const std::vector<std::pair<xls_dslx_interp_value*, xls_dslx_interp_value*>>
+      incompatible = {{values[0], values[2]},
+                      {values[0], values[7]},
+                      {values[7], values[0]},
+                      {values[3], values[4]},
+                      {values[3], values[5]}};
+  for (const auto& [first, second] : incompatible) {
+    EXPECT_NE(xls::GetDslxValueMetadataForTesting(first).lock(),
+              xls::GetDslxValueMetadataForTesting(second).lock());
+    xls_dslx_interp_value* elements[] = {first, second};
+    xls_dslx_interp_value* array = nullptr;
+    char* array_error = nullptr;
+    absl::Cleanup free_array([&] {
+      if (array != nullptr) {
+        xls_dslx_interp_value_free(array);
+      }
+      xls_c_str_free(array_error);
+    });
+    EXPECT_FALSE(
+        xls_dslx_interp_value_make_array(2, elements, &array_error, &array));
+    EXPECT_EQ(array, nullptr);
+    EXPECT_NE(array_error, nullptr);
+  }
+
+  // Constructors, aliases, and handle clones do not create new nominal types.
+  const std::vector<std::pair<xls_dslx_interp_value*, xls_dslx_interp_value*>>
+      compatible = {{values[1], values[0]},
+                    {values[3], values[6]},
+                    {values[0], values[8]}};
+  for (const auto& [first, second] : compatible) {
+    EXPECT_EQ(xls::GetDslxValueMetadataForTesting(first).lock(),
+              xls::GetDslxValueMetadataForTesting(second).lock());
+    xls_dslx_interp_value* elements[] = {first, second};
+    xls_dslx_interp_value* array = nullptr;
+    ASSERT_TRUE(xls_dslx_interp_value_make_array(2, elements, &error, &array));
+    absl::Cleanup free_array([&] { xls_dslx_interp_value_free(array); });
+    char* text = xls_dslx_interp_value_to_string(array);
+    absl::Cleanup free_text([&] { xls_c_str_free(text); });
+    EXPECT_THAT(text, HasSubstr(first == values[3] ? "Phantom::Only()"
+                                                   : "Maybe::Some(u8:42)"));
+  }
+}
+
+TEST(XlsCApiTest, DslxSemanticSumMetadataSurvivesNonoverlappingHandles) {
+  constexpr const char* kProgram = R"(
+enum Maybe { None, Some(u8) }
+const FIRST: Maybe = Maybe::None;
+const SECOND: Maybe = Maybe::Some(u8:42);
+)";
+  xls_dslx_import_data* owner = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  xls_dslx_typechecked_module* tm = nullptr;
+  xls_dslx_interp_value* first = nullptr;
+  xls_dslx_interp_value* second = nullptr;
+  xls_dslx_interp_value* cloned = nullptr;
+  char* error = nullptr;
+  absl::Cleanup cleanup([&] {
+    xls_c_str_free(error);
+    xls_dslx_interp_value_free(first);
+    xls_dslx_interp_value_free(second);
+    xls_dslx_interp_value_free(cloned);
+    xls_dslx_typechecked_module_free(tm);
+    xls_dslx_import_data_free(owner);
+  });
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kProgram, "sum_metadata.x",
+                                           "sum_metadata", owner, &error, &tm))
+      << error;
+  auto* module = xls_dslx_typechecked_module_get_module(tm);
+  auto* type_info = xls_dslx_typechecked_module_get_type_info(tm);
+  auto* first_constant = xls_dslx_module_member_get_constant_def(
+      xls_dslx_module_get_member(module, 1));
+  ASSERT_NE(first_constant, nullptr);
+  ASSERT_TRUE(xls_dslx_type_info_get_const_expr(
+      type_info, xls_dslx_constant_def_get_value(first_constant), &error,
+      &first));
+  const auto metadata = xls::GetDslxValueMetadataForTesting(first);
+  ASSERT_FALSE(metadata.expired());
+  char* first_text = xls_dslx_interp_value_to_string(first);
+  absl::Cleanup free_first_text([&] { xls_c_str_free(first_text); });
+  EXPECT_STREQ(first_text, "Maybe::None");
+  xls_dslx_interp_value_free(first);
+  first = nullptr;
+  // No live value or strong test witness bridges these independent handles.
+  EXPECT_FALSE(metadata.expired());
+
+  auto* second_constant = xls_dslx_module_member_get_constant_def(
+      xls_dslx_module_get_member(module, 2));
+  ASSERT_NE(second_constant, nullptr);
+  ASSERT_TRUE(xls_dslx_type_info_get_const_expr(
+      type_info, xls_dslx_constant_def_get_value(second_constant), &error,
+      &second));
+  EXPECT_EQ(metadata.lock(),
+            xls::GetDslxValueMetadataForTesting(second).lock());
+  cloned = xls_dslx_interp_value_clone(second);
+  ASSERT_NE(cloned, nullptr);
+  EXPECT_EQ(metadata.lock(),
+            xls::GetDslxValueMetadataForTesting(cloned).lock());
+  xls_dslx_interp_value_free(second);
+  second = nullptr;
+  xls_dslx_typechecked_module_free(tm);
+  tm = nullptr;
+  xls_dslx_import_data_free(owner);
+  owner = nullptr;
+
+  // The clone retains the descriptor without retaining the compilation owner.
+  EXPECT_FALSE(metadata.expired());
+  char* clone_text = xls_dslx_interp_value_to_string(cloned);
+  absl::Cleanup free_clone_text([&] { xls_c_str_free(clone_text); });
+  EXPECT_STREQ(clone_text, "Maybe::Some(u8:42)");
+  xls_dslx_interp_value_free(cloned);
+  cloned = nullptr;
+  EXPECT_TRUE(metadata.expired());
+}
+
+TEST(XlsCApiTest, DslxEnumMetadataUsesNominalDeclarationIdentity) {
+  constexpr const char* kEnum = "pub enum E : u2 { A = 0, B = 1 }";
+  xls_dslx_import_data* owner = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  xls_dslx_import_data* separate_owner = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  xls_dslx_typechecked_module* original = nullptr;
+  xls_dslx_typechecked_module* cloned = nullptr;
+  xls_dslx_typechecked_module* consumer = nullptr;
+  xls_dslx_typechecked_module* separate = nullptr;
+  std::vector<xls_dslx_interp_value*> values;
+  xls_bits* bits = nullptr;
+  char* error = nullptr;
+  absl::Cleanup cleanup([&] {
+    xls_c_str_free(error);
+    xls_bits_free(bits);
+    for (auto* value : values) {
+      xls_dslx_interp_value_free(value);
+    }
+    xls_dslx_typechecked_module_free(consumer);
+    xls_dslx_typechecked_module_free(cloned);
+    xls_dslx_typechecked_module_free(original);
+    xls_dslx_typechecked_module_free(separate);
+    xls_dslx_import_data_free(owner);
+    xls_dslx_import_data_free(separate_owner);
+  });
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kEnum, "enum.x", "a", owner, &error,
+                                           &original))
+      << error;
+  ASSERT_TRUE(xls_dslx_typechecked_module_clone_removing_members(
+      original, nullptr, 0, "b", owner, &error, &cloned))
+      << error;
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(
+      "import a; import b; type Alias = a::E; "
+      "const FIRST: Alias = Alias::A; const LAST: a::E = a::E::B; "
+      "const CLONED: b::E = b::E::A;",
+      "main.x", "main", owner, &error, &consumer))
+      << error;
+  auto* module = xls_dslx_typechecked_module_get_module(consumer);
+  auto* type_info = xls_dslx_typechecked_module_get_type_info(consumer);
+  for (int64_t index : {3, 4, 5}) {
+    auto* constant = xls_dslx_module_member_get_constant_def(
+        xls_dslx_module_get_member(module, index));
+    ASSERT_NE(constant, nullptr);
+    xls_dslx_interp_value* value = nullptr;
+    ASSERT_TRUE(xls_dslx_type_info_get_const_expr(
+        type_info, xls_dslx_constant_def_get_value(constant), &error, &value));
+    values.push_back(value);
+  }
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kEnum, "enum.x", "a", separate_owner,
+                                           &error, &separate))
+      << error;
+  ASSERT_TRUE(xls_bits_make_ubits(2, 0, &error, &bits));
+  for (auto* tm : {original, separate}) {
+    auto* def = xls_dslx_module_member_get_enum_def(xls_dslx_module_get_member(
+        xls_dslx_typechecked_module_get_module(tm), 0));
+    xls_dslx_interp_value* value = nullptr;
+    ASSERT_TRUE(
+        xls_dslx_interp_value_make_enum(def, false, bits, &error, &value));
+    values.push_back(value);
+  }
+  const auto metadata = xls::GetDslxValueMetadataForTesting(values[0]);
+  ASSERT_FALSE(metadata.expired());
+  EXPECT_EQ(metadata.lock(),
+            xls::GetDslxValueMetadataForTesting(values[1]).lock());
+  EXPECT_EQ(metadata.lock(),
+            xls::GetDslxValueMetadataForTesting(values[3]).lock());
+  EXPECT_NE(metadata.lock(),
+            xls::GetDslxValueMetadataForTesting(values[2]).lock());
+  EXPECT_NE(metadata.lock(),
+            xls::GetDslxValueMetadataForTesting(values[4]).lock());
+}
+
+TEST(XlsCApiTest, DslxRawEnumFromRetainedTransformedModule) {
+  constexpr const char* kImported = "pub fn f<N: u32>() -> u32 { N }";
+  constexpr const char* kProgram = R"(
+import imported;
+enum E: u2 { A = 0 }
+const VALUE: E = E::A;
+fn caller() -> u32 { imported::f<u32:1>() }
+proc P {}
+impl P {
+  fn new() -> Self { P {} }
+}
+#[test]
+fn test_spawn() {
+  let p = P::new();
+  p.spawn();
+}
+)";
+  auto* owner = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  xls_dslx_typechecked_module* imported_tm = nullptr;
+  xls_dslx_typechecked_module* tm = nullptr;
+  xls_dslx_invocation_callee_data_array* invocations = nullptr;
+  xls_bits* bits = nullptr;
+  xls_dslx_interp_value* value = nullptr;
+  char* error = nullptr;
+  absl::Cleanup cleanup([&] {
+    xls_c_str_free(error);
+    xls_dslx_interp_value_free(value);
+    xls_bits_free(bits);
+    xls_dslx_invocation_callee_data_array_free(invocations);
+    xls_dslx_typechecked_module_free(tm);
+    xls_dslx_typechecked_module_free(imported_tm);
+    xls_dslx_import_data_free(owner);
+  });
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kImported, "imported.x", "imported",
+                                           owner, &error, &imported_tm))
+      << error;
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kProgram, "retained_enum.x",
+                                           "retained_enum", owner, &error, &tm))
+      << error;
+  auto* module = xls_dslx_typechecked_module_get_module(tm);
+  auto* type_info = xls_dslx_typechecked_module_get_type_info(tm);
+  auto* imported = xls_dslx_typechecked_module_get_module(imported_tm);
+  auto* function = xls_dslx_module_member_get_function(
+      xls_dslx_module_get_member(imported, 0));
+  ASSERT_NE(function, nullptr);
+
+  // Transforming the spawning test reparses the module, but imported calls
+  // still expose callers from the retained original through public accessors.
+  invocations =
+      xls_dslx_type_info_get_all_invocation_callee_data(type_info, function);
+  ASSERT_NE(invocations, nullptr);
+  xls_dslx_module* retained_module = nullptr;
+  for (int64_t i = 0;
+       i < xls_dslx_invocation_callee_data_array_get_count(invocations); ++i) {
+    auto* data = xls_dslx_invocation_callee_data_array_get(invocations, i);
+    auto* invocation = xls_dslx_invocation_callee_data_get_invocation(data);
+    auto* root_data =
+        xls_dslx_type_info_get_root_invocation_data(type_info, invocation);
+    ASSERT_NE(root_data, nullptr);
+    auto* caller = xls_dslx_invocation_data_get_caller(root_data);
+    ASSERT_NE(caller, nullptr);
+    auto* caller_module =
+        xls_dslx_expr_get_owner_module(xls_dslx_function_get_body(caller));
+    if (caller_module != module) {
+      retained_module = caller_module;
+      break;
+    }
+  }
+  ASSERT_NE(retained_module, nullptr);
+  ASSERT_NE(retained_module, module);
+  for (int64_t i = 0; i < xls_dslx_module_get_member_count(module); ++i) {
+    EXPECT_NE(
+        xls_dslx_module_member_get_kind(xls_dslx_module_get_member(module, i)),
+        xls_dslx_module_member_kind_test_function);
+  }
+  auto* enum_def = xls_dslx_module_member_get_enum_def(
+      xls_dslx_module_get_member(retained_module, 1));
+  ASSERT_NE(enum_def, nullptr);
+  ASSERT_TRUE(xls_bits_make_ubits(2, 0, &error, &bits));
+  ASSERT_TRUE(
+      xls_dslx_interp_value_make_enum(enum_def, false, bits, &error, &value))
+      << error;
+  char* text = xls_dslx_interp_value_to_string(value);
+  EXPECT_STREQ(text, "E:0");
+  xls_c_str_free(text);
+}
+
+// Negative test: checks error handling for cross-module sum assignments.
+TEST(XlsCApiTest, DslxClonedModulesHaveDistinctSumIdentity) {
+  xls_dslx_import_data* import_data = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  xls_dslx_typechecked_module* original = nullptr;
+  xls_dslx_typechecked_module* cloned = nullptr;
+  xls_dslx_typechecked_module* consumer = nullptr;
+  char* error = nullptr;
+  absl::Cleanup cleanup([&] {
+    xls_c_str_free(error);
+    xls_dslx_typechecked_module_free(consumer);
+    xls_dslx_typechecked_module_free(cloned);
+    xls_dslx_typechecked_module_free(original);
+    xls_dslx_import_data_free(import_data);
+  });
+  ASSERT_NE(import_data, nullptr);
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck("pub enum S { A(u8), B }", "same.x",
+                                           "a", import_data, &error, &original))
+      << error;
+  ASSERT_EQ(error, nullptr);
+  ASSERT_NE(original, nullptr);
+  ASSERT_TRUE(xls_dslx_typechecked_module_clone_removing_members(
+      original, nullptr, 0, "b", import_data, &error, &cloned))
+      << error;
+  ASSERT_EQ(error, nullptr);
+  ASSERT_NE(cloned, nullptr);
+
+  // All owners remain alive. Shared source spans do not equate independently
+  // installed sum declarations.
+  EXPECT_FALSE(xls_dslx_parse_and_typecheck(
+      "import a; import b; fn f(x: a::S) -> b::S { x }", "main.x", "main",
+      import_data, &error, &consumer));
+  EXPECT_EQ(consumer, nullptr);
+  ASSERT_NE(error, nullptr);
+  EXPECT_THAT(error, HasSubstr("type mismatch"));
+}
+
+TEST(XlsCApiTest, DslxSemanticSumArrayIdentityAcrossClonedModuleAndCValues) {
+  constexpr const char* kProgram = R"(
+enum Maybe { None, Some(u8) }
+enum E : u2 { A = 0, B = 1, AliasA = 0 }
+enum F : u2 { A = 0, B = 1 }
+const SUM: Maybe = Maybe::Some(u8:42);
+const PAIR: (Maybe, E) = (SUM, E::A);
+const OTHER: (Maybe, F) = (SUM, F::A);
+const PAIRS: (Maybe, E)[2] = [PAIR, (SUM, E::B)];
+const EMPTY = u8[0]:[];
+const SIGNED_EMPTY = s8[0]:[];
+const NESTED_EMPTY = ([EMPTY],);
+const EMPTY_PAIR = (SUM, EMPTY);
+const NESTED_EMPTY_PAIR = (SUM, NESTED_EMPTY);
+const SIGNED_EMPTY_PAIR = (SUM, SIGNED_EMPTY);
+)";
+  xls_dslx_import_data* source = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  xls_dslx_import_data* destination = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  absl::Cleanup free_owners([&] {
+    xls_dslx_import_data_free(source);
+    xls_dslx_import_data_free(destination);
+  });
+  char* error = nullptr;
+  absl::Cleanup free_error([&] { xls_c_str_free(error); });
+  xls_dslx_typechecked_module* original = nullptr;
+  xls_dslx_typechecked_module* cloned = nullptr;
+  absl::Cleanup free_modules([&] {
+    xls_dslx_typechecked_module_free(original);
+    xls_dslx_typechecked_module_free(cloned);
+  });
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(
+      kProgram, "array_clone.x", "array_clone", source, &error, &original))
+      << error;
+  ASSERT_TRUE(xls_dslx_typechecked_module_clone_removing_members(
+      original, nullptr, 0, "array_clone_destination", destination, &error,
+      &cloned))
+      << error;
+  auto* module = xls_dslx_typechecked_module_get_module(cloned);
+  auto* type_info = xls_dslx_typechecked_module_get_type_info(cloned);
+  std::vector<xls_dslx_interp_value*> values;
+  absl::Cleanup free_values([&] {
+    for (auto* value : values) {
+      xls_dslx_interp_value_free(value);
+    }
+  });
+  for (int64_t index : {3, 4, 5, 6, 7, 8, 9, 10, 11, 12}) {
+    auto* constant = xls_dslx_module_member_get_constant_def(
+        xls_dslx_module_get_member(module, index));
+    ASSERT_NE(constant, nullptr);
+    xls_dslx_interp_value* value = nullptr;
+    ASSERT_TRUE(xls_dslx_type_info_get_const_expr(
+        type_info, xls_dslx_constant_def_get_value(constant), &error, &value));
+    values.push_back(value);
+  }
+  auto* empty_clone = xls_dslx_interp_value_clone(values[4]);
+  auto* nested_empty_clone = xls_dslx_interp_value_clone(values[6]);
+  ASSERT_NE(empty_clone, nullptr);
+  ASSERT_NE(nested_empty_clone, nullptr);
+  EXPECT_EQ(xls::GetDslxValueMetadataForTesting(values[4]).lock(),
+            xls::GetDslxValueMetadataForTesting(empty_clone).lock());
+  EXPECT_EQ(xls::GetDslxValueMetadataForTesting(values[6]).lock(),
+            xls::GetDslxValueMetadataForTesting(nested_empty_clone).lock());
+  values.push_back(empty_clone);
+  values.push_back(nested_empty_clone);
+  xls_dslx_interp_value_free(values[4]);
+  values[4] = nullptr;
+  xls_dslx_interp_value_free(values[6]);
+  values[6] = nullptr;
+  auto* original_module = xls_dslx_typechecked_module_get_module(original);
+  auto* original_constant = xls_dslx_module_member_get_constant_def(
+      xls_dslx_module_get_member(original_module, 3));
+  xls_dslx_interp_value* original_sum = nullptr;
+  ASSERT_TRUE(xls_dslx_type_info_get_const_expr(
+      xls_dslx_typechecked_module_get_type_info(original),
+      xls_dslx_constant_def_get_value(original_constant), &error,
+      &original_sum));
+  values.push_back(original_sum);
+  auto* enum_def = xls_dslx_module_member_get_enum_def(
+      xls_dslx_module_get_member(module, 1));
+  ASSERT_NE(enum_def, nullptr);
+  xls_bits* bits = nullptr;
+  ASSERT_TRUE(xls_bits_make_ubits(2, 1, &error, &bits));
+  absl::Cleanup free_bits([&] { xls_bits_free(bits); });
+  xls_dslx_interp_value* enum_value = nullptr;
+  ASSERT_TRUE(xls_dslx_interp_value_make_enum(enum_def, false, bits, &error,
+                                              &enum_value))
+      << error;
+  values.push_back(enum_value);
+  struct RawEnumCase {
+    int64_t bit_count;
+    uint64_t value;
+    bool is_signed;
+  };
+  std::vector<xls_dslx_interp_value*> untyped_values;
+  for (const RawEnumCase& raw :
+       {RawEnumCase{2, 2, false}, {3, 0, false}, {2, 0, true}}) {
+    xls_bits* raw_bits = nullptr;
+    ASSERT_TRUE(
+        xls_bits_make_ubits(raw.bit_count, raw.value, &error, &raw_bits));
+    absl::Cleanup free_raw_bits([&] { xls_bits_free(raw_bits); });
+    xls_dslx_interp_value* raw_enum = nullptr;
+    // The existing raw enum constructor remains permissive for ordinary values.
+    ASSERT_TRUE(xls_dslx_interp_value_make_enum(enum_def, raw.is_signed,
+                                                raw_bits, &error, &raw_enum));
+    values.push_back(raw_enum);
+    untyped_values.push_back(raw_enum);
+    char* ordinary_text = xls_dslx_interp_value_to_string(raw_enum);
+    EXPECT_NE(ordinary_text, nullptr);
+    xls_c_str_free(ordinary_text);
+  }
+
+  // The clone keeps the source FileTable but belongs to destination. Neither
+  // FileTable addresses nor borrowed AST pointers may become retained identity.
+  xls_dslx_typechecked_module_free(original);
+  original = nullptr;
+  xls_dslx_typechecked_module_free(cloned);
+  cloned = nullptr;
+  xls_dslx_import_data_free(source);
+  source = nullptr;
+  xls_dslx_import_data_free(destination);
+  destination = nullptr;
+
+  // Both direct empties and empties below tuple/array layers retain their
+  // known type after cloning and teardown of every compilation owner.
+  std::vector<xls_dslx_interp_value*> empty_tuples;
+  const std::vector<std::pair<xls_dslx_interp_value*, xls_dslx_interp_value*>>
+      empty_cases = {{empty_clone, values[7]},
+                     {nested_empty_clone, values[8]},
+                     {values[5], values[9]}};
+  for (const auto& [empty, source_tuple] : empty_cases) {
+    xls_dslx_interp_value* elements[] = {values[0], empty};
+    xls_dslx_interp_value* tuple = nullptr;
+    ASSERT_TRUE(xls_dslx_interp_value_make_tuple(2, elements, &error, &tuple))
+        << error;
+    values.push_back(tuple);
+    empty_tuples.push_back(tuple);
+    char* text = xls_dslx_interp_value_to_string(tuple);
+    char* source_text = xls_dslx_interp_value_to_string(source_tuple);
+    EXPECT_STREQ(text, source_text);
+    EXPECT_THAT(text, HasSubstr("Maybe::Some(u8:42)"));
+    xls_c_str_free(text);
+    xls_c_str_free(source_text);
+
+    // Matching text alone cannot prove structural type compatibility.
+    xls_dslx_interp_value* compatible[] = {tuple, source_tuple};
+    xls_dslx_interp_value* array = nullptr;
+    ASSERT_TRUE(xls_dslx_interp_value_make_array(2, compatible, &error, &array))
+        << error;
+    values.push_back(array);
+  }
+
+  // Ordinary C arrays remain permissive and keep their raw stringification.
+  // Neither an untyped empty nor incompatible known element types may become
+  // a wildcard when a later aggregate contains a sum.
+  xls_dslx_interp_value* raw_empty = nullptr;
+  ASSERT_TRUE(xls_dslx_interp_value_make_array(0, nullptr, &error, &raw_empty));
+  values.push_back(raw_empty);
+  untyped_values.push_back(raw_empty);
+  char* raw_empty_text = xls_dslx_interp_value_to_string(raw_empty);
+  char* typed_empty_text = xls_dslx_interp_value_to_string(empty_clone);
+  EXPECT_STREQ(raw_empty_text, "[]");
+  EXPECT_STREQ(typed_empty_text, "[]");
+  xls_c_str_free(raw_empty_text);
+  xls_c_str_free(typed_empty_text);
+  xls_dslx_interp_value* mixed_elements[] = {empty_clone, values[5]};
+  xls_dslx_interp_value* mixed_array = nullptr;
+  ASSERT_TRUE(xls_dslx_interp_value_make_array(2, mixed_elements, &error,
+                                               &mixed_array));
+  values.push_back(mixed_array);
+  untyped_values.push_back(mixed_array);
+  char* mixed_text = xls_dslx_interp_value_to_string(mixed_array);
+  EXPECT_STREQ(mixed_text, "[[], []]");
+  xls_c_str_free(mixed_text);
+
+  // Invalid raw enums and untyped arrays have no DSLX identity. Reject them at
+  // sum composition through the existing error channel, not in stringification.
+  for (auto* untyped_value : untyped_values) {
+    xls_dslx_interp_value* invalid_fields[] = {values[0], untyped_value};
+    xls_dslx_interp_value* invalid_tuple = nullptr;
+    char* tuple_error = nullptr;
+    EXPECT_FALSE(xls_dslx_interp_value_make_tuple(
+        2, invalid_fields, &tuple_error, &invalid_tuple));
+    EXPECT_EQ(invalid_tuple, nullptr);
+    EXPECT_THAT(
+        tuple_error,
+        HasSubstr("Sum-bearing tuple contains an element with no DSLX type"));
+    xls_dslx_interp_value_free(invalid_tuple);
+    xls_c_str_free(tuple_error);
+  }
+
+  xls_dslx_interp_value* fields[] = {values[0], enum_value};
+  xls_dslx_interp_value* c_tuple = nullptr;
+  ASSERT_TRUE(xls_dslx_interp_value_make_tuple(2, fields, &error, &c_tuple));
+  values.push_back(c_tuple);
+  // The first element supplies the array descriptor. Its raw enum was B; that
+  // descriptor must also know A's last-declared alias for the next element.
+  xls_dslx_interp_value* compatible[] = {c_tuple, values[1]};
+  xls_dslx_interp_value* array = nullptr;
+  ASSERT_TRUE(xls_dslx_interp_value_make_array(2, compatible, &error, &array))
+      << error;
+  values.push_back(array);
+  xls_dslx_interp_value* nested_elements[] = {array, values[3]};
+  xls_dslx_interp_value* nested_array = nullptr;
+  ASSERT_TRUE(xls_dslx_interp_value_make_array(2, nested_elements, &error,
+                                               &nested_array))
+      << error;
+  values.push_back(nested_array);
+  char* text = xls_dslx_interp_value_to_string(nested_array);
+  absl::Cleanup free_text([&] { xls_c_str_free(text); });
+  EXPECT_THAT(text, HasSubstr("Maybe::Some(u8:42)"));
+  EXPECT_THAT(text, HasSubstr("E::AliasA  // u2:0"));
+  EXPECT_THAT(text, HasSubstr("E::B  // u2:1"));
+
+  // Equal storage does not erase enum declaration identity, independent sum
+  // owners, or the element type of an empty array.
+  const std::vector<std::pair<xls_dslx_interp_value*, xls_dslx_interp_value*>>
+      incompatible = {{c_tuple, values[2]},
+                      {values[0], original_sum},
+                      {empty_tuples[0], empty_tuples[2]}};
+  for (const auto& [first, second] : incompatible) {
+    xls_dslx_interp_value* elements[] = {first, second};
+    xls_dslx_interp_value* rejected = nullptr;
+    char* array_error = nullptr;
+    EXPECT_FALSE(
+        xls_dslx_interp_value_make_array(2, elements, &array_error, &rejected));
+    EXPECT_EQ(rejected, nullptr);
+    EXPECT_NE(array_error, nullptr);
+    xls_dslx_interp_value_free(rejected);
+    xls_c_str_free(array_error);
+  }
+}
+
+TEST(XlsCApiTest, DslxOrdinaryCArraysRetainPermissiveConstruction) {
+  auto* byte = xls_dslx_interp_value_make_ubits(8, 7);
+  auto* word = xls_dslx_interp_value_make_sbits(16, -1);
+  absl::Cleanup free_elements([&] {
+    xls_dslx_interp_value_free(byte);
+    xls_dslx_interp_value_free(word);
+  });
+  xls_dslx_interp_value* elements[] = {byte, word};
+  xls_dslx_interp_value* array = nullptr;
+  char* error = nullptr;
+  absl::Cleanup free_result([&] {
+    xls_dslx_interp_value_free(array);
+    xls_c_str_free(error);
+  });
+  ASSERT_TRUE(xls_dslx_interp_value_make_array(2, elements, &error, &array));
+  char* text = xls_dslx_interp_value_to_string(array);
+  absl::Cleanup free_text([&] { xls_c_str_free(text); });
+  EXPECT_STREQ(text, "[u8:7, s16:-1]");
 }
 
 TEST(XlsCApiTest, DslxCloneTypecheckedModuleRemovingMembersSuccess) {
@@ -2751,8 +4027,8 @@ top fn add_one(x: bits[32]) -> bits[32] {
             xls::AotEntrypointProto::FUNCTION);
   EXPECT_TRUE(entrypoints.entrypoint(0).has_function_symbol());
   EXPECT_TRUE(entrypoints.entrypoint(0).has_packed_function_symbol());
-  ASSERT_TRUE(entrypoints.entrypoint(0)
-                  .has_standalone_runtime_feature_requirements());
+  ASSERT_TRUE(
+      entrypoints.entrypoint(0).has_standalone_runtime_feature_requirements());
   EXPECT_EQ(entrypoints.entrypoint(0)
                 .standalone_runtime_feature_requirements()
                 .required_feature_size(),
@@ -2805,15 +4081,14 @@ top fn calls_featureful(tok: token, pred: bits[1], x: bits[8]) -> bits[8] {
   xls::AotPackageEntrypointsProto entrypoints;
   ASSERT_TRUE(entrypoints.ParseFromArray(proto_bytes, proto_byte_count));
   ASSERT_EQ(entrypoints.entrypoint_size(), 1);
-  ASSERT_TRUE(entrypoints.entrypoint(0)
-                  .has_standalone_runtime_feature_requirements());
+  ASSERT_TRUE(
+      entrypoints.entrypoint(0).has_standalone_runtime_feature_requirements());
   EXPECT_THAT(entrypoints.entrypoint(0)
                   .standalone_runtime_feature_requirements()
                   .required_feature(),
-              ElementsAre(
-                  xls::AotRuntimeFeatureRequirementsProto::ASSERTIONS,
-                  xls::AotRuntimeFeatureRequirementsProto::TRACES,
-                  xls::AotRuntimeFeatureRequirementsProto::COVERS));
+              ElementsAre(xls::AotRuntimeFeatureRequirementsProto::ASSERTIONS,
+                          xls::AotRuntimeFeatureRequirementsProto::TRACES,
+                          xls::AotRuntimeFeatureRequirementsProto::COVERS));
 }
 
 TEST(XlsCApiTest, AotEntrypointTrampoline) {
@@ -4331,8 +5606,10 @@ fn main() -> u32 {
   xls_dslx_invocation_callee_data_array* unique_array =
       xls_dslx_type_info_get_unique_invocation_callee_data(type_info, id_fn);
   ASSERT_NE(unique_array, nullptr);
-  absl::Cleanup free_unique_array([unique_array] {
-    xls_dslx_invocation_callee_data_array_free(unique_array);
+  absl::Cleanup free_unique_array([&unique_array] {
+    if (unique_array != nullptr) {
+      xls_dslx_invocation_callee_data_array_free(unique_array);
+    }
   });
 
   int64_t unique_count =
@@ -4347,6 +5624,10 @@ fn main() -> u32 {
       xls_dslx_invocation_callee_data_get_callee_bindings(callee_data_unique);
   ASSERT_NE(callee_env, nullptr);
   EXPECT_EQ(xls_dslx_parametric_env_get_binding_count(callee_env), 1);
+  char* callee_env_string = xls_dslx_parametric_env_to_string(callee_env);
+  absl::Cleanup free_callee_env_string(
+      [callee_env_string] { xls_c_str_free(callee_env_string); });
+  EXPECT_STREQ(callee_env_string, "{N: u32:32}");
   const char* callee_identifier =
       xls_dslx_parametric_env_get_binding_identifier(callee_env, 0);
   ASSERT_NE(callee_identifier, nullptr);
@@ -4359,6 +5640,25 @@ fn main() -> u32 {
   absl::Cleanup free_callee_value_string(
       [callee_value_string] { xls_c_str_free(callee_value_string); });
   EXPECT_EQ(std::string_view{callee_value_string}, "u32:32");
+
+  xls_dslx_invocation_callee_data* callee_data_clone =
+      xls_dslx_invocation_callee_data_clone(callee_data_unique);
+  ASSERT_NE(callee_data_clone, nullptr);
+  absl::Cleanup free_callee_data_clone([callee_data_clone] {
+    xls_dslx_invocation_callee_data_free(callee_data_clone);
+  });
+  const xls_dslx_parametric_env* cloned_callee_env =
+      xls_dslx_invocation_callee_data_get_callee_bindings(callee_data_clone);
+  ASSERT_NE(cloned_callee_env, nullptr);
+  xls_dslx_interp_value* cloned_callee_value =
+      xls_dslx_parametric_env_get_binding_value(cloned_callee_env, 0);
+  ASSERT_NE(cloned_callee_value, nullptr);
+  char* cloned_callee_value_string =
+      xls_dslx_interp_value_to_string(cloned_callee_value);
+  absl::Cleanup free_cloned_callee_value_string([cloned_callee_value_string] {
+    xls_c_str_free(cloned_callee_value_string);
+  });
+  EXPECT_STREQ(cloned_callee_value_string, "u32:32");
 
   const xls_dslx_parametric_env* caller_env =
       xls_dslx_invocation_callee_data_get_caller_bindings(callee_data_unique);
@@ -4407,6 +5707,487 @@ fn main() -> u32 {
   ASSERT_NE(invocation0, nullptr);
   ASSERT_NE(invocation1, nullptr);
   EXPECT_NE(invocation0, invocation1);
+
+  xls_dslx_invocation_callee_data_array_free(unique_array);
+  unique_array = nullptr;
+  const xls_dslx_parametric_env* surviving_callee_env =
+      xls_dslx_invocation_callee_data_get_callee_bindings(callee_data_clone);
+  ASSERT_NE(surviving_callee_env, nullptr);
+  char* surviving_callee_env_string =
+      xls_dslx_parametric_env_to_string(surviving_callee_env);
+  absl::Cleanup free_surviving_callee_env_string([surviving_callee_env_string] {
+    xls_c_str_free(surviving_callee_env_string);
+  });
+  EXPECT_STREQ(surviving_callee_env_string, "{N: u32:32}");
+  xls_dslx_interp_value* surviving_callee_value =
+      xls_dslx_parametric_env_get_binding_value(surviving_callee_env, 0);
+  ASSERT_NE(surviving_callee_value, nullptr);
+  char* surviving_callee_value_string =
+      xls_dslx_interp_value_to_string(surviving_callee_value);
+  absl::Cleanup free_surviving_callee_value_string(
+      [surviving_callee_value_string] {
+        xls_c_str_free(surviving_callee_value_string);
+      });
+  EXPECT_STREQ(surviving_callee_value_string, "u32:32");
+}
+
+TEST(XlsCApiTest, DslxInvocationSumBindingsRetainFormattingThroughClones) {
+  constexpr const char* kProgram = R"(
+enum Choice { None, Some(u8) }
+fn f<V: Choice>() -> Choice { V }
+pub fn main() -> Choice { f<{Choice::Some(u8:1)}>() }
+)";
+  for (auto get_data : {xls_dslx_type_info_get_unique_invocation_callee_data,
+                        xls_dslx_type_info_get_all_invocation_callee_data}) {
+    auto* owner = xls_dslx_import_data_create(
+        std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+    xls_dslx_typechecked_module* tm = nullptr;
+    xls_dslx_invocation_callee_data_array* array = nullptr;
+    xls_dslx_invocation_callee_data* data_clone = nullptr;
+    xls_dslx_parametric_env* env_clone = nullptr;
+    xls_dslx_interp_value* value_clone = nullptr;
+    char* error = nullptr;
+    absl::Cleanup cleanup([&] {
+      xls_c_str_free(error);
+      xls_dslx_interp_value_free(value_clone);
+      xls_dslx_parametric_env_free(env_clone);
+      xls_dslx_invocation_callee_data_free(data_clone);
+      xls_dslx_invocation_callee_data_array_free(array);
+      xls_dslx_typechecked_module_free(tm);
+      xls_dslx_import_data_free(owner);
+    });
+    ASSERT_TRUE(xls_dslx_parse_and_typecheck(
+        kProgram, "invocation_sum.x", "invocation_sum", owner, &error, &tm))
+        << error;
+    auto* module = xls_dslx_typechecked_module_get_module(tm);
+    auto* type_info = xls_dslx_typechecked_module_get_type_info(tm);
+    auto* function = xls_dslx_module_member_get_function(
+        xls_dslx_module_get_member(module, 1));
+    ASSERT_NE(function, nullptr);
+    array = get_data(type_info, function);
+    ASSERT_NE(array, nullptr);
+    ASSERT_EQ(xls_dslx_invocation_callee_data_array_get_count(array), 1);
+    auto* data = xls_dslx_invocation_callee_data_array_get(array, 0);
+    const auto* env = xls_dslx_invocation_callee_data_get_callee_bindings(data);
+    ASSERT_EQ(xls_dslx_parametric_env_get_binding_count(env), 1);
+    auto* value = xls_dslx_parametric_env_get_binding_value(env, 0);
+    EXPECT_EQ(env, xls_dslx_invocation_callee_data_get_callee_bindings(data));
+    EXPECT_EQ(value, xls_dslx_parametric_env_get_binding_value(env, 0));
+    char* value_text = xls_dslx_interp_value_to_string(value);
+    EXPECT_STREQ(value_text, "Choice::Some(u8:1)");
+    xls_c_str_free(value_text);
+    char* env_text = xls_dslx_parametric_env_to_string(env);
+    EXPECT_STREQ(env_text, "{V: Choice::Some(u8:1)}");
+    xls_c_str_free(env_text);
+    const auto* caller_env =
+        xls_dslx_invocation_callee_data_get_caller_bindings(data);
+    EXPECT_EQ(xls_dslx_parametric_env_get_binding_count(caller_env), 0);
+    char* caller_text = xls_dslx_parametric_env_to_string(caller_env);
+    EXPECT_STREQ(caller_text, "{}");
+    xls_c_str_free(caller_text);
+
+    data_clone = xls_dslx_invocation_callee_data_clone(data);
+    env_clone = xls_dslx_parametric_env_clone(env);
+    value_clone = xls_dslx_interp_value_clone(value);
+    xls_dslx_invocation_callee_data_array_free(array);
+    array = nullptr;
+    xls_dslx_typechecked_module_free(tm);
+    tm = nullptr;
+    xls_dslx_import_data_free(owner);
+    owner = nullptr;
+
+    // The independent clones own values and formatting, not the source AST.
+    // The cloned entry's AST/TypeInfo accessors still require the source owner.
+    for (const auto* surviving_env :
+         {xls_dslx_invocation_callee_data_get_callee_bindings(data_clone),
+          static_cast<const xls_dslx_parametric_env*>(env_clone)}) {
+      char* text = xls_dslx_parametric_env_to_string(surviving_env);
+      EXPECT_STREQ(text, "{V: Choice::Some(u8:1)}");
+      xls_c_str_free(text);
+      char* binding_text = xls_dslx_interp_value_to_string(
+          xls_dslx_parametric_env_get_binding_value(surviving_env, 0));
+      EXPECT_STREQ(binding_text, "Choice::Some(u8:1)");
+      xls_c_str_free(binding_text);
+    }
+    char* clone_text = xls_dslx_interp_value_to_string(value_clone);
+    EXPECT_STREQ(clone_text, "Choice::Some(u8:1)");
+    xls_c_str_free(clone_text);
+  }
+}
+
+TEST(XlsCApiTest, DslxInvocationCallerBindingsUseConcreteTypesAndBindingOrder) {
+  constexpr const char* kProgram = R"(
+#![feature(generics)]
+enum Choice { None, Some(u8) }
+fn f<T: type, Z: Choice, A: u32>() -> Choice { Z }
+fn caller<Z: Choice, A: u32>() -> Choice { f<Choice, Z, A>() }
+pub fn main() -> Choice { caller<{Choice::Some(u8:1)}, u32:7>() }
+)";
+  auto* owner = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  xls_dslx_typechecked_module* tm = nullptr;
+  xls_dslx_invocation_callee_data_array* array = nullptr;
+  xls_dslx_invocation_callee_data* clone = nullptr;
+  char* error = nullptr;
+  absl::Cleanup cleanup([&] {
+    xls_c_str_free(error);
+    xls_dslx_invocation_callee_data_free(clone);
+    xls_dslx_invocation_callee_data_array_free(array);
+    xls_dslx_typechecked_module_free(tm);
+    xls_dslx_import_data_free(owner);
+  });
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kProgram, "caller_sum.x",
+                                           "caller_sum", owner, &error, &tm))
+      << error;
+  auto* module = xls_dslx_typechecked_module_get_module(tm);
+  auto* type_info = xls_dslx_typechecked_module_get_type_info(tm);
+  auto* function = xls_dslx_module_member_get_function(
+      xls_dslx_module_get_member(module, 1));
+  ASSERT_NE(function, nullptr);
+  array =
+      xls_dslx_type_info_get_all_invocation_callee_data(type_info, function);
+  ASSERT_NE(array, nullptr);
+  ASSERT_EQ(xls_dslx_invocation_callee_data_array_get_count(array), 1);
+  auto* data = xls_dslx_invocation_callee_data_array_get(array, 0);
+  clone = xls_dslx_invocation_callee_data_clone(data);
+  xls_dslx_invocation_callee_data_array_free(array);
+  array = nullptr;
+  xls_dslx_typechecked_module_free(tm);
+  tm = nullptr;
+  xls_dslx_import_data_free(owner);
+  owner = nullptr;
+
+  // Environment order is alphabetical, not declaration order. Neither the
+  // ordinary A nor the type-valued T binding should acquire Z's sum format.
+  const auto* callee_env =
+      xls_dslx_invocation_callee_data_get_callee_bindings(clone);
+  ASSERT_EQ(xls_dslx_parametric_env_get_binding_count(callee_env), 3);
+  char* callee_text = xls_dslx_parametric_env_to_string(callee_env);
+  EXPECT_STREQ(callee_text, "{A: u32:7, T: Choice, Z: Choice::Some(u8:1)}");
+  xls_c_str_free(callee_text);
+  char* type_text = xls_dslx_interp_value_to_string(
+      xls_dslx_parametric_env_get_binding_value(callee_env, 1));
+  EXPECT_STREQ(type_text, "Choice");
+  xls_c_str_free(type_text);
+  const auto* caller_env =
+      xls_dslx_invocation_callee_data_get_caller_bindings(clone);
+  ASSERT_EQ(xls_dslx_parametric_env_get_binding_count(caller_env), 2);
+  char* caller_text = xls_dslx_parametric_env_to_string(caller_env);
+  EXPECT_STREQ(caller_text, "{A: u32:7, Z: Choice::Some(u8:1)}");
+  xls_c_str_free(caller_text);
+  char* value_text = xls_dslx_interp_value_to_string(
+      xls_dslx_parametric_env_get_binding_value(caller_env, 1));
+  EXPECT_STREQ(value_text, "Choice::Some(u8:1)");
+  xls_c_str_free(value_text);
+}
+
+TEST(XlsCApiTest, DslxInvocationCallerBindingsDoNotUseCanonicalCalleeContext) {
+  constexpr const char* kImported = "pub fn f<N: u32>() -> u32 { N }";
+  constexpr const char* kProgram = R"(
+import imported;
+enum First { None, Some(u8) }
+enum Second { None, Other(u8) }
+fn first<V: First>() -> u32 { imported::f<u32:1>() }
+fn second<W: Second>() -> u32 { imported::f<u32:1>() }
+pub fn main() -> u32 {
+  first<{First::Some(u8:1)}>() + second<{Second::Other(u8:1)}>()
+}
+)";
+  auto* owner = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  xls_dslx_typechecked_module* imported_tm = nullptr;
+  xls_dslx_typechecked_module* tm = nullptr;
+  xls_dslx_invocation_callee_data_array* array = nullptr;
+  xls_dslx_invocation_callee_data* unique_clone = nullptr;
+  std::vector<xls_dslx_invocation_callee_data*> clones;
+  char* error = nullptr;
+  absl::Cleanup cleanup([&] {
+    xls_c_str_free(error);
+    for (auto* clone : clones) {
+      xls_dslx_invocation_callee_data_free(clone);
+    }
+    xls_dslx_invocation_callee_data_free(unique_clone);
+    xls_dslx_invocation_callee_data_array_free(array);
+    xls_dslx_typechecked_module_free(tm);
+    xls_dslx_typechecked_module_free(imported_tm);
+    xls_dslx_import_data_free(owner);
+  });
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kImported, "imported.x", "imported",
+                                           owner, &error, &imported_tm))
+      << error;
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kProgram, "callers.x", "callers",
+                                           owner, &error, &tm))
+      << error;
+  auto* imported = xls_dslx_typechecked_module_get_module(imported_tm);
+  auto* function = xls_dslx_module_member_get_function(
+      xls_dslx_module_get_member(imported, 0));
+  ASSERT_NE(function, nullptr);
+  auto* type_info = xls_dslx_typechecked_module_get_type_info(tm);
+  // Uniqueness is by callee bindings, not caller: both callers use f<N=1>.
+  array =
+      xls_dslx_type_info_get_unique_invocation_callee_data(type_info, function);
+  ASSERT_EQ(xls_dslx_invocation_callee_data_array_get_count(array), 1);
+  unique_clone = xls_dslx_invocation_callee_data_clone(
+      xls_dslx_invocation_callee_data_array_get(array, 0));
+  xls_dslx_invocation_callee_data_array_free(array);
+  array = nullptr;
+
+  // GetAll retains both caller contexts even though the callee is canonical.
+  array =
+      xls_dslx_type_info_get_all_invocation_callee_data(type_info, function);
+  ASSERT_EQ(xls_dslx_invocation_callee_data_array_get_count(array), 2);
+  for (int64_t i = 0; i < 2; ++i) {
+    clones.push_back(xls_dslx_invocation_callee_data_clone(
+        xls_dslx_invocation_callee_data_array_get(array, i)));
+  }
+  xls_dslx_invocation_callee_data_array_free(array);
+  array = nullptr;
+  xls_dslx_typechecked_module_free(tm);
+  tm = nullptr;
+  xls_dslx_typechecked_module_free(imported_tm);
+  imported_tm = nullptr;
+  xls_dslx_import_data_free(owner);
+  owner = nullptr;
+
+  // Both calls share f<N=1>'s canonical TypeInfo, but the caller bindings
+  // belong to different functions and nominal types with identical raw
+  // representations.
+  std::vector<std::string> caller_texts;
+  for (auto* clone : clones) {
+    const auto* caller_env =
+        xls_dslx_invocation_callee_data_get_caller_bindings(clone);
+    char* text = xls_dslx_parametric_env_to_string(caller_env);
+    caller_texts.emplace_back(text);
+    xls_c_str_free(text);
+  }
+  EXPECT_THAT(caller_texts,
+              testing::UnorderedElementsAre("{V: First::Some(u8:1)}",
+                                            "{W: Second::Other(u8:1)}"));
+
+  char* unique_callee_text = xls_dslx_parametric_env_to_string(
+      xls_dslx_invocation_callee_data_get_callee_bindings(unique_clone));
+  EXPECT_STREQ(unique_callee_text, "{N: u32:1}");
+  xls_c_str_free(unique_callee_text);
+  char* unique_caller_text = xls_dslx_parametric_env_to_string(
+      xls_dslx_invocation_callee_data_get_caller_bindings(unique_clone));
+  // The unique representative must retain its caller's semantic type; no
+  // particular caller is required to be the first publication.
+  EXPECT_THAT(unique_caller_text,
+              testing::AnyOf(testing::StrEq("{V: First::Some(u8:1)}"),
+                             testing::StrEq("{W: Second::Other(u8:1)}")));
+  xls_c_str_free(unique_caller_text);
+}
+
+TEST(XlsCApiTest, DslxBuiltinInvocationBindingsWithoutDerivedTypeInfo) {
+  auto* owner = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  xls_dslx_typechecked_module* tm = nullptr;
+  xls_dslx_call_graph* graph = nullptr;
+  xls_dslx_invocation_callee_data_array* array = nullptr;
+  xls_dslx_parametric_env* clone = nullptr;
+  char* error = nullptr;
+  absl::Cleanup cleanup([&] {
+    xls_c_str_free(error);
+    xls_dslx_parametric_env_free(clone);
+    xls_dslx_invocation_callee_data_array_free(array);
+    xls_dslx_call_graph_free(graph);
+    xls_dslx_typechecked_module_free(tm);
+    xls_dslx_import_data_free(owner);
+  });
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(
+      "pub fn main() -> u8 { clz(u8:1) }", "builtin_bindings.x",
+      "builtin_bindings", owner, &error, &tm))
+      << error;
+  auto* module = xls_dslx_typechecked_module_get_module(tm);
+  auto* type_info = xls_dslx_typechecked_module_get_type_info(tm);
+  auto* main = xls_dslx_module_member_get_function(
+      xls_dslx_module_get_member(module, 0));
+  ASSERT_TRUE(xls_dslx_type_info_build_function_call_graph_for_module(
+      type_info, module, &error, &graph));
+  ASSERT_EQ(xls_dslx_call_graph_get_callee_count(graph, main), 1);
+  auto* builtin = xls_dslx_call_graph_get_callee_function(graph, main, 0);
+  array =
+      xls_dslx_type_info_get_unique_invocation_callee_data(type_info, builtin);
+  ASSERT_EQ(xls_dslx_invocation_callee_data_array_get_count(array), 1);
+  auto* data = xls_dslx_invocation_callee_data_array_get(array, 0);
+  EXPECT_EQ(xls_dslx_invocation_callee_data_get_derived_type_info(data),
+            nullptr);
+  clone = xls_dslx_parametric_env_clone(
+      xls_dslx_invocation_callee_data_get_callee_bindings(data));
+  xls_dslx_invocation_callee_data_array_free(array);
+  array = nullptr;
+  xls_dslx_call_graph_free(graph);
+  graph = nullptr;
+  xls_dslx_typechecked_module_free(tm);
+  tm = nullptr;
+  xls_dslx_import_data_free(owner);
+  owner = nullptr;
+  char* text = xls_dslx_parametric_env_to_string(clone);
+  EXPECT_STREQ(text, "{N: u32:8}");
+  xls_c_str_free(text);
+}
+
+TEST(XlsCApiTest, DslxInvocationCallerBindingsFromParametricStructDefault) {
+  constexpr const char* kProgram = R"(
+enum Choice { None, Some(u8) }
+fn f<W: Choice>() -> u32 { u32:1 }
+struct S<V: Choice, N: u32 = {f<V>()}> {}
+type T = S<{Choice::Some(u8:3)}>;
+)";
+  auto* owner = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  xls_dslx_typechecked_module* tm = nullptr;
+  xls_dslx_invocation_callee_data_array* array = nullptr;
+  xls_dslx_parametric_env* clone = nullptr;
+  char* error = nullptr;
+  absl::Cleanup cleanup([&] {
+    xls_c_str_free(error);
+    xls_dslx_parametric_env_free(clone);
+    xls_dslx_invocation_callee_data_array_free(array);
+    xls_dslx_typechecked_module_free(tm);
+    xls_dslx_import_data_free(owner);
+  });
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(
+      kProgram, "struct_default.x", "struct_default", owner, &error, &tm))
+      << error;
+  auto* module = xls_dslx_typechecked_module_get_module(tm);
+  auto* type_info = xls_dslx_typechecked_module_get_type_info(tm);
+  auto* function = xls_dslx_module_member_get_function(
+      xls_dslx_module_get_member(module, 1));
+  ASSERT_NE(function, nullptr);
+  array =
+      xls_dslx_type_info_get_unique_invocation_callee_data(type_info, function);
+  ASSERT_EQ(xls_dslx_invocation_callee_data_array_get_count(array), 1);
+  auto* data = xls_dslx_invocation_callee_data_array_get(array, 0);
+  char* callee_text = xls_dslx_parametric_env_to_string(
+      xls_dslx_invocation_callee_data_get_callee_bindings(data));
+  EXPECT_STREQ(callee_text, "{W: Choice::Some(u8:3)}");
+  xls_c_str_free(callee_text);
+
+  // The type alias evaluates S's default without constructing a struct value
+  // or rewriting member types through the bits-only inference path. The call
+  // belongs to S, not a function; V is an env key and the defaulted N is not.
+  clone = xls_dslx_parametric_env_clone(
+      xls_dslx_invocation_callee_data_get_caller_bindings(data));
+  xls_dslx_invocation_callee_data_array_free(array);
+  array = nullptr;
+  xls_dslx_typechecked_module_free(tm);
+  tm = nullptr;
+  xls_dslx_import_data_free(owner);
+  owner = nullptr;
+  char* caller_text = xls_dslx_parametric_env_to_string(clone);
+  EXPECT_STREQ(caller_text, "{V: Choice::Some(u8:3)}");
+  xls_c_str_free(caller_text);
+}
+
+TEST(XlsCApiTest, DslxInvocationCallerBindingsFromParametricSumDiscriminant) {
+  constexpr const char* kProgram = R"(
+enum Choice { None, Some(u8) }
+fn f<W: Choice>() -> u32 { u32:1 }
+enum E<V: Choice>: u32 { A() = f<V>() }
+type T = E<{Choice::Some(u8:3)}>;
+)";
+  auto* owner = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  xls_dslx_typechecked_module* tm = nullptr;
+  xls_dslx_invocation_callee_data_array* array = nullptr;
+  xls_dslx_parametric_env* clone = nullptr;
+  char* error = nullptr;
+  absl::Cleanup cleanup([&] {
+    xls_c_str_free(error);
+    xls_dslx_parametric_env_free(clone);
+    xls_dslx_invocation_callee_data_array_free(array);
+    xls_dslx_typechecked_module_free(tm);
+    xls_dslx_import_data_free(owner);
+  });
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(
+      kProgram, "sum_discriminant.x", "sum_discriminant", owner, &error, &tm))
+      << error;
+  auto* module = xls_dslx_typechecked_module_get_module(tm);
+  auto* type_info = xls_dslx_typechecked_module_get_type_info(tm);
+  auto* function = xls_dslx_module_member_get_function(
+      xls_dslx_module_get_member(module, 1));
+  ASSERT_NE(function, nullptr);
+  array =
+      xls_dslx_type_info_get_unique_invocation_callee_data(type_info, function);
+  ASSERT_EQ(xls_dslx_invocation_callee_data_array_get_count(array), 1);
+  auto* data = xls_dslx_invocation_callee_data_array_get(array, 0);
+  char* callee_text = xls_dslx_parametric_env_to_string(
+      xls_dslx_invocation_callee_data_get_callee_bindings(data));
+  EXPECT_STREQ(callee_text, "{W: Choice::Some(u8:3)}");
+  xls_c_str_free(callee_text);
+
+  // The call belongs to E's discriminant, not an enclosing function. Its
+  // cloned environment must retain nominal formatting after the owner dies.
+  clone = xls_dslx_parametric_env_clone(
+      xls_dslx_invocation_callee_data_get_caller_bindings(data));
+  xls_dslx_invocation_callee_data_array_free(array);
+  array = nullptr;
+  xls_dslx_typechecked_module_free(tm);
+  tm = nullptr;
+  xls_dslx_import_data_free(owner);
+  owner = nullptr;
+  char* caller_text = xls_dslx_parametric_env_to_string(clone);
+  EXPECT_STREQ(caller_text, "{V: Choice::Some(u8:3)}");
+  xls_c_str_free(caller_text);
+}
+
+TEST(XlsCApiTest, DslxBuiltinInvocationRetainsSumCallerBindings) {
+  constexpr const char* kProgram = R"(
+enum Choice { None, Some(u8) }
+fn caller<V: Choice>() -> u8 { clz(u8:1) }
+pub fn main() -> u8 { caller<{Choice::Some(u8:3)}>() }
+)";
+  auto* owner = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  xls_dslx_typechecked_module* tm = nullptr;
+  xls_dslx_call_graph* graph = nullptr;
+  xls_dslx_invocation_callee_data_array* array = nullptr;
+  xls_dslx_invocation_callee_data* clone = nullptr;
+  char* error = nullptr;
+  absl::Cleanup cleanup([&] {
+    xls_c_str_free(error);
+    xls_dslx_invocation_callee_data_free(clone);
+    xls_dslx_invocation_callee_data_array_free(array);
+    xls_dslx_call_graph_free(graph);
+    xls_dslx_typechecked_module_free(tm);
+    xls_dslx_import_data_free(owner);
+  });
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(
+      kProgram, "builtin_caller.x", "builtin_caller", owner, &error, &tm))
+      << error;
+  auto* module = xls_dslx_typechecked_module_get_module(tm);
+  auto* type_info = xls_dslx_typechecked_module_get_type_info(tm);
+  auto* caller = xls_dslx_module_member_get_function(
+      xls_dslx_module_get_member(module, 1));
+  ASSERT_NE(caller, nullptr);
+  ASSERT_TRUE(xls_dslx_type_info_build_function_call_graph_for_module(
+      type_info, module, &error, &graph));
+  ASSERT_EQ(xls_dslx_call_graph_get_callee_count(graph, caller), 1);
+  auto* builtin = xls_dslx_call_graph_get_callee_function(graph, caller, 0);
+  array =
+      xls_dslx_type_info_get_unique_invocation_callee_data(type_info, builtin);
+  ASSERT_EQ(xls_dslx_invocation_callee_data_array_get_count(array), 1);
+  auto* data = xls_dslx_invocation_callee_data_array_get(array, 0);
+  EXPECT_EQ(xls_dslx_invocation_callee_data_get_derived_type_info(data),
+            nullptr);
+  clone = xls_dslx_invocation_callee_data_clone(data);
+  xls_dslx_invocation_callee_data_array_free(array);
+  array = nullptr;
+  xls_dslx_call_graph_free(graph);
+  graph = nullptr;
+  xls_dslx_typechecked_module_free(tm);
+  tm = nullptr;
+  xls_dslx_import_data_free(owner);
+  owner = nullptr;
+  char* callee_text = xls_dslx_parametric_env_to_string(
+      xls_dslx_invocation_callee_data_get_callee_bindings(clone));
+  EXPECT_STREQ(callee_text, "{N: u32:8}");
+  xls_c_str_free(callee_text);
+  char* caller_text = xls_dslx_parametric_env_to_string(
+      xls_dslx_invocation_callee_data_get_caller_bindings(clone));
+  EXPECT_STREQ(caller_text, "{V: Choice::Some(u8:3)}");
+  xls_c_str_free(caller_text);
 }
 
 TEST(XlsCApiTest, DslxFunctionParamIntrospection) {
