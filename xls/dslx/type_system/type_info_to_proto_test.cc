@@ -459,9 +459,8 @@ TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
       ToHumanString(with_layout, import_data, import_data.file_table()));
   *sum->mutable_variants(1)->mutable_discriminant() =
       sum->variants(0).discriminant();
-  EXPECT_THAT(
-      ToHumanString(with_layout, import_data, import_data.file_table()),
-      absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(ToHumanString(with_layout, import_data, import_data.file_table()),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
