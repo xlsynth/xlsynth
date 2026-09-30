@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/status.h"
 #include "absl/strings/str_format.h"
 #include "gtest/gtest.h"
 #include "re2/re2.h"
@@ -33,9 +34,38 @@
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/parse_and_typecheck.h"
+#include "xls/dslx/type_system/type.h"
+#include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/virtualizable_file_system.h"
 
 namespace xls::dslx {
+
+class DslxTypeToVerilogManagerTestPeer {
+ public:
+  static bool CanAddWithoutNameChanges(const DslxTypeToVerilogManager& manager,
+                                       const SumType& sum) {
+    return manager.CanAddDirectSumWithoutNameChanges(sum);
+  }
+
+  static bool HasCommittedGraph(const DslxTypeToVerilogManager& manager,
+                                const SumType& sum) {
+    return manager.sum_payload_graphs_.Contains(sum);
+  }
+
+  static absl::Status MarkThenReject(DslxTypeToVerilogManager& manager,
+                                     const SumType& sum) {
+    return manager.WithSumPayloadGraphs([&] {
+      absl::Status status = manager.MarkSumPayloadNominals(
+          sum, /*newly_emitted_names_displace_enum_members=*/false);
+      if (status.ok()) {
+        return absl::InvalidArgumentError("later emission rejected");
+      } else {
+        return status;
+      }
+    });
+  }
+};
+
 namespace {
 
 constexpr std::string_view kTestdataPath = "xls/dslx/translators/testdata";
@@ -47,6 +77,15 @@ int CountOccurrences(std::string_view text, std::string_view needle) {
     ++count;
   }
   return count;
+}
+
+const SumType& ConcreteSum(const TypecheckedModule& module,
+                           std::string_view name) {
+  const TypeDefinition definition =
+      module.module->GetTypeDefinition(name).value();
+  const Type* type =
+      module.type_info->GetItem(TypeDefinitionToAstNode(definition)).value();
+  return type->AsMeta().wrapped()->AsSum();
 }
 
 class DslxToVerilogTest : public ::testing::Test {
@@ -65,6 +104,32 @@ class DslxToVerilogTest : public ::testing::Test {
                            TestName(), file_ext);
   }
 };
+
+TEST_F(DslxToVerilogTest, PayloadGraphsCommitPerRequestAndPerSpecialization) {
+  constexpr std::string_view program = R"(#![feature(generics)]
+enum Leaf { None, Some(u8) }
+enum Mid { None, Some(Leaf) }
+enum Top { None, Some(Mid) }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+  manager.PrepareForModules({{tm.module, tm.type_info}});
+  const std::string before_late_failure = manager.Emit();
+  EXPECT_EQ(DslxTypeToVerilogManagerTestPeer::MarkThenReject(
+                manager, ConcreteSum(tm, "Top")),
+            absl::InvalidArgumentError("later emission rejected"));
+  EXPECT_EQ(manager.Emit(), before_late_failure);
+  for (std::string_view name : {"Leaf", "Mid", "Top"}) {
+    EXPECT_FALSE(DslxTypeToVerilogManagerTestPeer::HasCommittedGraph(
+        manager, ConcreteSum(tm, name)));
+    EXPECT_TRUE(DslxTypeToVerilogManagerTestPeer::CanAddWithoutNameChanges(
+        manager, ConcreteSum(tm, name)));
+  }
+}
 
 TEST_F(DslxToVerilogTest, BasicTypesInFunctions) {
   constexpr std::string_view program =
