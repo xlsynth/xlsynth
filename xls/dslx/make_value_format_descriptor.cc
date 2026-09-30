@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -42,13 +43,19 @@ class ValueFormatDescriptorBuilder {
  public:
   enum class ChannelFormatPolicy { kReject, kOpaque };
 
-  explicit ValueFormatDescriptorBuilder(
+  ValueFormatDescriptorBuilder(
       FormatPreference field_preference,
+      EnumFormatDescriptorProvider enum_format_provider,
+      std::optional<NestedSumFormatDescriptorProvider>
+          nested_sum_format_provider = std::nullopt,
       ChannelFormatPolicy channel_format_policy = ChannelFormatPolicy::kReject)
       : field_preference_(field_preference),
+        enum_format_provider_(enum_format_provider),
+        nested_sum_format_provider_(nested_sum_format_provider),
         channel_format_policy_(channel_format_policy) {}
 
-  absl::StatusOr<ValueFormatDescriptor> Build(const Type& type);
+  absl::StatusOr<ValueFormatDescriptor> Build(const Type& type,
+                                              bool is_root = false);
 
  private:
   absl::StatusOr<ValueFormatDescriptor> BuildStruct(
@@ -58,6 +65,9 @@ class ValueFormatDescriptorBuilder {
   absl::StatusOr<ValueFormatDescriptor> BuildSum(const SumType& type);
 
   const FormatPreference field_preference_;
+  const EnumFormatDescriptorProvider enum_format_provider_;
+  const std::optional<NestedSumFormatDescriptorProvider>
+      nested_sum_format_provider_;
   const ChannelFormatPolicy channel_format_policy_;
   // The vector object's address identifies the complete immutable sum data,
   // including for empty sums. Keys are borrowed only for this synchronous
@@ -104,7 +114,7 @@ absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::BuildArray(
 namespace {
 
 absl::StatusOr<ValueFormatDescriptor> MakeEnumFormatDescriptor(
-    const EnumType& type, FormatPreference field_preference) {
+    const EnumType& type) {
   absl::flat_hash_map<Bits, std::string> value_to_name;
   const EnumDef& enum_def = type.nominal_type();
   for (size_t i = 0; i < enum_def.values().size(); ++i) {
@@ -170,11 +180,11 @@ absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::BuildSum(
 }
 
 absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::Build(
-    const Type& type) {
+    const Type& type, bool is_root) {
   class Visitor : public TypeVisitor {
    public:
-    explicit Visitor(ValueFormatDescriptorBuilder& builder)
-        : builder_(builder) {}
+    Visitor(ValueFormatDescriptorBuilder& builder, bool is_root)
+        : builder_(builder), is_root_(is_root) {}
 
     absl::Status HandleArray(const ArrayType& t) override {
       if (IsBitsLike(t)) {
@@ -198,6 +208,11 @@ absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::Build(
       if (auto it = builder_.sum_descriptors_.find(identity);
           it != builder_.sum_descriptors_.end()) {
         result_ = it->second;
+      } else if (!is_root_ &&
+                 builder_.nested_sum_format_provider_.has_value()) {
+        XLS_ASSIGN_OR_RETURN(result_,
+                             (*builder_.nested_sum_format_provider_)(t));
+        builder_.sum_descriptors_.emplace(identity, result_);
       } else {
         XLS_ASSIGN_OR_RETURN(result_, builder_.BuildSum(t));
         builder_.sum_descriptors_.emplace(identity, result_);
@@ -213,8 +228,7 @@ absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::Build(
       return absl::OkStatus();
     }
     absl::Status HandleEnum(const EnumType& t) override {
-      XLS_ASSIGN_OR_RETURN(
-          result_, MakeEnumFormatDescriptor(t, builder_.field_preference_));
+      XLS_ASSIGN_OR_RETURN(result_, builder_.enum_format_provider_(t));
       return absl::OkStatus();
     }
     absl::Status HandleBits(const BitsType& t) override {
@@ -253,6 +267,7 @@ absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::Build(
 
    private:
     ValueFormatDescriptorBuilder& builder_;
+    const bool is_root_;
     ValueFormatDescriptor result_;
   };
 
@@ -261,7 +276,7 @@ absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::Build(
     // Channel arrays carry handles and must not use an array value descriptor.
     return ValueFormatDescriptor::MakeLeafValue(field_preference_);
   } else {
-    Visitor v(*this);
+    Visitor v(*this, is_root);
     XLS_RETURN_IF_ERROR(type.Accept(v));
     return std::move(v.result());
   }
@@ -269,13 +284,31 @@ absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::Build(
 
 absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
     const Type& type, FormatPreference field_preference) {
-  return ValueFormatDescriptorBuilder(field_preference).Build(type);
+  return MakeValueFormatDescriptor(type, field_preference,
+                                   MakeEnumFormatDescriptor);
+}
+
+absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
+    const Type& type, FormatPreference field_preference,
+    EnumFormatDescriptorProvider enum_format_provider) {
+  return ValueFormatDescriptorBuilder(field_preference, enum_format_provider)
+      .Build(type);
+}
+
+absl::StatusOr<ValueFormatDescriptor>
+MakeDefaultValueFormatDescriptorWithNestedSumProvider(
+    const Type& type, EnumFormatDescriptorProvider enum_format_provider,
+    NestedSumFormatDescriptorProvider nested_sum_format_provider) {
+  return ValueFormatDescriptorBuilder(FormatPreference::kDefault,
+                                      enum_format_provider,
+                                      nested_sum_format_provider)
+      .Build(type, /*is_root=*/true);
 }
 
 absl::StatusOr<ValueFormatDescriptor> MakeTraceCallFormatDescriptor(
     const Type& type, FormatPreference field_preference) {
   return ValueFormatDescriptorBuilder(
-             field_preference,
+             field_preference, MakeEnumFormatDescriptor, std::nullopt,
              ValueFormatDescriptorBuilder::ChannelFormatPolicy::kOpaque)
       .Build(type);
 }
