@@ -147,6 +147,14 @@ absl::StatusOr<bool> PackedValuesEqual(const InterpValue& lhs,
 
 }  // namespace internal
 
+// Compares declared constructors and meaningful payloads recursively, ignoring
+// sum padding. Validates all active constructors in both operands, even if an
+// earlier member differs. Does not change raw InterpValue equality or hashing
+// and never rewrites either operand.
+absl::StatusOr<bool> SemanticValuesEqual(const InterpValue& lhs,
+                                         const InterpValue& rhs,
+                                         const Type& type);
+
 // Finds the first index in the LHS and RHS sequences at which values differ or
 // nullopt if the two are equal.
 absl::StatusOr<std::optional<int64_t>> FindFirstDifferingIndex(
