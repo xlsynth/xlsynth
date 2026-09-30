@@ -876,13 +876,20 @@ TEST(InterpValueHelpersTest, PackedEqualityChecksBothCompleteAggregates) {
   members.push_back(std::make_unique<ArrayType>(sum_type.CloneToUnique(),
                                                 TypeDim::CreateU32(1)));
   const TupleType type(std::move(members));
-  auto aggregate = [](int64_t prefix, int64_t sum_tag) {
+  auto aggregate = [](int64_t prefix, int64_t sum_tag, int64_t payload = 0) {
     InterpValue sum = InterpValue::MakeTuple(
         {InterpValue::MakeUBits(2, sum_tag),
-         InterpValue::MakeTuple({InterpValue::MakeUBits(16, 0)})});
+         InterpValue::MakeTuple({InterpValue::MakeUBits(16, payload)})});
     return InterpValue::MakeTuple(
         {InterpValue::MakeU8(prefix), InterpValue::MakeArray({sum}).value()});
   };
+
+  EXPECT_THAT(internal::PackedValuesEqual(aggregate(1, 1, 0x005a),
+                                        aggregate(1, 1, 0xff5a), type),
+              IsOkAndHolds(true));
+  EXPECT_THAT(internal::PackedValuesEqual(aggregate(1, 1, 0x005a),
+                                        aggregate(1, 1, 0xff5b), type),
+              IsOkAndHolds(false));
 
   EXPECT_THAT(
       internal::PackedValuesEqual(aggregate(1, 0), aggregate(2, 0), type),
