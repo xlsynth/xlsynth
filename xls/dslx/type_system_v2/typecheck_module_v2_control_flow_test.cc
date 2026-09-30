@@ -1845,7 +1845,7 @@ fn f(value: Either) -> u32 {
     Either::Left(u1:0) => u32:0,
     Either::Right(u1:0) => u32:1,
     Either::Left(u1:1) => u32:2,
-    Either::Right(u1:1) => u32:3,
+    Either::Right(_) => u32:3,
   }
 }
 )"));
