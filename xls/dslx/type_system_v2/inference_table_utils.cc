@@ -200,19 +200,8 @@ absl::StatusOr<const TypeAnnotation*> SubstituteTypeParametrics(
 
   CloneReplacer replacer = ChainCloneReplacers(
       &PreserveTypeDefinitionsReplacer,
-      ChainCloneReplacers(
-          NameRefMapper(table, actual_values, type->owner(),
-                        /*add_parametric_binding_type_annotation=*/true),
-          [&](const AstNode* node, Module*,
-              const absl::flat_hash_map<const AstNode*, AstNode*>&)
-              -> absl::StatusOr<std::optional<AstNode*>> {
-            // Leave attrs in place; they never need parametric replacement
-            // here.
-            if (node->kind() == AstNodeKind::kAttr) {
-              return const_cast<AstNode*>(node);
-            }
-            return std::nullopt;
-          }));
+      NameRefMapper(table, actual_values, type->owner(),
+                    /*add_parametric_binding_type_annotation=*/true));
 
   replacer = ChainCloneReplacers(
       std::move(replacer),

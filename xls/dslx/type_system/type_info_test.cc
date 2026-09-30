@@ -133,7 +133,8 @@ fn main() -> u32 { f() }
 
 TEST(TypeInfoTest, GetUniqueInvocationCalleeDataOneParametricCall) {
   const std::string kInvocation = R"(
-fn f<N: u32>() -> u32 { u32:42 }
+fn g<N: u32>() -> u32 { u32:42 }
+fn f<N: u32>() -> u32 { g<N>() }
 fn main() -> u32 { f<u32:0>() }
 )";
   XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(kInvocation));
@@ -142,7 +143,15 @@ fn main() -> u32 { f<u32:0>() }
   ASSERT_TRUE(f.has_value());
 
   auto invocations = result.tm.type_info->GetUniqueInvocationCalleeData(*f);
-  EXPECT_EQ(invocations.size(), 1);
+  ASSERT_EQ(invocations.size(), 1);
+  ASSERT_NE(invocations[0].derived_type_info, nullptr);
+  EXPECT_NE(invocations[0].derived_type_info, result.tm.type_info);
+  Function* g = result.tm.module->GetFunction("g").value();
+  auto callees = result.tm.type_info->GetUniqueInvocationCalleeData(g);
+  ASSERT_EQ(callees.size(), 1);
+  EXPECT_EQ(callees[0].caller_type_info, invocations[0].derived_type_info);
+  EXPECT_EQ(callees[0].caller_parametric_owner, *f);
+  EXPECT_EQ(callees[0].caller_bindings, invocations[0].callee_bindings);
 }
 
 TEST(TypeInfoTest, NonParametricMethodRetainsActualCallerContext) {

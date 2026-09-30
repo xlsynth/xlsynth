@@ -2121,6 +2121,83 @@ fn alias(value: Phantom<ByteAlias>) -> Phantom<ByteAlias> {
             *first_type->params()[0]->CloneToUnique());
 }
 
+TEST(TypecheckV2Test, TaggedSemanticSumRecordTypeArgumentKeepsOuterBinding) {
+  constexpr std::string_view kProgram = R"(
+#![feature(generics)]
+struct Width { n: u32 }
+enum E<R: Width, T: type>: T { A() = 0, B = 1 }
+fn f<$0: Width>() -> u32 {
+  type S = E<{Width { n: u32:4 }}, uN[$0.n]>;
+  let value = S::A();
+  match value { S::A() => u32:0, S::B => u32:1 }
+}
+const X = f<{Width { n: u32:2 }}>();
+)";
+  // Run the renamed control first; only the outer binding's name changes.
+  for (std::string_view outer_binding : {"Outer", "R"}) {
+    SCOPED_TRACE(outer_binding);
+    XLS_ASSERT_OK_AND_ASSIGN(
+        TypecheckResult result,
+        TypecheckV2(absl::Substitute(kProgram, outer_binding)));
+    Function* function = result.tm.module->GetFunction("f").value();
+    auto invocations =
+        result.tm.type_info->GetUniqueInvocationCalleeData(function);
+    ASSERT_EQ(invocations.size(), 1);
+    TypeInfo* function_type_info = invocations[0].derived_type_info;
+    ASSERT_NE(function_type_info, nullptr);
+    const auto* value = dynamic_cast<const Let*>(
+        ToAstNode(function->body()->statements().at(1)->wrapped()));
+    ASSERT_NE(value, nullptr);
+    std::optional<Type*> type = function_type_info->GetItem(value->rhs());
+    ASSERT_TRUE(type.has_value());
+    const auto* sum_type = dynamic_cast<const SumType*>(*type);
+    ASSERT_NE(sum_type, nullptr);
+    EXPECT_THAT(sum_type->tag_bit_count().GetAsInt64(), IsOkAndHolds(2));
+  }
+}
+
+TEST(TypecheckV2Test, TaggedSemanticSumNominalTypeDefaultKeepsOuterBinding) {
+  constexpr std::string_view kProgram = R"(
+#![feature(generics)]
+struct Width { n: u32 }
+enum Box<R: Width, U: type = uN[R.n]> { Value(U) }
+enum E<R: Width, T: type>: u32 { A() = bit_count<T>() }
+fn f<$0: Width>() -> u32 {
+  type S = E<{Width { n: u32:4 }}, $1>;
+  let value = S::A();
+  match value { S::A() => u32:0 }
+}
+const X = f<{Width { n: u32:2 }}>();
+)";
+  // Keep each case independent so a typecheck rejection cannot hide the rest.
+  const auto check_case = [&](std::string_view outer_binding,
+                              std::string_view type_argument) {
+    SCOPED_TRACE(type_argument);
+    XLS_ASSERT_OK_AND_ASSIGN(
+        TypecheckResult result,
+        TypecheckV2(absl::Substitute(kProgram, outer_binding, type_argument)));
+    Function* function = result.tm.module->GetFunction("f").value();
+    auto invocations =
+        result.tm.type_info->GetUniqueInvocationCalleeData(function);
+    ASSERT_EQ(invocations.size(), 1);
+    TypeInfo* function_type_info = invocations[0].derived_type_info;
+    ASSERT_NE(function_type_info, nullptr);
+    const auto* value = dynamic_cast<const Let*>(
+        ToAstNode(function->body()->statements().at(1)->wrapped()));
+    ASSERT_NE(value, nullptr);
+    std::optional<Type*> type = function_type_info->GetItem(value->rhs());
+    ASSERT_TRUE(type.has_value());
+    const auto* sum_type = dynamic_cast<const SumType*>(*type);
+    ASSERT_NE(sum_type, nullptr);
+    // Box has one variant (zero tag bits), so its total width is U's width.
+    EXPECT_EQ(sum_type->GetDiscriminant(0), InterpValue::MakeU32(2));
+  };
+  check_case("Outer", "Box<Outer, uN[Outer.n]>");
+  check_case("R", "Box<R, uN[R.n]>");
+  check_case("Outer", "Box<Outer>");
+  check_case("R", "Box<R>");
+}
+
 TEST(TypecheckV2Test, TaggedSemanticSumWithUnusedTypeBinding) {
   XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
 #![feature(generics)]

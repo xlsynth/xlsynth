@@ -2172,12 +2172,18 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
               sum_type_info->NoteConstExpr(binding->name_def(), *value);
               values.emplace(binding->identifier(), *value);
             } else {
+              const auto* argument = std::get<TypeAnnotation*>(
+                  resolved_parametrics.at(binding->name_def()));
+              // Two inputs bypass source-spelling preservation and normalize
+              // dimensions and nested arguments in the caller's context.
+              // Otherwise uN[R.n] could bind to this sum's different R.
               XLS_ASSIGN_OR_RETURN(
                   const TypeAnnotation* type,
-                  CleanseGenericTypeArgument(
-                      parametric_context, *parent_type_info,
-                      std::get<TypeAnnotation*>(
-                          resolved_parametrics.at(binding->name_def()))));
+                  resolver_->ResolveAndUnifyTypeAnnotations(
+                      parametric_context, /*context_node=*/std::nullopt,
+                      {argument, argument}, argument->span(),
+                      TypeAnnotationFilter::None(), /*require_bits_like=*/false,
+                      /*used_error_handler=*/nullptr));
               values.emplace(binding->identifier(),
                              InterpValue::MakeTypeReference(type));
               tag_type_parametrics.emplace(binding->name_def(),
