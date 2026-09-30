@@ -281,6 +281,7 @@ class MakeValueVisitor : public TypeVisitor {
 
     XLS_ASSIGN_OR_RETURN(int64_t size, t.size().GetAsInt64());
     if (size == 0) {
+      XLS_RETURN_IF_ERROR(internal::ValidateEmptyArrayElementSumWidths(t));
       XLS_ASSIGN_OR_RETURN(result_, InterpValue::MakeArray({}));
       return absl::OkStatus();
     }
