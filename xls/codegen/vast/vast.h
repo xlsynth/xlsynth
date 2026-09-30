@@ -222,8 +222,8 @@ class DataType : public VastNode {
   // Returns whether this is a scalar signal type (for example, "wire foo").
   virtual bool IsScalar() const { return false; }
 
-  // Returns whether this type represents a typedef, struct, enum, or an array
-  // of a user-defined type.
+  // Returns whether this type represents a typedef, struct, union, enum, or an
+  // array of a user-defined type.
   virtual bool IsUserDefined() const { return false; }
 
   // Returns the width of the def (not counting packed or unpacked dimensions)
@@ -1446,6 +1446,42 @@ class Struct final : public DataType {
   std::vector<Def*> members_;
 };
 
+// Represents a packed, unsigned union whose members overlay the same bits. A
+// valid union must contain at least one member, and all members must be packed
+// and have the same flat bit count. Construction does not validate these
+// conditions; callers can check them with FlatBitCountAsInt64().
+class Union final : public DataType {
+ public:
+  Union(absl::Span<Def* const> members, VerilogFile* file,
+        const SourceInfo& loc)
+      : DataType(file, loc), members_(members.begin(), members.end()) {}
+
+  bool IsScalar() const final { return false; }
+
+  bool IsUserDefined() const final { return true; }
+
+  absl::StatusOr<int64_t> WidthAsInt64() const final {
+    return absl::UnimplementedError(
+        "WidthAsInt64 is not implemented for unions.");
+  }
+
+  // Returns the shared member width, or an error if the union is empty, a
+  // member contains an unpacked type, a member's width cannot be determined, or
+  // member widths differ.
+  absl::StatusOr<int64_t> FlatBitCountAsInt64() const final;
+
+  std::optional<Expression*> width() const final { return std::nullopt; }
+
+  bool is_signed() const final { return false; }
+
+  std::string Emit(LineInfo* line_info) const final;
+
+  absl::Span<Def* const> members() const { return members_; }
+
+ private:
+  std::vector<Def*> members_;
+};
+
 // Defines an item in a localparam.
 class LocalParamItem final : public NamedTrait {
  public:
@@ -2561,7 +2597,7 @@ using VerilogPackageMember =
                  Comment*,                 // Comment text.
                  BlankLine*,               // Blank line.
                  InlineVerilogStatement*,  // InlineVerilog string statement.
-                 Typedef*, VerilogPackageSection*>;
+                 Typedef*, VerilogFunction*, VerilogPackageSection*>;
 
 // A ParameterSection is a container of ParameterMembers used to organize the
 // contents of a package. A Package contains a single top-level PackageSection
@@ -2604,6 +2640,15 @@ class VerilogPackageSection final : public VastNode {
   TypedefType* AddStructTypedef(std::string_view name,
                                 absl::Span<Def*> struct_members,
                                 const SourceInfo& loc);
+
+  // Adds a packed union typedef and returns the named type for use in
+  // declarations or casts. Accepts an existing Union or constructs one from its
+  // members; either form relies on the caller to supply a valid union.
+  TypedefType* AddUnionTypedef(std::string_view name, Union* union_data_type,
+                               const SourceInfo& loc);
+  TypedefType* AddUnionTypedef(std::string_view name,
+                               absl::Span<Def*> union_members,
+                               const SourceInfo& loc);
 
   // Adds a parameter to the package section.  Returns a reference to the
   // parameter rather than the parameter itself.
