@@ -269,22 +269,27 @@ absl::StatusOr<dslx::Function*> GetEntryFunction(dslx::Module& module) {
                    module.name(), "'"));
 }
 
-// Parses a reviewed source fixture and clones its entry parameter types.
-absl::StatusOr<std::vector<std::unique_ptr<dslx::Type>>> GetFunctionParamTypes(
+// Nominal types borrow their declaration AST even after CloneToUnique. Keep the
+// import owner alive through generation and recursive inspection of those
+// types.
+struct SourceInhabitanceContext {
+  std::unique_ptr<dslx::ImportData> import_data;
+  const dslx::FunctionType* function_type;
+};
+
+absl::StatusOr<SourceInhabitanceContext> PrepareSourceContext(
     const std::string& seed_text, std::string_view seed_id) {
-  dslx::ImportData import_data = dslx::CreateImportDataForTest();
+  auto import_data =
+      std::make_unique<dslx::ImportData>(dslx::CreateImportDataForTest());
   XLS_ASSIGN_OR_RETURN(
       dslx::TypecheckedModule tm,
       dslx::ParseAndTypecheck(seed_text, absl::StrCat(seed_id, ".x"), seed_id,
-                              &import_data));
+                              import_data.get()));
   XLS_ASSIGN_OR_RETURN(dslx::Function * function, GetEntryFunction(*tm.module));
   XLS_ASSIGN_OR_RETURN(dslx::FunctionType * function_type,
                        tm.type_info->GetItemAs<dslx::FunctionType>(function));
-  std::vector<std::unique_ptr<dslx::Type>> params;
-  for (const std::unique_ptr<dslx::Type>& param : function_type->params()) {
-    params.push_back(param->CloneToUnique());
-  }
-  return params;
+  return SourceInhabitanceContext{.import_data = std::move(import_data),
+                                  .function_type = function_type};
 }
 
 // Verifies: reviewed inhabitance seeds generate only valid values.
@@ -300,8 +305,9 @@ TEST(SemanticSumInhabitanceFuzzTest, ReplaysManifestCases) {
         if (seed.outcome() != fuzzer::SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS) {
           return absl::OkStatus();
         }
-        XLS_ASSIGN_OR_RETURN(std::vector<std::unique_ptr<dslx::Type>> params,
-                             GetFunctionParamTypes(seed_text, seed.seed_id()));
+        XLS_ASSIGN_OR_RETURN(SourceInhabitanceContext context,
+                             PrepareSourceContext(seed_text, seed.seed_id()));
+        const auto& params = context.function_type->params();
         std::vector<const dslx::Type*> param_ptrs;
         param_ptrs.reserve(params.size());
         for (const std::unique_ptr<dslx::Type>& param : params) {
