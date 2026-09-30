@@ -136,6 +136,19 @@ Phase1SumTypeEncoding::FindVariant(std::string_view variant_name) const {
 
 SumTypeEncoding::SumTypeEncoding(const SumType& type) : type_(type) {}
 
+absl::StatusOr<int64_t> SumTypeEncoding::VariantInfo::payload_bit_count()
+    const {
+  XLS_ASSIGN_OR_RETURN(TypeDim payload_bit_count,
+                       internal::GetBitCountWithSharedSumPayload(*variant));
+  return payload_bit_count.GetAsInt64();
+}
+
+absl::StatusOr<int64_t> SumTypeEncoding::payload_slot_bit_count() const {
+  XLS_ASSIGN_OR_RETURN(TypeDim payload_bit_count,
+                       type_.GetMaxPayloadBitCount());
+  return payload_bit_count.GetAsInt64();
+}
+
 absl::StatusOr<int64_t> SumTypeEncoding::tag_bit_count() const {
   return type_.tag_bit_count().GetAsInt64();
 }
