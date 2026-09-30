@@ -88,6 +88,13 @@ std::optional<int64_t> ParseNumericSuffix(std::string_view name,
 
 }  // namespace
 
+NameUniquer NameUniquer::Clone() const {
+  NameUniquer clone(separator_);
+  clone.reserved_names_ = reserved_names_;
+  clone.generated_names_ = generated_names_;
+  return clone;
+}
+
 std::string NameUniquer::GetSanitizedUniqueName(std::string_view prefix) {
   std::string sanitized = SanitizeName(prefix, reserved_names_);
 

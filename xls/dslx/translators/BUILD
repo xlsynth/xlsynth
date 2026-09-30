@@ -85,6 +85,7 @@ cc_library(
     srcs = ["dslx_to_verilog.cc"],
     hdrs = ["dslx_to_verilog.h"],
     deps = [
+        ":verilog_sum_naming",
         "//xls/codegen/vast",
         "//xls/common:visitor",
         "//xls/common/status:ret_check",
@@ -92,6 +93,7 @@ cc_library(
         "//xls/dslx:import_data",
         "//xls/dslx:interp_value",
         "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:pos",
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info",
@@ -105,6 +107,7 @@ cc_library(
         "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",
         "@abseil-cpp//absl/strings:str_format",
+        "@abseil-cpp//absl/types:span",
         "@abseil-cpp//absl/types:variant",
     ],
 )
@@ -123,6 +126,7 @@ cc_test(
         "//xls/dslx:parse_and_typecheck",
         "//xls/dslx:virtualizable_file_system",
         "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
         "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/strings:str_format",
         "@googletest//:gtest",
