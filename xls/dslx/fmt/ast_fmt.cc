@@ -599,6 +599,10 @@ DocRef Formatter::FormatNumber(const Number& n) {
   return num_text;
 }
 
+DocRef Formatter::FormatInvalidPattern(const InvalidPattern& n) {
+  return arena_.MakeText(n.ToString());
+}
+
 DocRef Formatter::FormatWildcardPattern(const WildcardPattern& n) {
   return arena_.underscore();
 }
@@ -1980,6 +1984,7 @@ DocRef Formatter::FormatPatternTree(const PatternTree& n) {
           [&](const NameDef* n) { return FormatNameDef(*n); },
           [&](const NameRef* n) { return FormatNameRef(*n); },
           [&](const WildcardPattern* n) { return FormatWildcardPattern(*n); },
+          [&](const InvalidPattern* n) { return FormatInvalidPattern(*n); },
           [&](const RestOfTuple* n) { return FormatRestOfTuple(*n); },
           [&](const Number* n) { return FormatNumber(*n); },
           [&](const ColonRef* n) { return FormatColonRef(*n); },
