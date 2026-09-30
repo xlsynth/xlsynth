@@ -458,29 +458,46 @@ absl::Status RunBuiltinAssertEq(const Bytecode& bytecode,
                                          stack.file_table()));
   stack.Push(InterpValue::MakeUnit());
   if (!eq) {
-    std::string message;
-    if (TypeContainsSemanticSum(*argument_type)) {
-      message =
-          "\n  lhs and rhs were not equal; formatting values containing "
-          "semantic sums is not supported.";
-    } else {
+    XLS_ASSIGN_OR_RETURN((const auto& [lhs_string, rhs_string]),
+                         GetAssertFormattedStrings(lhs, rhs, bytecode, frame, options));
+    std::string message =
+        absl::StrContains(lhs_string, '\n')
+            ? absl::StrCat(
+                  "\n  lhs and rhs were not equal:\n",
+                  HighlightLineByLineDifferences(lhs_string, rhs_string))
+            : absl::StrFormat("\n  lhs: %s\n  rhs: %s\n  were not equal",
+                              lhs_string, rhs_string);
+    if (lhs.value.IsArray() && rhs.value.IsArray()) {
+      const auto* array_type = dynamic_cast<const ArrayType*>(argument_type);
       XLS_ASSIGN_OR_RETURN(
-          (const auto& [lhs_string, rhs_string]),
-          GetAssertFormattedStrings(lhs, rhs, bytecode, frame, options));
-      message =
-          absl::StrContains(lhs_string, '\n')
-              ? absl::StrCat(
-                    "\n  lhs and rhs were not equal:\n",
-                    HighlightLineByLineDifferences(lhs_string, rhs_string))
-              : absl::StrFormat("\n  lhs: %s\n  rhs: %s\n  were not equal",
-                                lhs_string, rhs_string);
-      if (lhs.value.IsArray() && rhs.value.IsArray()) {
-        XLS_ASSIGN_OR_RETURN(std::optional<int64_t> i,
-                             FindFirstDifferingIndex(lhs.value.GetValuesOrDie(),
-                                                     rhs.value.GetValuesOrDie()));
-        XLS_RET_CHECK(i.has_value());
-        const auto& lhs_values = lhs.value.GetValuesOrDie();
-        const auto& rhs_values = rhs.value.GetValuesOrDie();
+          std::optional<int64_t> i,
+          array_type != nullptr &&
+                  TypeContainsSemanticSum(array_type->element_type())
+              ? FindFirstDifferingIndex(lhs.value.GetValuesOrDie(),
+                                        rhs.value.GetValuesOrDie(),
+                                        array_type->element_type())
+              : FindFirstDifferingIndex(lhs.value.GetValuesOrDie(),
+                                        rhs.value.GetValuesOrDie()));
+      XLS_RET_CHECK(i.has_value());
+      const auto& lhs_values = lhs.value.GetValuesOrDie();
+      const auto& rhs_values = rhs.value.GetValuesOrDie();
+      if (array_type != nullptr &&
+          TypeContainsSemanticSum(array_type->element_type())) {
+        XLS_ASSIGN_OR_RETURN(
+            ValueFormatDescriptor element_descriptor,
+            MakeValueFormatDescriptor(array_type->element_type(),
+                                      options.format_preference()));
+        XLS_ASSIGN_OR_RETURN(
+            std::string lhs_element,
+            lhs_values[*i].ToFormattedString(element_descriptor,
+                                             /*include_type_prefix=*/true));
+        XLS_ASSIGN_OR_RETURN(
+            std::string rhs_element,
+            rhs_values[*i].ToFormattedString(element_descriptor,
+                                             /*include_type_prefix=*/true));
+        message += absl::StrFormat("; first differing index: %d :: %s vs %s",
+                                   *i, lhs_element, rhs_element);
+      } else {
         message += absl::StrFormat("; first differing index: %d :: %s vs %s",
                                    *i, lhs_values[*i].ToHumanString(),
                                    rhs_values[*i].ToHumanString());
