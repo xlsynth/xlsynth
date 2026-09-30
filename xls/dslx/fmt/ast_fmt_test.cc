@@ -2088,6 +2088,25 @@ TEST_F(ModuleFmtTest, SemanticSumCommentsAroundExplicitDiscriminants) {
 )");
 }
 
+TEST_F(ModuleFmtTest, SemanticSumMatchWithInvalidPattern) {
+  DoFmt(
+      "enum Option{None,Some(u8),}fn f(x:Option)->u8{match x{"
+      "Option::Some(v)=>v,_=>u8:0,invalid!(raw)=>raw[0+:u8],}}",
+      R"(enum Option {
+    None,
+    Some(u8),
+}
+
+fn f(x: Option) -> u8 {
+    match x {
+        Option::Some(v) => v,
+        _ => u8:0,
+        invalid!(raw) => raw[0+:u8],
+    }
+}
+)");
+}
+
 TEST_F(ModuleFmtTest, FunctionRefWithExplicitParametrics) {
   DoFmt(
       R"(fn f<X: u32>() -> u32 { X }
