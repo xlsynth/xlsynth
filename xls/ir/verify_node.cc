@@ -85,6 +85,20 @@ class NodeChecker : public DfsVisitor {
     // The extra two arguments are the token and the condition
     XLS_RETURN_IF_ERROR(ExpectOperandCount(
         trace_op, OperandsExpectedByFormat(trace_op->format()) + 2));
+    XLS_RETURN_IF_ERROR(ValidateFormatSteps(trace_op->format()));
+
+    int64_t operand_index = 2;
+    for (const FormatStep& step : trace_op->format()) {
+      if (std::holds_alternative<FormatPreference>(step)) {
+        ++operand_index;
+      } else if (auto* control = std::get_if<FormatControl>(&step);
+                 control != nullptr &&
+                 *control == FormatControl::kBeginConditional) {
+        XLS_RETURN_IF_ERROR(ExpectOperandHasBitsType(trace_op, operand_index,
+                                                     /*expected_bit_count=*/1));
+        ++operand_index;
+      }
+    }
 
     return ExpectHasTokenType(trace_op);
   }

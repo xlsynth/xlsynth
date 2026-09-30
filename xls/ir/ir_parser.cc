@@ -1320,7 +1320,7 @@ absl::StatusOr<BValue> Parser::ParseNode(
           arg_parser.AddOptionalKeywordArg<int64_t>("verbosity");
       XLS_ASSIGN_OR_RETURN(operands, arg_parser.Run(/*arity=*/2));
       XLS_ASSIGN_OR_RETURN(std::vector<FormatStep> format,
-                           ParseFormatString(format_string->value));
+                           ParseIrFormatString(format_string->value));
       if (verbosity->has_value() && verbosity->value() < 0) {
         return absl::InvalidArgumentError(absl::StrFormat(
             "Verbosity must be >= 0: got %d", verbosity->value()));
