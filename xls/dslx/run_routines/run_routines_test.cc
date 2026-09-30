@@ -1052,8 +1052,9 @@ fn inhabited(value: u1) -> bool { value == value }
   };
   options.quickcheck_runner = &comparator;
   DslxInterpreterTestRunner runner;
-  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
-                           runner.ParseAndTest(kProgram, "test", "test.x", options));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TestResultData result,
+      runner.ParseAndTest(kProgram, "test", "test.x", options));
   EXPECT_THAT(result, IsTestResult(TestResult::kSomeFailed, 2, 0, 1));
   ASSERT_EQ(result.GetFailureMessages().size(), 1);
   EXPECT_THAT(
