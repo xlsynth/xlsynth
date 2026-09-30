@@ -1007,6 +1007,49 @@ fn f(x: Option, y: Option) -> bool {
   EXPECT_FALSE(has_direct_param_eq);
 }
 
+TEST(FunctionConverterTest, BoundEmptySumArrayAgreesWithFallbackType) {
+  constexpr std::string_view kProgram = R"(
+enum Inner { A(u3), B(u5) }
+struct Record { nested: Inner, marker: u2 }
+enum Message { Data(Record[0]), Other(u1) }
+fn f(x: Message, fallback: Record[0]) -> (Record[0], bool) {
+  match x { Message::Data(a) => (a, true), _ => (fallback, false) }
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+  PackageConversionData package = MakeConversionData("test_module_package");
+  XLS_ASSERT_OK(ConvertOneFunctionIntoPackage(
+      tm.module->GetFunction("f").value(), &import_data,
+      /*parametric_env=*/nullptr, ConvertOptions(), &package));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * function,
+                           package.package->GetFunction("__test_module__f"));
+  ASSERT_TRUE(function->return_type()->IsTuple());
+  xls::Type* returned_array =
+      function->return_type()->AsTupleOrDie()->element_type(0);
+  EXPECT_EQ(returned_array, function->param(1)->GetType());
+  EXPECT_EQ(returned_array->ToString(), "((bits[1], (bits[5])), bits[2])[0]");
+
+  // Value and the IR interpreter cannot represent empty arrays. The JIT views
+  // use their declared types; the boolean identifies which match arm ran.
+  XLS_ASSERT_OK_AND_ASSIGN(auto jit, FunctionJit::Create(function));
+  ASSERT_EQ(jit->GetArgTypeSize(0), 2);  // Tag and one-bit payload storage.
+  ASSERT_EQ(jit->GetArgTypeSize(1), 0);
+  ASSERT_EQ(jit->GetReturnTypeSize(), 1);
+  for (int tag : {0, 1}) {
+    uint8_t input[] = {static_cast<uint8_t>(tag), 0};
+    uint8_t fallback = 0;
+    uint8_t result[] = {static_cast<uint8_t>(tag)};
+    InterpreterEvents events;
+    XLS_ASSERT_OK(
+        jit->RunWithViews({input, &fallback}, absl::MakeSpan(result), &events));
+    EXPECT_EQ(result[0], 1 - tag);
+    EXPECT_THAT(events.GetAssertMessages(), testing::IsEmpty());
+  }
+}
+
 TEST(FunctionConverterTest,
      RejectsBindingInLaterSemanticSumOrPatternBeforeConversion) {
   constexpr std::string_view kProgram = R"(

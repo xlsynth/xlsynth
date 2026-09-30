@@ -41,6 +41,7 @@
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/cord.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/substitute.h"
@@ -93,6 +94,11 @@
 
 namespace xls::dslx {
 namespace {
+
+// Carries a definitive physical-width error separately from unresolved generic
+// annotations, which may use the same InvalidArgument status code.
+constexpr std::string_view kSemanticSumBitCountFailure =
+    "xls.dev/dslx/semantic-sum-bit-count-failure";
 
 // Returns whether the type for the given node should be a `MetaType`, i.e. the
 // node represents a type itself rather than an object of the type.
@@ -1446,10 +1452,36 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       // When the node itself is an annotation, and we decide to concretize
       // the node itself, we can't succeed in all contexts. For example, a
       // parametric-dependent field type declaration inside a parametric struct
-      // declaration can't just be concretized like that. Rather than trying to
-      // identify such cases, we just consider such nodes best-effort.
+      // declaration can't just be concretized like that. Such nodes are
+      // best-effort unless a count builtin encounters a concretely overflowing
+      // sum; otherwise that specific diagnostic would be lost.
       if (node_is_annotation) {
-        return absl::OkStatus();
+        const auto* invocation =
+            dynamic_cast<const Invocation*>(node->parent());
+        std::optional<absl::Cord> width_error =
+            type.status().GetPayload(kSemanticSumBitCountFailure);
+        if (invocation == nullptr ||
+            (!IsBuiltinFn(invocation->callee(), "bit_count") &&
+             !IsBuiltinFn(invocation->callee(), "element_count")) ||
+            invocation->explicit_parametrics().empty() ||
+            !width_error.has_value()) {
+          return absl::OkStatus();
+        } else {
+          // A resolved generic annotation may carry its declaration's span;
+          // the failing specialization was requested by the source argument.
+          const AstNode* argument =
+              ToAstNode(invocation->explicit_parametrics().front());
+          if (const auto* source_type =
+                  dynamic_cast<const TypeAnnotation*>(argument)) {
+            return TypeInferenceErrorStatusForAnnotation(
+                source_type->span(), source_type, std::string(*width_error),
+                file_table_);
+          } else {
+            return TypeInferenceErrorStatus(
+                argument->GetSpan().value_or(invocation->span()), nullptr,
+                std::string(*width_error), file_table_);
+          }
+        }
       }
       return type.status();
     }
@@ -2147,9 +2179,12 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
         // constructed or constexpr evaluation of a constructor is best-effort.
         absl::Status bit_count_status = type->GetTotalBitCount().status();
         if (!bit_count_status.ok()) {
-          return TypeInferenceErrorStatusForAnnotation(
+          absl::Status error = TypeInferenceErrorStatusForAnnotation(
               annotation->span(), annotation, bit_count_status.message(),
               file_table_);
+          error.SetPayload(kSemanticSumBitCountFailure,
+                           absl::Cord(bit_count_status.message()));
+          return error;
         }
         std::unique_ptr<Type> result = type->CloneToUnique();
         sum_type_cache_[cache_key].push_back(std::move(type));
