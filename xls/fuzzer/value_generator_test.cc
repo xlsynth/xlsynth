@@ -21,10 +21,10 @@
 #include <variant>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/module.h"
@@ -172,8 +172,8 @@ absl::StatusOr<dslx::SumType> MakeEnumPayloadSumType(dslx::Module& module) {
   return dslx::SumType(*sum_def, std::move(variants));
 }
 
-absl::StatusOr<dslx::SumType> MakeSumWithEmptyEnumPayload(
-    dslx::Module& module, bool include_unit_variant) {
+absl::StatusOr<dslx::SumType> MakePartiallyInhabitedEnumPayloadSumType(
+    dslx::Module& module, bool include_unit_variant = true) {
   const dslx::Span kFakeSpan = dslx::FakeSpan();
 
   auto* enum_name = module.Make<dslx::NameDef>(kFakeSpan, "Empty", nullptr);
@@ -200,15 +200,14 @@ absl::StatusOr<dslx::SumType> MakeSumWithEmptyEnumPayload(
       kFakeSpan, impossible_name,
       module.Make<dslx::TupleTypeAnnotation>(
           kFakeSpan, std::vector<dslx::TypeAnnotation*>{enum_type_annotation}));
-  std::vector<dslx::SumVariant*> declaration_variants;
+  std::vector<dslx::SumVariant*> declared_variants;
   if (include_unit_variant) {
-    declaration_variants.push_back(unit_variant);
+    declared_variants.push_back(unit_variant);
   }
-  declaration_variants.push_back(impossible_variant);
+  declared_variants.push_back(impossible_variant);
   auto* sum_def = module.Make<dslx::SumDef>(
       kFakeSpan, sum_name, std::vector<dslx::ParametricBinding*>{},
-      std::move(declaration_variants),
-      /*is_public=*/false);
+      std::move(declared_variants), /*is_public=*/false);
   sum_name->set_definer(sum_def);
   XLS_RETURN_IF_ERROR(module.AddTop(sum_def, /*make_collision_error=*/nullptr));
 
@@ -223,6 +222,12 @@ absl::StatusOr<dslx::SumType> MakeSumWithEmptyEnumPayload(
   variants.push_back(dslx::SumTypeVariant::MakeTuple(
       *impossible_variant, std::move(payload_members)));
   return dslx::SumType(*sum_def, std::move(variants));
+}
+
+absl::StatusOr<dslx::SumType> MakeUninhabitedEnumPayloadSumType(
+    dslx::Module& module) {
+  return MakePartiallyInhabitedEnumPayloadSumType(
+      module, /*include_unit_variant=*/false);
 }
 
 void ExpectValueMatchesType(const dslx::Type& type,
@@ -446,9 +451,9 @@ TEST(ValueGeneratorTest,
      GeneratePartiallyInhabitedSemanticSumUsesOnlyInhabitedVariants) {
   dslx::FileTable file_table;
   dslx::Module module("test", /*fs_path=*/std::nullopt, file_table);
-  XLS_ASSERT_OK_AND_ASSIGN(
-      dslx::SumType sum_type,
-      MakeSumWithEmptyEnumPayload(module, /*include_unit_variant=*/true));
+  XLS_ASSERT_OK_AND_ASSIGN(dslx::SumType sum_type,
+                           MakePartiallyInhabitedEnumPayloadSumType(
+                               module, /*include_unit_variant=*/true));
 
   for (uint64_t seed = 0; seed < 64; ++seed) {
     SCOPED_TRACE(seed);
@@ -468,9 +473,9 @@ TEST(ValueGeneratorTest,
 TEST(ValueGeneratorTest, GenerateUninhabitedSemanticSumValueFails) {
   dslx::FileTable file_table;
   dslx::Module module("test", /*fs_path=*/std::nullopt, file_table);
-  XLS_ASSERT_OK_AND_ASSIGN(
-      dslx::SumType sum_type,
-      MakeSumWithEmptyEnumPayload(module, /*include_unit_variant=*/false));
+  XLS_ASSERT_OK_AND_ASSIGN(dslx::SumType sum_type,
+                           MakePartiallyInhabitedEnumPayloadSumType(
+                               module, /*include_unit_variant=*/false));
 
   std::mt19937_64 rng{0};
   EXPECT_THAT(GenerateInterpValue(rng, sum_type, {}),
