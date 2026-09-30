@@ -1152,9 +1152,14 @@ absl::Status BytecodeEmitter::HandleFormatMacro(const FormatMacro* node) {
 
   CHECK(node->macro() == "trace_fmt!" || node->macro() == "vtrace_fmt!")
       << "Expected trace_fmt! or vtrace_fmt! but got: " << node->macro();
-  Bytecode::TraceData trace_data(
-      std::vector<FormatStep>(node->format().begin(), node->format().end()),
-      std::move(value_fmt_descs));
+  std::vector<FormatStep> steps(node->format().begin(), node->format().end());
+  // Bytecode stores literal text; the AST keeps escaped format strings.
+  for (FormatStep& step : steps) {
+    if (std::string* literal = std::get_if<std::string>(&step)) {
+      *literal = UnescapeFormatStringLiteral(*literal);
+    }
+  }
+  Bytecode::TraceData trace_data(std::move(steps), std::move(value_fmt_descs));
   bytecode_.push_back(
       Bytecode(node->span(), Bytecode::Op::kTraceFmt, std::move(trace_data)));
   return absl::OkStatus();
