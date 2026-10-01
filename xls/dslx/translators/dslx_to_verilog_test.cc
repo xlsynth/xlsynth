@@ -2323,28 +2323,33 @@ enum Payload {
 TEST_F(DslxToVerilogTest, OrdinaryWrapperConflictIsAtomicAndRetryable) {
   constexpr std::string_view program = R"(
 enum Seed { Empty, Item(u1) }
+enum Leaf { Value(u8) }
 type Fresh = u8;
 type Taken = u16;
 struct Payload { fresh: Fresh, taken: Taken }
 enum Inner { Value(Payload) }
 struct Wrapper { inner: Inner }
+struct KnownWrapper { fresh: Fresh, taken: Taken, inner: Leaf }
 )";
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK_AND_ASSIGN(
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
   const TypeDefinition seed = tm.module->GetTypeDefinition("Seed").value();
-  for (const std::string name : {"Inner", "Wrapper"}) {
+  const TypeDefinition leaf = tm.module->GetTypeDefinition("Leaf").value();
+  for (const std::string name : {"Inner", "Wrapper", "KnownWrapper"}) {
     SCOPED_TRACE(name);
     const TypeDefinition definition =
         tm.module->GetTypeDefinition(name).value();
     XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager control,
                              DslxTypeToVerilogManager::Create("test_pkg"));
+    XLS_ASSERT_OK(control.AddTypeForTypeDefinition(leaf, &import_data));
     XLS_ASSERT_OK(control.AddTypeForTypeDefinition(seed, &import_data, "Safe"));
     XLS_ASSERT_OK(control.AddTypeForTypeDefinition(definition, &import_data));
 
     XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
                              DslxTypeToVerilogManager::Create("test_pkg"));
+    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(leaf, &import_data));
     XLS_ASSERT_OK(
         manager.AddTypeForTypeDefinition(seed, &import_data, "Taken"));
     const std::string before = manager.Emit();

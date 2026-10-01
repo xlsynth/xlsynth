@@ -2870,7 +2870,11 @@ absl::Status DslxTypeToVerilogManager::AddTypeToVerilogPackageInternal(
         sum, import_data,
         canonical ? std::nullopt
                   : std::make_optional<std::string_view>(typedef_identifier)));
-  } else if (GetSumNameState(*concrete) != SumNameState::kNoSums) {
+  } else if (SumNameState names = GetSumNameState(*concrete);
+             names == SumNameState::kHasUnemitted ||
+             (names == SumNameState::kAllEmitted && !sum_aliases_.empty())) {
+    // Completed families add no names. With no aliases, ordinary dependency
+    // names can be uniquified instead of rejected, so no snapshot is needed.
     XLS_RETURN_IF_ERROR(CheckExportNames(*concrete, &type_definition,
                                          import_data, typedef_identifier));
   }
