@@ -245,13 +245,13 @@ class DslxTypeToVerilogManager {
                                      const TypeAnnotation* annotation,
                                      ImportData* import_data,
                                      std::string_view name);
+  using ExportRoot =
+      std::variant<const SumType*, const TypeAnnotation*, const TypeDefinition*>;
   // Checks all name changes in emission order before a new sum or an ordinary
-  // function type containing one can alter package declarations or caches.
+  // export containing one can alter package declarations or caches.
   absl::Status CheckExportNames(
-      const Type& type, const TypeAnnotation* annotation,
-      ImportData* import_data,
-      std::optional<std::string_view> ordinary_function_name,
-      std::optional<std::string_view> sum_alias);
+      const Type& type, ExportRoot root, ImportData* import_data,
+      std::optional<std::string_view> requested_name);
   absl::Status CheckDirectSumNames(
       const SumType& sum, ImportData* import_data,
       std::optional<std::string_view> requested_alias = std::nullopt);
