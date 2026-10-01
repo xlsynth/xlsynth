@@ -110,6 +110,31 @@ TEST_P(FunctionJitPackedTest, ZeroWidthArray) {
                     Value(UBits(0, 4))}));
 }
 
+TEST_P(FunctionJitPackedTest, EmptyArrayWithLargeElementType) {
+  Package package("packed_empty_array");
+  FunctionBuilder fb("live_field", &package);
+  auto* empty_array_type = package.GetArrayType(
+      0, package.GetArrayType(4096, package.GetBitsType(8)));
+  BValue input = fb.Param(
+      "input", package.GetTupleType({empty_array_type, package.GetBitsType(1)}));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Function * function, fb.BuildWithReturnValue(fb.TupleIndex(input, 1)));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto jit,
+      FunctionJit::Create(function, EvaluatorOptions(),
+                          JitEvaluatorOptions().set_opt_level(GetParam())));
+  using InputView =
+      PackedTupleView<PackedArrayView<PackedArrayView<PackedBitsView<8>, 4096>, 0>,
+                      PackedBitsView<1>>;
+  for (uint8_t input_byte : {0, 1}) {
+    uint8_t output_byte = 0;
+    InputView packed_input(&input_byte, 0);
+    PackedBitsView<1> output(&output_byte, 0);
+    XLS_ASSERT_OK(jit->RunWithPackedViews(packed_input, output));
+    EXPECT_EQ(output_byte, input_byte);
+  }
+}
+
 INSTANTIATE_TEST_SUITE_P(OptLevels, FunctionJitPackedTest,
                          testing::Values(0, 3));
 
