@@ -53,10 +53,13 @@ class FunctionJitPackedTest : public testing::TestWithParam<int64_t> {
     // ensures initializing that subtree does not erase the packed payload.
     for (int iteration = 0; iteration < 32; ++iteration) {
       SCOPED_TRACE(iteration);
-      for (uint8_t payload : {0, 1}) {
+      for (uint8_t payload = 0;
+           payload < (InputView::kBitCount > 0 ? 2 : 1); ++payload) {
         SCOPED_TRACE(static_cast<int>(payload));
         std::array<uint8_t, (InputView::kBitCount + 7) / 8> input_data = {};
-        input_data[0] = payload;
+        if constexpr (InputView::kBitCount > 0) {
+          input_data[0] = payload;
+        }
         uint8_t output_data = 0;
         InputView packed_input(input_data.data(), 0);
         PackedBitsView<1> output(&output_data, 0);
@@ -74,6 +77,13 @@ TEST_P(FunctionJitPackedTest, ZeroWidthTag) {
       PackedTupleView<PackedBitsView<0>, PackedTupleView<PackedBitsView<4>>>;
   ExpectZeroWidthEquality<InputView>(
       Value::Tuple({Value(UBits(0, 0)), Value::Tuple({Value(UBits(0, 4))})}));
+}
+
+TEST_P(FunctionJitPackedTest, EmptySingletonSum) {
+  using InputView =
+      PackedTupleView<PackedBitsView<0>, PackedTupleView<PackedBitsView<0>>>;
+  ExpectZeroWidthEquality<InputView>(
+      Value::Tuple({Value(UBits(0, 0)), Value::Tuple({Value(UBits(0, 0))})}));
 }
 
 TEST_P(FunctionJitPackedTest, ByteAlignedZeroWidthTag) {
