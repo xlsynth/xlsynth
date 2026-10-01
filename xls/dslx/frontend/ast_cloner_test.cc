@@ -1758,39 +1758,42 @@ TEST(AstClonerTest, IfElseIf) {
   XLS_ASSERT_OK_AND_ASSIGN(auto module, ParseModule(kProgram, "fake_path.x",
                                                     "the_module", file_table));
   std::vector<Conditional*> completed;
-  auto check_enclosing = [&](const AstNode*, AstNode* clone)
-      -> absl::StatusOr<AstNode*> {
+  auto check_enclosing = [&](const AstNode*,
+                             AstNode* clone) -> absl::StatusOr<AstNode*> {
     if (auto* conditional = dynamic_cast<Conditional*>(clone)) {
       // A post-replacer sees the current chain before its parent is cloned.
       EXPECT_EQ(conditional->consequent()->GetEnclosing(), conditional);
       if (std::holds_alternative<StatementBlock*>(conditional->alternate())) {
-        EXPECT_EQ(std::get<StatementBlock*>(conditional->alternate())
-                      ->GetEnclosing(),
-                  conditional);
+        EXPECT_EQ(
+            std::get<StatementBlock*>(conditional->alternate())->GetEnclosing(),
+            conditional);
       } else {
         EXPECT_EQ(std::get<Conditional*>(conditional->alternate())
-                      ->consequent()->GetEnclosing(),
+                      ->consequent()
+                      ->GetEnclosing(),
                   conditional);
       }
       completed.push_back(conditional);
     }
     return clone;
   };
-  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> clone,
-                           CloneModule(*module, NoopCloneReplacer,
-                                       check_enclosing));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<Module> clone,
+      CloneModule(*module, NoopCloneReplacer, check_enclosing));
   EXPECT_EQ(kProgram, clone->ToString());
   ASSERT_EQ(completed.size(), 2);
   Conditional* inner = completed[0];
   Conditional* outer = completed[1];
   EXPECT_EQ(std::get<Conditional*>(outer->alternate()), inner);
   EXPECT_EQ(inner->consequent()->GetEnclosing(), outer);
-  EXPECT_EQ(std::get<StatementBlock*>(inner->alternate())->GetEnclosing(), outer);
+  EXPECT_EQ(std::get<StatementBlock*>(inner->alternate())->GetEnclosing(),
+            outer);
 
   // Cloning only the suffix gives it a new enclosing root of its own.
   XLS_ASSERT_OK_AND_ASSIGN(AstNode * suffix, CloneAst(inner));
   auto* suffix_conditional = absl::down_cast<Conditional*>(suffix);
-  EXPECT_EQ(suffix_conditional->consequent()->GetEnclosing(), suffix_conditional);
+  EXPECT_EQ(suffix_conditional->consequent()->GetEnclosing(),
+            suffix_conditional);
   EXPECT_EQ(std::get<StatementBlock*>(suffix_conditional->alternate())
                 ->GetEnclosing(),
             suffix_conditional);
@@ -3255,7 +3258,8 @@ TEST(AstClonerTest, ModuleClonesPreserveExternalNodes) {
 
     ASSERT_TRUE(
         std::holds_alternative<StructDef*>(cloned_type_ref->type_definition()));
-    EXPECT_EQ(std::get<StructDef*>(cloned_type_ref->type_definition()), ext_struct);
+    EXPECT_EQ(std::get<StructDef*>(cloned_type_ref->type_definition()),
+              ext_struct);
   }
 }
 
