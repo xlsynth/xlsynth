@@ -1311,6 +1311,14 @@ fn f(x: Option) -> u8 {
 }
 )",
               TypecheckSucceeds(::testing::_));
+
+  EXPECT_THAT(R"(
+enum Pair { Item((u8, u8)) }
+fn f(x: Pair) -> u8 {
+  match x { Pair::Item((v, ..)) => v }
+}
+)",
+              TypecheckSucceeds(::testing::_));
 }
 
 TEST(TypecheckV2Test,

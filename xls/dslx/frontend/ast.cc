@@ -3405,7 +3405,8 @@ bool IsIrrefutablePattern(const PatternTree& pattern) {
   std::vector<PatternLeaf> leaves = FlattenPattern(pattern);
   return std::all_of(leaves.begin(), leaves.end(), [](PatternLeaf leaf) {
     return std::holds_alternative<NameDef*>(leaf) ||
-           std::holds_alternative<WildcardPattern*>(leaf);
+           std::holds_alternative<WildcardPattern*>(leaf) ||
+           std::holds_alternative<RestOfTuple*>(leaf);
   });
 }
 
@@ -3413,7 +3414,8 @@ bool IsIrrefutablePattern(const ConstPatternTree& pattern) {
   std::vector<ConstPatternLeaf> leaves = FlattenPattern(pattern);
   return std::all_of(leaves.begin(), leaves.end(), [](ConstPatternLeaf leaf) {
     return std::holds_alternative<const NameDef*>(leaf) ||
-           std::holds_alternative<const WildcardPattern*>(leaf);
+           std::holds_alternative<const WildcardPattern*>(leaf) ||
+           std::holds_alternative<const RestOfTuple*>(leaf);
   });
 }
 
