@@ -53,8 +53,8 @@ class FunctionJitPackedTest : public testing::TestWithParam<int64_t> {
     // ensures initializing that subtree does not erase the packed payload.
     for (int iteration = 0; iteration < 32; ++iteration) {
       SCOPED_TRACE(iteration);
-      for (uint8_t payload = 0;
-           payload < (InputView::kBitCount > 0 ? 2 : 1); ++payload) {
+      for (uint8_t payload = 0; payload < (InputView::kBitCount > 0 ? 2 : 1);
+           ++payload) {
         SCOPED_TRACE(static_cast<int>(payload));
         std::array<uint8_t, (InputView::kBitCount + 7) / 8> input_data = {};
         if constexpr (InputView::kBitCount > 0) {
