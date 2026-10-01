@@ -1223,8 +1223,18 @@ class AstCloner : public AstNodeVisitor {
         n->span(), absl::down_cast<Expr*>(old_to_new_.at(n->test())),
         absl::down_cast<StatementBlock*>(old_to_new_.at(n->consequent())),
         new_alternate, n->in_parens(), n->HasElse(), n->IsConst());
-    for (StatementBlock* block : new_conditional->GatherBlocks()) {
-      block->SetEnclosing(new_conditional);
+    // Each post-replacer must see the complete chain enclosed by this clone.
+    // Walk it directly instead of recursively collecting and copying suffixes.
+    Conditional* branch = new_conditional;
+    while (branch != nullptr) {
+      branch->consequent()->SetEnclosing(new_conditional);
+      if (std::holds_alternative<Conditional*>(branch->alternate())) {
+        branch = std::get<Conditional*>(branch->alternate());
+      } else {
+        std::get<StatementBlock*>(branch->alternate())
+            ->SetEnclosing(new_conditional);
+        branch = nullptr;
+      }
     }
     old_to_new_[n] = new_conditional;
     return absl::OkStatus();
