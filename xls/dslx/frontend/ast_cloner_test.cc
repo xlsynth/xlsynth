@@ -1686,10 +1686,10 @@ TEST(AstClonerTest, IfElseIf) {
   ASSERT_TRUE(std::holds_alternative<Conditional*>(outer->alternate()));
   Conditional* inner = std::get<Conditional*>(outer->alternate());
   EXPECT_EQ(std::get<Conditional*>(outer->alternate()), inner);
-  EXPECT_THAT(outer->GatherBlocks(),
-              ::testing::ElementsAre(
-                  outer->consequent(), inner->consequent(),
-                  std::get<StatementBlock*>(inner->alternate())));
+  EXPECT_THAT(
+      outer->GatherBlocks(),
+      ::testing::ElementsAre(outer->consequent(), inner->consequent(),
+                             std::get<StatementBlock*>(inner->alternate())));
   EXPECT_EQ(inner->consequent()->GetEnclosing(), outer);
   EXPECT_EQ(std::get<StatementBlock*>(inner->alternate())->GetEnclosing(),
             outer);
