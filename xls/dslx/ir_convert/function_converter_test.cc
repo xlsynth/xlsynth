@@ -782,7 +782,7 @@ fn f(x: u8, y: u16) -> (E, E, E, E, bool, bool, bool, u16, u16, u32) {
          encoded_sum(false, test_case.x), encoded_sum(true, test_case.y),
          Value::Bool(test_case.a_equals_constant),
          Value::Bool(test_case.b_equals_constant), Value::Bool(true),
-          Value(UBits(test_case.x & 0xc3, 16)), Value(UBits(test_case.y, 16)),
+         Value(UBits(test_case.x & 0xc3, 16)), Value(UBits(test_case.y, 16)),
          Value(UBits(17, 32))});
 
     XLS_ASSERT_OK_AND_ASSIGN(InterpValue bytecode_result,
