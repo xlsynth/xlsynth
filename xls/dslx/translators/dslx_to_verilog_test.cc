@@ -2336,15 +2336,17 @@ struct Wrapper { inner: Inner }
   const TypeDefinition seed = tm.module->GetTypeDefinition("Seed").value();
   for (const std::string name : {"Inner", "Wrapper"}) {
     SCOPED_TRACE(name);
-    const TypeDefinition definition = tm.module->GetTypeDefinition(name).value();
+    const TypeDefinition definition =
+        tm.module->GetTypeDefinition(name).value();
     XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager control,
-                            DslxTypeToVerilogManager::Create("test_pkg"));
+                             DslxTypeToVerilogManager::Create("test_pkg"));
     XLS_ASSERT_OK(control.AddTypeForTypeDefinition(seed, &import_data, "Safe"));
     XLS_ASSERT_OK(control.AddTypeForTypeDefinition(definition, &import_data));
 
     XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                            DslxTypeToVerilogManager::Create("test_pkg"));
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(seed, &import_data, "Taken"));
+                             DslxTypeToVerilogManager::Create("test_pkg"));
+    XLS_ASSERT_OK(
+        manager.AddTypeForTypeDefinition(seed, &import_data, "Taken"));
     const std::string before = manager.Emit();
     ASSERT_EQ(CountOccurrences(before, "typedef Seed Taken;"), 1) << before;
     ASSERT_EQ(CountOccurrences(before, " Fresh;"), 0) << before;
@@ -2356,7 +2358,8 @@ struct Wrapper { inner: Inner }
       const absl::Status status =
           manager.AddTypeForTypeDefinition(definition, &import_data);
       EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
-      EXPECT_NE(status.message().find("Taken"), std::string_view::npos) << status;
+      EXPECT_NE(status.message().find("Taken"), std::string_view::npos)
+          << status;
       if (attempt == 0) {
         first_status = status;
       } else {
@@ -2381,13 +2384,15 @@ pub enum Wrapped { Value(Wrapper) }
   for (const std::string name : {"Direct", "Wrapped"}) {
     SCOPED_TRACE(name);
     XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                            DslxTypeToVerilogManager::Create("test_pkg"));
+                             DslxTypeToVerilogManager::Create("test_pkg"));
     XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
         tm.module->GetTypeDefinition(name).value(), &import_data));
     const std::string emitted = manager.Emit();
     // A wrapper preserves the same concrete field and complete payload width.
-    EXPECT_TRUE(RE2::PartialMatch(emitted, R"(logic \[7:0\] value;)")) << emitted;
-    EXPECT_TRUE(RE2::PartialMatch(emitted, R"(logic \[7:0\] bits;)")) << emitted;
+    EXPECT_TRUE(RE2::PartialMatch(emitted, R"(logic \[7:0\] value;)"))
+        << emitted;
+    EXPECT_TRUE(RE2::PartialMatch(emitted, R"(logic \[7:0\] bits;)"))
+        << emitted;
   }
 }
 
@@ -2402,7 +2407,7 @@ enum Wrapped { Value(Record) }
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
   XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                          DslxTypeToVerilogManager::Create("test_pkg"));
+                           DslxTypeToVerilogManager::Create("test_pkg"));
   manager.PrepareForModules({{tm.module, tm.type_info}});
   EXPECT_TRUE(DslxTypeToVerilogManagerTestPeer::CanAddWithoutNameChanges(
       manager, ConcreteSum(tm, "Scalar")));

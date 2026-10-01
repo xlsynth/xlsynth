@@ -1787,7 +1787,8 @@ absl::Status DslxTypeToVerilogManager::CheckExportNames(
   std::function<absl::Status(const Type*, const TypeAnnotation*)>
       visit_annotation;
   std::function<absl::Status(const TypeDefinition&,
-                            std::optional<std::string_view>)> visit_definition;
+                             std::optional<std::string_view>)>
+      visit_definition;
   std::function<absl::StatusOr<std::string>(const SumType&)> visit_sum;
   std::function<absl::Status(const Type&, std::set<std::string>&)>
       visit_payload;
@@ -1941,9 +1942,9 @@ absl::Status DslxTypeToVerilogManager::CheckExportNames(
     return absl::OkStatus();
   };
 
-  visit_definition = [&](const TypeDefinition& definition,
-                         std::optional<std::string_view> identifier)
-      -> absl::Status {
+  visit_definition =
+      [&](const TypeDefinition& definition,
+          std::optional<std::string_view> identifier) -> absl::Status {
     AstNode* node = TypeDefinitionToAstNode(definition);
     XLS_ASSIGN_OR_RETURN(TypeInfo * info,
                          import_data->GetRootTypeInfoForNode(node));
@@ -2870,8 +2871,8 @@ absl::Status DslxTypeToVerilogManager::AddTypeToVerilogPackageInternal(
         canonical ? std::nullopt
                   : std::make_optional<std::string_view>(typedef_identifier)));
   } else if (GetSumNameState(*concrete) != SumNameState::kNoSums) {
-    XLS_RETURN_IF_ERROR(CheckExportNames(*concrete, &type_definition, import_data,
-                                        typedef_identifier));
+    XLS_RETURN_IF_ERROR(CheckExportNames(*concrete, &type_definition,
+                                         import_data, typedef_identifier));
   }
 
   return TypeDefinitionToVastType(type_definition, import_data,
