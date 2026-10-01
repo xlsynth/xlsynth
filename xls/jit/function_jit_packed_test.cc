@@ -116,16 +116,17 @@ TEST_P(FunctionJitPackedTest, EmptyArrayWithLargeElementType) {
   auto* empty_array_type = package.GetArrayType(
       0, package.GetArrayType(4096, package.GetBitsType(8)));
   BValue input = fb.Param(
-      "input", package.GetTupleType({empty_array_type, package.GetBitsType(1)}));
-  XLS_ASSERT_OK_AND_ASSIGN(
-      Function * function, fb.BuildWithReturnValue(fb.TupleIndex(input, 1)));
+      "input",
+      package.GetTupleType({empty_array_type, package.GetBitsType(1)}));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                           fb.BuildWithReturnValue(fb.TupleIndex(input, 1)));
   XLS_ASSERT_OK_AND_ASSIGN(
       auto jit,
       FunctionJit::Create(function, EvaluatorOptions(),
                           JitEvaluatorOptions().set_opt_level(GetParam())));
-  using InputView =
-      PackedTupleView<PackedArrayView<PackedArrayView<PackedBitsView<8>, 4096>, 0>,
-                      PackedBitsView<1>>;
+  using InputView = PackedTupleView<
+      PackedArrayView<PackedArrayView<PackedBitsView<8>, 4096>, 0>,
+      PackedBitsView<1>>;
   for (uint8_t input_byte : {0, 1}) {
     uint8_t output_byte = 0;
     InputView packed_input(&input_byte, 0);
