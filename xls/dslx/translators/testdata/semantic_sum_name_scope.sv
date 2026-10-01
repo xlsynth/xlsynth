@@ -16,11 +16,32 @@ module semantic_sum_name_scope_consumer;
   import semantic_sum_name_scope::*;
 
   Message item;
-  logic [7:0] named_member, one_member, pair_member;
+  as_x union_shadow;
+  as_reverse union_reverse;
+  logic [7:0] named_member, ordinary_member, direct_member, unrelated_member;
+  logic [7:0] one_member, pair_member;
+  logic [1:0] shadow_member, reverse_member;
+  logic signed [7:0] signed_member;
 
+  // Verifies: generated members resolve in their legal struct and union scopes.
+  // Catches: missing or unnecessary renaming and qualification under Slang.
   initial begin
+    // A later anonymous packed struct has its own member scope. The three
+    // packed views retain the DSLX name.
     named_member = item.payload.as_named.Token;
+    ordinary_member = item.payload.as_ordinary.value.Token;
+    signed_member = item.payload.as_signed.value.Token;
+
+    // Direct name hiding needs a suffix; an unrelated package type does not.
+    direct_member = item.payload.as_direct.Token__1;
+    unrelated_member = item.payload.as_unrelated.Token;
+
+    // Positional names remain fixed even when a later type is named index_0.
     one_member = item.payload.as_one.value;
     pair_member = item.payload.as_pair.index_0;
+
+    // Fixed union member spellings survive when they hide a later view type.
+    shadow_member = union_shadow.payload.as_y.value;
+    reverse_member = union_reverse.payload.as_y.value;
   end
 endmodule

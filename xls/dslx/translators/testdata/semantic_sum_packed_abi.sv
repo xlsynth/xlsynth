@@ -37,6 +37,21 @@ module semantic_sum_packed_abi_consumer;
     $error("packed sum, shared payload, tuple, and nested tag widths differ from DSLX");
   end
 
+  // Read one raw pattern through every typed view. The low bits hold a short
+  // payload; tuple/array member zero is the most significant member.
+  localparam Packed RAW = Packed'(19'h5_a3e7);
+  if (RAW.tag != 3'h5 || RAW.payload.bits != 16'ha3e7 ||
+      RAW.payload.as_scalar.value != -8'sd25 ||
+      RAW.payload.as_array.value[0] != -8'sd25 ||
+      RAW.payload.as_array.value[1] != -8'sd93 ||
+      RAW.payload.as_tuple.value.index_0 != 8'sd62 ||
+      RAW.payload.as_tuple.value.index_1 != 4'h7 ||
+      RAW.payload.as_nested.value.tag != 1'b1 ||
+      RAW.payload.as_nested.value.payload.as_number.value != 8'he7 ||
+      RAW.payload.as_record.value.field != 8'he7) begin : wrong_bit_layout
+    $error("typed payload views must preserve the raw DSLX bit positions");
+  end
+
   initial begin
     item.tag = Packed_tag_Array;
     item.payload.as_nested.value.tag = Leaf_tag_Number;
