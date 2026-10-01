@@ -713,16 +713,22 @@ fn f(x: Message) -> Message {
 
 TEST(FunctionConverterTest, ConstexprAndRuntimeSumsShare17BitAbiAcrossEngines) {
   constexpr std::string_view kProgram = R"(
-enum E { A(u8), B(u16) }
+enum E { A((u2, u4, u2)), B(u16) }
 
-const CONST_A: E = E::A(u8:0xab);
+const CONST_A: E = E::A((u2:2, u4:10, u2:3));
 const CONST_B: E = E::B(u16:0xcdef);
 
 fn f(x: u8, y: u16) -> (E, E, E, E, bool, bool, bool, u16, u16, u32) {
-  let runtime_a = E::A(x);
+  let runtime_a = E::A((x[6+:u2], x[2+:u4], x[0+:u2]));
   let runtime_b = E::B(y);
-  let matched_a = match runtime_a { E::A(v) => v as u16, E::B(v) => v };
-  let matched_b = match runtime_b { E::A(v) => v as u16, E::B(v) => v };
+  let matched_a = match runtime_a {
+    E::A((first, .., last)) => (first ++ u4:0 ++ last) as u16,
+    E::B(v) => v,
+  };
+  let matched_b = match runtime_b {
+    E::A((first, middle, last)) => (first ++ middle ++ last) as u16,
+    E::B(v) => v,
+  };
   (CONST_A, CONST_B, runtime_a, runtime_b,
    runtime_a == CONST_A, runtime_b == CONST_B, runtime_a != runtime_b,
    matched_a, matched_b, bit_count<E>())
@@ -747,7 +753,7 @@ fn f(x: u8, y: u16) -> (E, E, E, E, bool, bool, bool, u16, u16, u32) {
                            package.package->GetFunction("__test_module__f"));
   XLS_ASSERT_OK_AND_ASSIGN(auto jit, FunctionJit::Create(ir_function));
 
-  // The inherited separate u8/u16 payload slots would use 25 bits. The two
+  // Separate eight-bit and u16 payload slots would use 25 bits. The two
   // constants and two runtime results must each use one shared 16-bit slot.
   ASSERT_TRUE(ir_function->return_type()->IsTuple());
   const xls::TupleType* result_type =
@@ -776,7 +782,7 @@ fn f(x: u8, y: u16) -> (E, E, E, E, bool, bool, bool, u16, u16, u32) {
          encoded_sum(false, test_case.x), encoded_sum(true, test_case.y),
          Value::Bool(test_case.a_equals_constant),
          Value::Bool(test_case.b_equals_constant), Value::Bool(true),
-         Value(UBits(test_case.x, 16)), Value(UBits(test_case.y, 16)),
+          Value(UBits(test_case.x & 0xc3, 16)), Value(UBits(test_case.y, 16)),
          Value(UBits(17, 32))});
 
     XLS_ASSERT_OK_AND_ASSIGN(InterpValue bytecode_result,
