@@ -752,16 +752,17 @@ Conditional::~Conditional() = default;
 
 std::vector<StatementBlock*> Conditional::GatherBlocks() {
   std::vector<StatementBlock*> blocks;
-  blocks.push_back(consequent_);
-  absl::visit(Visitor{
-                  [&](StatementBlock* block) { blocks.push_back(block); },
-                  [&](Conditional* elseif) {
-                    for (StatementBlock* block : elseif->GatherBlocks()) {
-                      blocks.push_back(block);
-                    }
-                  },
-              },
-              alternate_);
+  // Collect each branch once instead of recursively copying every suffix.
+  Conditional* branch = this;
+  while (branch != nullptr) {
+    blocks.push_back(branch->consequent());
+    if (std::holds_alternative<Conditional*>(branch->alternate())) {
+      branch = std::get<Conditional*>(branch->alternate());
+    } else {
+      blocks.push_back(std::get<StatementBlock*>(branch->alternate()));
+      branch = nullptr;
+    }
+  }
   return blocks;
 }
 
