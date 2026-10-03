@@ -673,6 +673,15 @@ std::string DslxTypeToVerilogManager::NominalName(
              : known->second;
 }
 
+absl::StatusOr<std::string> DslxTypeToVerilogManager::SumPayloadNominalName(
+    const AstNode& nominal) const {
+  const auto* record = dynamic_cast<const StructDef*>(&nominal);
+  const auto* enumeration = dynamic_cast<const EnumDef*>(&nominal);
+  XLS_RET_CHECK(record != nullptr || enumeration != nullptr);
+  return NominalName(nominal, record != nullptr ? record->identifier()
+                                                : enumeration->identifier());
+}
+
 std::string DslxTypeToVerilogManager::OrdinaryTypeNameCandidate(
     const AstNode& node, std::string_view identifier, bool is_sum_payload,
     bool use_nominal_name) const {
@@ -828,12 +837,7 @@ absl::Status DslxTypeToVerilogManager::MarkSumPayloadNominals(
     auto* reference = dynamic_cast<verilog::TypedefType*>(known->second);
     XLS_RET_CHECK(reference != nullptr);
     std::string previous = reference->type_def()->GetName();
-    auto* record = dynamic_cast<const StructDef*>(nominal);
-    auto* enumeration = dynamic_cast<const EnumDef*>(nominal);
-    XLS_RET_CHECK(record != nullptr || enumeration != nullptr);
-    std::string repaired =
-        NominalName(*nominal, record != nullptr ? record->identifier()
-                                                : enumeration->identifier());
+    XLS_ASSIGN_OR_RETURN(std::string repaired, SumPayloadNominalName(*nominal));
     if (previous != repaired) {
       if (!next_allocated_names.has_value()) {
         next_allocated_names.emplace(allocated_package_names_);
@@ -896,10 +900,7 @@ absl::Status DslxTypeToVerilogManager::ReprojectSumPayloadNominal(
         RegisterOrdinaryEnum(*enum_definition, /*projected=*/true));
   }
   if (ordinary_source_named_types_.contains(&nominal)) {
-    std::string source_name = record_definition != nullptr
-                                  ? record_definition->identifier()
-                                  : enum_definition->identifier();
-    std::string repaired = NominalName(nominal, source_name);
+    XLS_ASSIGN_OR_RETURN(std::string repaired, SumPayloadNominalName(nominal));
     if (repaired != declaration->GetName()) {
       const std::string previous = declaration->GetName();
       std::string allocated = ClaimVisibleName(repaired, *typedef_name_uniquer_,
@@ -1071,6 +1072,29 @@ absl::Status DslxTypeToVerilogManager::CheckOrdinaryNameAgainstSumAliases(
         declaration->type_def()->data_type());
     return SumAliasConflict(name, canonical->type_def()->GetName());
   }
+}
+
+absl::StatusOr<DslxTypeToVerilogManager::SumSpecializationClaim>
+DslxTypeToVerilogManager::ClaimSumSpecialization(
+    const SumType& sum, std::string_view family,
+    SumSpecializationOwners& owners) {
+  SumSpecializationClaim claim;
+  if (!sum.specialization_arguments().empty()) {
+    XLS_ASSIGN_OR_RETURN(claim.suffix, sum_identities_.SpecializationName(sum));
+    XLS_ASSIGN_OR_RETURN(std::string identity,
+                         sum_identities_.TypeIdentity(sum));
+    auto [existing, inserted] =
+        owners[&sum.nominal_type()].emplace(claim.suffix, identity);
+    if (inserted) {
+      claim.inserted = true;
+    } else if (existing->second != identity) {
+      return absl::InvalidArgumentError(absl::StrFormat(
+          "Different specializations of DSLX sum `%s` have the same "
+          "SystemVerilog spelling `%s%s`",
+          sum.nominal_type().identifier(), family, claim.suffix));
+    }
+  }
+  return claim;
 }
 
 absl::Status DslxTypeToVerilogManager::PlanSumFamilyNames(
@@ -1544,25 +1568,13 @@ absl::Status DslxTypeToVerilogManager::CheckExportNames(
     } else {
       family.name = nominal->second;
     }
-    std::string specialization;
-    if (!sum.specialization_arguments().empty()) {
-      XLS_ASSIGN_OR_RETURN(specialization,
-                           sum_identities_.SpecializationName(sum));
-      XLS_ASSIGN_OR_RETURN(std::string identity,
-                           sum_identities_.TypeIdentity(sum));
-      auto& owners = specialization_owners[&sum.nominal_type()];
-      auto [existing, inserted] = owners.emplace(specialization, identity);
-      if (!inserted && existing->second != identity) {
-        return absl::InvalidArgumentError(absl::StrFormat(
-            "Different specializations of DSLX sum `%s` have the same "
-            "SystemVerilog spelling `%s%s`",
-            sum.nominal_type().identifier(), family.name, specialization));
-      }
-    }
+    XLS_ASSIGN_OR_RETURN(
+        SumSpecializationClaim specialization,
+        ClaimSumSpecialization(sum, family.name, specialization_owners));
     XLS_ASSIGN_OR_RETURN(TypeDim payload_dim, sum.GetMaxPayloadBitCount());
     XLS_ASSIGN_OR_RETURN(int64_t payload_width, payload_dim.GetAsInt64());
-    XLS_RETURN_IF_ERROR(PlanSumFamilyNames(sum, specialization, payload_width,
-                                           family, allocate_sum));
+    XLS_RETURN_IF_ERROR(PlanSumFamilyNames(
+        sum, specialization.suffix, payload_width, family, allocate_sum));
     visited.emplace_back(&sum, family.name);
     bool needs_enum_update = enum_names.projected.contains(family.name);
     emitted_sums.insert(family.name);
@@ -1588,12 +1600,8 @@ absl::Status DslxTypeToVerilogManager::CheckExportNames(
       auto known = converted.find(nominal);
       if (known != converted.end() && ordinary_source_names.contains(nominal)) {
         const std::string& previous = known->second;
-        auto* record = dynamic_cast<const StructDef*>(nominal);
-        auto* enumeration = dynamic_cast<const EnumDef*>(nominal);
-        XLS_RET_CHECK(record != nullptr || enumeration != nullptr);
-        std::string repaired = NominalName(
-            *nominal, record != nullptr ? record->identifier()
-                                        : enumeration->identifier());
+        XLS_ASSIGN_OR_RETURN(std::string repaired,
+                             SumPayloadNominalName(*nominal));
         if (previous != repaired) {
           if (allocated.contains(repaired) ||
               ClaimVisibleName(repaired, uniquer, ephemeral) != repaired) {
@@ -1870,25 +1878,14 @@ absl::StatusOr<verilog::DataType*> DslxTypeToVerilogManager::SumToVastType(
     } else {
       owner->name = nominal->second;
     }
-    std::string specialization;
-    if (!sum.specialization_arguments().empty()) {
-      XLS_ASSIGN_OR_RETURN(specialization,
-                           sum_identities_.SpecializationName(sum));
-      XLS_ASSIGN_OR_RETURN(std::string identity,
-                           sum_identities_.TypeIdentity(sum));
-      auto& owners = sum_specialization_owners_[&sum.nominal_type()];
-      auto [existing, inserted] = owners.emplace(specialization, identity);
-      if (inserted) {
-        claimed_specialization = specialization;
-      } else if (existing->second != identity) {
-        return absl::InvalidArgumentError(absl::StrFormat(
-            "Different specializations of DSLX sum `%s` have the same "
-            "SystemVerilog spelling `%s%s`",
-            sum.nominal_type().identifier(), owner->name, specialization));
-      }
+    XLS_ASSIGN_OR_RETURN(
+        SumSpecializationClaim specialization,
+        ClaimSumSpecialization(sum, owner->name, sum_specialization_owners_));
+    if (specialization.inserted) {
+      claimed_specialization = specialization.suffix;
     }
-    XLS_RETURN_IF_ERROR(PlanSumFamilyNames(sum, specialization, payload_width,
-                                           *owner, allocate));
+    XLS_RETURN_IF_ERROR(PlanSumFamilyNames(sum, specialization.suffix,
+                                           payload_width, *owner, allocate));
 
     // Reject fixed alias collisions before this new family changes the package.
     std::optional<std::string_view> pending_alias;
