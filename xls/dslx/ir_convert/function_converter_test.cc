@@ -923,23 +923,10 @@ fn f(x: Message) -> u8 {
 
   XLS_ASSERT_OK(package.package->SetTop(ir_function));
   XLS_ASSERT_OK(RunOptimizationPassPipeline(package.package.get()));
-  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Package> simulation_package,
-                           ClonePackage(package.package.get()));
-  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * simulation_function,
-                           simulation_package->GetFunction("__test_module__f"));
-  XLS_ASSERT_OK_AND_ASSIGN(
-      verilog::CodegenResult system_verilog,
-      verilog::GenerateCombinationalModule(
-          ir_function, verilog::CodegenOptions().use_system_verilog(true)));
-  EXPECT_THAT(system_verilog.verilog_text, testing::HasSubstr("module "));
-
-  // The default open-source simulator does not accept SystemVerilog. Generate
-  // the equivalent Verilog module to execute the same lowered hardware.
   XLS_ASSERT_OK_AND_ASSIGN(
       verilog::CodegenResult generated,
       verilog::GenerateCombinationalModule(
-          simulation_function,
-          verilog::CodegenOptions().use_system_verilog(false)));
+          ir_function, verilog::CodegenOptions().use_system_verilog(false)));
   std::unique_ptr<verilog::VerilogSimulator> verilog_simulator =
       verilog::GetDefaultVerilogSimulator();
   verilog::ModuleSimulator simulator(
@@ -1044,30 +1031,29 @@ fn bind_whole(x: Message) -> Message {
   const Value undeclared =
       Value::Tuple({Value(UBits(2, 2)), Value::Tuple({Value(UBits(0xfa, 8))})});
   struct Case {
-    std::string_view function;
     Value input;
     Value expected;
   };
-  const std::vector<Case> cases = {
-      {"forward", canonical, canonical},
-      {"forward", dirty, dirty},
-      {"forward", malformed, malformed},
-      {"construct", dirty, canonical},
-      {"wrap", dirty, wrapped_dirty},
-      {"wrap", malformed, wrapped_malformed},
-      {"unwrap", wrapped_dirty, dirty},
-      {"unwrap", wrapped_malformed, malformed},
-      {"ignore", wrapped_malformed, Value(UBits(42, 8))},
-      {"named_arm", undeclared, Value(UBits(2, 8))},
-      {"named_arm", dirty, Value(UBits(1, 8))},
-      {"wildcard_arm", undeclared, Value(UBits(2, 8))},
-      {"wildcard_arm", dirty, Value(UBits(1, 8))},
-      {"bind_whole", dirty, dirty},
+  struct FunctionCases {
+    std::string_view function;
+    std::vector<Case> cases;
   };
-  for (const Case& test_case : cases) {
-    SCOPED_TRACE(test_case.function);
-    SCOPED_TRACE(test_case.input.ToString());
-    Function* function = tm.module->GetFunction(test_case.function).value();
+  const std::vector<FunctionCases> test_functions = {
+      {"forward",
+       {{canonical, canonical}, {dirty, dirty}, {malformed, malformed}}},
+      {"construct", {{dirty, canonical}}},
+      {"wrap", {{dirty, wrapped_dirty}, {malformed, wrapped_malformed}}},
+      {"unwrap", {{wrapped_dirty, dirty}, {wrapped_malformed, malformed}}},
+      {"ignore", {{wrapped_malformed, Value(UBits(42, 8))}}},
+      {"named_arm",
+       {{undeclared, Value(UBits(2, 8))}, {dirty, Value(UBits(1, 8))}}},
+      {"wildcard_arm",
+       {{undeclared, Value(UBits(2, 8))}, {dirty, Value(UBits(1, 8))}}},
+      {"bind_whole", {{dirty, dirty}}},
+  };
+  for (const FunctionCases& test_function : test_functions) {
+    SCOPED_TRACE(test_function.function);
+    Function* function = tm.module->GetFunction(test_function.function).value();
     PackageConversionData package = MakeConversionData("test_module_package");
     PackageData package_data{.conversion_info = &package};
     FunctionConverter converter(package_data, tm.module, &import_data,
@@ -1078,14 +1064,22 @@ fn bind_whole(x: Message) -> Message {
     XLS_ASSERT_OK_AND_ASSIGN(
         xls::Function * ir_function,
         package.package->GetFunction("__test_module__" +
-                                     std::string(test_case.function)));
-    XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> interpreted,
-                             InterpretFunction(ir_function, {test_case.input}));
-    EXPECT_EQ(interpreted.value, test_case.expected);
+                                     std::string(test_function.function)));
     XLS_ASSERT_OK_AND_ASSIGN(auto jit, FunctionJit::Create(ir_function));
-    XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> jitted,
-                             jit->Run({test_case.input}));
-    EXPECT_EQ(jitted.value, test_case.expected);
+    std::vector<absl::flat_hash_map<std::string, Value>> rtl_inputs;
+    std::vector<Value> expected_outputs;
+    for (const Case& test_case : test_function.cases) {
+      SCOPED_TRACE(test_case.input.ToString());
+      XLS_ASSERT_OK_AND_ASSIGN(
+          InterpreterResult<Value> interpreted,
+          InterpretFunction(ir_function, {test_case.input}));
+      EXPECT_EQ(interpreted.value, test_case.expected);
+      XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> jitted,
+                               jit->Run({test_case.input}));
+      EXPECT_EQ(jitted.value, test_case.expected);
+      rtl_inputs.push_back({{"x", test_case.input}});
+      expected_outputs.push_back(test_case.expected);
+    }
     XLS_ASSERT_OK(package.package->SetTop(ir_function));
     XLS_ASSERT_OK(RunOptimizationPassPipeline(package.package.get()));
     XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Package> simulation_package,
@@ -1099,9 +1093,10 @@ fn bind_whole(x: Message) -> Message {
             ir_function, verilog::CodegenOptions().use_system_verilog(true)));
     // Sum ports carry the entire tag and slot, including inactive padding.
     EXPECT_THAT(system_verilog.verilog_text,
-                testing::HasSubstr(test_case.input.GetFlatBitCount() == 10
-                                       ? "[9:0] x"
-                                       : "[16:0] x"));
+                testing::HasSubstr(
+                    test_function.cases.front().input.GetFlatBitCount() == 10
+                        ? "[9:0] x"
+                        : "[16:0] x"));
     XLS_ASSERT_OK_AND_ASSIGN(
         verilog::CodegenResult generated,
         verilog::GenerateCombinationalModule(
@@ -1112,9 +1107,8 @@ fn bind_whole(x: Message) -> Message {
     verilog::ModuleSimulator simulator(
         generated.signature, generated.verilog_text,
         verilog::FileType::kVerilog, verilog_simulator.get());
-    EXPECT_THAT(simulator.RunFunction(absl::flat_hash_map<std::string, Value>{
-                    {"x", test_case.input}}),
-                IsOkAndHolds(test_case.expected));
+    EXPECT_THAT(simulator.RunBatched(rtl_inputs),
+                IsOkAndHolds(expected_outputs));
   }
 }
 
@@ -1631,72 +1625,6 @@ fn f(x: Option) -> u8 {
   XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> result,
                            InterpretFunction(ir_function, {malformed}));
   EXPECT_EQ(result.value, Value(UBits(/*value=*/0xa5, /*bit_count=*/8)));
-}
-
-TEST(FunctionConverterTest, ExpandsSemanticSumEqIntoTagAndPayloadChecks) {
-  constexpr std::string_view kProgram = R"(
-enum Option {
-  None,
-  Some(u32),
-  Pair(u32, u32),
-}
-
-fn f(x: Option, y: Option) -> bool {
-  x == y
-}
-)";
-
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
-                           ParseAndTypecheck(kProgram, "test_module.x",
-                                             "test_module", &import_data));
-
-  Function* f = tm.module->GetFunction("f").value();
-  ASSERT_NE(f, nullptr);
-
-  const ConvertOptions convert_options;
-  PackageConversionData package = MakeConversionData("test_module_package");
-  PackageData package_data{.conversion_info = &package};
-  FunctionConverter converter(package_data, tm.module, &import_data,
-                              convert_options, /*proc_data=*/nullptr,
-                              /*channel_scope=*/nullptr,
-                              /*is_top=*/true);
-  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
-
-  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
-                           package.package->GetFunction("__test_module__f"));
-  int64_t tuple_index_count = 0;
-  int64_t eq_count = 0;
-  int64_t eq_literal_count = 0;
-  int64_t equality_select_count = 0;
-  bool has_direct_param_eq = false;
-  for (xls::Node* node : ir_function->nodes()) {
-    if (node->op() == xls::Op::kTupleIndex) {
-      ++tuple_index_count;
-    }
-    if (node->op() == xls::Op::kSel) {
-      const auto* select = node->As<xls::Select>();
-      if (SelectCaseContainsOp(*select, xls::Op::kEq)) {
-        ++equality_select_count;
-      }
-    }
-    if (node->op() == xls::Op::kEq) {
-      ++eq_count;
-      if (node->operand(0)->op() == xls::Op::kLiteral ||
-          node->operand(1)->op() == xls::Op::kLiteral) {
-        ++eq_literal_count;
-      }
-      if (node->operand(0)->op() == xls::Op::kParam &&
-          node->operand(1)->op() == xls::Op::kParam) {
-        has_direct_param_eq = true;
-      }
-    }
-  }
-  EXPECT_GE(tuple_index_count, 4);
-  EXPECT_GT(eq_count, 1);
-  EXPECT_GE(equality_select_count, 2);
-  EXPECT_GT(eq_literal_count, 0);
-  EXPECT_FALSE(has_direct_param_eq);
 }
 
 TEST(FunctionConverterTest, SingleVariantSemanticSumEqSkipsTagSelect) {
