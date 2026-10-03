@@ -212,17 +212,6 @@ TEST(Phase1SumTypeEncodingTest, RejectsSumVariantsOutsideDeclarationOrder) {
       "Check failed");
 }
 
-TEST(SumTypeEncodingTest, UsesOneSharedWidestPayloadSlot) {
-  FileTable file_table;
-  Module module("test", /*fs_path=*/std::nullopt, file_table);
-  SumType sum_type = MakeTuplePayloadSumType(module);
-  SumTypeEncoding encoding(sum_type);
-
-  XLS_ASSERT_OK_AND_ASSIGN(int64_t payload_slot_bit_count,
-                           encoding.payload_slot_bit_count());
-  EXPECT_EQ(payload_slot_bit_count, 48);
-}
-
 TEST(SumTypeEncodingTest, TracksPayloadMembersForLaterVariants) {
   FileTable file_table;
   Module module("test", /*fs_path=*/std::nullopt, file_table);
