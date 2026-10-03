@@ -1034,76 +1034,45 @@ fn f(x: Option) -> u32 {
               testing::HasSubstr("bound: v"))));
 }
 
-TEST(FunctionConverterTest, SemanticSumEqualityDoesNotRequireImplicitToken) {
-  constexpr std::string_view kProgram = R"(
+TEST(FunctionConverterTest, SemanticSumComparisonsDoNotRequireImplicitToken) {
+  auto check = [](const char* expression, const char* phase1_label) {
+    SCOPED_TRACE(expression);
+    const std::string program = std::string(R"(
 enum Option {
   None,
   Some(u32),
 }
 
 fn f(x: Option, y: Option) -> bool {
-  x == y
+  )") + expression + R"(
 }
 )";
 
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
-                           ParseAndTypecheck(kProgram, "test_module.x",
-                                             "test_module", &import_data));
+    ImportData import_data = CreateImportDataForTest();
+    XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                             ParseAndTypecheck(program, "test_module.x",
+                                               "test_module", &import_data));
 
-  Function* f = tm.module->GetFunction("f").value();
-  ASSERT_NE(f, nullptr);
-  EXPECT_FALSE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
+    Function* f = tm.module->GetFunction("f").value();
+    ASSERT_NE(f, nullptr);
+    EXPECT_FALSE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
 
-  const ConvertOptions convert_options;
-  PackageConversionData package = MakeConversionData("test_module_package");
-  PackageData package_data{.conversion_info = &package};
-  FunctionConverter converter(package_data, tm.module, &import_data,
-                              convert_options, /*proc_data=*/nullptr,
-                              /*channel_scope=*/nullptr,
-                              /*is_top=*/true);
-  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+    const ConvertOptions convert_options;
+    PackageConversionData package = MakeConversionData("test_module_package");
+    PackageData package_data{.conversion_info = &package};
+    FunctionConverter converter(package_data, tm.module, &import_data,
+                                convert_options, /*proc_data=*/nullptr,
+                                /*channel_scope=*/nullptr,
+                                /*is_top=*/true);
+    XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
 
-  EXPECT_THAT(package.DumpIr(),
-              testing::Not(testing::HasSubstr("phase1_sum_equality")));
-  EXPECT_THAT(package.DumpIr(),
-              testing::Not(testing::HasSubstr("__itok__test_module__f")));
-}
-
-TEST(FunctionConverterTest, SemanticSumInequalityDoesNotRequireImplicitToken) {
-  constexpr std::string_view kProgram = R"(
-enum Option {
-  None,
-  Some(u32),
-}
-
-fn f(x: Option, y: Option) -> bool {
-  x != y
-}
-)";
-
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
-                           ParseAndTypecheck(kProgram, "test_module.x",
-                                             "test_module", &import_data));
-
-  Function* f = tm.module->GetFunction("f").value();
-  ASSERT_NE(f, nullptr);
-  EXPECT_FALSE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
-
-  const ConvertOptions convert_options;
-  PackageConversionData package = MakeConversionData("test_module_package");
-  PackageData package_data{.conversion_info = &package};
-  FunctionConverter converter(package_data, tm.module, &import_data,
-                              convert_options, /*proc_data=*/nullptr,
-                              /*channel_scope=*/nullptr,
-                              /*is_top=*/true);
-  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
-
-  EXPECT_THAT(package.DumpIr(),
-              testing::Not(testing::HasSubstr("phase1_sum_inequality")));
-  EXPECT_THAT(package.DumpIr(),
-              testing::Not(testing::HasSubstr("__itok__test_module__f")));
+    EXPECT_THAT(package.DumpIr(),
+                testing::Not(testing::HasSubstr(phase1_label)));
+    EXPECT_THAT(package.DumpIr(),
+                testing::Not(testing::HasSubstr("__itok__test_module__f")));
+  };
+  check("x == y", "phase1_sum_equality");
+  check("x != y", "phase1_sum_inequality");
 }
 
 TEST(FunctionConverterTest,
