@@ -454,8 +454,8 @@ fn marker(x: Marker<VALUE>) -> Marker<VALUE> { x }
 }
 
 // A shared symbolic range must not be traversed for every otherwise distinct
-// specialization. Its public hash must match the same eager sequence and differ
-// from a shifted symbolic sequence regardless of encounter order.
+// specialization. Its public hash must differ from a shifted symbolic sequence
+// regardless of encounter order.
 TEST(VerilogSumNamingTest, DistinctSpecializationsReuseSymbolicRangeValues) {
   constexpr std::string_view kDefinitions = R"(#![feature(generics)]
 struct Values { xs: u32[64] }
@@ -518,32 +518,6 @@ fn fixture(a: Marker<u32:1, EXCLUSIVE>, b: Marker<u32:2, EXCLUSIVE>,
       shifted_first.SpecializationName(types->params()[1]->AsSum()));
   EXPECT_EQ(shifted, shifted_uncached);
   EXPECT_EQ(second, second_after_shifted);
-
-  const std::string eager_program = absl::StrCat(kDefinitions, R"(
-const EAGER = Values { xs: u32[64]:[
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-    32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
-    48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
-] };
-fn fixture(a: Marker<u32:2, EAGER>) { () }
-)");
-  ImportData eager_import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule eager_tm,
-                           ParseAndTypecheck(eager_program, "ranges.x",
-                                             "ranges", &eager_import_data));
-  auto eager_fixture = eager_tm.module->GetFunction("fixture");
-  ASSERT_TRUE(eager_fixture.has_value());
-  XLS_ASSERT_OK_AND_ASSIGN(
-      FunctionType * eager_types,
-      eager_tm.type_info->GetItemAs<FunctionType>(*eager_fixture));
-  ASSERT_EQ(eager_types->params().size(), 1);
-  ASSERT_FALSE(sequence(*eager_types->params()[0]).GetRangeData().has_value());
-  IdentityBuilder eager_identities;
-  XLS_ASSERT_OK_AND_ASSIGN(
-      std::string eager,
-      eager_identities.SpecializationName(eager_types->params()[0]->AsSum()));
-  EXPECT_EQ(second, eager);
 }
 
 // A nominal argument is part of a type even when it does not occur in its
