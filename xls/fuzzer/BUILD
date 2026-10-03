@@ -829,7 +829,7 @@ cc_test(
     name = "semantic_sum_diagnostic_fuzz_test",
     srcs = ["semantic_sum_diagnostic_fuzz_test.cc"],
     deps = [
-        ":semantic_sum_fuzz_main",
+        "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
         "//xls/dslx:create_import_data",
         "//xls/dslx:import_data",
@@ -846,7 +846,7 @@ cc_test(
     name = "semantic_sum_observer_fuzz_test",
     srcs = ["semantic_sum_observer_fuzz_test.cc"],
     deps = [
-        ":semantic_sum_fuzz_main",
+        "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
         "//xls/common/status:status_macros",
         "//xls/dslx:create_import_data",
