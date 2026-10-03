@@ -514,8 +514,8 @@ cc_test(
     deps = [
         ":c_api",
         ":c_api_dslx",
+        "//xls/common:xls_gunit_main",
         "//xls/dslx:default_dslx_stdlib_path",
-        "//xls/fuzzer:semantic_sum_fuzz_main",
         "@abseil-cpp//absl/cleanup",
         "@abseil-cpp//absl/strings",
         "@com_google_fuzztest//fuzztest",

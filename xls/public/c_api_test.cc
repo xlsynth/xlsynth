@@ -4424,7 +4424,7 @@ fn test_spawn() {
   xls_c_str_free(text);
 }
 
-enum class MetadataWaiter { kNone, kEnum, kConstExpr };
+enum class MetadataWaiter { kEnum, kConstExpr };
 enum class MetadataTemperature { kCold, kWarm };
 
 void ExpectMetadataDoesNotWaitForUnrelatedParse(
@@ -4542,7 +4542,7 @@ void ExpectMetadataDoesNotWaitForUnrelatedParse(
   bool parse_ok = false;
   bool metadata_ok = false;
   bool const_expr_ok = false;
-  bool waiter_ok = waiter == MetadataWaiter::kNone;
+  bool waiter_ok = false;
   parse_worker = std::thread([&] {
     parse_ok = xls_dslx_parse_and_typecheck("fn identity(x: u8) -> u8 { x }",
                                             "busy_parse.x", "busy_parse",
@@ -4550,8 +4550,8 @@ void ExpectMetadataDoesNotWaitForUnrelatedParse(
   });
   const bool parse_is_held =
       parse_entered.WaitForNotificationWithTimeout(absl::Seconds(10));
-  bool waiter_is_selected = waiter == MetadataWaiter::kNone;
-  if (parse_is_held && waiter != MetadataWaiter::kNone) {
+  bool waiter_is_selected = false;
+  if (parse_is_held) {
     waiter_worker = std::thread([&] {
       if (waiter == MetadataWaiter::kEnum) {
         waiter_ok = xls_dslx_interp_value_make_enum(
@@ -4588,17 +4588,7 @@ void ExpectMetadataDoesNotWaitForUnrelatedParse(
   EXPECT_TRUE(const_expr_ok) << const_expr_error;
   EXPECT_NE(value, nullptr);
   EXPECT_NE(const_expr_value, nullptr);
-  if (waiter != MetadataWaiter::kNone) {
-    EXPECT_NE(waiter_value, nullptr);
-  }
-}
-
-TEST(XlsCApiTest, EnumMetadataDoesNotWaitForUnrelatedParse) {
-  for (auto temperature :
-       {MetadataTemperature::kCold, MetadataTemperature::kWarm}) {
-    ExpectMetadataDoesNotWaitForUnrelatedParse(MetadataWaiter::kNone,
-                                               temperature);
-  }
+  EXPECT_NE(waiter_value, nullptr);
 }
 
 TEST(XlsCApiTest, EnumMetadataDoesNotWaitForBlockedEnumMetadata) {
