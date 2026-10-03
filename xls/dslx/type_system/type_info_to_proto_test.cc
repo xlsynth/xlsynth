@@ -855,7 +855,7 @@ fn f(three: E<u32:3, u3:5>, five: E<u32:5, u5:17>) -> u1 { u1:0 }
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
-       RejectsOverlongDependentScalarSumArgumentBytes) {
+       RejectsInvalidDependentScalarSumArgumentBytes) {
   constexpr std::string_view kProgram = R"(#![feature(generics)]
 enum E<N: u32, V: uN[N]> { A, B(u1) }
 fn f(value: E<u32:5, u5:17>) -> u1 { u1:0 }
@@ -882,25 +882,6 @@ fn f(value: E<u32:5, u5:17>) -> u1 { u1:0 }
   bits->set_data(std::string("\xff\x11", 2));
   EXPECT_THAT(ToHumanString(bad, import_data, import_data.file_table()),
               absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
-}
-
-TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
-       RejectsShortAndInvalidWidthDependentScalarSumArgumentBytes) {
-  constexpr std::string_view kProgram = R"(#![feature(generics)]
-enum E<N: u32, V: uN[N]> { A, B(u1) }
-fn f(value: E<u32:5, u5:17>) -> u1 { u1:0 }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(kProgram, "fake.x", "fake", &import_data));
-  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto written,
-                           TypeInfoToProto(*tm.type_info, tm.module));
-  TypeInfoProto parsed;
-  ASSERT_TRUE(parsed.ParseFromString(written.SerializeAsString()));
-  const AstNodeTypeInfoProto* node = FindParameterNode(parsed);
-  ASSERT_NE(node, nullptr);
-  XLS_EXPECT_OK(ToHumanString(*node, import_data, import_data.file_table()));
   for (std::optional<int32_t> width :
        {std::optional<int32_t>(9), std::optional<int32_t>(-1),
         std::optional<int32_t>(),

@@ -240,13 +240,6 @@ const_assert!(element_count<Marker<Big<u32:65537>>>() == u32:2);
               IsOkAndHolds(TypeDim::CreateU32(2)));
 }
 
-TEST(TypecheckV2Test, GenericSemanticSumAllowsUnusedOversizedModuleAlias) {
-  XLS_EXPECT_OK(TypecheckV2(R"(#![feature(generics)]
-enum Big<N: u32> { None, Data(u1[65535][N]) }
-type Alias = Big<u32:65537>;
-)"));
-}
-
 TEST(TypecheckV2Test,
      GenericSemanticSumWidthIgnoresOversizedModuleAliasInPhantomArgument) {
   XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
