@@ -5978,11 +5978,11 @@ pub fn main() -> u32 {
   xls_c_str_free(unique_caller_text);
 }
 
-TEST(XlsCApiTest, DslxBuiltinInvocationBindingsWithoutDerivedTypeInfo) {
+void ExpectInvocationCallerBindingsAfterOwnerDestruction(
+    const char* program, const char* module_name) {
   auto* owner = xls_dslx_import_data_create(
       std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
   xls_dslx_typechecked_module* tm = nullptr;
-  xls_dslx_call_graph* graph = nullptr;
   xls_dslx_invocation_callee_data_array* array = nullptr;
   xls_dslx_parametric_env* clone = nullptr;
   char* error = nullptr;
@@ -5990,41 +5990,39 @@ TEST(XlsCApiTest, DslxBuiltinInvocationBindingsWithoutDerivedTypeInfo) {
     xls_c_str_free(error);
     xls_dslx_parametric_env_free(clone);
     xls_dslx_invocation_callee_data_array_free(array);
-    xls_dslx_call_graph_free(graph);
     xls_dslx_typechecked_module_free(tm);
     xls_dslx_import_data_free(owner);
   });
-  ASSERT_TRUE(xls_dslx_parse_and_typecheck(
-      "pub fn main() -> u8 { clz(u8:1) }", "builtin_bindings.x",
-      "builtin_bindings", owner, &error, &tm))
+  const std::string path = std::string(module_name) + ".x";
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(program, path.c_str(), module_name,
+                                           owner, &error, &tm))
       << error;
   auto* module = xls_dslx_typechecked_module_get_module(tm);
   auto* type_info = xls_dslx_typechecked_module_get_type_info(tm);
-  auto* main = xls_dslx_module_member_get_function(
-      xls_dslx_module_get_member(module, 0));
-  ASSERT_TRUE(xls_dslx_type_info_build_function_call_graph_for_module(
-      type_info, module, &error, &graph));
-  ASSERT_EQ(xls_dslx_call_graph_get_callee_count(graph, main), 1);
-  auto* builtin = xls_dslx_call_graph_get_callee_function(graph, main, 0);
+  auto* function = xls_dslx_module_member_get_function(
+      xls_dslx_module_get_member(module, 1));
+  ASSERT_NE(function, nullptr);
   array =
-      xls_dslx_type_info_get_unique_invocation_callee_data(type_info, builtin);
+      xls_dslx_type_info_get_unique_invocation_callee_data(type_info, function);
   ASSERT_EQ(xls_dslx_invocation_callee_data_array_get_count(array), 1);
   auto* data = xls_dslx_invocation_callee_data_array_get(array, 0);
-  EXPECT_EQ(xls_dslx_invocation_callee_data_get_derived_type_info(data),
-            nullptr);
-  clone = xls_dslx_parametric_env_clone(
+  char* callee_text = xls_dslx_parametric_env_to_string(
       xls_dslx_invocation_callee_data_get_callee_bindings(data));
+  EXPECT_STREQ(callee_text, "{W: Choice::Some(u8:3)}");
+  xls_c_str_free(callee_text);
+
+  // The caller environment must retain nominal formatting after its owner dies.
+  clone = xls_dslx_parametric_env_clone(
+      xls_dslx_invocation_callee_data_get_caller_bindings(data));
   xls_dslx_invocation_callee_data_array_free(array);
   array = nullptr;
-  xls_dslx_call_graph_free(graph);
-  graph = nullptr;
   xls_dslx_typechecked_module_free(tm);
   tm = nullptr;
   xls_dslx_import_data_free(owner);
   owner = nullptr;
-  char* text = xls_dslx_parametric_env_to_string(clone);
-  EXPECT_STREQ(text, "{N: u32:8}");
-  xls_c_str_free(text);
+  char* caller_text = xls_dslx_parametric_env_to_string(clone);
+  EXPECT_STREQ(caller_text, "{V: Choice::Some(u8:3)}");
+  xls_c_str_free(caller_text);
 }
 
 TEST(XlsCApiTest, DslxInvocationCallerBindingsFromParametricStructDefault) {
@@ -6034,50 +6032,11 @@ fn f<W: Choice>() -> u32 { u32:1 }
 struct S<V: Choice, N: u32 = {f<V>()}> {}
 type T = S<{Choice::Some(u8:3)}>;
 )";
-  auto* owner = xls_dslx_import_data_create(
-      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
-  xls_dslx_typechecked_module* tm = nullptr;
-  xls_dslx_invocation_callee_data_array* array = nullptr;
-  xls_dslx_parametric_env* clone = nullptr;
-  char* error = nullptr;
-  absl::Cleanup cleanup([&] {
-    xls_c_str_free(error);
-    xls_dslx_parametric_env_free(clone);
-    xls_dslx_invocation_callee_data_array_free(array);
-    xls_dslx_typechecked_module_free(tm);
-    xls_dslx_import_data_free(owner);
-  });
-  ASSERT_TRUE(xls_dslx_parse_and_typecheck(
-      kProgram, "struct_default.x", "struct_default", owner, &error, &tm))
-      << error;
-  auto* module = xls_dslx_typechecked_module_get_module(tm);
-  auto* type_info = xls_dslx_typechecked_module_get_type_info(tm);
-  auto* function = xls_dslx_module_member_get_function(
-      xls_dslx_module_get_member(module, 1));
-  ASSERT_NE(function, nullptr);
-  array =
-      xls_dslx_type_info_get_unique_invocation_callee_data(type_info, function);
-  ASSERT_EQ(xls_dslx_invocation_callee_data_array_get_count(array), 1);
-  auto* data = xls_dslx_invocation_callee_data_array_get(array, 0);
-  char* callee_text = xls_dslx_parametric_env_to_string(
-      xls_dslx_invocation_callee_data_get_callee_bindings(data));
-  EXPECT_STREQ(callee_text, "{W: Choice::Some(u8:3)}");
-  xls_c_str_free(callee_text);
-
   // The type alias evaluates S's default without constructing a struct value
   // or rewriting member types through the bits-only inference path. The call
   // belongs to S, not a function; V is an env key and the defaulted N is not.
-  clone = xls_dslx_parametric_env_clone(
-      xls_dslx_invocation_callee_data_get_caller_bindings(data));
-  xls_dslx_invocation_callee_data_array_free(array);
-  array = nullptr;
-  xls_dslx_typechecked_module_free(tm);
-  tm = nullptr;
-  xls_dslx_import_data_free(owner);
-  owner = nullptr;
-  char* caller_text = xls_dslx_parametric_env_to_string(clone);
-  EXPECT_STREQ(caller_text, "{V: Choice::Some(u8:3)}");
-  xls_c_str_free(caller_text);
+  ExpectInvocationCallerBindingsAfterOwnerDestruction(kProgram,
+                                                      "struct_default");
 }
 
 TEST(XlsCApiTest, DslxInvocationCallerBindingsFromParametricSumDiscriminant) {
@@ -6087,49 +6046,9 @@ fn f<W: Choice>() -> u32 { u32:1 }
 enum E<V: Choice>: u32 { A() = f<V>() }
 type T = E<{Choice::Some(u8:3)}>;
 )";
-  auto* owner = xls_dslx_import_data_create(
-      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
-  xls_dslx_typechecked_module* tm = nullptr;
-  xls_dslx_invocation_callee_data_array* array = nullptr;
-  xls_dslx_parametric_env* clone = nullptr;
-  char* error = nullptr;
-  absl::Cleanup cleanup([&] {
-    xls_c_str_free(error);
-    xls_dslx_parametric_env_free(clone);
-    xls_dslx_invocation_callee_data_array_free(array);
-    xls_dslx_typechecked_module_free(tm);
-    xls_dslx_import_data_free(owner);
-  });
-  ASSERT_TRUE(xls_dslx_parse_and_typecheck(
-      kProgram, "sum_discriminant.x", "sum_discriminant", owner, &error, &tm))
-      << error;
-  auto* module = xls_dslx_typechecked_module_get_module(tm);
-  auto* type_info = xls_dslx_typechecked_module_get_type_info(tm);
-  auto* function = xls_dslx_module_member_get_function(
-      xls_dslx_module_get_member(module, 1));
-  ASSERT_NE(function, nullptr);
-  array =
-      xls_dslx_type_info_get_unique_invocation_callee_data(type_info, function);
-  ASSERT_EQ(xls_dslx_invocation_callee_data_array_get_count(array), 1);
-  auto* data = xls_dslx_invocation_callee_data_array_get(array, 0);
-  char* callee_text = xls_dslx_parametric_env_to_string(
-      xls_dslx_invocation_callee_data_get_callee_bindings(data));
-  EXPECT_STREQ(callee_text, "{W: Choice::Some(u8:3)}");
-  xls_c_str_free(callee_text);
-
-  // The call belongs to E's discriminant, not an enclosing function. Its
-  // cloned environment must retain nominal formatting after the owner dies.
-  clone = xls_dslx_parametric_env_clone(
-      xls_dslx_invocation_callee_data_get_caller_bindings(data));
-  xls_dslx_invocation_callee_data_array_free(array);
-  array = nullptr;
-  xls_dslx_typechecked_module_free(tm);
-  tm = nullptr;
-  xls_dslx_import_data_free(owner);
-  owner = nullptr;
-  char* caller_text = xls_dslx_parametric_env_to_string(clone);
-  EXPECT_STREQ(caller_text, "{V: Choice::Some(u8:3)}");
-  xls_c_str_free(caller_text);
+  // The call belongs to E's discriminant, not an enclosing function.
+  ExpectInvocationCallerBindingsAfterOwnerDestruction(kProgram,
+                                                      "sum_discriminant");
 }
 
 TEST(XlsCApiTest, DslxBuiltinInvocationRetainsSumCallerBindings) {
@@ -6144,9 +6063,11 @@ pub fn main() -> u8 { caller<{Choice::Some(u8:3)}>() }
   xls_dslx_call_graph* graph = nullptr;
   xls_dslx_invocation_callee_data_array* array = nullptr;
   xls_dslx_invocation_callee_data* clone = nullptr;
+  xls_dslx_parametric_env* env_clone = nullptr;
   char* error = nullptr;
   absl::Cleanup cleanup([&] {
     xls_c_str_free(error);
+    xls_dslx_parametric_env_free(env_clone);
     xls_dslx_invocation_callee_data_free(clone);
     xls_dslx_invocation_callee_data_array_free(array);
     xls_dslx_call_graph_free(graph);
@@ -6172,6 +6093,8 @@ pub fn main() -> u8 { caller<{Choice::Some(u8:3)}>() }
   EXPECT_EQ(xls_dslx_invocation_callee_data_get_derived_type_info(data),
             nullptr);
   clone = xls_dslx_invocation_callee_data_clone(data);
+  env_clone = xls_dslx_parametric_env_clone(
+      xls_dslx_invocation_callee_data_get_callee_bindings(data));
   xls_dslx_invocation_callee_data_array_free(array);
   array = nullptr;
   xls_dslx_call_graph_free(graph);
@@ -6180,10 +6103,13 @@ pub fn main() -> u8 { caller<{Choice::Some(u8:3)}>() }
   tm = nullptr;
   xls_dslx_import_data_free(owner);
   owner = nullptr;
-  char* callee_text = xls_dslx_parametric_env_to_string(
-      xls_dslx_invocation_callee_data_get_callee_bindings(clone));
-  EXPECT_STREQ(callee_text, "{N: u32:8}");
-  xls_c_str_free(callee_text);
+  for (const auto* surviving_env :
+       {xls_dslx_invocation_callee_data_get_callee_bindings(clone),
+        static_cast<const xls_dslx_parametric_env*>(env_clone)}) {
+    char* callee_text = xls_dslx_parametric_env_to_string(surviving_env);
+    EXPECT_STREQ(callee_text, "{N: u32:8}");
+    xls_c_str_free(callee_text);
+  }
   char* caller_text = xls_dslx_parametric_env_to_string(
       xls_dslx_invocation_callee_data_get_caller_bindings(clone));
   EXPECT_STREQ(caller_text, "{V: Choice::Some(u8:3)}");
