@@ -42,7 +42,6 @@ module semantic_sum_consumer;
   ReusedShadowedRecord reused_shadowed_record;
   Token named_token;
   logic [17:0] raw_message;
-  logic [17:0] raw_inner;
   logic signed [15:0] widened;
   logic [1:0] dslx_selector;
   logic [7:0] dslx_hi;
@@ -171,13 +170,14 @@ module semantic_sum_consumer;
     #1;
     sparse = Sparse'(dslx_sparse_produced);
     outer = Outer'(dslx_outer_produced);
-    if (sparse !== {3'b111, 8'h5a} || sparse !== Sparse_make_negative(8'h5a) ||
+    if ($bits(Sparse) != 11 || sparse !== {3'b111, 8'h5a} ||
+        sparse !== Sparse_make_negative(8'h5a) ||
         Sparse_get_tag(sparse) !== Sparse_tag_Negative ||
         !(Sparse_get_tag(sparse) < 0) ||
         sparse.payload.as_negative.value !== 8'h5a ||
         dslx_sparse_matched !== 16'h02a6)
       $fatal(1, "DSLX Negative producer or DSLX matcher of an SV Positive disagrees");
-    if (outer !== {2'd1, 6'b0, dslx_inner_input} ||
+    if ($bits(Outer) != 26 || outer !== {2'd1, 6'b0, dslx_inner_input} ||
         outer !== Outer_make_wrapped(Inner'(dslx_inner_input)) ||
         Outer_get_tag(outer) !== Outer_tag_Wrapped ||
         outer.payload.as_wrapped.value.payload.bits !== 16'hc35a ||
@@ -245,21 +245,12 @@ module semantic_sum_consumer;
         mixed.payload.as_record.lo !== 8'hcd)
       $fatal(1, "omitted zero-width record children must not shift visible fields");
 
-    // Crossing a raw boundary preserves unused bits. A constructor zeroes only
-    // the padding that belongs to the sum it is constructing.
+    // Crossing a raw boundary preserves unused bits.
     raw_message = {2'd1, 16'hab5a};
     message = Message'(raw_message);
     if (message !== raw_message || message.payload.bits !== 16'hab5a ||
         message.payload.as_byte.value !== 8'h5a)
       $fatal(1, "raw transport must retain dirty high-side Byte padding");
-
-    raw_inner = {2'd1, 16'hc35a};
-    inner = Inner'(raw_inner);
-    outer = Outer_make_wrapped(inner);
-    if ($bits(Outer) != 26 || outer !== {2'd1, 6'b0, raw_inner} ||
-        outer.payload.as_wrapped.value !== raw_inner ||
-        outer.payload.as_wrapped.value.payload.bits !== 16'hc35a)
-      $fatal(1, "Outer must zero its padding without rewriting Inner padding");
 
     if ($bits(Payloadless) != 3)
       $fatal(1, "all-zero payloads must not introduce a payload or placeholder");
@@ -282,16 +273,6 @@ module semantic_sum_consumer;
         ExplicitSingleton_get_tag(explicit_singleton) !==
             ExplicitSingleton_tag_Only)
       $fatal(1, "an explicit singleton tag remains present on the wire");
-
-    sparse = Sparse_make_negative(8'h5a);
-    if ($bits(Sparse) != 11 || sparse !== {3'b111, 8'h5a} ||
-        Sparse_get_tag(sparse) !== Sparse_tag_Negative ||
-        !(Sparse_get_tag(sparse) < 0))
-      $fatal(1, "negative explicit tags must retain bits and signed arithmetic");
-    sparse = Sparse_make_positive(8'ha5);
-    if (sparse !== {3'd2, 8'ha5} ||
-        Sparse_get_tag(sparse) !== Sparse_tag_Positive)
-      $fatal(1, "sparse tags must retain evaluated source discriminants");
 
     signed_message = SignedMessage_make_scalar(8'hff);
     widened = `XLS_SIGNED_VIEW(8, signed_message.payload.as_scalar.value);
