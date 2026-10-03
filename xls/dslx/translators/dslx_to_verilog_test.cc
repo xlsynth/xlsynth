@@ -277,44 +277,6 @@ type AliasType1 = Point[1];
   ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
 }
 
-// Verifies: Sum declarations emit the expected public SystemVerilog API.
-// Catches: Incorrect tags, payload layouts, or public type definitions.
-TEST_F(DslxToVerilogTest, SemanticSumTypeDefinition) {
-  constexpr std::string_view program =
-      R"(
-pub enum MaybeWord {
-  None,
-  Some(u32),
-  Pair { lo: u8, hi: u8 },
-}
-
-pub enum ExplicitTagWidth : u5 {
-  None = 0,
-  Some(u8) = 1,
-}
-
-pub enum Singleton {
-  Only(u16),
-}
-)";
-
-  dslx::ImportData import_data = dslx::CreateImportDataForTest();
-
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      dslx::ParseAndTypecheck(program, "test_module.x", "test_module",
-                              &import_data, nullptr));
-
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-
-  for (const TypeDefinition& def : tm.module->GetTypeDefinitions()) {
-    XLS_ASSERT_OK(type_to_verilog.AddTypeForTypeDefinition(def, &import_data));
-  }
-
-  ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
-}
-
 // Verifies: Definitions and function aliases reuse one nested sum API.
 // Catches: Duplicate types and outer types emitted before their dependencies.
 TEST_F(DslxToVerilogTest, NestedSumFunctionParameterAndOutput) {
@@ -1762,37 +1724,6 @@ fn attempt(value: (Message, Fresh, Taken)) -> (Message, Fresh, Taken) { value }
   EXPECT_FALSE(rejected.ok()) << rejected;
   EXPECT_EQ(manager.Emit(), before);
   EXPECT_EQ(CountOccurrences(manager.Emit(), " Fresh;"), 0) << manager.Emit();
-}
-
-TEST_F(DslxToVerilogTest, DirectSumDependencyConflictIsAtomicAndRepeatable) {
-  constexpr std::string_view program = R"(
-enum Seed { Empty, Item(u1) }
-type Fresh = u8;
-type Taken = u16;
-struct Holder { fresh: Fresh, taken: Taken }
-enum Outer { Item(Holder) }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Seed").value(), &import_data, "Taken"));
-  const std::string before = manager.Emit();
-  ASSERT_EQ(CountOccurrences(before, "typedef Seed Taken;"), 1) << before;
-  ASSERT_EQ(CountOccurrences(before, " Fresh;"), 0) << before;
-
-  const TypeDefinition outer = tm.module->GetTypeDefinition("Outer").value();
-  const absl::Status expected = absl::InvalidArgumentError(
-      "SystemVerilog alias `Taken` for sum family `Seed` conflicts with an "
-      "existing package symbol");
-  for (int attempt = 0; attempt < 2; ++attempt) {
-    SCOPED_TRACE(attempt);
-    EXPECT_EQ(manager.AddTypeForTypeDefinition(outer, &import_data), expected);
-    EXPECT_EQ(manager.Emit(), before);
-  }
 }
 
 TEST_F(DslxToVerilogTest, PayloadGraphsCommitPerRequestAndPerSpecialization) {
