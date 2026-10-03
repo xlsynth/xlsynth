@@ -91,7 +91,6 @@ SumType MakeTuplePayloadSumType(Module& module) {
   return SumType(*sum_def, std::move(variants));
 }
 
-
 TEST(SumTypeEncodingTest, TracksPayloadMembersForLaterVariants) {
   FileTable file_table;
   Module module("test", /*fs_path=*/std::nullopt, file_table);
