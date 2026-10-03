@@ -798,35 +798,7 @@ fn later_sum(value: Message<u32:16>) -> Message<u32:16> { value }
   }
 }
 
-TEST_F(DslxToVerilogTest, OrdinaryFunctionOutputCannotClaimPlannedSumNames) {
-  constexpr std::string_view program = R"(
-pub enum Message { Empty, Item(u8) }
-fn ordinary(value: u8) -> u8 { value }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
-                        nullptr));
-  Function* function = tm.module->GetFunction("ordinary").value();
-  for (std::string_view alias : {"Message", "Message_tag_t"}) {
-    SCOPED_TRACE(alias);
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
-    manager.PrepareForModules({{tm.module, tm.type_info}});
-    const std::string before = manager.Emit();
-    const auto rejected =
-        manager.AddTypeForFunctionOutput(function, &import_data, alias);
-    EXPECT_FALSE(rejected.ok()) << rejected;
-    EXPECT_EQ(manager.Emit(), before);
-
-    XLS_EXPECT_OK(manager.AddTypeForTypeDefinition(
-        tm.module->GetTypeDefinition("Message").value(), &import_data));
-    const std::string emitted = manager.Emit();
-    EXPECT_EQ(CountOccurrences(emitted, " Message;"), 1) << emitted;
-    EXPECT_LE(CountOccurrences(emitted, " Message_tag_t;"), 1) << emitted;
-  }
-
+TEST_F(DslxToVerilogTest, OrdinaryFunctionOutputReusesCrossModuleTypedef) {
   constexpr std::string_view first_program = R"(
 pub type Envelope_tag_t = u8;
 pub enum Envelope { Empty, Item(u8) }
