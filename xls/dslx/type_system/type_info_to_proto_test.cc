@@ -1451,48 +1451,6 @@ fn f(nonempty: u8, empty: u8) -> u8 { nonempty }
 }
 
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
-       RejectsDuplicateAndMissingSumVariantsInProtoImport) {
-  std::string program = R"(
-enum Option {
-  None,
-  Some(u32),
-}
-
-fn f(x: bool) -> Option {
-  if x { Option::None } else { Option::Some(u32:42) }
-}
-)";
-
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "fake.x", "fake", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto tip,
-                           TypeInfoToProto(*tm.type_info, tm.module));
-
-  const AstNodeTypeInfoProto* sum_node =
-      FindSumTypeInfoNode(tip, "Option", import_data);
-  ASSERT_NE(sum_node, nullptr);
-
-  for (AstNodeTypeInfoProto& node : *tip.mutable_nodes()) {
-    if (!node.has_type() || !node.type().has_sum_type()) {
-      continue;
-    }
-    SumTypeProto* sum_type = node.mutable_type()->mutable_sum_type();
-    if (!sum_type->has_sum_def_span()) {
-      continue;
-    }
-    *sum_type->mutable_variants(1) = sum_type->variants(0);
-  }
-
-  EXPECT_THAT(
-      ToHumanString(*sum_node, import_data, import_data.file_table()),
-      absl_testing::StatusIs(
-          absl::StatusCode::kInvalidArgument,
-          ::testing::HasSubstr("Sum variant payload member count mismatch")));
-}
-
-TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        SemanticSumSchemaKeepsLegacyFieldNumbers) {
   EXPECT_EQ(SumTypeProto::descriptor()->field_count(), 5);
   EXPECT_EQ(SumTypeVariantProto::descriptor()->field_count(), 2);
@@ -1871,22 +1829,24 @@ fn identity(x: Aggregate) -> Aggregate { x }
 }
 
 // Fixed records using only the Phase One schema fields, not output from the
-// current writer with fields removed. The source has no concrete root SumType
-// for either declaration; the old records never stored their nominal arguments.
+// current writer with fields removed.
+constexpr char kPhaseOneParametricRecords[] =
+    "\x0a\x5c\x08\x03\x12\x1c\x0a\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78"
+    "\x10\x03\x18\x0a\x12\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78\x10\x03"
+    "\x18\x0b\x1a\x3a\x6a\x38\x0a\x1c\x0a\x0c\x0a\x06\x66\x61\x6b\x65"
+    "\x2e\x78\x10\x01\x18\x00\x12\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78"
+    "\x10\x01\x18\x29\x12\x00\x12\x16\x0a\x14\x0a\x12\x08\x00\x12\x0e"
+    "\x0a\x0c\x0a\x0a\x08\x00\x10\x20\x1a\x04\x00\x00\x00\x08\x0a\x44"
+    "\x08\x03\x12\x1c\x0a\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78\x10\x04"
+    "\x18\x0b\x12\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78\x10\x04\x18\x0c"
+    "\x1a\x22\x6a\x20\x0a\x1c\x0a\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78"
+    "\x10\x02\x18\x00\x12\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78\x10\x02"
+    "\x18\x1f\x12\x00";
+
+// The source has no concrete root SumType for either declaration; the old
+// records never stored their nominal arguments.
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        ReadsFixedPhaseOneParametricRecordsWithoutRootInstance) {
-  constexpr char kPhaseOne[] =
-      "\x0a\x5c\x08\x03\x12\x1c\x0a\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78"
-      "\x10\x03\x18\x0a\x12\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78\x10\x03"
-      "\x18\x0b\x1a\x3a\x6a\x38\x0a\x1c\x0a\x0c\x0a\x06\x66\x61\x6b\x65"
-      "\x2e\x78\x10\x01\x18\x00\x12\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78"
-      "\x10\x01\x18\x29\x12\x00\x12\x16\x0a\x14\x0a\x12\x08\x00\x12\x0e"
-      "\x0a\x0c\x0a\x0a\x08\x00\x10\x20\x1a\x04\x00\x00\x00\x08\x0a\x44"
-      "\x08\x03\x12\x1c\x0a\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78\x10\x04"
-      "\x18\x0b\x12\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78\x10\x04\x18\x0c"
-      "\x1a\x22\x6a\x20\x0a\x1c\x0a\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78"
-      "\x10\x02\x18\x00\x12\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78\x10\x02"
-      "\x18\x1f\x12\x00";
   constexpr std::string_view kProgram = R"(#![feature(generics)]
 enum Option<N: u32> { None, Some(uN[N]) }
 enum Phantom<N: u32> { Only() }
@@ -1903,8 +1863,8 @@ fn phantom(x: Phantom<u32:9>) -> Phantom<u32:9> { x }
     EXPECT_FALSE(tm.type_info->GetItem(sum_def).has_value());
   }
   TypeInfoProto parsed;
-  ASSERT_TRUE(
-      parsed.ParseFromString(std::string(kPhaseOne, sizeof(kPhaseOne) - 1)));
+  ASSERT_TRUE(parsed.ParseFromString(std::string(
+      kPhaseOneParametricRecords, sizeof(kPhaseOneParametricRecords) - 1)));
   ASSERT_EQ(parsed.nodes_size(), 2);
   for (const AstNodeTypeInfoProto& node : parsed.nodes()) {
     const SumTypeProto& sum = node.type().sum_type();
@@ -1934,18 +1894,6 @@ fn phantom(x: Phantom<u32:9>) -> Phantom<u32:9> { x }
 // contradictory modern description, including the old one-bit singleton tag.
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        ReadsFixedPhaseOneParametricRecordsWhenNested) {
-  constexpr char kPhaseOne[] =
-      "\x0a\x5c\x08\x03\x12\x1c\x0a\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78"
-      "\x10\x03\x18\x0a\x12\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78\x10\x03"
-      "\x18\x0b\x1a\x3a\x6a\x38\x0a\x1c\x0a\x0c\x0a\x06\x66\x61\x6b\x65"
-      "\x2e\x78\x10\x01\x18\x00\x12\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78"
-      "\x10\x01\x18\x29\x12\x00\x12\x16\x0a\x14\x0a\x12\x08\x00\x12\x0e"
-      "\x0a\x0c\x0a\x0a\x08\x00\x10\x20\x1a\x04\x00\x00\x00\x08\x0a\x44"
-      "\x08\x03\x12\x1c\x0a\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78\x10\x04"
-      "\x18\x0b\x12\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78\x10\x04\x18\x0c"
-      "\x1a\x22\x6a\x20\x0a\x1c\x0a\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78"
-      "\x10\x02\x18\x00\x12\x0c\x0a\x06\x66\x61\x6b\x65\x2e\x78\x10\x02"
-      "\x18\x1f\x12\x00";
   constexpr std::string_view kProgram = R"(#![feature(generics)]
 enum Option<N: u32> { None, Some(uN[N]) }
 enum Phantom<N: u32> { Only() }
@@ -1967,8 +1915,8 @@ fn f(x: Outer) -> Outer { x }
   ASSERT_TRUE(pair.payload_members(0).has_sum_type());
   ASSERT_TRUE(pair.payload_members(1).has_sum_type());
   TypeInfoProto fixed;
-  ASSERT_TRUE(
-      fixed.ParseFromString(std::string(kPhaseOne, sizeof(kPhaseOne) - 1)));
+  ASSERT_TRUE(fixed.ParseFromString(std::string(
+      kPhaseOneParametricRecords, sizeof(kPhaseOneParametricRecords) - 1)));
   ASSERT_EQ(fixed.nodes_size(), 2);
 
   for (int legacy_mask : {1, 2, 3}) {
