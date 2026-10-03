@@ -2981,7 +2981,7 @@ endpackage)");
             std::vector<LineSpan>{LineSpan(7, 7)});
 }
 
-TEST_P(VastTest, PackageFunctionArgumentsUseUserDefinedTypesWithoutReg) {
+TEST_P(VastTest, PackageFunctionSignatureUsesUserDefinedTypesWithoutReg) {
   VerilogFile f(GetFileType());
   const SourceInfo si;
   VerilogPackage* package = f.AddVerilogPackage("payload_pkg", si);
@@ -2993,12 +2993,12 @@ TEST_P(VastTest, PackageFunctionArgumentsUseUserDefinedTypesWithoutReg) {
   tag->AddMember("Tag_None", f.Literal(UBits(0, 1), si), si);
   TypedefType* tag_type = package->top()->AddEnumTypedef("tag_t", tag, si);
   VerilogFunction* function =
-      package->Add<VerilogFunction>(si, "get_payload", payload_type);
-  LogicRef* payload = function->AddArgument("payload", payload_type, si);
-  function->AddArgument("tag", tag_type, si);
+      package->Add<VerilogFunction>(si, "get_tag", tag_type);
+  function->AddArgument("payload", payload_type, si);
+  LogicRef* tag_arg = function->AddArgument("tag", tag_type, si);
   function->AddArgument("raw", f.BitVectorType(8, si), si);
   function->AddStatement<BlockingAssignment>(si, function->return_value_ref(),
-                                             payload);
+                                             tag_arg);
 
   EXPECT_EQ(package->Emit(nullptr), R"(package payload_pkg;
   typedef union packed {
@@ -3007,37 +3007,9 @@ TEST_P(VastTest, PackageFunctionArgumentsUseUserDefinedTypesWithoutReg) {
   typedef enum logic {
     Tag_None = 1'h0
   } tag_t;
-  function automatic payload_t get_payload (input payload_t payload, input tag_t tag, input reg [7:0] raw);
+  function automatic tag_t get_tag (input payload_t payload, input tag_t tag, input reg [7:0] raw);
     begin
-      get_payload = payload;
-    end
-  endfunction
-endpackage)");
-}
-
-// Verifies: Scalar typedefs are emitted by name as function return types.
-// Catches: An extra logic keyword or range being added to a named return type.
-TEST_P(VastTest, FunctionWithUserDefinedScalarReturnUsesOnlyNamedType) {
-  VerilogFile f(GetFileType());
-  const SourceInfo si;
-  VerilogPackage* package = f.AddVerilogPackage("tag_pkg", si);
-  Enum* tag = f.Make<Enum>(si, DataKind::kLogic, f.ScalarType(si));
-  EnumMemberRef* none =
-      tag->AddMember("Tag_None", f.Literal(UBits(0, 1), si), si);
-  Typedef* declaration =
-      package->Add<Typedef>(si, f.Make<Def>(si, "tag_t", DataKind::kUser, tag));
-  TypedefType* tag_type = f.Make<TypedefType>(si, declaration);
-  VerilogFunction* function =
-      package->Add<VerilogFunction>(si, "get_tag", tag_type);
-  function->AddStatement<BlockingAssignment>(si, function->return_value_ref(),
-                                             none);
-  EXPECT_EQ(package->Emit(nullptr), R"(package tag_pkg;
-  typedef enum logic {
-    Tag_None = 1'h0
-  } tag_t;
-  function automatic tag_t get_tag ();
-    begin
-      get_tag = Tag_None;
+      get_tag = tag;
     end
   endfunction
 endpackage)");
