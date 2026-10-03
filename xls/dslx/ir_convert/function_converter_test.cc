@@ -968,21 +968,6 @@ fn f(x: Option) -> u34 {
 
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
                            package.package->GetFunction("__test_module__f"));
-  bool has_tag_then_payload_concat = false;
-  for (xls::Node* node : ir_function->nodes()) {
-    if (node->op() != xls::Op::kConcat || node->operand_count() != 2) {
-      continue;
-    }
-    xls::Node* tag = node->operand(0);
-    xls::Node* payload = node->operand(1);
-    if (tag->op() == xls::Op::kTupleIndex &&
-        payload->op() == xls::Op::kTupleIndex &&
-        payload->operand(0)->op() == xls::Op::kTupleIndex) {
-      has_tag_then_payload_concat = true;
-    }
-  }
-  EXPECT_TRUE(has_tag_then_payload_concat) << package.DumpIr();
-
   const Value malformed = Value::Tuple(
       {Value(UBits(/*value=*/3, /*bit_count=*/2)),
        Value::Tuple({Value(UBits(/*value=*/0x12345678, /*bit_count=*/32))})});

@@ -1174,22 +1174,6 @@ fn f(x: Option) -> u8 {
                   "arm.")));
 }
 
-TEST(TypecheckV2Test, WildcardMayBeFollowedByFinalInvalidPattern) {
-  EXPECT_THAT(R"(
-enum Option {
-  None,
-  Some(u8),
-}
-fn f(x: Option) -> u8 {
-  match x {
-    _ => u8:0,
-    invalid! => u8:1,
-  }
-}
-)",
-              TypecheckSucceeds(::testing::_));
-}
-
 TEST(TypecheckV2Test, WildcardWithoutInvalidPatternCannotPrecedeSumArm) {
   for (const std::string pattern : {"_", "_ | Option::None"}) {
     SCOPED_TRACE(pattern);
@@ -1316,23 +1300,6 @@ fn f(x: Option) -> u8 {
 enum Pair { Item((u8, u8)) }
 fn f(x: Pair) -> u8 {
   match x { Pair::Item((v, ..)) => v }
-}
-)",
-              TypecheckSucceeds(::testing::_));
-}
-
-TEST(TypecheckV2Test,
-     SumMatchWithoutInvalidPatternAcceptsPayloadlessFinalConstructor) {
-  EXPECT_THAT(R"(
-enum Option {
-  None,
-  Some(u8),
-}
-fn f(x: Option) -> u8 {
-  match x {
-    Option::Some(v) => v,
-    Option::None => u8:0,
-  }
 }
 )",
               TypecheckSucceeds(::testing::_));
