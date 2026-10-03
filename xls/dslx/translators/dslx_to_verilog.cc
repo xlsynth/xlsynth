@@ -879,6 +879,37 @@ std::string DslxTypeToVerilogManager::OrdinaryTypeNameCandidate(
   }
 }
 
+absl::StatusOr<std::optional<std::string>>
+DslxTypeToVerilogManager::ReserveOrdinaryDefinitionName(
+    const AstNode& node, std::optional<std::string_view> declared_name,
+    std::string_view requested_name, bool already_converted,
+    bool is_sum_payload, OrdinaryDefinitionNames names) const {
+  std::optional<std::string> reserved_name;
+  if (already_converted) {
+    if (!is_sum_payload) {
+      // Ordinary exports historically advance the typedef name even when the
+      // declaration was already emitted; sum families keep their own identity.
+      AllocateOrdinaryTypeName(requested_name, /*already_converted=*/true,
+                               names.uniquer, names.allocated, names.ephemeral);
+    }
+  } else {
+    bool use_nominal_name =
+        IsOrdinarySourceTypeName(&node, declared_name, requested_name);
+    if (use_nominal_name) {
+      names.source_named.insert(&node);
+    }
+    std::string candidate = OrdinaryTypeNameCandidate(
+        node, requested_name, is_sum_payload, use_nominal_name);
+    NameUniquer unoccupied("__");
+    XLS_RETURN_IF_ERROR(CheckOrdinaryNameAgainstSumAliases(
+        unoccupied.GetSanitizedUniqueName(candidate)));
+    reserved_name = AllocateOrdinaryTypeName(
+        candidate, /*already_converted=*/false, names.uniquer, names.allocated,
+        names.ephemeral);
+  }
+  return reserved_name;
+}
+
 bool DslxTypeToVerilogManager::SumPayloadGraphs::Contains(
     const SumType& sum) const {
   auto graphs =
@@ -1960,26 +1991,16 @@ absl::Status DslxTypeToVerilogManager::CheckExportNames(
                                 : TypeDefinitionName(definition);
     bool already_converted = TypeDefinitionIdentifier(source).has_value() &&
                              converted.contains(node);
-    if (already_converted) {
-      if (!projected_nominals.contains(node)) {
-        AllocateOrdinaryTypeName(requested, /*already_converted=*/true, uniquer,
-                                 allocated, ephemeral);
-      }
+    XLS_ASSIGN_OR_RETURN(
+        std::optional<std::string> reserved_name,
+        ReserveOrdinaryDefinitionName(
+            *node, TypeDefinitionIdentifier(source), requested,
+            already_converted, projected_nominals.contains(node),
+            {uniquer, allocated, ephemeral, ordinary_source_names}));
+    if (!reserved_name.has_value()) {
       return absl::OkStatus();
-    } else {
-      bool use_nominal = IsOrdinarySourceTypeName(
-          node, TypeDefinitionIdentifier(source), requested);
-      if (use_nominal) {
-        ordinary_source_names.insert(node);
-      }
-      requested = OrdinaryTypeNameCandidate(
-          *node, requested, projected_nominals.contains(node), use_nominal);
-      NameUniquer unoccupied("__");
-      XLS_RETURN_IF_ERROR(CheckOrdinaryNameAgainstSumAliases(
-          unoccupied.GetSanitizedUniqueName(requested)));
     }
-    std::string allocated_name = AllocateOrdinaryTypeName(
-        requested, /*already_converted=*/false, uniquer, allocated, ephemeral);
+    std::string allocated_name = std::move(*reserved_name);
     ordinary_names.insert(allocated_name);
     if (enum_names.projected.contains(allocated_name)) {
       XLS_RETURN_IF_ERROR(update_enums());
@@ -2523,31 +2544,20 @@ DslxTypeToVerilogManager::TypeDefinitionToVastType(
   XLS_RET_CHECK(identifier.has_value());
 
   auto iter = converted_types_.find(type_definition_node);
-  if (type_definition_name.has_value() && iter != converted_types_.end()) {
-    if (!sum_payload_nominals_.contains(type_definition_node)) {
-      // Ordinary exports historically advance the typedef name even when the
-      // declaration was already emitted; sum families keep their own identity.
-      AllocateOrdinaryTypeName(*identifier, /*already_converted=*/true,
-                               *typedef_name_uniquer_, allocated_package_names_,
-                               ephemeral_ordinary_type_names_);
-    }
+  bool already_converted =
+      type_definition_name.has_value() && iter != converted_types_.end();
+  XLS_ASSIGN_OR_RETURN(
+      std::optional<std::string> reserved_name,
+      ReserveOrdinaryDefinitionName(
+          *type_definition_node, type_definition_name, *identifier,
+          already_converted,
+          sum_payload_nominals_.contains(type_definition_node),
+          {*typedef_name_uniquer_, allocated_package_names_,
+           ephemeral_ordinary_type_names_, ordinary_source_named_types_}));
+  if (!reserved_name.has_value()) {
     return iter->second;
   }
-
-  bool use_nominal_name = IsOrdinarySourceTypeName(
-      type_definition_node, type_definition_name, *identifier);
-  if (use_nominal_name) {
-    ordinary_source_named_types_.insert(type_definition_node);
-  }
-  bool is_sum_payload = sum_payload_nominals_.contains(type_definition_node);
-  std::string candidate = OrdinaryTypeNameCandidate(
-      *type_definition_node, *identifier, is_sum_payload, use_nominal_name);
-  NameUniquer unoccupied("__");
-  XLS_RETURN_IF_ERROR(CheckOrdinaryNameAgainstSumAliases(
-      unoccupied.GetSanitizedUniqueName(candidate)));
-  std::string typedef_identifier = AllocateOrdinaryTypeName(
-      candidate, /*already_converted=*/false, *typedef_name_uniquer_,
-      allocated_package_names_, ephemeral_ordinary_type_names_);
+  std::string typedef_identifier = std::move(*reserved_name);
   emitted_ordinary_type_names_.insert(typedef_identifier);
   if (projected_ordinary_enum_member_names_.contains(typedef_identifier)) {
     absl::Status enum_names =
