@@ -731,8 +731,8 @@ cc_test(
     srcs = ["semantic_sum_raw_boundary_fuzz_test.cc"],
     data = [":semantic_sum_phase1_seed_corpus_files"],
     deps = [
-        ":semantic_sum_fuzz_main",
         ":semantic_sum_seed_corpus",
+        "//xls/common:xls_gunit_main",
         "//xls/common/file:get_runfile_path",
         "//xls/common/status:matchers",
         "//xls/common/status:status_macros",
@@ -758,9 +758,9 @@ cc_test(
     srcs = ["semantic_sum_inhabitance_fuzz_test.cc"],
     data = [":semantic_sum_phase1_seed_corpus_files"],
     deps = [
-        ":semantic_sum_fuzz_main",
         ":semantic_sum_seed_corpus",
         ":value_generator",
+        "//xls/common:xls_gunit_main",
         "//xls/common/file:get_runfile_path",
         "//xls/common/status:matchers",
         "//xls/common/status:status_macros",
@@ -790,8 +790,8 @@ cc_test(
     srcs = ["semantic_sum_typeinfo_layout_fuzz_test.cc"],
     data = [":semantic_sum_phase1_seed_corpus_files"],
     deps = [
-        ":semantic_sum_fuzz_main",
         ":semantic_sum_seed_corpus",
+        "//xls/common:xls_gunit_main",
         "//xls/common/file:get_runfile_path",
         "//xls/common/status:matchers",
         "//xls/common/status:status_macros",
@@ -810,18 +810,6 @@ cc_test(
         "@com_google_fuzztest//fuzztest",
         "@googletest//:gtest",
     ],
-)
-
-cc_library(
-    name = "semantic_sum_fuzz_main",
-    testonly = True,
-    srcs = ["semantic_sum_fuzz_main.cc"],
-    deps = [
-        "//xls/common:gunit_init_xls",
-        "@com_google_fuzztest//fuzztest:init_fuzztest",
-        "@googletest//:gtest",
-    ],
-    alwayslink = True,
 )
 
 cc_library(
