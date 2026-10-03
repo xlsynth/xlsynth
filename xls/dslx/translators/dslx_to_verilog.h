@@ -223,6 +223,16 @@ class DslxTypeToVerilogManager {
   void PrepareSumNames(Module* module, TypeInfo* type_info);
   const SumFamily* FindSumFamily(const SumType& sum) const;
   SumNameState GetSumNameState(const Type& type) const;
+  using SumSpecializationOwners =
+      absl::flat_hash_map<const SumDef*, std::map<std::string, std::string>>;
+  struct SumSpecializationClaim {
+    std::string suffix;
+    bool inserted = false;
+  };
+  // Reports newly inserted ownership so emission can undo only its own claim.
+  absl::StatusOr<SumSpecializationClaim> ClaimSumSpecialization(
+      const SumType& sum, std::string_view family,
+      SumSpecializationOwners& owners);
   absl::Status PlanSumFamilyNames(
       const SumType& sum, std::string_view specialization,
       int64_t payload_width, SumFamily& family,
@@ -333,6 +343,8 @@ class DslxTypeToVerilogManager {
   // source spelling. Unambiguous declarations retain their legacy spelling.
   std::string NominalName(const AstNode& node,
                           std::string_view identifier) const;
+  absl::StatusOr<std::string> SumPayloadNominalName(
+      const AstNode& nominal) const;
 
   // Collects preferred names for generated types and enum literals needed by
   // nonzero-width payloads so the caller can reserve them in stable order.
@@ -441,8 +453,7 @@ class DslxTypeToVerilogManager {
       nominal_sum_symbols_;
   // Rejects different specializations with the same preferred spelling instead
   // of making their public names depend on which one was exported first.
-  absl::flat_hash_map<const SumDef*, std::map<std::string, std::string>>
-      sum_specialization_owners_;
+  SumSpecializationOwners sum_specialization_owners_;
   // One family per source declaration and concrete parametric argument set.
   absl::flat_hash_map<const SumDef*, std::vector<std::unique_ptr<SumFamily>>>
       sum_families_;
