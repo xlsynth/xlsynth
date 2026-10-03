@@ -2260,7 +2260,8 @@ fn identity(value: Option<u8>) -> Option<u8> { value }
 }
 
 TEST(TypecheckV2Test, GenericSemanticSumBarePayloadConstructorsAndPatterns) {
-  EXPECT_THAT(R"(
+  EXPECT_THAT(
+      R"(
 #![feature(generics)]
 enum Option<T: type> { None, Some(T) }
 fn make(value: u8) -> Option<u8> { Option::Some(value) }
@@ -2272,33 +2273,10 @@ fn unwrap(value: Option<u8>) -> u8 {
 }
 const_assert!(unwrap(make(u8:7)) == u8:7);
 )",
-              TypecheckSucceeds(HasNodeWithType("v", "uN[8]")));
-}
-
-TEST(TypecheckV2Test, GenericSemanticSumInferredTupleConstructor) {
-  EXPECT_THAT(
-      R"(
-#![feature(generics)]
-enum Option<T: type> { None, Some(T) }
-fn make(value: u8) -> Option<u8> { Option::Some(value) }
-)",
-      TypecheckSucceeds(HasNodeWithType(
-          "Option::Some(value)", "Option<uN[8]> { None | Some(uN[8]) }")));
-}
-
-TEST(TypecheckV2Test, GenericSemanticSumInferredConstructorPatterns) {
-  EXPECT_THAT(R"(
-#![feature(generics)]
-enum Option<T: type> { None, Some(T) }
-fn unwrap(value: Option<u8>) -> u8 {
-  match value {
-    Option::None => u8:0,
-    Option::Some(v) => v,
-  }
-}
-const_assert!(unwrap(Option<u8>::Some(u8:7)) == u8:7);
-)",
-              TypecheckSucceeds(HasNodeWithType("v", "uN[8]")));
+      TypecheckSucceeds(
+          AllOf(HasNodeWithType("v", "uN[8]"),
+                HasNodeWithType("Option::Some(value)",
+                                "Option<uN[8]> { None | Some(uN[8]) }"))));
 }
 
 TEST(TypecheckV2Test, GenericSemanticSumInferredUnitConstructor) {
