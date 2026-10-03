@@ -581,8 +581,7 @@ fn qc(_values: Leaf[2]) -> bool { true }
               ::testing::ElementsAreArray(expected));
 }
 
-TEST_P(RunRoutinesTest,
-       QuickcheckExhaustivePackedSumArraysPreserveMultiplicity) {
+TEST(QuickcheckTest, ExhaustivePackedSumArraysPreserveMultiplicity) {
   constexpr std::string_view kProgram = R"(
 enum Leaf: u2 { Small(u1) = 0, Big(u2) = 2 }
 struct Pair { flag: bool, value: Leaf }
@@ -594,8 +593,10 @@ fn qc(_prefix: bool, _value: Outer) -> bool { true }
   CountingRunComparator comparator(CompareMode::kJit);
   ParseAndTestOptions options;
   options.quickcheck_runner = &comparator;
-  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
-                           ParseAndTest(kProgram, "test", "test.x", options));
+  DslxInterpreterTestRunner runner;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TestResultData result,
+      runner.ParseAndTest(kProgram, "test", "test.x", options));
   EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
 
   std::vector<std::vector<Value>> expected;
