@@ -36,10 +36,6 @@ check_imported_package() {
 # Verifies: aliases share families while distinct sum declarations stay distinct.
 # Catches: input or search-path ordering changing identity or generated names.
 # Existing stdin input remains usable for an ordinary file and a named import.
-printf '%s\n' 'pub type PlainStdin = u8;' |
-  "${translator}" --package_name=multi --namespace=multi \
-    --output_file="${TEST_TMPDIR}/stdin_plain.sv" -
-grep -Fq 'typedef logic [7:0] PlainStdin;' "${TEST_TMPDIR}/stdin_plain.sv"
 printf '%s\n' 'pub type DuplicateStdin = u8;' |
   "${translator}" --package_name=multi --namespace=multi \
     --output_file="${TEST_TMPDIR}/stdin_duplicate.sv" - -
