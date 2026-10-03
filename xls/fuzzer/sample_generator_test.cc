@@ -81,6 +81,7 @@ TEST(SampleGeneratorTest, GenerateCrossModuleSumFunctionSample) {
   EXPECT_THAT(sample.input_text(), HasSubstr("import float32;"));
   EXPECT_THAT(sample.input_text(), HasSubstr("float32::F32 {"));
   EXPECT_THAT(sample.input_text(), HasSubstr(".fraction as "));
+  EXPECT_THAT(sample.input_text(), ContainsRegex(R"(x[0-9]+::x[0-9]+\()"));
   EXPECT_THAT(sample.input_text(),
               HasSubstr("import xls.fuzzer.testdata.semantic_sum_provider;"));
   EXPECT_THAT(sample.input_text(),

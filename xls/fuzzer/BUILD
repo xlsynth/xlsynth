@@ -962,7 +962,6 @@ cc_test(
     name = "ast_generator_test",
     timeout = "long",
     srcs = ["ast_generator_test.cc"],
-    data = [":semantic_sum_provider_files"],
     deps = [
         ":ast_generator",
         "//xls/common:xls_gunit_main",
