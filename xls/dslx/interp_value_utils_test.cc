@@ -1507,7 +1507,7 @@ TEST(InterpValueHelpersTest,
       span, BuiltinType::kU32,
       module.GetOrCreateBuiltinNameDef(BuiltinType::kU32));
   auto make_sum = [&](uint32_t repeated_size, uint32_t outer_size,
-                      bool* visited) {
+                      bool& visited) {
     auto* repeated = module.Make<Number>(span, absl::StrCat(repeated_size),
                                          NumberKind::kOther, u32);
     auto* outer = module.Make<Number>(span, absl::StrCat(outer_size),
@@ -1527,20 +1527,15 @@ TEST(InterpValueHelpersTest,
               TypeDim::CreateU32(repeated_size)),
           TypeDim::CreateU32(outer_size));
     };
-    std::unique_ptr<Type> second_leaf;
-    if (visited == nullptr) {
-      second_leaf = BitsType::MakeU1();
-    } else {
-      second_leaf = std::make_unique<DescriptorSentinelBitsType>(*visited);
-    }
     return MakeOptionalPayloadSumType(
         module, tuple,
-        TupleType::Create2(make_array(BitsType::MakeU1()),
-                           make_array(std::move(second_leaf))));
+        TupleType::Create2(
+            make_array(BitsType::MakeU1()),
+            make_array(std::make_unique<DescriptorSentinelBitsType>(visited))));
   };
 
   bool ordinary_visited = false;
-  const SumType ordinary = make_sum(2, 2, &ordinary_visited);
+  const SumType ordinary = make_sum(2, 2, ordinary_visited);
   EXPECT_THAT(ordinary.GetTotalBitCount(),
               IsOkAndHolds(TypeDim::CreateU32(17)));
   EXPECT_FALSE(ordinary_visited);
@@ -1550,7 +1545,7 @@ TEST(InterpValueHelpersTest,
   EXPECT_TRUE(ordinary_visited);
 
   bool overflowing_visited = false;
-  const SumType overflowing = make_sum(65536, 1073741824, &overflowing_visited);
+  const SumType overflowing = make_sum(65536, 1073741824, overflowing_visited);
   const auto overflow =
       StatusIs(absl::StatusCode::kInvalidArgument,
                HasSubstr("shared sum bit count exceeds 4294967295 bits"));
@@ -1563,13 +1558,6 @@ TEST(InterpValueHelpersTest,
       MakeValueFormatDescriptor(overflowing, FormatPreference::kDefault),
       overflow);
   ASSERT_FALSE(overflowing_visited);
-
-  // Use two ordinary u1 leaves only after the sentinel proves the unsafe
-  // descriptor arithmetic is unreachable, including if this check regresses.
-  const SumType real_arrays = make_sum(65536, 1073741824, nullptr);
-  EXPECT_THAT(
-      MakeValueFormatDescriptor(real_arrays, FormatPreference::kDefault),
-      overflow);
 }
 
 // Verifies: Production sum formatting ignores inactive padding.

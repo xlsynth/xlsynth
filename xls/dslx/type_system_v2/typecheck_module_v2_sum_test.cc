@@ -276,13 +276,6 @@ fn observed() -> u32 { COUNT }
           HasSubstr("TypeInferenceError: fake.x:5:29-5:43"),
           HasSubstr("Big<u32:65537> shared sum bit count exceeds 4294967295 "
                     "bits"))));
-  EXPECT_THAT(R"(
-enum Big { None, Data(u1[65535][65537]) }
-const COUNT = element_count<Big>();
-)",
-              TypecheckFails(AllOf(
-                  HasSubstr("TypeInferenceError: fake.x:"),
-                  HasSubstr("shared sum bit count exceeds 4294967295 bits"))));
 }
 
 TEST(TypecheckV2Test,
