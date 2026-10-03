@@ -258,6 +258,18 @@ class DslxTypeToVerilogManager {
   // Recognizes canonical families whose already-reserved names and simple new
   // dependencies cannot reject or reproject an existing package declaration.
   bool CanAddDirectSumWithoutNameChanges(const SumType& sum) const;
+  struct OrdinaryDefinitionNames {
+    NameUniquer& uniquer;
+    std::set<std::string>& allocated;
+    std::set<std::string>& ephemeral;
+    std::set<const AstNode*>& source_named;
+  };
+  // An absent result reuses a cached declaration, but may reserve an invisible
+  // ordinary name. Callers still own emitted names, enum updates, and rollback.
+  absl::StatusOr<std::optional<std::string>> ReserveOrdinaryDefinitionName(
+      const AstNode& node, std::optional<std::string_view> declared_name,
+      std::string_view requested_name, bool already_converted,
+      bool is_sum_payload, OrdinaryDefinitionNames names) const;
   std::string OrdinaryTypeNameCandidate(const AstNode& node,
                                         std::string_view identifier,
                                         bool is_sum_payload,
