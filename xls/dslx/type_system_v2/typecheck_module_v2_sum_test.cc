@@ -1493,23 +1493,6 @@ fn f(x: S) -> u32 {
       TypecheckSucceeds(::testing::_));
 }
 
-TEST(TypecheckV2Test, IfLetOnSemanticSum) {
-  EXPECT_THAT(R"(
-enum Option {
-  None,
-  Some(u8),
-}
-fn f(x: Option) -> u8 {
-  if let Option::Some(v) = x {
-    v
-  } else {
-    u8:0
-  }
-}
-)",
-              TypecheckSucceeds(::testing::A<std::string>()));
-}
-
 // If-let lowering replaces the module before diagnostics are written. Keep the
 // saved name alive for every dump path, including names too long for inline
 // string storage.

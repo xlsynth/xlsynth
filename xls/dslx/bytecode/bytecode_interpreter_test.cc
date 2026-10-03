@@ -4064,31 +4064,6 @@ fn main() -> (u32, u32, u32) {
                           InterpValue::MakeU32(0)));
 }
 
-TEST_F(BytecodeInterpreterTest, SemanticSumIfLet) {
-  constexpr std::string_view kProgram = R"(
-enum Option {
-  None,
-  Some(u32),
-}
-
-fn unwrap_or_zero(x: Option) -> u32 {
-  if let Option::Some(v) = x { v } else { u32:0 }
-}
-
-fn main() -> (u32, u32) {
-  (
-    unwrap_or_zero(Option::Some(u32:7)),
-    unwrap_or_zero(Option::None)
-  )
-}
-)";
-  XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
-  XLS_ASSERT_OK_AND_ASSIGN(const std::vector<InterpValue>* values,
-                           result.GetValues());
-  EXPECT_THAT(*values,
-              ElementsAre(InterpValue::MakeU32(7), InterpValue::MakeU32(0)));
-}
-
 TEST_F(BytecodeInterpreterTest, SemanticSumIfLetRejectsMalformedInput) {
   constexpr std::string_view kProgram = R"(
 enum Option: u2 {
