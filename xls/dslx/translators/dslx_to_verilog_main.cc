@@ -472,27 +472,6 @@ std::map<const AstNode*, std::string> GetPublicNominalOwners(
     }
   }
 
-  // An alias-only input can still export sums from transitive imports. Record
-  // their compiler owners so the public sum naming rules apply even when no
-  // nominal declaration belongs to an explicit input. Do not merge distinct
-  // compiler imports or replace the explicit spellings chosen above.
-  std::set<Module*> visited;
-  std::vector<ModuleAndType> pending(selected.modules);
-  while (!pending.empty()) {
-    auto [module, type_info] = pending.back();
-    pending.pop_back();
-    if (visited.insert(module).second) {
-      for (const TypeDefinition& definition : module->GetTypeDefinitions()) {
-        AstNode* node = TypeDefinitionToAstNode(definition);
-        if (IsNominalDefinition(node)) {
-          result.try_emplace(node, module->name());
-        }
-      }
-      for (const auto& [subject, imported] : type_info->GetRootImports()) {
-        pending.emplace_back(imported.module, imported.type_info);
-      }
-    }
-  }
   return result;
 }
 
@@ -583,8 +562,9 @@ absl::Status RealMain(absl::Span<const std::string_view> paths) {
       SelectExplicitModules(inputs, parsed_inputs, import_data));
   // Name collisions among sum declarations must be known before any root is
   // emitted, independently of the order the caller supplied those roots.
-  type_to_verilog.PrepareForModules(selected.modules,
-                                    GetPublicNominalOwners(selected));
+  type_to_verilog.PrepareForModules(
+      selected.modules, GetPublicNominalOwners(selected),
+      DslxTypeToVerilogManager::SumQualifierPolicy::kSameIdentifier);
 
   for (const auto& [module, type_info] : selected.modules) {
     for (const auto& def : module->GetTypeDefinitions()) {
