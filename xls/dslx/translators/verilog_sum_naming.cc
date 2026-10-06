@@ -313,19 +313,12 @@ class IdentityBuilder::Impl {
     SpecializationTypePtr owner;
     Node node;
   };
-  struct MemoizedRoot {
-    std::shared_ptr<const std::vector<SpecializationArgument>> owner;
-    Node node;
-  };
   // Own every pointer used as a key so transient compiler Type wrappers cannot
   // cause the cache to mistake a reused address for an existing description.
   std::map<const SpecializationType*, MemoizedType> types_;
   // Separate descriptors can represent clones of the same nominal DAG node.
   // Their precomputed semantic hashes avoid rebuilding that node's identity.
   std::map<size_t, std::vector<MemoizedType>> nominal_types_;
-  std::map<const AstNode*,
-           std::map<const std::vector<SpecializationArgument>*, MemoizedRoot>>
-      nominal_roots_;
   // A symbolic array is completely determined by its length and first value;
   // the empty array has no first value. Sharing the array digest avoids walking
   // the same constant for different nominal specializations in this package.
@@ -491,32 +484,7 @@ IdentityBuilder::Impl::Node IdentityBuilder::Impl::NominalNode(
 absl::StatusOr<IdentityBuilder::Impl::Node> IdentityBuilder::Impl::TypeNode(
     const Type& type) {
   XLS_RETURN_IF_ERROR(ValidateRootType(type));
-  const AstNode* nominal = nullptr;
-  std::shared_ptr<const std::vector<SpecializationArgument>> arguments;
-  if (type.IsSum()) {
-    nominal = &type.AsSum().nominal_type();
-    arguments = type.AsSum().shared_specialization_arguments();
-  } else if (type.IsStruct()) {
-    nominal = &type.AsStruct().nominal_type();
-    arguments = type.AsStruct().shared_specialization_arguments();
-  } else if (type.IsProc()) {
-    nominal = &type.AsProc().nominal_type();
-    arguments = type.AsProc().shared_specialization_arguments();
-  }
-
-  if (arguments != nullptr) {
-    auto& roots = nominal_roots_[nominal];
-    if (auto cached = roots.find(arguments.get()); cached != roots.end()) {
-      return cached->second.node;
-    }
-  }
-  XLS_ASSIGN_OR_RETURN(Node node, TypeNode(SpecializationType::FromType(type)));
-  if (arguments != nullptr) {
-    const auto* key = arguments.get();
-    nominal_roots_[nominal].emplace(
-        key, MemoizedRoot{.owner = std::move(arguments), .node = node});
-  }
-  return node;
+  return TypeNode(SpecializationType::FromType(type));
 }
 
 absl::StatusOr<IdentityBuilder::Impl::Node> IdentityBuilder::Impl::TypeNode(
