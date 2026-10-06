@@ -652,11 +652,9 @@ class InterpValueHandle {
       : value_(std::in_place_type<xls::dslx::InterpValue>, std::move(value)),
         metadata_(std::move(metadata)) {}
 
-  static std::unique_ptr<InterpValueHandle> Borrowed(
-      const xls::dslx::InterpValue& value,
-      ValueMetadataPtr metadata = nullptr) {
-    return std::unique_ptr<InterpValueHandle>(
-        new InterpValueHandle(&value, std::move(metadata)));
+  static InterpValueHandle Borrowed(const xls::dslx::InterpValue& value,
+                                    ValueMetadataPtr metadata = nullptr) {
+    return InterpValueHandle(&value, std::move(metadata));
   }
 
   const xls::dslx::InterpValue& value() const {
@@ -697,6 +695,9 @@ class ParametricEnvHandle {
     InitializeBindingViews(binding_metadata);
   }
 
+  ParametricEnvHandle(const ParametricEnvHandle&) = delete;
+  ParametricEnvHandle& operator=(const ParametricEnvHandle&) = delete;
+
   const xls::dslx::ParametricEnv& env() const {
     if (const auto* owned = std::get_if<xls::dslx::ParametricEnv>(&env_)) {
       return *owned;
@@ -710,14 +711,14 @@ class ParametricEnvHandle {
   }
 
   const InterpValueHandle& binding_value(int64_t index) const {
-    return *binding_values_.at(index);
+    return binding_values_.at(index);
   }
 
   BindingMetadata binding_metadata() const {
     BindingMetadata metadata;
     metadata.reserve(binding_values_.size());
     for (const auto& binding_value : binding_values_) {
-      metadata.push_back(binding_value->metadata());
+      metadata.push_back(binding_value.metadata());
     }
     return metadata;
   }
@@ -740,7 +741,9 @@ class ParametricEnvHandle {
   }
 
   std::variant<xls::dslx::ParametricEnv, const xls::dslx::ParametricEnv*> env_;
-  std::vector<std::unique_ptr<InterpValueHandle>> binding_values_;
+  // Populated only during construction, so exposed element addresses stay valid
+  // until this environment handle is destroyed.
+  std::vector<InterpValueHandle> binding_values_;
 };
 
 class InvocationCalleeDataHandle {
