@@ -97,7 +97,8 @@ class Phase1SumTypeEncoding {
 //
 // Describes a packed representation with one semantic-discriminant tag and one
 // shared low-bit-aligned payload bit slot sized to the widest flattened variant
-// payload.
+// payload. Borrows the SumType, which must outlive this view and any copied
+// VariantInfo values.
 class SumTypeEncoding {
  public:
   struct VariantInfo {
@@ -123,6 +124,8 @@ class SumTypeEncoding {
 
   absl::StatusOr<VariantInfo> GetVariant(std::string_view variant_name) const;
   absl::StatusOr<VariantInfo> GetVariantByTagBits(const Bits& tag_bits) const;
+  // Visits variants in declaration order. The descriptor reference is valid
+  // only during the callback; copy it to retain it for the SumType's lifetime.
   absl::Status ForEachVariant(
       absl::FunctionRef<absl::Status(const VariantInfo& variant)> visitor)
       const;
@@ -133,14 +136,10 @@ class SumTypeEncoding {
           visitor) const;
 
  private:
+  VariantInfo GetVariantInfo(int64_t variant_index) const;
   absl::Status ValidateVariantInfo(const VariantInfo& variant) const;
-  absl::StatusOr<const VariantInfo*> FindVariant(
-      std::string_view variant_name) const;
-  absl::StatusOr<const VariantInfo*> FindVariantByTagBits(
-      const Bits& tag_bits) const;
 
   const SumType& type_;
-  std::vector<VariantInfo> variants_;
 };
 
 }  // namespace xls::dslx

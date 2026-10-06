@@ -242,7 +242,24 @@ TEST(SumTypeEncodingTest, LooksUpSparseDeclaredTagBits) {
   SumType sum_type(template_type.nominal_type(), std::move(variants),
                    TypeDim::CreateU32(3),
                    {InterpValue::MakeUBits(3, 5), InterpValue::MakeUBits(3, 1),
-                    InterpValue::MakeUBits(3, 6)});
+                    InterpValue::MakeSBits(3, -2)});
+  std::vector<SumTypeEncoding::VariantInfo> copied_variants;
+  {
+    SumTypeEncoding encoding(sum_type);
+    XLS_ASSERT_OK(encoding.ForEachVariant(
+        [&](const SumTypeEncoding::VariantInfo& variant) -> absl::Status {
+          copied_variants.push_back(variant);
+          return absl::OkStatus();
+        }));
+  }
+  ASSERT_EQ(copied_variants.size(), 3);
+  for (int64_t i = 0; i < copied_variants.size(); ++i) {
+    EXPECT_EQ(copied_variants[i].variant_index, i);
+    EXPECT_EQ(copied_variants[i].variant, &sum_type.variants().at(i));
+    EXPECT_EQ(copied_variants[i].discriminant, &sum_type.GetDiscriminant(i));
+  }
+  EXPECT_EQ(copied_variants[2].payload_size(), 2);
+  EXPECT_EQ(copied_variants[2].discriminant->GetBitsOrDie(), UBits(6, 3));
   SumTypeEncoding encoding(sum_type);
 
   XLS_ASSERT_OK_AND_ASSIGN(int64_t tag_bit_count, encoding.tag_bit_count());
