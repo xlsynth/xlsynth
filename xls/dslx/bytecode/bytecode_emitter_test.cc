@@ -260,9 +260,14 @@ fn classify(x: Message) -> u8 {
     XLS_ASSERT_OK_AND_ASSIGN(
         const Bytecode::MatchArmItem::SumMatchData* sum_match,
         item->sum_match_data());
-    if (sum_match->variant_name == "Request") {
+    const SumType& sum_type = *sum_match->sum_type;
+    const int64_t variant_index = sum_match->variant_index;
+    if (sum_type.variants().at(variant_index).variant().identifier() ==
+        "Request") {
       found_request_pattern = true;
-      EXPECT_TRUE(sum_match->discriminant.Eq(InterpValue::MakeUBits(3, 3)));
+      EXPECT_EQ(variant_index, 0);
+      EXPECT_TRUE(sum_type.GetDiscriminant(variant_index)
+                      .Eq(InterpValue::MakeUBits(3, 3)));
     }
   }
   EXPECT_TRUE(found_request_pattern);

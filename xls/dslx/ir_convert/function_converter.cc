@@ -3209,6 +3209,27 @@ absl::Status FunctionConverter::HandleBuiltinWrite(const Invocation* node) {
   return absl::OkStatus();
 }
 
+absl::Status FunctionConverter::DefineSumConstruction(
+    const AstNode* node, const SumTypeEncoding& encoding,
+    const SumTypeEncoding::VariantInfo& variant,
+    absl::Span<Expr* const> payload_exprs) {
+  std::vector<BValue> payload_members;
+  payload_members.reserve(payload_exprs.size());
+  for (Expr* payload_expr : payload_exprs) {
+    XLS_RETURN_IF_ERROR(Visit(payload_expr));
+    XLS_ASSIGN_OR_RETURN(BValue value, Use(payload_expr));
+    payload_members.push_back(value);
+  }
+
+  return DefWithStatus(
+             node, [this, &payload_members, &encoding, &variant](
+                       const SourceInfo& loc) -> absl::StatusOr<BValue> {
+               return internal::BuildPackedSumValue(
+                   *function_builder_, encoding, variant, payload_members, loc);
+             })
+      .status();
+}
+
 absl::Status FunctionConverter::HandleSumConstructorInvocation(
     const Invocation* node, const SumType& sum_type,
     const ColonRef* constructor_ref) {
@@ -3217,26 +3238,7 @@ absl::Status FunctionConverter::HandleSumConstructorInvocation(
                        encoding.GetVariant(constructor_ref->attr()));
   XLS_RET_CHECK_EQ(node->args().size(), variant.payload_size());
 
-  std::vector<BValue> payload_members;
-  payload_members.reserve(variant.payload_size());
-  for (int64_t active_index = 0; active_index < variant.payload_size();
-       ++active_index) {
-    Expr* arg = node->args().at(active_index);
-    XLS_RETURN_IF_ERROR(Visit(arg));
-    XLS_ASSIGN_OR_RETURN(BValue value, Use(arg));
-    payload_members.push_back(value);
-  }
-
-  XLS_RETURN_IF_ERROR(
-      DefWithStatus(node,
-                    [this, &payload_members, &encoding,
-                     variant](const SourceInfo& loc) -> absl::StatusOr<BValue> {
-                      return internal::BuildPackedSumValue(
-                          *function_builder_, encoding, variant,
-                          payload_members, loc);
-                    })
-          .status());
-  return absl::OkStatus();
+  return DefineSumConstruction(node, encoding, variant, node->args());
 }
 
 absl::Status FunctionConverter::HandleSumInstance(const SumInstance* node) {
@@ -3245,52 +3247,27 @@ absl::Status FunctionConverter::HandleSumInstance(const SumInstance* node) {
   XLS_RET_CHECK((*node_type)->IsSum());
   const SumType& sum_type = (*node_type)->AsSum();
 
-  if (node->is_unit()) {
-    const SumTypeEncoding encoding(sum_type);
-    XLS_ASSIGN_OR_RETURN(SumTypeEncoding::VariantInfo variant,
-                         encoding.GetVariant(node->constructor_ref()->attr()));
-    XLS_RETURN_IF_ERROR(
-        DefWithStatus(node,
-                      [this, &encoding, variant](
-                          const SourceInfo& loc) -> absl::StatusOr<BValue> {
-                        return internal::BuildPackedSumValue(
-                            *function_builder_, encoding, variant, {}, loc);
-                      })
-            .status());
-    return absl::OkStatus();
-  }
-
   const SumTypeEncoding encoding(sum_type);
   XLS_ASSIGN_OR_RETURN(SumTypeEncoding::VariantInfo variant,
                        encoding.GetVariant(node->constructor_ref()->attr()));
 
-  std::vector<BValue> payload_members;
-  payload_members.reserve(variant.payload_size());
-  absl::flat_hash_map<std::string, Expr*> members_by_name;
-  for (const auto& [name, value] : node->struct_payload_field_args()) {
-    members_by_name.emplace(name, value);
+  std::vector<Expr*> payload_exprs;
+  payload_exprs.reserve(variant.payload_size());
+  if (!node->is_unit()) {
+    absl::flat_hash_map<std::string, Expr*> members_by_name;
+    for (const auto& [name, value] : node->struct_payload_field_args()) {
+      members_by_name.emplace(name, value);
+    }
+    for (int64_t active_index = 0; active_index < variant.payload_size();
+         ++active_index) {
+      payload_exprs.push_back(
+          node->is_tuple()
+              ? node->tuple_payload_args().at(active_index)
+              : members_by_name.at(std::string(
+                    variant.variant->GetMemberName(active_index))));
+    }
   }
-  for (int64_t active_index = 0; active_index < variant.payload_size();
-       ++active_index) {
-    Expr* value = node->is_tuple()
-                      ? node->tuple_payload_args().at(active_index)
-                      : members_by_name.at(std::string(
-                            variant.variant->GetMemberName(active_index)));
-    XLS_RETURN_IF_ERROR(Visit(value));
-    XLS_ASSIGN_OR_RETURN(BValue ir_value, Use(value));
-    payload_members.push_back(ir_value);
-  }
-
-  XLS_RETURN_IF_ERROR(
-      DefWithStatus(node,
-                    [this, &payload_members, &encoding,
-                     variant](const SourceInfo& loc) -> absl::StatusOr<BValue> {
-                      return internal::BuildPackedSumValue(
-                          *function_builder_, encoding, variant,
-                          payload_members, loc);
-                    })
-          .status());
-  return absl::OkStatus();
+  return DefineSumConstruction(node, encoding, variant, payload_exprs);
 }
 
 absl::Status FunctionConverter::HandleInvocation(const Invocation* node) {
@@ -5187,27 +5164,14 @@ absl::Status FunctionConverter::HandleSumStructInstance(
     members_by_name.emplace(name, value);
   }
 
-  std::vector<BValue> payload_members;
-  payload_members.reserve(variant.payload_size());
+  std::vector<Expr*> payload_exprs;
+  payload_exprs.reserve(variant.payload_size());
   for (int64_t active_index = 0; active_index < variant.payload_size();
        ++active_index) {
-    Expr* value = members_by_name.at(
-        std::string(sum_variant.GetMemberName(active_index)));
-    XLS_RETURN_IF_ERROR(Visit(value));
-    XLS_ASSIGN_OR_RETURN(BValue ir_value, Use(value));
-    payload_members.push_back(ir_value);
+    payload_exprs.push_back(members_by_name.at(
+        std::string(sum_variant.GetMemberName(active_index))));
   }
-
-  XLS_RETURN_IF_ERROR(
-      DefWithStatus(node,
-                    [this, &payload_members, &encoding,
-                     variant](const SourceInfo& loc) -> absl::StatusOr<BValue> {
-                      return internal::BuildPackedSumValue(
-                          *function_builder_, encoding, variant,
-                          payload_members, loc);
-                    })
-          .status());
-  return absl::OkStatus();
+  return DefineSumConstruction(node, encoding, variant, payload_exprs);
 }
 
 absl::Status FunctionConverter::HandleStructInstance(

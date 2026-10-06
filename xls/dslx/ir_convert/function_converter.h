@@ -45,6 +45,7 @@
 #include "xls/dslx/ir_convert/convert_options.h"
 #include "xls/dslx/ir_convert/proc_config_ir_converter.h"
 #include "xls/dslx/mangle.h"
+#include "xls/dslx/sum_type_encoding.h"
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
@@ -470,6 +471,11 @@ class FunctionConverter {
   absl::Status HandleRange(const Range* node);
   absl::Status HandleSplatStructInstance(const SplatStructInstance* node);
   absl::Status HandleStatement(const Statement* node);
+  // Visits payload_exprs, already in declaration order, then defines the sum.
+  absl::Status DefineSumConstruction(
+      const AstNode* node, const SumTypeEncoding& encoding,
+      const SumTypeEncoding::VariantInfo& variant,
+      absl::Span<Expr* const> payload_exprs);
   absl::Status HandleSumConstructorInvocation(const Invocation* node,
                                               const SumType& sum_type,
                                               const ColonRef* constructor_ref);

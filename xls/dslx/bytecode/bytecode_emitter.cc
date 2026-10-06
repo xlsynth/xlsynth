@@ -1243,6 +1243,18 @@ absl::Status BytecodeEmitter::PushResolvedCallee(const Invocation* invocation) {
   return absl::OkStatus();
 }
 
+absl::Status BytecodeEmitter::EmitSumConstruction(
+    const Span& span, const SumType& sum_type, int64_t variant_index,
+    absl::Span<Expr* const> payload_exprs) {
+  for (Expr* payload_expr : payload_exprs) {
+    XLS_RETURN_IF_ERROR(payload_expr->AcceptExpr(this));
+  }
+  Add(Bytecode::MakeCreateSum(
+      span, Bytecode::SumConstructionData(sum_type.CloneToUnique(),
+                                          variant_index)));
+  return absl::OkStatus();
+}
+
 absl::Status BytecodeEmitter::HandleSumConstructorInvocation(
     const Invocation* node, const SumType& sum_type,
     const ColonRef* constructor_ref) {
@@ -1251,14 +1263,8 @@ absl::Status BytecodeEmitter::HandleSumConstructorInvocation(
                        encoding.GetVariant(constructor_ref->attr()));
   XLS_RET_CHECK_EQ(node->args().size(), variant.payload_size());
 
-  XLS_RETURN_IF_ERROR(encoding.ForEachPayloadMember(
-      variant, [&](int64_t active_index, const Type&) -> absl::Status {
-        return node->args().at(active_index)->AcceptExpr(this);
-      }));
-  Add(Bytecode::MakeCreateSum(
-      node->span(), Bytecode::SumConstructionData(sum_type.CloneToUnique(),
-                                                  variant.variant_index)));
-  return absl::OkStatus();
+  return EmitSumConstruction(node->span(), sum_type, variant.variant_index,
+                             node->args());
 }
 
 absl::Status BytecodeEmitter::HandleInvocation(const Invocation* node) {
@@ -1405,9 +1411,7 @@ BytecodeEmitter::HandleSumVariantPayloadPattern(
   }
 
   return Bytecode::MatchArmItem::MakeSum(
-      &sum_type, std::string(variant.variant->variant().identifier()),
-      sum_type.GetDiscriminant(variant.variant_index),
-      std::move(payload_items));
+      &sum_type, variant.variant_index, std::move(payload_items));
 }
 
 absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
@@ -1457,8 +1461,7 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
                                      encoding.GetVariant(n->attr()));
                 XLS_RET_CHECK_EQ(variant.payload_size(), 0);
                 return Bytecode::MatchArmItem::MakeSum(
-                    sum_type, n->attr(),
-                    sum_type->GetDiscriminant(variant.variant_index), {});
+                    sum_type, variant.variant_index, {});
               } else {
                 XLS_ASSIGN_OR_RETURN(InterpValue value,
                                      HandleColonRefInternal(n));
@@ -1871,16 +1874,15 @@ absl::Status BytecodeEmitter::HandleSumStructInstance(
     members_by_name.emplace(name, value);
   }
 
-  XLS_RETURN_IF_ERROR(encoding.ForEachPayloadMember(
-      variant, [&](int64_t active_index, const Type&) -> absl::Status {
-        return members_by_name
-            .at(std::string(sum_variant.GetMemberName(active_index)))
-            ->AcceptExpr(this);
-      }));
-  Add(Bytecode::MakeCreateSum(
-      node->span(), Bytecode::SumConstructionData(sum_type.CloneToUnique(),
-                                                  variant.variant_index)));
-  return absl::OkStatus();
+  std::vector<Expr*> payload_exprs;
+  payload_exprs.reserve(variant.payload_size());
+  for (int64_t active_index = 0; active_index < variant.payload_size();
+       ++active_index) {
+    payload_exprs.push_back(members_by_name.at(
+        std::string(sum_variant.GetMemberName(active_index))));
+  }
+  return EmitSumConstruction(node->span(), sum_type, variant.variant_index,
+                             payload_exprs);
 }
 
 absl::Status BytecodeEmitter::HandleStructInstance(const StructInstance* node) {
@@ -1934,18 +1936,18 @@ absl::Status BytecodeEmitter::HandleSumInstance(const SumInstance* node) {
   for (const auto& [name, value] : node->struct_payload_field_args()) {
     members_by_name.emplace(name, value);
   }
-  XLS_RETURN_IF_ERROR(encoding.ForEachPayloadMember(
-      variant, [&](int64_t active_index, const Type&) -> absl::Status {
-        Expr* value = node->is_tuple()
-                          ? node->tuple_payload_args().at(active_index)
-                          : members_by_name.at(std::string(
-                                variant.variant->GetMemberName(active_index)));
-        return value->AcceptExpr(this);
-      }));
-  Add(Bytecode::MakeCreateSum(
-      node->span(), Bytecode::SumConstructionData(sum_type.CloneToUnique(),
-                                                  variant.variant_index)));
-  return absl::OkStatus();
+  std::vector<Expr*> payload_exprs;
+  payload_exprs.reserve(variant.payload_size());
+  for (int64_t active_index = 0; active_index < variant.payload_size();
+       ++active_index) {
+    payload_exprs.push_back(
+        node->is_tuple()
+            ? node->tuple_payload_args().at(active_index)
+            : members_by_name.at(std::string(
+                  variant.variant->GetMemberName(active_index))));
+  }
+  return EmitSumConstruction(node->span(), sum_type, variant.variant_index,
+                             payload_exprs);
 }
 
 absl::Status BytecodeEmitter::HandleSplatStructInstance(
