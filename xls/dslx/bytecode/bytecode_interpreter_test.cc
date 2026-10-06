@@ -392,11 +392,11 @@ TEST_F(BytecodeInterpreterTest,
   };
   auto a = [&](uint64_t payload) {
     return Item::MakeSum(
-        &sum_type, "A", InterpValue::MakeUBits(4, 2),
+        &sum_type, /*variant_index=*/0,
         {Item::MakeInterpValue(InterpValue::MakeUBits(8, payload))});
   };
   auto b = Item::MakeSum(
-      &sum_type, "B", InterpValue::MakeUBits(4, 9),
+      &sum_type, /*variant_index=*/1,
       {Item::MakeInterpValue(InterpValue::MakeUBits(16, 0xcafe))});
 
   EXPECT_THAT(matches(MakePackedBytecodeSum(2, 0xffa5), a(0xa5)),
@@ -422,8 +422,7 @@ TEST_F(BytecodeInterpreterTest,
   const InterpValue valid = MakePackedBytecodeSum(2, 0xa5);
   const InterpValue invalid = MakePackedBytecodeSum(3, 0);
   auto a = [&] {
-    return Item::MakeSum(&sum_type, "A", InterpValue::MakeUBits(4, 2),
-                         {Item::MakeWildcard()});
+    return Item::MakeSum(&sum_type, /*variant_index=*/0, {Item::MakeWildcard()});
   };
   auto matches = [&](std::vector<Item> items) {
     std::vector<Bytecode> bytecodes;

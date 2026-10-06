@@ -262,9 +262,9 @@ class Bytecode {
                                  const Type* value_type = nullptr);
     static MatchArmItem MakeStore(SlotIndex slot_index);
     static MatchArmItem MakeRange(InterpValue start, InterpValue limit);
-    static MatchArmItem MakeSum(const SumType* sum_type,
-                                std::string variant_name,
-                                InterpValue discriminant,
+    // The borrowed type must outlive the bytecode. variant_index is declaration
+    // order, not the semantic discriminant.
+    static MatchArmItem MakeSum(const SumType* sum_type, int64_t variant_index,
                                 std::vector<MatchArmItem> payload_items);
     static MatchArmItem MakeInvalidSum();
     static MatchArmItem MakeTuple(std::vector<MatchArmItem> elements);
@@ -290,8 +290,7 @@ class Bytecode {
 
     struct SumMatchData {
       const SumType* sum_type;
-      std::string variant_name;
-      InterpValue discriminant;
+      int64_t variant_index;
       std::vector<MatchArmItem> payload_items;
     };
 

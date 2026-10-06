@@ -1311,7 +1311,9 @@ absl::StatusOr<bool> BytecodeInterpreter::MatchArmEqualsInterpValue(
           const std::vector<InterpValue>* payload_values,
           GetMatchSumPayloadValues(bytecode, frame, *sum_match->sum_type, value,
                                    path));
-      if (sum_match->discriminant.Ne(sum_view.tag)) {
+      const InterpValue& discriminant =
+          sum_match->sum_type->GetDiscriminant(sum_match->variant_index);
+      if (discriminant.Ne(sum_view.tag)) {
         return false;
       }
       XLS_RET_CHECK_EQ(sum_match->payload_items.size(), payload_values->size());
