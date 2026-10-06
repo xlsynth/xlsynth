@@ -505,8 +505,10 @@ internal::DecodeFormattedSumPayload(const InterpValue& value,
         fmt_desc.sum_name(), variant.name(), active_payload_bit_count,
         fmt_desc.sum_payload_slot_bit_count()));
   }
-  const Bits active_payload_bits =
-      sum_view.payload_slot.GetBitsOrDie().Slice(0, active_payload_bit_count);
+  // Copy only the active bits, not the whole slot of a wider inactive variant.
+  const Bits active_payload_bits = Bits::FromBitmapView(
+      BitmapView(sum_view.payload_slot.GetBitsOrDie().bitmap(), /*start_bit=*/0,
+                 active_payload_bit_count));
   XLS_ASSIGN_OR_RETURN(std::vector<InterpValue> active_payload_values,
                        UnflattenAggregateValuesForDescriptor(
                            payload_formats, active_payload_bits));
