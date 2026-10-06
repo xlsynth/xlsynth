@@ -471,9 +471,8 @@ void DslxTypeToVerilogManager::PrepareSumNames(Module* module,
 
 void DslxTypeToVerilogManager::PrepareForModules(
     absl::Span<const std::pair<Module*, TypeInfo*>> modules,
-    const std::map<const AstNode*, std::string>& public_nominal_owners) {
-  bool has_public_nominal_owners =
-      !public_nominal_owners.empty() || !public_nominal_owners_.empty();
+    const std::map<const AstNode*, std::string>& public_nominal_owners,
+    SumQualifierPolicy sum_qualifier_policy) {
   bool public_owners_changed = false;
   for (const auto& [node, owner] : public_nominal_owners) {
     if (owner != node->owner()->name()) {
@@ -558,10 +557,19 @@ void DslxTypeToVerilogManager::PrepareForModules(
       bool is_sum = dynamic_cast<SumDef*>(node) != nullptr;
       const std::string& owner = public_owner(node);
       std::string module = verilog::SanitizeVerilogIdentifier(owner);
-      const auto& qualifiers = is_sum && has_public_nominal_owners
-                                   ? sum_module_qualifiers.at(name)
-                                   : module_qualifiers;
-      if (qualifiers.at(module).size() != 1) {
+      const auto& qualifiers =
+          is_sum ? sum_module_qualifiers.at(name) : module_qualifiers;
+      bool qualifier_collides = qualifiers.at(module).size() != 1;
+      if (is_sum &&
+          sum_qualifier_policy == SumQualifierPolicy::kWholeModuleGraph) {
+        // An effective public owner need not occur in the compiler graph.
+        // Any different compiler owner in its qualifier bucket also collides.
+        auto graph = module_qualifiers.find(module);
+        qualifier_collides |=
+            graph != module_qualifiers.end() &&
+            (graph->second.size() != 1 || !graph->second.contains(owner));
+      }
+      if (qualifier_collides) {
         module = EscapeName(owner);
       }
       std::string nominal = nodes.size() == 1

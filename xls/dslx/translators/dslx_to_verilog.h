@@ -128,6 +128,16 @@ class DslxTypeToVerilogManager {
       const dslx::TypeDefinition& def, dslx::ImportData* import_data,
       std::optional<std::string_view> verilog_type_name = std::nullopt);
 
+  // Selects which owner spellings can collide when qualifying a sum name.
+  enum class SumQualifierPolicy {
+    // Consider effective owners of declarations with the same sanitized
+    // identifier, plus compiler module names throughout the prepared graph.
+    kWholeModuleGraph,
+    // Consider only effective owners of declarations with the same sanitized
+    // identifier, so unrelated modules cannot change the qualifier.
+    kSameIdentifier,
+  };
+
   // Registers root modules and their transitive imports without emitting
   // exports. When a package has multiple independent roots, call this with all
   // of them before any AddTypeFor* operation. The complete graph lets the
@@ -145,9 +155,14 @@ class DslxTypeToVerilogManager {
   // nested nominal specialization arguments without changing compiler identity
   // or standalone ordinary exports. Entries refer to nominal definitions in
   // the prepared graph; omitted entries use their compiler module name.
+  // The sum qualifier policy applies to modules first prepared by this call,
+  // independently of owner overrides. Ordinary names always consider the
+  // whole compiler module graph; on-demand preparation uses the default policy.
   void PrepareForModules(
       absl::Span<const std::pair<Module*, TypeInfo*>> modules,
-      const std::map<const AstNode*, std::string>& public_nominal_owners = {});
+      const std::map<const AstNode*, std::string>& public_nominal_owners = {},
+      SumQualifierPolicy sum_qualifier_policy =
+          SumQualifierPolicy::kWholeModuleGraph);
 
   // Emits added DSLX types as a verilog package.
   std::string Emit() const { return file_->Emit(); }

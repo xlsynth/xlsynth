@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -943,6 +944,113 @@ pub type Right = b::Duplicate;
       forward_families = std::move(families);
       forward_aliases = std::move(aliases);
     }
+  }
+}
+
+// Sum qualifier policy changes whether an empty, colliding module contributes
+// a qualifier collision. Ordinary payload names still use the whole graph.
+TEST_F(DslxToVerilogTest, SumQualifierPolicyIsIndependentOfEmptyOwnerMap) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule first,
+      ParseAndTypecheck("pub struct Record { value: u8 } "
+                        "pub enum Packet { Empty, Item(Record) }",
+                        "first.x", "a.b", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule second,
+      ParseAndTypecheck("pub struct Record { value: u16 } "
+                        "pub enum Packet { Empty, Item(Record) }",
+                        "second.x", "c", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule empty,
+      ParseAndTypecheck("", "empty.x", "a_b", &import_data, nullptr));
+  const std::vector<std::pair<Module*, TypeInfo*>> modules = {
+      {first.module, first.type_info},
+      {second.module, second.type_info},
+      {empty.module, empty.type_info}};
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager default_policy,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager empty_owners,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager same_identifier,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+  default_policy.PrepareForModules(modules);
+  empty_owners.PrepareForModules(modules, {});
+  same_identifier.PrepareForModules(
+      modules, {},
+      DslxTypeToVerilogManager::SumQualifierPolicy::kSameIdentifier);
+
+  for (auto [manager, sum_name] : {std::pair{&default_policy, "a_2e_b_Packet"},
+                                   std::pair{&empty_owners, "a_2e_b_Packet"},
+                                   std::pair{&same_identifier, "a_b_Packet"}}) {
+    SCOPED_TRACE(sum_name);
+    for (Module* module : {first.module, second.module}) {
+      XLS_ASSERT_OK(manager->AddTypeForTypeDefinition(
+          module->GetTypeDefinition("Packet").value(), &import_data));
+    }
+    const std::string emitted = manager->Emit();
+    EXPECT_EQ(CountOccurrences(emitted, std::string("} ") + sum_name + ";"), 1)
+        << emitted;
+    EXPECT_EQ(CountOccurrences(emitted, "} c_Packet;"), 1) << emitted;
+    EXPECT_EQ(CountOccurrences(emitted, "} a_2e_b_Record;"), 1) << emitted;
+    EXPECT_EQ(CountOccurrences(emitted, "} c_Record;"), 1) << emitted;
+  }
+  EXPECT_EQ(default_policy.Emit(), empty_owners.Emit());
+}
+
+// A public owner can have no compiler qualifier bucket, or collide with a
+// bucket containing a single different compiler owner.
+TEST_F(DslxToVerilogTest, SumQualifierPolicyCombinesPublicAndCompilerOwners) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule first,
+      ParseAndTypecheck("pub enum Packet { Empty, Item(u8) }", "first.x",
+                        "internal", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule second,
+      ParseAndTypecheck("pub enum Packet { Empty, Item(u16) }", "second.x", "c",
+                        &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule empty,
+      ParseAndTypecheck("", "empty.x", "a_b", &import_data, nullptr));
+  const std::vector<std::pair<Module*, TypeInfo*>> modules = {
+      {first.module, first.type_info},
+      {second.module, second.type_info},
+      {empty.module, empty.type_info}};
+  const TypeDefinition first_packet =
+      first.module->GetTypeDefinition("Packet").value();
+  const std::map<const AstNode*, std::string> public_owners = {
+      {TypeDefinitionToAstNode(first_packet), "a.b"}};
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager whole_graph,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager same_identifier,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager no_compiler_bucket,
+                           DslxTypeToVerilogManager::Create("test_pkg"));
+  whole_graph.PrepareForModules(
+      modules, public_owners,
+      DslxTypeToVerilogManager::SumQualifierPolicy::kWholeModuleGraph);
+  same_identifier.PrepareForModules(
+      modules, public_owners,
+      DslxTypeToVerilogManager::SumQualifierPolicy::kSameIdentifier);
+  no_compiler_bucket.PrepareForModules(
+      {{first.module, first.type_info}, {second.module, second.type_info}},
+      public_owners);
+
+  for (auto [manager, sum_name] :
+       {std::pair{&whole_graph, "a_2e_b_Packet"},
+        std::pair{&same_identifier, "a_b_Packet"},
+        std::pair{&no_compiler_bucket, "a_b_Packet"}}) {
+    SCOPED_TRACE(sum_name);
+    XLS_ASSERT_OK(
+        manager->AddTypeForTypeDefinition(first_packet, &import_data));
+    XLS_ASSERT_OK(manager->AddTypeForTypeDefinition(
+        second.module->GetTypeDefinition("Packet").value(), &import_data));
+    const std::string emitted = manager->Emit();
+    EXPECT_EQ(CountOccurrences(emitted, std::string("} ") + sum_name + ";"), 1)
+        << emitted;
+    EXPECT_EQ(CountOccurrences(emitted, "} c_Packet;"), 1) << emitted;
+    EXPECT_EQ(emitted.find("internal_Packet"), std::string::npos) << emitted;
   }
 }
 
