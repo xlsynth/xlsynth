@@ -1418,9 +1418,7 @@ BytecodeEmitter::HandleSumVariantPayloadPattern(
   }
 
   return Bytecode::MatchArmItem::MakeSum(
-      &sum_type, std::string(variant.variant->variant().identifier()),
-      sum_type.GetDiscriminant(variant.variant_index),
-      std::move(payload_items));
+      &sum_type, variant.variant_index, std::move(payload_items));
 }
 
 absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
@@ -1470,8 +1468,7 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
                                      encoding.GetVariant(n->attr()));
                 XLS_RET_CHECK_EQ(variant.payload_size(), 0);
                 return Bytecode::MatchArmItem::MakeSum(
-                    sum_type, n->attr(),
-                    sum_type->GetDiscriminant(variant.variant_index), {});
+                    sum_type, variant.variant_index, {});
               } else {
                 XLS_ASSIGN_OR_RETURN(InterpValue value,
                                      HandleColonRefInternal(n));
