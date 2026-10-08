@@ -532,23 +532,44 @@ absl::Status IrInterpreter::HandleTrace(Trace* trace_op) {
     };
 
     std::string trace_output;
+    std::vector<bool> enclosing_guards;
+    bool section_is_active = true;
 
-    for (auto step : trace_op->format()) {
+    for (const FormatStep& step : trace_op->format()) {
       if (std::holds_alternative<std::string>(step)) {
-        absl::StrAppend(&trace_output, std::get<std::string>(step));
-      }
-
-      if (std::holds_alternative<FormatPreference>(step)) {
+        if (section_is_active) {
+          absl::StrAppend(&trace_output, UnescapeFormatStringLiteral(
+                                             std::get<std::string>(step)));
+        }
+      } else if (std::holds_alternative<FormatPreference>(step)) {
         if (arg_node == arg_nodes.end()) {
           return make_error("Not enough operands");
         }
-        auto arg_format = std::get<FormatPreference>(step);
-        absl::StrAppend(&trace_output,
-                        ResolveAsValue(*arg_node).ToHumanString(arg_format));
-        arg_node++;
+        if (section_is_active) {
+          auto arg_format = std::get<FormatPreference>(step);
+          absl::StrAppend(&trace_output,
+                          ResolveAsValue(*arg_node).ToHumanString(arg_format));
+        }
+        ++arg_node;
+      } else if (std::get<FormatControl>(step) ==
+                 FormatControl::kBeginConditional) {
+        if (arg_node == arg_nodes.end()) {
+          return make_error("Missing conditional guard operand");
+        }
+        enclosing_guards.push_back(section_is_active);
+        section_is_active = section_is_active && ResolveAsBool(*arg_node);
+        ++arg_node;
+      } else if (enclosing_guards.empty()) {
+        return make_error("Conditional end has no matching begin");
+      } else {
+        section_is_active = enclosing_guards.back();
+        enclosing_guards.pop_back();
       }
     }
 
+    if (!enclosing_guards.empty()) {
+      return make_error("Conditional begin has no matching end");
+    }
     if (arg_node != arg_nodes.end()) {
       return make_error("Too many operands");
     }
