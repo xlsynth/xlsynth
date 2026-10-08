@@ -493,7 +493,14 @@ class InferenceTableImpl : public InferenceTable {
   absl::Status AddStructBindingAnnotationsForContext(
       const StructDefBase* struct_def, ParametricEnv parametric_env,
       const ParametricContext* context) override {
-    for (const ParametricBinding* binding : struct_def->parametric_bindings()) {
+    return AddBindingAnnotationsForContext(struct_def->parametric_bindings(),
+                                           parametric_env, context);
+  }
+
+  absl::Status AddBindingAnnotationsForContext(
+      absl::Span<ParametricBinding* const> bindings,
+      const ParametricEnv& parametric_env, const ParametricContext* context) {
+    for (const ParametricBinding* binding : bindings) {
       if (binding->type_annotation()->IsAnnotation<GenericTypeAnnotation>()) {
         std::optional<InterpValue> value =
             parametric_env.GetValue(binding->name_def());
@@ -535,6 +542,25 @@ class InferenceTableImpl : public InferenceTable {
     XLS_RETURN_IF_ERROR(AddStructBindingAnnotationsForContext(
         struct_def, parametric_env, result));
     return StructContextResult{.context = result, .created_new = true};
+  }
+
+  absl::StatusOr<const ParametricContext*> AddParametricSumContext(
+      const SumDef* sum_def, const AstNode* node, ParametricEnv parametric_env,
+      TypeInfo* type_info,
+      std::optional<const ParametricContext*> parent_context) override {
+    auto context = std::make_unique<ParametricContext>(
+        parametric_contexts_.size(), node,
+        ParametricSumDetails{sum_def, parametric_env}, type_info,
+        parent_context,
+        /*self_type=*/std::nullopt);
+    const ParametricContext* result = context.get();
+    parametric_contexts_.push_back(std::move(context));
+    mutable_parametric_context_data_.emplace(result,
+                                             MutableParametricContextData{});
+    converted_parametric_envs_.emplace(result, parametric_env);
+    XLS_RETURN_IF_ERROR(AddBindingAnnotationsForContext(
+        sum_def->parametric_bindings(), parametric_env, result));
+    return result;
   }
 
   std::optional<ParametricContextScopedExpr> GetParametricValue(
