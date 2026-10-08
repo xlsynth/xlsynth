@@ -61,6 +61,7 @@
 #include "xls/jit/function_jit.h"
 #include "xls/jit/llvm_type_converter.h"
 #include "xls/jit/orc_jit.h"
+#include "xls/public/c_api_dslx_internal.h"
 #include "xls/public/c_api_format_preference.h"
 #include "xls/public/c_api_impl_helpers.h"
 #include "xls/public/runtime_codegen_actions.h"
@@ -268,8 +269,7 @@ bool xls_mangle_dslx_name_full(
     free_key_set.insert(free_keys[i]);
   }
 
-  const xls::dslx::ParametricEnv* env =
-      reinterpret_cast<const xls::dslx::ParametricEnv*>(param_env);
+  const xls::dslx::ParametricEnv* env = xls::UnwrapDslxParametricEnv(param_env);
 
   std::string_view scope_sv;
   if (scope != nullptr) {
