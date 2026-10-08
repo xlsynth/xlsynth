@@ -726,6 +726,24 @@ struct EncodedSumView {
 // Does not validate the tag or payload values against a nominal sum type.
 absl::StatusOr<EncodedSumView> GetEncodedSumView(const InterpValue& value);
 
+namespace internal {
+
+// Borrowed view of the semantic-sum `(tag, packed-payload-slot)` carrier.
+struct EncodedSumView {
+  const InterpValue& tag;
+  const InterpValue& payload_slot;
+};
+
+// Checks that `value` is a two-element tuple whose second element is a one-slot
+// payload tuple.
+// Does not validate the tag or payload values against a nominal sum type.
+absl::StatusOr<EncodedSumView> GetEncodedSumView(const InterpValue& value);
+
+// Constructs the interpreter-owned tuple carrier for an encoded semantic sum.
+InterpValue CreateEncodedSumTuple(InterpValue tag, InterpValue payload_slot);
+
+}  // namespace internal
+
 }  // namespace xls::dslx
 
 #endif  // XLS_DSLX_INTERP_VALUE_H_

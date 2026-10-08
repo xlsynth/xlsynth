@@ -17,6 +17,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -83,9 +85,15 @@ class ValueFormatDescriptor {
   ValueFormatDescriptor() : kind_(ValueFormatDescriptorKind::kLeafValue) {}
 
   static ValueFormatDescriptor MakeLeafValue(FormatPreference format);
+  static ValueFormatDescriptor MakeLeafValue(FormatPreference format,
+                                             int64_t bit_count, bool is_signed);
   static ValueFormatDescriptor MakeEnum(
       std::string_view enum_name,
       absl::flat_hash_map<Bits, std::string> value_to_name);
+  static ValueFormatDescriptor MakeEnum(
+      std::string_view enum_name,
+      absl::flat_hash_map<Bits, std::string> value_to_name, int64_t bit_count,
+      bool is_signed);
   static ValueFormatDescriptor MakeArray(
       const ValueFormatDescriptor& element_format, size_t size);
   static ValueFormatDescriptor MakeTuple(
@@ -111,6 +119,10 @@ class ValueFormatDescriptor {
     CHECK(IsLeafValue());
     return format_;
   }
+  std::optional<bool> leaf_is_signed() const {
+    CHECK(IsLeafValue());
+    return is_signed_;
+  }
 
   // Enum methods.
   std::string_view enum_name() const {
@@ -120,6 +132,10 @@ class ValueFormatDescriptor {
   const absl::flat_hash_map<Bits, std::string>& value_to_name() const {
     CHECK(IsEnum());
     return std::get<EnumFormat>(nominal_format_).value_to_name;
+  }
+  std::optional<bool> enum_is_signed() const {
+    CHECK(IsEnum());
+    return is_signed_;
   }
 
   // Array methods.
@@ -148,20 +164,30 @@ class ValueFormatDescriptor {
   }
 
   // Sum methods.
+  // Process-local identity of the immutable sum description, shared by copies.
+  // Valid only while a descriptor owning that description remains alive.
+  const void* sum_format_identity() const {
+    CHECK(IsSum());
+    return std::get<std::shared_ptr<const SumFormat>>(nominal_format_).get();
+  }
   std::string_view sum_name() const {
     CHECK(IsSum());
-    return std::get<SumFormat>(nominal_format_).name;
+    return std::get<std::shared_ptr<const SumFormat>>(nominal_format_)->name;
   }
   size_t sum_variant_count() const {
     CHECK(IsSum());
-    return std::get<SumFormat>(nominal_format_).variants.size();
+    return std::get<std::shared_ptr<const SumFormat>>(nominal_format_)
+        ->variants.size();
   }
   ValueFormatSumVariantView sum_variant(size_t i) const;
   // Total number of slots in the internal flattened sum payload tuple.
   size_t sum_payload_slot_count() const {
     CHECK(IsSum());
-    return std::get<SumFormat>(nominal_format_).payload_slot_count;
+    return std::get<std::shared_ptr<const SumFormat>>(nominal_format_)
+        ->payload_slot_count;
   }
+
+  std::optional<int64_t> flat_bit_count() const { return flat_bit_count_; }
 
   // Number of elements in tuple, array, or struct descriptors. Sum descriptors
   // instead expose their constructor count through sum_variant_count().
@@ -173,7 +199,7 @@ class ValueFormatDescriptor {
   absl::Status Accept(ValueFormatVisitor& v) const;
 
  private:
-  friend class SumValueFormatBuilder;
+  friend class ValueFormatDescriptorBuilder;
 
   explicit ValueFormatDescriptor(ValueFormatDescriptorKind kind)
       : kind_(kind) {}
@@ -222,13 +248,18 @@ class ValueFormatDescriptor {
 
   // Leaf data members;
   FormatPreference format_ = FormatPreference::kDefault;
+  std::optional<int64_t> flat_bit_count_;
+  std::optional<bool> is_signed_;
 
   // Size of array or tuple.
   size_t size_ = 0;
 
   // A descriptor describes at most one nominal kind. Sharing its storage keeps
   // semantic-sum support from enlarging every ordinary bytecode instruction.
-  std::variant<std::monostate, EnumFormat, StructFormat, SumFormat>
+  // Copies share immutable sum descriptions, including their descendants,
+  // without retaining any Type or AST pointers.
+  std::variant<std::monostate, EnumFormat, StructFormat,
+               std::shared_ptr<const SumFormat>>
       nominal_format_;
 };
 

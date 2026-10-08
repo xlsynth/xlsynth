@@ -67,7 +67,9 @@ EnumValueDomain MakeEnumValueDomain(const EnumType& enum_type) {
 struct FlattenedLeafType {
   const Type* type;
   std::optional<int64_t> dense_max_value;
-  std::vector<int64_t> excluded_dense_values;
+  // Sum tags use consecutive inhabited-constructor coordinates. Keep excluded
+  // declaration indices sorted for pattern conversion and witness decoding.
+  std::vector<int64_t> uninhabited_variant_indices;
   std::optional<EnumValueDomain> enum_domain;
 };
 
@@ -76,7 +78,7 @@ struct FlattenedLeafTypes {
   std::vector<FlattenedLeafType> flat;
   // True when the semantic product being flattened has no inhabited values.
   //
-  // Empty sums and empty enums contribute no storage leaf to the semantic match
+  // Empty sums and empty enums contribute no checker leaf to the semantic match
   // domain. In a product such as `(Never, bool)`, the bool leaf is still needed
   // to interpret patterns, but the remaining region starts empty.
   bool is_empty = false;
@@ -86,29 +88,15 @@ bool IsEmptyEnum(const Type& type) {
   return type.IsEnum() && type.AsEnum().nominal_type().values().empty();
 }
 
-bool IsInhabited(const Type& type) {
-  bool result;
-  if (IsEmptyEnum(type)) {
-    result = false;
-  } else if (type.IsTuple()) {
-    result = std::all_of(type.AsTuple().members().begin(),
-                         type.AsTuple().members().end(),
-                         [](const std::unique_ptr<Type>& member) {
-                           return IsInhabited(*member);
-                         });
-  } else if (type.IsSum()) {
-    result = std::any_of(type.AsSum().variants().begin(),
-                         type.AsSum().variants().end(),
-                         [](const SumTypeVariant& variant) {
-                           for (int64_t i = 0; i < variant.size(); ++i) {
-                             if (!IsInhabited(variant.GetMemberType(i))) {
-                               return false;
-                             }
-                           }
-                           return true;
-                         });
-  } else {
-    result = true;
+int64_t GetLeafTypeCount(const Type& type);
+
+int64_t GetSumPayloadLeafTypeCount(const SumType& sum_type) {
+  int64_t result = 0;
+  for (const SumTypeVariant& variant : sum_type.variants()) {
+    for (int64_t member_index = 0; member_index < variant.size();
+         ++member_index) {
+      result += GetLeafTypeCount(variant.GetMemberType(member_index));
+    }
   }
   return result;
 }
@@ -116,28 +104,21 @@ bool IsInhabited(const Type& type) {
 int64_t GetLeafTypeCount(const Type& type) {
   if (IsEmptyEnum(type)) {
     return 0;
-  }
-  if (type.IsTuple()) {
+  } else if (type.IsTuple()) {
     int64_t result = 0;
     for (const std::unique_ptr<Type>& member : type.AsTuple().members()) {
       result += GetLeafTypeCount(*member);
     }
     return result;
-  }
-  if (type.IsSum()) {
+  } else if (type.IsSum()) {
     if (type.AsSum().variant_count() == 0) {
       return 0;
+    } else {
+      return 1 + GetSumPayloadLeafTypeCount(type.AsSum());
     }
-    int64_t result = 1;
-    const Phase1SumTypeEncoding encoding(type.AsSum());
-    CHECK_OK(encoding.ForEachPayloadType(
-        [&](const Type& payload_type) -> absl::Status {
-          result += GetLeafTypeCount(payload_type);
-          return absl::OkStatus();
-        }));
-    return result;
+  } else {
+    return 1;
   }
-  return 1;
 }
 
 void AppendStorageLeafTypes(const Type& type, FlattenedLeafTypes* result) {
@@ -149,37 +130,42 @@ void AppendStorageLeafTypes(const Type& type, FlattenedLeafTypes* result) {
     }
   } else if (type.IsSum()) {
     if (type.AsSum().variant_count() != 0) {
-      const Phase1SumTypeEncoding encoding(type.AsSum());
-      result->owned.push_back(std::make_unique<BitsType>(
-          /*is_signed=*/false, encoding.tag_bit_count().value()));
-      std::vector<int64_t> excluded_dense_values;
-      for (int64_t variant_index = 0;
-           variant_index < type.AsSum().variant_count(); ++variant_index) {
-        const SumTypeVariant& variant =
-            type.AsSum().variants().at(variant_index);
-        bool is_inhabited = true;
-        for (int64_t member_index = 0; member_index < variant.size();
-             ++member_index) {
-          if (!IsInhabited(variant.GetMemberType(member_index))) {
-            is_inhabited = false;
-            break;
-          }
-        }
-        if (!is_inhabited) {
-          excluded_dense_values.push_back(variant_index);
-        }
-      }
+      const SumType& sum_type = type.AsSum();
+      const int64_t tag_bit_count =
+          sum_type.tag_bit_count().GetAsInt64().value();
+      result->owned.push_back(
+          std::make_unique<BitsType>(/*is_signed=*/false, tag_bit_count));
+      const int64_t tag_leaf_index = result->flat.size();
       result->flat.push_back(FlattenedLeafType{
           .type = result->owned.back().get(),
-          .dense_max_value = type.AsSum().variant_count() - 1,
-          .excluded_dense_values = std::move(excluded_dense_values),
+          .dense_max_value = 0,
+          .uninhabited_variant_indices = {},
           .enum_domain = std::nullopt,
       });
-      CHECK_OK(encoding.ForEachPayloadType(
-          [&](const Type& payload_type) -> absl::Status {
-            AppendStorageLeafTypes(payload_type, result);
-            return absl::OkStatus();
-          }));
+      std::vector<int64_t> uninhabited_variant_indices;
+      for (int64_t variant_index = 0; variant_index < sum_type.variant_count();
+           ++variant_index) {
+        const SumTypeVariant& variant = sum_type.variants().at(variant_index);
+        for (int64_t member_index = 0; member_index < variant.size();
+             ++member_index) {
+          AppendStorageLeafTypes(variant.GetMemberType(member_index), result);
+        }
+        if (!SumVariantIsInhabited(variant).value()) {
+          uninhabited_variant_indices.push_back(variant_index);
+        }
+      }
+      const int64_t uninhabited_count = uninhabited_variant_indices.size();
+      const int64_t inhabited_count =
+          sum_type.variant_count() - uninhabited_count;
+      // Recursive appends can reallocate flat, so look up the tag by index.
+      FlattenedLeafType& tag_leaf = result->flat[tag_leaf_index];
+      // Contiguous coordinates avoid multiplying constructor holes across
+      // independent dimensions. An uninhabited sum in an inactive payload keeps
+      // one storage placeholder; an actively required empty type is handled by
+      // FlattenedLeafTypes::is_empty instead.
+      tag_leaf.dense_max_value = std::max<int64_t>(0, inhabited_count - 1);
+      tag_leaf.uninhabited_variant_indices =
+          std::move(uninhabited_variant_indices);
     }
   } else {
     std::optional<EnumValueDomain> enum_domain;
@@ -189,14 +175,14 @@ void AppendStorageLeafTypes(const Type& type, FlattenedLeafTypes* result) {
     result->flat.push_back(FlattenedLeafType{
         .type = &type,
         .dense_max_value = std::nullopt,
-        .excluded_dense_values = {},
+        .uninhabited_variant_indices = {},
         .enum_domain = std::move(enum_domain),
     });
   }
 }
 
 void AppendLeafTypes(const Type& type, FlattenedLeafTypes* result) {
-  result->is_empty = result->is_empty || !IsInhabited(type);
+  result->is_empty = result->is_empty || !TypeIsInhabited(type).value();
   AppendStorageLeafTypes(type, result);
 }
 
@@ -214,20 +200,12 @@ FlattenedLeafTypes GetLeafTypes(const Type& type, const Span& span,
 }
 
 FlattenedLeafTypes GetSumVariantPayloadLeafTypes(
-    const SumType& sum_type, std::string_view variant_name) {
+    const SumTypeVariant& variant) {
   FlattenedLeafTypes result;
-  const Phase1SumTypeEncoding encoding(sum_type);
-  Phase1SumTypeEncoding::VariantInfo variant =
-      encoding.GetVariant(variant_name).value();
-  CHECK_OK(encoding.ForEachActivePayloadSlot(
-      variant,
-      [&](int64_t slot_index, int64_t active_index,
-          const Type& slot_type) -> absl::Status {
-        static_cast<void>(slot_index);
-        static_cast<void>(active_index);
-        AppendLeafTypes(slot_type, &result);
-        return absl::OkStatus();
-      }));
+  for (int64_t member_index = 0; member_index < variant.size();
+       ++member_index) {
+    AppendLeafTypes(variant.GetMemberType(member_index), &result);
+  }
   return result;
 }
 
@@ -284,7 +262,7 @@ std::vector<InterpValueInterval> GetFullIntervals(
   return result;
 }
 
-InterpValueInterval MakePointIntervalForLeafType(
+std::optional<InterpValueInterval> MakePointIntervalForLeafType(
     const FlattenedLeafType& leaf_type, const InterpValue& value) {
   const Type& type = *leaf_type.type;
   VLOG(5) << "MakePointIntervalForLeafType; type: `" << type.ToString()
@@ -300,11 +278,26 @@ InterpValueInterval MakePointIntervalForLeafType(
     InterpValue coordinate = InterpValue::MakeUBits(
         type.AsEnum().size().GetAsInt64().value(), it->second);
     return InterpValueInterval(coordinate, coordinate);
+  } else if (leaf_type.dense_max_value.has_value()) {
+    const int64_t variant_index = value.GetBitValueUnsigned().value();
+    const std::vector<int64_t>& uninhabited =
+        leaf_type.uninhabited_variant_indices;
+    const auto it =
+        std::lower_bound(uninhabited.begin(), uninhabited.end(), variant_index);
+    if (it != uninhabited.end() && *it == variant_index) {
+      return std::nullopt;
+    } else {
+      InterpValue coordinate =
+          InterpValue::MakeUBits(value.GetBitsOrDie().bit_count(),
+                                 variant_index - (it - uninhabited.begin()));
+      return InterpValueInterval(coordinate, coordinate);
+    }
+  } else {
+    std::optional<BitsLikeProperties> bits_like = GetBitsLike(type);
+    CHECK(bits_like.has_value())
+        << "MakePointIntervalForType; got non-bits type: " << type.ToString();
+    return InterpValueInterval(value, value);
   }
-  std::optional<BitsLikeProperties> bits_like = GetBitsLike(type);
-  CHECK(bits_like.has_value())
-      << "MakePointIntervalForType; got non-bits type: " << type.ToString();
-  return InterpValueInterval(value, value);
 }
 
 InterpValueInterval MakeIntervalForType(const Type& type,
@@ -437,14 +430,22 @@ IntervalPatternLeaf ToIntervalPatternLeaf(const PatternTree& pattern) {
 
 int64_t GetSumVariantIndex(const SumType& sum_type,
                            std::string_view constructor_name) {
-  return Phase1SumTypeEncoding(sum_type)
-      .GetVariant(constructor_name)
-      .value()
-      .variant_index;
+  for (int64_t variant_index = 0; variant_index < sum_type.variant_count();
+       ++variant_index) {
+    if (sum_type.variants()[variant_index].variant().identifier() ==
+        constructor_name) {
+      return variant_index;
+    }
+  }
+  LOG(FATAL) << "No variant `" << constructor_name << "` in sum `"
+             << sum_type.ToString() << "`";
 }
 
+// Nested sums still use a checker-local declaration-order product until Phase 3
+// replaces this MVP with a recursive checker. This ordinal is semantic checker
+// state, not the runtime payload-slot layout or a wire discriminant.
 InterpValue MakeSumTagValue(const SumType& sum_type, int64_t variant_index) {
-  int64_t bit_count = sum_type.storage_tag_bit_count().GetAsInt64().value();
+  int64_t bit_count = sum_type.tag_bit_count().GetAsInt64().value();
   return InterpValue::MakeUBits(bit_count, variant_index);
 }
 
@@ -975,25 +976,10 @@ NdRegion MakeFullNdRegion(const FlattenedLeafTypes& leaf_types) {
   std::vector<InterpValue> dim_extents = GetDimExtents(intervals);
   if (leaf_types.is_empty) {
     return NdRegion::MakeEmpty(std::move(dim_extents));
+  } else {
+    return NdRegion::MakeFromNdInterval(NdInterval(intervals),
+                                        std::move(dim_extents));
   }
-  NdRegion result = NdRegion::MakeFromNdInterval(NdInterval(intervals),
-                                                 std::move(dim_extents));
-  for (int64_t i = 0; i < leaf_types.flat.size(); ++i) {
-    const FlattenedLeafType& leaf_type = leaf_types.flat.at(i);
-    for (int64_t excluded_value : leaf_type.excluded_dense_values) {
-      std::vector<std::optional<InterpValueInterval>> excluded_intervals(
-          intervals.begin(), intervals.end());
-      std::optional<BitsLikeProperties> bits_like =
-          GetBitsLike(*leaf_type.type);
-      CHECK(bits_like.has_value());
-      int64_t bit_count = bits_like->size.GetAsInt64().value();
-      InterpValue value = InterpValue::MakeUBits(bit_count, excluded_value);
-      excluded_intervals[i] = InterpValueInterval(value, value);
-      result = result.SubtractInterval(
-          NdIntervalWithEmpty(std::move(excluded_intervals)));
-    }
-  }
-  return result;
 }
 
 std::string FormatSumVariant(const SumType& sum_type,
@@ -1068,28 +1054,36 @@ std::string FormatSampleForType(
   } else if (type.IsSum()) {
     CHECK_LT(*leaf_index, dimensions.size());
     const SumType& sum_type = type.AsSum();
+    const FlattenedLeafType& leaf_type = leaf_types[*leaf_index];
     int64_t variant_index =
         dimensions[(*leaf_index)++].min().GetBitValueUnsigned().value();
+    for (int64_t uninhabited_index : leaf_type.uninhabited_variant_indices) {
+      if (uninhabited_index <= variant_index) {
+        ++variant_index;
+      } else {
+        break;
+      }
+    }
     CHECK_LT(variant_index, sum_type.variant_count());
     const SumTypeVariant& variant = sum_type.variants().at(variant_index);
-    const Phase1SumTypeEncoding encoding(sum_type);
-    Phase1SumTypeEncoding::VariantInfo variant_info =
-        encoding.GetVariant(variant.variant().identifier()).value();
     std::vector<std::string> payload_values;
     payload_values.reserve(variant.size());
-    CHECK_OK(encoding.VisitPayloadAssemblyOrder(
-        variant_info,
-        [&](int64_t active_index) -> absl::Status {
-          payload_values.push_back(FormatSampleForType(
-              variant.GetMemberType(active_index), dimensions, leaf_types,
-              leaf_index));
-          return absl::OkStatus();
-        },
-        [&](const Type& inactive_type) -> absl::Status {
-          *leaf_index += GetLeafTypeCount(inactive_type);
+    for (int64_t candidate_index = 0;
+         candidate_index < sum_type.variant_count(); ++candidate_index) {
+      const SumTypeVariant& candidate = sum_type.variants()[candidate_index];
+      for (int64_t member_index = 0; member_index < candidate.size();
+           ++member_index) {
+        if (candidate_index == variant_index) {
+          payload_values.push_back(
+              FormatSampleForType(candidate.GetMemberType(member_index),
+                                  dimensions, leaf_types, leaf_index));
+        } else {
+          *leaf_index +=
+              GetLeafTypeCount(candidate.GetMemberType(member_index));
           CHECK_LE(*leaf_index, dimensions.size());
-          return absl::OkStatus();
-        }));
+        }
+      }
+    }
     result = FormatSumVariant(sum_type, variant, payload_values);
   } else {
     CHECK_LT(*leaf_index, dimensions.size());
@@ -1343,8 +1337,8 @@ MatchExhaustivenessChecker::MatchExhaustivenessChecker(
     impl_->sum_variant_states_.reserve(
         impl_->matched_sum_type_->variant_count());
     for (const SumTypeVariant& variant : impl_->matched_sum_type_->variants()) {
-      FlattenedLeafTypes variant_leaf_types = GetSumVariantPayloadLeafTypes(
-          *impl_->matched_sum_type_, variant.variant().identifier());
+      FlattenedLeafTypes variant_leaf_types =
+          GetSumVariantPayloadLeafTypes(variant);
       NdRegion variant_remaining = MakeFullNdRegion(variant_leaf_types);
       impl_->sum_variant_states_.push_back(Impl::SumVariantState{
           .variant_name = std::string(variant.variant().identifier()),
