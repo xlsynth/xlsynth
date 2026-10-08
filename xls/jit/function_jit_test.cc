@@ -387,6 +387,28 @@ TEST(FunctionJitTest, PackedAndUnpackedSmoke) {
   }
 }
 
+TEST(FunctionJitTest, PackedTupleWithZeroBitLeaf) {
+  Package package("my_package");
+  std::string ir_text = R"(
+  fn get_tag(x: (bits[1], (bits[0]))) -> bits[1] {
+    ret tag: bits[1] = tuple_index(x, index=0)
+  }
+  )";
+  XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                           Parser::ParseFunction(ir_text, &package));
+
+  XLS_ASSERT_OK_AND_ASSIGN(auto jit, FunctionJit::Create(function));
+
+  using InputT =
+      PackedTupleView<PackedBitsView<1>, PackedTupleView<PackedBitsView<0>>>;
+  uint8_t input_data[] = {0x1};
+  uint8_t output_data = 0;
+  InputT input(input_data, 0);
+  PackedBitsView<1> output(&output_data, 0);
+  XLS_ASSERT_OK(jit->RunWithPackedViews(input, output));
+  EXPECT_EQ(output_data, 0x1);
+}
+
 TEST(FunctionJitTest, PackedAndUnpackedSmokeWide) {
   Package package("my_package");
   std::string ir_text = R"(
