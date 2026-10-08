@@ -278,6 +278,39 @@ TEST(AstGeneratorMultiTest, GeneratesRequiredSumTypes) {
   }
 }
 
+TEST(AstGeneratorOptionsTest, CrossModuleSumTypeOptionRoundTrips) {
+  AstGeneratorOptions options;
+  options.require_sum_type = true;
+  options.require_cross_module_sum_type = true;
+
+  XLS_ASSERT_OK_AND_ASSIGN(AstGeneratorOptions decoded,
+                           AstGeneratorOptions::FromProto(options.ToProto()));
+  EXPECT_TRUE(decoded.require_sum_type);
+  EXPECT_TRUE(decoded.require_cross_module_sum_type);
+}
+
+TEST(AstGeneratorOptionsTest, RejectsUnsupportedCrossModuleSumTypes) {
+  AstGeneratorOptions options;
+  options.require_cross_module_sum_type = true;
+  EXPECT_THAT(options.Validate().message(),
+              testing::HasSubstr("requires require_sum_type"));
+
+  options.require_sum_type = true;
+  options.max_width_bits_types = 22;
+  EXPECT_THAT(options.Validate().message(),
+              testing::HasSubstr("max_width_bits_types of at least 23"));
+
+  options.max_width_bits_types = 23;
+  options.max_width_aggregate_types = 31;
+  EXPECT_THAT(options.Validate().message(),
+              testing::HasSubstr("max_width_aggregate_types of at least 32"));
+
+  options.max_width_aggregate_types = 32;
+  options.generate_proc = true;
+  EXPECT_THAT(options.Validate().message(),
+              testing::HasSubstr("only supported for function generation"));
+}
+
 TEST(AstGeneratorMultiTest,
      GeneratesRequiredUnitOnlySumTypesWhenPayloadBitsDisabled) {
   FileTable file_table;

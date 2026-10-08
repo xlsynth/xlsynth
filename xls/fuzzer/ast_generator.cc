@@ -110,9 +110,33 @@ LastDelayingOp ComposeDelayingOps(LastDelayingOp op1, LastDelayingOp op2,
 
 }  // namespace
 
+absl::Status AstGeneratorOptions::Validate() const {
+  if (generate_proc && require_sum_type) {
+    return absl::InvalidArgumentError(
+        "require_sum_type is only supported for function generation.");
+  } else if (require_cross_module_sum_type && generate_proc) {
+    return absl::InvalidArgumentError(
+        "require_cross_module_sum_type is only supported for function "
+        "generation.");
+  } else if (require_cross_module_sum_type && !require_sum_type) {
+    return absl::InvalidArgumentError(
+        "require_cross_module_sum_type requires require_sum_type.");
+  } else if (require_cross_module_sum_type && max_width_bits_types < 23) {
+    return absl::InvalidArgumentError(
+        "require_cross_module_sum_type requires max_width_bits_types "
+        "of at least 23.");
+  } else if (require_cross_module_sum_type && max_width_aggregate_types < 32) {
+    return absl::InvalidArgumentError(
+        "require_cross_module_sum_type requires "
+        "max_width_aggregate_types of at least 32.");
+  } else {
+    return absl::OkStatus();
+  }
+}
+
 /* static */ absl::StatusOr<AstGeneratorOptions> AstGeneratorOptions::FromProto(
     const AstGeneratorOptionsProto& proto) {
-  return AstGeneratorOptions{
+  AstGeneratorOptions options{
       .emit_signed_types = proto.emit_signed_types(),
       .max_width_bits_types = proto.max_width_bits_types(),
       .max_width_aggregate_types = proto.max_width_aggregate_types(),
@@ -122,7 +146,10 @@ LastDelayingOp ComposeDelayingOps(LastDelayingOp op1, LastDelayingOp op2,
       .emit_stateless_proc = proto.emit_stateless_proc(),
       .emit_zero_width_bits_types = proto.emit_zero_width_bits_types(),
       .require_sum_type = proto.require_sum_type(),
+      .require_cross_module_sum_type = proto.require_cross_module_sum_type(),
   };
+  XLS_RETURN_IF_ERROR(options.Validate());
+  return options;
 }
 
 AstGeneratorOptionsProto AstGeneratorOptions::ToProto() const {
@@ -136,6 +163,7 @@ AstGeneratorOptionsProto AstGeneratorOptions::ToProto() const {
   proto.set_emit_stateless_proc(emit_stateless_proc);
   proto.set_emit_zero_width_bits_types(emit_zero_width_bits_types);
   proto.set_require_sum_type(require_sum_type);
+  proto.set_require_cross_module_sum_type(require_cross_module_sum_type);
   return proto;
 }
 
@@ -2150,6 +2178,75 @@ TypeAnnotation* AstGenerator::GenerateType(
   return GenerateBitsType(max_width_bits_types);
 }
 
+TypeRefTypeAnnotation* AstGenerator::MakeImportedSumTypeAnnotation() {
+  CHECK(imported_semantic_sum_name_def_ != nullptr);
+  auto* type_ref = module_->Make<ColonRef>(
+      fake_span_, MakeNameRef(imported_semantic_sum_name_def_), "Option");
+  return MakeTypeRefTypeAnnotation(TypeDefinition(type_ref));
+}
+
+absl::Status AstGenerator::GenerateImportedSumStatements(
+    NameDef* imported_float32_value, std::vector<Statement*>* statements) {
+  XLS_RET_CHECK(imported_float32_value != nullptr);
+  XLS_RET_CHECK(imported_semantic_sum_name_def_ != nullptr);
+  XLS_RET_CHECK(statements != nullptr);
+
+  auto make_imported_constructor = [&](std::string_view variant) {
+    auto* type_ref = module_->Make<ColonRef>(
+        fake_span_, MakeNameRef(imported_semantic_sum_name_def_), "Option");
+    return module_->Make<ColonRef>(fake_span_, type_ref, std::string(variant));
+  };
+  auto* payload_type = MakeTypeAnnotation(/*is_signed=*/false, /*width=*/8,
+                                          /*use_xn=*/false);
+  auto make_payload = [&]() -> Expr* {
+    auto* fraction = module_->Make<Attr>(
+        fake_span_, MakeNameRef(imported_float32_value), "fraction");
+    return module_->Make<Cast>(fake_span_, fraction, payload_type);
+  };
+
+  auto* imported_sum =
+      module_->Make<Invocation>(fake_span_, make_imported_constructor("Some"),
+                                std::vector<Expr*>{make_payload()});
+  auto* imported_sum_name =
+      module_->Make<NameDef>(fake_span_, GenSym(), imported_sum);
+  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+      fake_span_, imported_sum_name, MakeImportedSumTypeAnnotation(),
+      imported_sum, /*is_const=*/false)));
+
+  auto* identity_ref = module_->Make<ColonRef>(
+      fake_span_, MakeNameRef(imported_semantic_sum_name_def_), "identity");
+  auto* identity_call = module_->Make<Invocation>(
+      fake_span_, identity_ref,
+      std::vector<Expr*>{MakeNameRef(imported_sum_name)});
+  auto* roundtripped_sum_name =
+      module_->Make<NameDef>(fake_span_, GenSym(), identity_call);
+  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+      fake_span_, roundtripped_sum_name, MakeImportedSumTypeAnnotation(),
+      identity_call, /*is_const=*/false)));
+
+  auto* matched_payload_name = MakeNameDef(GenSym());
+  auto* some_pattern = module_->Make<SumVariantPayloadPattern>(
+      fake_span_, make_imported_constructor("Some"),
+      PatternTree{module_->Make<TuplePattern>(
+          fake_span_, std::vector<PatternTree>{matched_payload_name})});
+  auto* some_arm = module_->Make<MatchArm>(
+      fake_span_, std::vector<PatternTree>{some_pattern},
+      MakeNameRef(matched_payload_name));
+  auto* none_arm = module_->Make<MatchArm>(
+      fake_span_, std::vector<PatternTree>{make_imported_constructor("None")},
+      GenerateNumber(/*value=*/0, payload_type));
+  auto* match =
+      module_->Make<Match>(fake_span_, MakeNameRef(roundtripped_sum_name),
+                           std::vector<MatchArm*>{some_arm, none_arm});
+  auto* matched_payload = module_->Make<NameDef>(fake_span_, GenSym(), match);
+  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+      fake_span_, matched_payload, payload_type, match, /*is_const=*/false)));
+  statements->push_back(module_->Make<Statement>(module_->Make<Invocation>(
+      fake_span_, MakeBuiltinNameRef("assert_eq"),
+      std::vector<Expr*>{MakeNameRef(matched_payload), make_payload()})));
+  return absl::OkStatus();
+}
+
 absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
     Context* ctx, std::vector<Statement*>* statements) {
   XLS_RET_CHECK(!ctx->is_generating_proc);
@@ -2190,6 +2287,41 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
   sum_defs_.push_back(sum_def);
   generated_required_sum_ = true;
 
+  NameDef* imported_value_name_def = nullptr;
+  if (options_.require_cross_module_sum_type) {
+    XLS_RET_CHECK(imported_float32_name_def_ != nullptr);
+    XLS_RET_CHECK(payload_type.has_value());
+
+    auto* imported_type_ref = module_->Make<ColonRef>(
+        fake_span_, MakeNameRef(imported_float32_name_def_), "F32");
+    auto* imported_type =
+        MakeTypeRefTypeAnnotation(TypeDefinition(imported_type_ref));
+    auto* sign_type = MakeTypeAnnotation(/*is_signed=*/false, /*width=*/1,
+                                         /*use_xn=*/false);
+    auto* exponent_type = MakeTypeAnnotation(/*is_signed=*/false, /*width=*/8,
+                                             /*use_xn=*/false);
+    auto* fraction_type = MakeTypeAnnotation(/*is_signed=*/false, /*width=*/23,
+                                             /*use_xn=*/false);
+    auto* imported_value = module_->Make<StructInstance>(
+        fake_span_, imported_type,
+        std::vector<std::pair<std::string, Expr*>>{
+            {"sign",
+             GenerateNumber(absl::Uniform<int64_t>(bit_gen_, 0, 2), sign_type)},
+            {"bexp", GenerateNumber(absl::Uniform<int64_t>(bit_gen_, 0, 256),
+                                    exponent_type)},
+            {"fraction",
+             GenerateNumber(absl::Uniform<int64_t>(bit_gen_, 0, 1 << 23),
+                            fraction_type)},
+        });
+    imported_value_name_def =
+        module_->Make<NameDef>(fake_span_, GenSym(), imported_value);
+    statements->push_back(module_->Make<Statement>(module_->Make<Let>(
+        fake_span_, imported_value_name_def, imported_type, imported_value,
+        /*is_const=*/false)));
+    XLS_RETURN_IF_ERROR(
+        GenerateImportedSumStatements(imported_value_name_def, statements));
+  }
+
   auto make_constructor_ref = [&](NameDef* variant_name_def) {
     return module_->Make<ColonRef>(fake_span_,
                                    MakeTypeRefTypeAnnotation(sum_def),
@@ -2207,10 +2339,19 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
       }
       return constructor_ref;
     }
-    XLS_ASSIGN_OR_RETURN(TypedExpr payload_value,
-                         GenerateExprOfType(ctx, *want_payload_type));
-    return module_->Make<Invocation>(fake_span_, constructor_ref,
-                                     std::vector<Expr*>{payload_value.expr});
+    if (imported_value_name_def != nullptr) {
+      auto* fraction = module_->Make<Attr>(
+          fake_span_, MakeNameRef(imported_value_name_def), "fraction");
+      auto* payload_value =
+          module_->Make<Cast>(fake_span_, fraction, *want_payload_type);
+      return module_->Make<Invocation>(fake_span_, constructor_ref,
+                                       std::vector<Expr*>{payload_value});
+    } else {
+      XLS_ASSIGN_OR_RETURN(TypedExpr payload_value,
+                           GenerateExprOfType(ctx, *want_payload_type));
+      return module_->Make<Invocation>(fake_span_, constructor_ref,
+                                       std::vector<Expr*>{payload_value.expr});
+    }
   };
   XLS_ASSIGN_OR_RETURN(
       Expr * active_sum_expr,
@@ -3259,12 +3400,33 @@ absl::StatusOr<AnnotatedFunction> AstGenerator::GenerateFunction(
   }
 
   XLS_ASSIGN_OR_RETURN(TypedExpr retval, GenerateBody(call_depth, &context));
+  std::vector<Statement*> statements;
+  if (call_depth == 0 && options_.require_cross_module_sum_type) {
+    Param* imported_sum_param =
+        GenerateParam({.type = MakeImportedSumTypeAnnotation()}).param;
+    params.push_back(imported_sum_param);
+
+    auto* original_result = module_->Make<NameDef>(
+        fake_span_, absl::StrCat("_", GenSym()), retval.expr);
+    statements.push_back(module_->Make<Statement>(module_->Make<Let>(
+        fake_span_, original_result, retval.type, retval.expr,
+        /*is_const=*/false)));
+
+    auto* identity_ref = module_->Make<ColonRef>(
+        fake_span_, MakeNameRef(imported_semantic_sum_name_def_), "identity");
+    auto* identity_call = module_->Make<Invocation>(
+        fake_span_, identity_ref,
+        std::vector<Expr*>{MakeNameRef(imported_sum_param->name_def())});
+    statements.push_back(module_->Make<Statement>(identity_call));
+    retval.type = MakeImportedSumTypeAnnotation();
+  } else {
+    statements.push_back(module_->Make<Statement>(retval.expr));
+  }
+
   NameDef* name_def =
       module_->Make<NameDef>(fake_span_, name, /*definer=*/nullptr);
-  Statement* retval_statement = module_->Make<Statement>(retval.expr);
-  auto* block = module_->Make<StatementBlock>(
-      fake_span_, std::vector<Statement*>{retval_statement},
-      /*trailing_semi=*/false);
+  auto* block = module_->Make<StatementBlock>(fake_span_, statements,
+                                              /*trailing_semi=*/false);
   Function* f = module_->Make<Function>(
       fake_span_, name_def,
       /*parametric_bindings=*/parametric_bindings,
@@ -3476,12 +3638,29 @@ absl::StatusOr<int64_t> AstGenerator::GenerateProcInModule(
 
 absl::StatusOr<AnnotatedModule> AstGenerator::Generate(
     const std::string& top_entity_name, const std::string& module_name) {
-  if (options_.generate_proc && options_.require_sum_type) {
-    return absl::InvalidArgumentError(
-        "require_sum_type is only supported for function generation.");
-  }
+  XLS_RETURN_IF_ERROR(options_.Validate());
   module_ = std::make_unique<Module>(module_name, /*fs_path=*/std::nullopt,
                                      file_table_);
+  if (options_.require_cross_module_sum_type) {
+    imported_float32_name_def_ = MakeNameDef("float32");
+    auto* import =
+        module_->Make<Import>(fake_span_, std::vector<std::string>{"float32"},
+                              *imported_float32_name_def_, std::nullopt);
+    imported_float32_name_def_->set_definer(import);
+    XLS_RETURN_IF_ERROR(
+        module_->AddTop(import, /*make_collision_error=*/nullptr));
+
+    imported_semantic_sum_name_def_ = MakeNameDef("semantic_sum_provider");
+    auto* semantic_sum_import = module_->Make<Import>(
+        fake_span_,
+        std::vector<std::string>{"xls", "fuzzer", "testdata",
+                                 "semantic_sum_provider"},
+        *imported_semantic_sum_name_def_, std::nullopt);
+    imported_semantic_sum_name_def_->set_definer(semantic_sum_import);
+    XLS_RETURN_IF_ERROR(
+        module_->AddTop(semantic_sum_import, /*make_collision_error=*/nullptr));
+  }
+
   int64_t min_stages = 1;
   if (options_.generate_proc) {
     XLS_ASSIGN_OR_RETURN(min_stages, GenerateProcInModule(top_entity_name));

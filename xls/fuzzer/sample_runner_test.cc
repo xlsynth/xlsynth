@@ -422,6 +422,37 @@ fn main(x: Choice) -> u16 {
                           "bits[16]:0x1236"));
 }
 
+TEST_F(SampleRunnerTest, EvaluateIRWithImportedSemanticSumArgumentAndResult) {
+  SampleRunner runner(GetTempPath());
+  constexpr std::string_view dslx_text = R"(
+import xls.fuzzer.testdata.semantic_sum_provider;
+
+fn main(value: semantic_sum_provider::Option) -> semantic_sum_provider::Option {
+  semantic_sum_provider::identity(value)
+}
+)";
+  SampleOptions options;
+  options.set_input_is_dslx(true);
+  options.set_ir_converter_args({"--top=main"});
+  options.set_optimize_ir(true);
+
+  XLS_ASSERT_OK_AND_ASSIGN(ArgsBatch args_batch,
+                           ToArgsBatch({{"(bits[1]:0x0, (bits[8]:0x0))"},
+                                        {"(bits[1]:0x1, (bits[8]:0x2a))"}}));
+  XLS_ASSERT_OK(
+      runner.Run(Sample(std::string(dslx_text), options, args_batch)));
+
+  for (const std::string& artifact :
+       {"sample.x.results", "sample.ir.results", "sample.opt.ir.results"}) {
+    XLS_ASSERT_OK_AND_ASSIGN(std::string results,
+                             GetFileContents(GetTempPath() / artifact));
+    EXPECT_THAT(absl::StrSplit(absl::StripAsciiWhitespace(results), "\n",
+                               absl::SkipEmpty()),
+                ElementsAre("(bits[1]:0x0, (bits[8]:0x0))",
+                            "(bits[1]:0x1, (bits[8]:0x2a))"));
+  }
+}
+
 TEST_F(SampleRunnerTest, EvaluateIRWide) {
   SampleRunner runner(GetTempPath());
   constexpr std::string_view dslx_text =

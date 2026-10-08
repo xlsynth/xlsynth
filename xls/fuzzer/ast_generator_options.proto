@@ -50,4 +50,11 @@ message AstGeneratorOptionsProto {
   // sum definition and constructor use. This is not supported for proc
   // generation.
   optional bool require_sum_type = 9;
+
+  // Whether each required-sum function must instantiate an imported parametric
+  // standard-library value and construct, transport, and match a semantic sum
+  // declared in another module. Imported structs remain private; imported sums
+  // are also used as generated function arguments and return values.
+  // This is supported only for function generation with require_sum_type.
+  optional bool require_cross_module_sum_type = 10;
 }
