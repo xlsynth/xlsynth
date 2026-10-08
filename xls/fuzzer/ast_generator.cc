@@ -1091,6 +1091,22 @@ std::unique_ptr<Type> AstGenerator::MakeMatchType(const TypeAnnotation* type) {
   }
 }
 
+bool AstGenerator::AddMatchPatternIfUseful(
+    const PatternTree& pattern, MatchExhaustivenessChecker& coverage_checker) {
+  const std::vector<PatternLeaf> leaves = FlattenPattern(pattern);
+  const bool is_catch_all =
+      std::all_of(leaves.begin(), leaves.end(), [](const PatternLeaf& leaf) {
+        return std::holds_alternative<NameDef*>(leaf) ||
+               std::holds_alternative<WildcardPattern*>(leaf) ||
+               std::holds_alternative<RestOfTuple*>(leaf);
+      });
+  if (is_catch_all) {
+    return false;
+  } else {
+    return coverage_checker.AddPattern(pattern).adds_coverage();
+  }
+}
+
 absl::StatusOr<TypedExpr> AstGenerator::GenerateMatch(Context* ctx) {
   XLS_ASSIGN_OR_RETURN(
       TypedExpr match,
@@ -1115,8 +1131,7 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateMatch(Context* ctx) {
   std::unique_ptr<Type> matched_type = MakeMatchType(match.type);
   MatchExhaustivenessChecker coverage_checker(match.expr->span(), *type_info,
                                               *matched_type);
-  // Empty ranges add no semantic coverage, but repeated spellings are still
-  // rejected by the frontend. Keep this check alongside semantic coverage.
+  // Reject repeated pattern spellings before asking the semantic checker.
   absl::flat_hash_set<std::string> all_match_arms_patterns;
   for (int64_t arm_count = 0; arm_count < max_arm_count; ++arm_count) {
     std::vector<PatternTree> match_arm_patterns;
@@ -1135,7 +1150,7 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateMatch(Context* ctx) {
       if (all_match_arms_patterns.contains(pattern_str)) {
         continue;
       }
-      if (coverage_checker.AddPattern(pattern).overlap() != nullptr) {
+      if (!AddMatchPatternIfUseful(pattern, coverage_checker)) {
         continue;
       }
       all_match_arms_patterns.insert(pattern_str);

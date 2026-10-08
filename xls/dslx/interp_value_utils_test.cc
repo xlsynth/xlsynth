@@ -18,6 +18,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <random>
 #include <set>
 #include <string>
 #include <utility>
@@ -25,6 +26,7 @@
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -34,6 +36,7 @@
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/interp_value_generator.h"
 #include "xls/dslx/make_value_format_descriptor.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/value_format_descriptor.h"
@@ -738,6 +741,19 @@ TEST(InterpValueHelpersTest,
   EXPECT_THAT(CreateZeroValueFromType(valid_empty), IsOkAndHolds(empty));
   EXPECT_THAT(internal::CreateInternalPlaceholderValueFromType(valid_empty),
               IsOkAndHolds(empty));
+
+  std::mt19937_64 bit_gen{0};
+  int64_t leaf_calls = 0;
+  auto reject_leaf = [&](auto, const auto&,
+                         auto) -> absl::StatusOr<InterpValue> {
+    ++leaf_calls;
+    return absl::AbortedError("empty array unexpectedly generated an element");
+  };
+  EXPECT_THAT(GenerateInterpValue(bit_gen, invalid_empty, {}, reject_leaf),
+              overflow);
+  EXPECT_THAT(GenerateInterpValue(bit_gen, valid_empty, {}, reject_leaf),
+              IsOkAndHolds(empty));
+  EXPECT_EQ(leaf_calls, 0);
 }
 
 TEST(InterpValueHelpersTest, SumConstructorsRejectTotalOverflowBeforePayload) {
