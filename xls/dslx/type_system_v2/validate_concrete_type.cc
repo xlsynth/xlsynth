@@ -68,6 +68,57 @@ absl::StatusOr<BitsLikeProperties> GetBitsLikeOrError(
   return *bits_like;
 }
 
+bool IsInvalidPattern(const PatternTree& pattern) {
+  return std::holds_alternative<InvalidPattern*>(pattern);
+}
+
+bool HasInvalidPattern(const Match& match) {
+  for (const MatchArm* arm : match.arms()) {
+    for (const PatternTree& pattern : arm->patterns()) {
+      if (IsInvalidPattern(pattern)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool HasOnlySumCatchAllPatterns(const Match& match) {
+  const auto& arms = match.arms();
+  if (arms.empty() || arms.size() > 2 || arms.front()->patterns().size() != 1) {
+    return false;
+  } else if (arms.size() == 2 &&
+             (arms.back()->patterns().size() != 1 ||
+              !IsInvalidPattern(arms.back()->patterns().front()))) {
+    return false;
+  } else {
+    const PatternTree& pattern = arms.front()->patterns().front();
+    return IsWildcardLeaf(pattern) || std::holds_alternative<NameDef*>(pattern);
+  }
+}
+
+bool HasIrrefutablePayloadPatterns(const SumVariantPayloadPattern& pattern) {
+  return IsIrrefutablePattern(pattern.payload());
+}
+
+bool IsValidMalformedSumFallbackPattern(const PatternTree& pattern,
+                                        const InferenceTable& table) {
+  if (IsWildcardLeaf(pattern)) {
+    return true;
+  } else if (std::holds_alternative<ColonRef*>(pattern)) {
+    std::optional<const AstNode*> target =
+        table.GetColonRefTarget(std::get<ColonRef*>(pattern));
+    return target.has_value() &&
+           (*target)->kind() == AstNodeKind::kSumVariant &&
+           absl::down_cast<const SumVariant*>(*target)->is_unit();
+  } else if (!std::holds_alternative<SumVariantPayloadPattern*>(pattern)) {
+    return false;
+  } else {
+    return HasIrrefutablePayloadPatterns(
+        *std::get<SumVariantPayloadPattern*>(pattern));
+  }
+}
+
 absl::Status ValidateCoverBuiltinInvocation(const FileTable& file_table,
                                             const Invocation* invocation) {
   // Make sure that the coverpoint's identifier is valid in both Verilog
@@ -165,6 +216,15 @@ class TypeValidator : public AstNodeVisitorWithDefault {
           file_table_);
     }
     return DefaultHandler(ref);
+  }
+
+  absl::Status HandleInvalidPattern(const InvalidPattern* pattern) override {
+    if (!type_->IsSum()) {
+      return TypeInferenceErrorStatus(
+          pattern->span(), type_,
+          "`invalid!` is only valid when matching on a sum type.", file_table_);
+    }
+    return DefaultHandler(pattern);
   }
 
   absl::Status HandleBinop(const Binop* binop) override {
@@ -369,9 +429,51 @@ class TypeValidator : public AstNodeVisitorWithDefault {
     XLS_RET_CHECK(matched_type.has_value());
 
     Type* matched = const_cast<Type*>(*matched_type);
+    MatchArm* malformed_fallback_arm = nullptr;
+    if (const auto* matched_sum = dynamic_cast<const SumType*>(*matched_type)) {
+      // This ordering rule is sum-only, even when no invalid! arm is present.
+      // Population already ensures that invalid! is a single final pattern.
+      bool saw_wildcard_arm = false;
+      for (const MatchArm* arm : node->arms()) {
+        if (saw_wildcard_arm && !IsInvalidPattern(arm->patterns().front())) {
+          return TypeInferenceErrorStatus(
+              arm->GetPatternSpan(), *matched_type,
+              "A wildcard arm may only be followed by a final `invalid!` arm.",
+              file_table_);
+        } else {
+          for (const PatternTree& pattern : arm->patterns()) {
+            saw_wildcard_arm = saw_wildcard_arm || IsWildcardLeaf(pattern);
+          }
+        }
+      }
+
+      if (!HasInvalidPattern(*node)) {
+        MatchArm* fallback_arm = node->arms().back();
+        if (fallback_arm->patterns().size() != 1 ||
+            !IsValidMalformedSumFallbackPattern(fallback_arm->patterns()[0],
+                                                table_)) {
+          malformed_fallback_arm = fallback_arm;
+        }
+      }
+
+      // A whole-value catch-all covers every inhabited constructor without
+      // expanding nested payload alternatives into coverage dimensions. Keep
+      // the existing fallback restrictions and empty-domain warning.
+      if (!node->IsConst() && malformed_fallback_arm == nullptr &&
+          HasOnlySumCatchAllPatterns(*node)) {
+        XLS_ASSIGN_OR_RETURN(bool is_inhabited, TypeIsInhabited(*matched_sum));
+        if (!is_inhabited) {
+          warning_collector_.Add(
+              GetPatternSpan(node->arms().front()->patterns().front()),
+              WarningKind::kAlreadyExhaustiveMatch,
+              "Match is already exhaustive before this pattern");
+        }
+        return absl::OkStatus();
+      }
+    }
+
     MatchExhaustivenessChecker exhaustiveness_checker(node->matched()->span(),
                                                       ti_, *matched);
-
     for (MatchArm* arm : node->arms()) {
       for (const PatternTree& pattern : arm->patterns()) {
         bool exhaustive_before = exhaustiveness_checker.IsExhaustive();
@@ -387,7 +489,8 @@ class TypeValidator : public AstNodeVisitorWithDefault {
           return MatchPatternAlreadyCoveredStatus(
               GetPatternSpan(pattern), overlap->previous_pattern_span,
               PatternToString(pattern), overlap->kind, file_table_);
-        } else if (exhaustive_before && !node->IsConst()) {
+        } else if (exhaustive_before && !node->IsConst() &&
+                   !IsInvalidPattern(pattern)) {
           warning_collector_.Add(
               GetPatternSpan(pattern), WarningKind::kAlreadyExhaustiveMatch,
               "Match is already exhaustive before this pattern");
@@ -397,6 +500,23 @@ class TypeValidator : public AstNodeVisitorWithDefault {
 
     if (node->IsConst()) {
       return absl::OkStatus();
+    }
+
+    if (malformed_fallback_arm != nullptr) {
+      std::string message =
+          "A sum match without `invalid!` must end with `_` or one "
+          "constructor pattern whose payload subpatterns are irrefutable.";
+      if (!exhaustiveness_checker.IsExhaustive()) {
+        std::optional<std::string> sample =
+            exhaustiveness_checker.FormatSimplestUncoveredValue();
+        XLS_RET_CHECK(sample.has_value());
+        absl::StrAppend(&message, " Match patterns are not exhaustive; e.g. `",
+                        *sample,
+                        "` is not covered; please add additional patterns to "
+                        "complete the match or a default case via `_ => ...`");
+      }
+      return TypeInferenceErrorStatus(malformed_fallback_arm->GetPatternSpan(),
+                                      *matched_type, message, file_table_);
     }
 
     if (!exhaustiveness_checker.IsExhaustive()) {

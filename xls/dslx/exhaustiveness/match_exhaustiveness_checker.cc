@@ -446,6 +446,11 @@ IntervalPatternLeaf ToIntervalPatternLeaf(const PatternTree& pattern) {
           [&](WildcardPattern* wildcard_pattern) -> IntervalPatternLeaf {
             return SomeWildcard();
           },
+          [&](InvalidPattern* invalid_pattern) -> IntervalPatternLeaf {
+            LOG(FATAL) << "InvalidPattern does not contribute to semantic "
+                          "exhaustiveness";
+            return SomeWildcard();
+          },
           [&](Number* number) -> IntervalPatternLeaf { return number; },
           [&](SumVariantPayloadPattern* /*constructor_pattern*/)
               -> IntervalPatternLeaf {
@@ -1459,6 +1464,9 @@ MatchExhaustivenessChecker::AddPattern(const PatternTree& pattern) {
   if (HasRuntimeDependentPatternLeaf(pattern, impl_->type_info_)) {
     result.outcome = PatternAddResult::RuntimeDependent{};
   } else if (impl_->matched_sum_type_ != nullptr) {
+    if (std::holds_alternative<InvalidPattern*>(pattern)) {
+      return result;
+    }
     if (IsIrrefutablePattern(pattern)) {
       for (Impl::SumVariantState& variant_state : impl_->sum_variant_states_) {
         std::vector<IntervalPatternLeaf> payload_wildcards(
