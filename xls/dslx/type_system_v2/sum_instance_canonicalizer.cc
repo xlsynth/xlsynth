@@ -144,6 +144,11 @@ absl::StatusOr<absl::flat_hash_set<const AstNode*>> CollectConstructors(
         pattern = ToAstNode(let->pattern());
       } else if (const auto* loop = dynamic_cast<const ForLoopBase*>(node)) {
         pattern = ToAstNode(loop->pattern());
+      } else if (const auto* conditional =
+                     dynamic_cast<const Conditional*>(node)) {
+        if (const PatternTree* if_let_pattern = conditional->if_let_pattern()) {
+          pattern = ToAstNode(*if_let_pattern);
+        }
       }
       if (const auto* instantiation =
               dynamic_cast<const Instantiation*>(node)) {
