@@ -20,16 +20,18 @@
 #include <optional>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
+#include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/type.h"
+#include "xls/ir/bits.h"
 
 namespace xls::dslx {
 namespace {
@@ -206,6 +208,88 @@ TEST(Phase1SumTypeEncodingTest, RejectsSumVariantsOutsideDeclarationOrder) {
         SumType invalid_type(valid_type.nominal_type(),
                              std::move(invalid_variants),
                              valid_type.zero_selection());
+      },
+      "Check failed");
+}
+
+TEST(SumTypeEncodingTest, RejectsVariantInfoFromDifferentEncoding) {
+  FileTable file_table;
+  Module local_module("local", /*fs_path=*/std::nullopt, file_table);
+  Module foreign_module("foreign", /*fs_path=*/std::nullopt, file_table);
+  SumType local_type = MakeTuplePayloadSumType(local_module);
+  SumType foreign_type = MakeTuplePayloadSumType(foreign_module);
+  SumTypeEncoding local_encoding(local_type);
+  SumTypeEncoding foreign_encoding(foreign_type);
+
+  XLS_ASSERT_OK_AND_ASSIGN(SumTypeEncoding::VariantInfo foreign_pair,
+                           foreign_encoding.GetVariant("Pair"));
+  EXPECT_THAT(local_encoding.ForEachPayloadMember(
+                  foreign_pair,
+                  [](int64_t, const Type&) -> absl::Status {
+                    return absl::OkStatus();
+                  }),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(SumTypeEncodingTest, LooksUpSparseDeclaredTagBits) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumType template_type = MakeTuplePayloadSumType(module);
+  std::vector<SumTypeVariant> variants;
+  for (const SumTypeVariant& variant : template_type.variants()) {
+    variants.push_back(variant.Clone());
+  }
+  SumType sum_type(template_type.nominal_type(), std::move(variants),
+                   TypeDim::CreateU32(3),
+                   {InterpValue::MakeUBits(3, 5), InterpValue::MakeUBits(3, 1),
+                    InterpValue::MakeSBits(3, -2)});
+  std::vector<SumTypeEncoding::VariantInfo> copied_variants;
+  {
+    SumTypeEncoding encoding(sum_type);
+    XLS_ASSERT_OK(encoding.ForEachVariant(
+        [&](const SumTypeEncoding::VariantInfo& variant) -> absl::Status {
+          copied_variants.push_back(variant);
+          return absl::OkStatus();
+        }));
+  }
+  ASSERT_EQ(copied_variants.size(), 3);
+  for (int64_t i = 0; i < copied_variants.size(); ++i) {
+    EXPECT_EQ(copied_variants[i].variant_index, i);
+    EXPECT_EQ(copied_variants[i].variant, &sum_type.variants().at(i));
+    EXPECT_EQ(copied_variants[i].discriminant, &sum_type.GetDiscriminant(i));
+  }
+  EXPECT_EQ(copied_variants[2].payload_size(), 2);
+  EXPECT_EQ(copied_variants[2].discriminant->GetBitsOrDie(), UBits(6, 3));
+  SumTypeEncoding encoding(sum_type);
+
+  XLS_ASSERT_OK_AND_ASSIGN(int64_t tag_bit_count, encoding.tag_bit_count());
+  EXPECT_EQ(tag_bit_count, 3);
+  XLS_ASSERT_OK_AND_ASSIGN(SumTypeEncoding::VariantInfo none,
+                           encoding.GetVariantByTagBits(UBits(5, 3)));
+  EXPECT_EQ(none.variant_index, 0);
+  XLS_ASSERT_OK_AND_ASSIGN(SumTypeEncoding::VariantInfo left,
+                           encoding.GetVariantByTagBits(UBits(1, 3)));
+  EXPECT_EQ(left.variant_index, 1);
+  XLS_ASSERT_OK_AND_ASSIGN(SumTypeEncoding::VariantInfo pair,
+                           encoding.GetVariantByTagBits(UBits(6, 3)));
+  EXPECT_EQ(pair.variant_index, 2);
+  EXPECT_THAT(encoding.GetVariantByTagBits(UBits(0, 3)),
+              StatusIs(absl::StatusCode::kNotFound));
+}
+
+TEST(SumTypeEncodingTest, RejectsSumVariantsOutsideDeclarationOrder) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  SumType valid_type = MakeTuplePayloadSumType(module);
+
+  EXPECT_DEATH(
+      {
+        std::vector<SumTypeVariant> invalid_variants;
+        invalid_variants.push_back(valid_type.variants().at(1).Clone());
+        invalid_variants.push_back(valid_type.variants().at(0).Clone());
+        invalid_variants.push_back(valid_type.variants().at(2).Clone());
+        SumType invalid_type(valid_type.nominal_type(),
+                             std::move(invalid_variants));
       },
       "Check failed");
 }

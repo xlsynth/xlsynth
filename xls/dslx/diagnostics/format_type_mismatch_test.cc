@@ -14,18 +14,20 @@
 
 #include "xls/dslx/diagnostics/format_type_mismatch.h"
 
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/channel_direction.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
+#include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/type.h"
 
 namespace xls::dslx {
@@ -56,9 +58,7 @@ TEST(FormatTypeMismatchTest, DistinctSumDeclarationsProduceTypeMismatch) {
 
     std::vector<SumTypeVariant> variants;
     variants.push_back(SumTypeVariant::MakeUnit(*variant));
-    return std::make_unique<SumType>(
-        *sum_def, std::move(variants),
-        SumType::SelectedZeroVariant{std::cref(*variant)});
+    return std::make_unique<SumType>(*sum_def, std::move(variants));
   };
 
   std::unique_ptr<SumType> lhs = make_sum_type("A");
@@ -66,6 +66,120 @@ TEST(FormatTypeMismatchTest, DistinctSumDeclarationsProduceTypeMismatch) {
   XLS_ASSERT_OK_AND_ASSIGN(std::string got,
                            FormatTypeMismatch(*lhs, *rhs, file_table));
   EXPECT_EQ(got, "Type mismatch:\n   A { X }\nvs B { X }");
+}
+
+TEST(FormatTypeMismatchTest, SumTagMismatchBeforeNonemptyTupleSibling) {
+  const Span span = Span::Fake();
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  auto* name = module.Make<NameDef>(span, "Choice", nullptr);
+  auto* a = module.Make<SumVariant>(
+      span, module.Make<NameDef>(span, "A", nullptr),
+      SumVariant::PayloadShape::kUnit, std::vector<TypeAnnotation*>{},
+      std::vector<StructMemberNode*>{});
+  auto* b = module.Make<SumVariant>(
+      span, module.Make<NameDef>(span, "B", nullptr),
+      SumVariant::PayloadShape::kUnit, std::vector<TypeAnnotation*>{},
+      std::vector<StructMemberNode*>{});
+  auto* choice =
+      module.Make<SumDef>(span, name, std::vector<ParametricBinding*>{},
+                          std::vector<SumVariant*>{a, b}, /*is_public=*/false);
+  name->set_definer(choice);
+
+  const InterpValue zero = InterpValue::MakeUBits(1, 0);
+  const InterpValue one = InterpValue::MakeUBits(1, 1);
+  auto make_outer_tuple = [&](std::vector<InterpValue> tags,
+                              std::unique_ptr<Type> sibling_member) {
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(SumTypeVariant::MakeUnit(*a));
+    variants.push_back(SumTypeVariant::MakeUnit(*b));
+    return TupleType::Create2(
+        std::make_unique<SumType>(*choice, std::move(variants),
+                                  TypeDim::CreateU32(1), std::move(tags)),
+        TupleType::Create2(std::move(sibling_member), BitsType::MakeU1()));
+  };
+
+  auto lhs = make_outer_tuple({zero, one}, BitsType::MakeU1());
+  EXPECT_EQ(FormatTypeMismatch(*lhs, *lhs, file_table).status().code(),
+            absl::StatusCode::kInternal);
+
+  auto sibling_mismatch = make_outer_tuple({zero, one}, BitsType::MakeU8());
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string control,
+      FormatTypeMismatch(*lhs, *sibling_mismatch, file_table));
+  EXPECT_EQ(control, ANSI_RESET
+            "Mismatched elements " ANSI_BOLD "within" ANSI_UNBOLD
+            " type:\n   uN[1]\nvs uN[8]\n" ANSI_BOLD "Overall" ANSI_UNBOLD
+            " type mismatch:\n" ANSI_RESET "   (Choice { A | B }, (" ANSI_RED
+            "uN[1]" ANSI_RESET ", uN[1]))\nvs (Choice { A | B }, (" ANSI_RED
+            "uN[8]" ANSI_RESET ", uN[1]))");
+
+  auto tag_mismatch = make_outer_tuple({one, zero}, BitsType::MakeU1());
+  XLS_ASSERT_OK_AND_ASSIGN(std::string got,
+                           FormatTypeMismatch(*lhs, *tag_mismatch, file_table));
+  EXPECT_NE(got.find("Mismatched elements " ANSI_BOLD "within" ANSI_UNBOLD
+                     " type:\n   Choice"),
+            std::string::npos);
+  EXPECT_NE(got.find("\nvs Choice"), std::string::npos);
+  EXPECT_NE(
+      got.find(ANSI_BOLD "Overall" ANSI_UNBOLD " type mismatch:\n" ANSI_RESET
+                         "   (" ANSI_RED "Choice"),
+      std::string::npos);
+  EXPECT_NE(got.find(ANSI_RESET ", (uN[1], uN[1]))\nvs (" ANSI_RED "Choice"),
+            std::string::npos);
+  const std::string suffix = ANSI_RESET ", (uN[1], uN[1]))";
+  ASSERT_GE(got.size(), suffix.size());
+  EXPECT_EQ(got.substr(got.size() - suffix.size()), suffix);
+}
+
+TEST(FormatTypeMismatchTest, LaterSumTagMismatchDoesNotReportEarlierPayload) {
+  const Span span = Span::Fake();
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  auto* name = module.Make<NameDef>(span, "Choice", nullptr);
+  auto* annotation = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU8,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU8));
+  auto* a =
+      module.Make<SumVariant>(span, module.Make<NameDef>(span, "A", nullptr),
+                              SumVariant::PayloadShape::kTuple,
+                              std::vector<TypeAnnotation*>{annotation},
+                              std::vector<StructMemberNode*>{});
+  auto* b = module.Make<SumVariant>(
+      span, module.Make<NameDef>(span, "B", nullptr),
+      SumVariant::PayloadShape::kUnit, std::vector<TypeAnnotation*>{},
+      std::vector<StructMemberNode*>{});
+  auto* choice =
+      module.Make<SumDef>(span, name, std::vector<ParametricBinding*>{},
+                          std::vector<SumVariant*>{a, b}, /*is_public=*/false);
+  name->set_definer(choice);
+
+  auto make_outer_tuple = [&](std::unique_ptr<Type> payload, int second_tag) {
+    std::vector<std::unique_ptr<Type>> members;
+    members.push_back(std::move(payload));
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(SumTypeVariant::MakeTuple(*a, std::move(members)));
+    variants.push_back(SumTypeVariant::MakeUnit(*b));
+    std::vector<InterpValue> tags = {InterpValue::MakeUBits(2, 0),
+                                     InterpValue::MakeUBits(2, second_tag)};
+    return TupleType::Create2(
+        std::make_unique<SumType>(*choice, std::move(variants),
+                                  TypeDim::CreateU32(2), std::move(tags)),
+        TupleType::Create2(BitsType::MakeU1(), BitsType::MakeU1()));
+  };
+
+  auto lhs = make_outer_tuple(BitsType::MakeU8(), /*second_tag=*/1);
+  auto rhs = make_outer_tuple(std::make_unique<BitsType>(false, 16),
+                              /*second_tag=*/2);
+  XLS_ASSERT_OK_AND_ASSIGN(std::string got,
+                           FormatTypeMismatch(*lhs, *rhs, file_table));
+  EXPECT_EQ(got, ANSI_RESET
+            "Mismatched elements " ANSI_BOLD "within" ANSI_UNBOLD
+            " type:\n   Choice { A(uN[8]) | B }\nvs Choice { A(uN[16]) | B "
+            "}\n" ANSI_BOLD "Overall" ANSI_UNBOLD " type mismatch:\n" ANSI_RESET
+            "   (" ANSI_RED "Choice { A(uN[8]) | B }" ANSI_RESET
+            ", (uN[1], uN[1]))\nvs (" ANSI_RED
+            "Choice { A(uN[16]) | B }" ANSI_RESET ", (uN[1], uN[1]))");
 }
 
 TEST(FormatTypeMismatchTest, SumPayloadMismatch) {
@@ -111,10 +225,8 @@ TEST(FormatTypeMismatchTest, SumPayloadMismatch) {
   rhs_variants.push_back(
       SumTypeVariant::MakeTuple(*some, std::move(rhs_some_members)));
 
-  SumType lhs(*option, std::move(lhs_variants),
-              SumType::SelectedZeroVariant{std::cref(*none)});
-  SumType rhs(*option, std::move(rhs_variants),
-              SumType::SelectedZeroVariant{std::cref(*none)});
+  SumType lhs(*option, std::move(lhs_variants));
+  SumType rhs(*option, std::move(rhs_variants));
   XLS_ASSERT_OK_AND_ASSIGN(std::string got,
                            FormatTypeMismatch(lhs, rhs, file_table));
 
@@ -155,8 +267,7 @@ TEST(FormatTypeMismatchTest, NestedAggregateSumPayloadMismatch) {
   std::vector<SumTypeVariant> lhs_variants;
   lhs_variants.push_back(
       SumTypeVariant::MakeTuple(*some, std::move(lhs_members)));
-  SumType lhs(*option, std::move(lhs_variants),
-              SumType::SelectedZeroVariant{std::cref(*some)});
+  SumType lhs(*option, std::move(lhs_variants));
 
   std::vector<std::unique_ptr<Type>> rhs_members;
   rhs_members.push_back(
@@ -164,8 +275,7 @@ TEST(FormatTypeMismatchTest, NestedAggregateSumPayloadMismatch) {
   std::vector<SumTypeVariant> rhs_variants;
   rhs_variants.push_back(
       SumTypeVariant::MakeTuple(*some, std::move(rhs_members)));
-  SumType rhs(*option, std::move(rhs_variants),
-              SumType::SelectedZeroVariant{std::cref(*some)});
+  SumType rhs(*option, std::move(rhs_variants));
 
   XLS_ASSERT_OK_AND_ASSIGN(std::string got,
                            FormatTypeMismatch(lhs, rhs, file_table));
@@ -226,8 +336,7 @@ TEST(FormatTypeMismatchTest,
     variants.push_back(SumTypeVariant::MakeStruct(
         *empty_struct, std::vector<std::unique_ptr<Type>>{}));
     variants.push_back(SumTypeVariant::MakeUnit(*none));
-    return SumType(*option, std::move(variants),
-                   SumType::SelectedZeroVariant{std::cref(*pair)});
+    return SumType(*option, std::move(variants));
   };
   SumType lhs = make_type(std::make_unique<BitsType>(false, 16));
   SumType rhs = make_type(BitsType::MakeU32());

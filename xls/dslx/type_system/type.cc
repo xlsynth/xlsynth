@@ -15,6 +15,7 @@
 #include "xls/dslx/type_system/type.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <iterator>
@@ -27,7 +28,10 @@
 
 #include "absl/algorithm/container.h"
 #include "absl/base/casts.h"
+#include "absl/cleanup/cleanup.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
+#include "absl/hash/hash.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -46,7 +50,70 @@
 #include "xls/ir/bits_ops.h"
 
 namespace xls::dslx {
+
+struct TypeStringContext {
+  struct SumUse {
+    int64_t count = 0;
+    std::optional<int64_t> reference_id;
+  };
+
+  const Type& root;
+  FullyQualify root_fully_qualify;
+  // Clones share their variant vector. Qualification is part of the rendering
+  // key because tuple members retain their existing unqualified spelling.
+  absl::flat_hash_map<
+      std::pair<const std::vector<SumTypeVariant>*, FullyQualify>, SumUse>
+      sums;
+  int64_t next_reference_id = 1;
+};
+
 namespace {
+
+void CountSumsForPrinting(const Type& type, FullyQualify fully_qualify,
+                          TypeStringContext& context) {
+  if (type.IsAggregate()) {
+    if (const auto* sum = dynamic_cast<const SumType*>(&type)) {
+      auto& use = context.sums[{&sum->variants(), fully_qualify}];
+      ++use.count;
+      if (use.count == 1) {
+        for (const SumType::ParametricArgument& argument :
+             sum->parametric_arguments()) {
+          if (const auto* type_argument =
+                  std::get_if<std::unique_ptr<const Type>>(&argument)) {
+            CountSumsForPrinting(**type_argument, fully_qualify, context);
+          }
+        }
+        for (const SumTypeVariant& variant : sum->variants()) {
+          for (int64_t i = 0; i < variant.size(); ++i) {
+            CountSumsForPrinting(variant.GetMemberType(i), fully_qualify,
+                                 context);
+          }
+        }
+      }
+    } else if (const auto* structure =
+                   dynamic_cast<const StructTypeBase*>(&type)) {
+      for (const auto& member : structure->members()) {
+        CountSumsForPrinting(*member, fully_qualify, context);
+      }
+    } else if (const auto* tuple = dynamic_cast<const TupleType*>(&type)) {
+      for (const auto& member : tuple->members()) {
+        CountSumsForPrinting(*member, FullyQualify::kNo, context);
+      }
+    } else if (const auto* array = dynamic_cast<const ArrayType*>(&type)) {
+      CountSumsForPrinting(array->element_type(), fully_qualify, context);
+    } else if (const auto* function =
+                   dynamic_cast<const FunctionType*>(&type)) {
+      for (const auto& param : function->params()) {
+        CountSumsForPrinting(*param, fully_qualify, context);
+      }
+      CountSumsForPrinting(function->return_type(), fully_qualify, context);
+    } else if (const auto* meta = dynamic_cast<const MetaType*>(&type)) {
+      CountSumsForPrinting(*meta->wrapped(), fully_qualify, context);
+    } else if (const auto* channel = dynamic_cast<const ChannelType*>(&type)) {
+      CountSumsForPrinting(channel->payload_type(), fully_qualify, context);
+    }
+  }
+}
 
 std::vector<std::unique_ptr<Type>> ClonePayloadMembers(
     absl::Span<const std::unique_ptr<Type>> members) {
@@ -67,9 +134,89 @@ void ValidateSumTypeVariantPayload(
   }
 }
 
+// These hashes only narrow the sum cache's semantic comparisons. In particular,
+// InterpValue equality compares bit patterns across bits and enum value tags.
+size_t HashSumArgumentValue(const InterpValue& value) {
+  if (value.HasBits()) {
+    return absl::HashOf(value.GetBitsOrDie());
+  } else if (value.IsArray() || value.IsTuple()) {
+    const int64_t length = value.GetLength().value();
+    size_t hash = absl::HashOf(value.tag(), length);
+    if (value.is_range()) {
+      for (int64_t i = 0; i < length; ++i) {
+        hash = absl::HashOf(hash, HashSumArgumentValue(value.Index(i).value()));
+      }
+    } else {
+      for (const InterpValue& member : value.GetValuesOrDie()) {
+        hash = absl::HashOf(hash, HashSumArgumentValue(member));
+      }
+    }
+    return hash;
+  } else {
+    // Runtime-only values do not need a new identity model for this index.
+    // A conservative collision leaves the existing equality check in charge.
+    return absl::HashOf(value.tag());
+  }
+}
+
+// Hashes concrete argument structure while treating a completed child sum as
+// one cached hash, rather than visiting both its arguments and its payloads.
+size_t HashSumArgumentType(const Type& type);
+
+// Preserves member order and arity in aggregate type arguments.
+size_t HashSumArgumentTypes(absl::Span<const std::unique_ptr<Type>> types) {
+  size_t hash = absl::HashOf(types.size());
+  for (const auto& type : types) {
+    hash = absl::HashOf(hash, HashSumArgumentType(*type));
+  }
+  return hash;
+}
+
+size_t HashSumArgumentType(const Type& type) {
+  if (std::optional<BitsLikeProperties> bits = GetBitsLike(type)) {
+    // Use the existing bits-like normalization, including xN array notation.
+    return absl::HashOf(HashSumArgumentValue(bits->is_signed.value()),
+                        HashSumArgumentValue(bits->size.value()));
+  } else if (const auto* sum = dynamic_cast<const SumType*>(&type)) {
+    return absl::HashOf(&sum->nominal_type(), sum->parametric_arguments_hash());
+  } else if (const auto* tuple = dynamic_cast<const TupleType*>(&type)) {
+    return HashSumArgumentTypes(tuple->members());
+  } else if (const auto* array = dynamic_cast<const ArrayType*>(&type)) {
+    return absl::HashOf(HashSumArgumentValue(array->size().value()),
+                        HashSumArgumentType(array->element_type()));
+  } else if (const auto* structure =
+                 dynamic_cast<const StructTypeBase*>(&type)) {
+    // Nominal dimensions are deliberately omitted, as in StructType equality.
+    return absl::HashOf(&structure->struct_def_base(),
+                        HashSumArgumentTypes(structure->members()));
+  } else if (const auto* enumeration = dynamic_cast<const EnumType*>(&type)) {
+    return absl::HashOf(&enumeration->nominal_type(), enumeration->is_signed(),
+                        HashSumArgumentValue(enumeration->size().value()));
+  } else if (const auto* function = dynamic_cast<const FunctionType*>(&type)) {
+    return absl::HashOf(HashSumArgumentTypes(function->params()),
+                        HashSumArgumentType(function->return_type()));
+  } else if (const auto* channel = dynamic_cast<const ChannelType*>(&type)) {
+    return absl::HashOf(channel->direction(),
+                        HashSumArgumentType(channel->payload_type()));
+  } else {
+    // Token and non-concrete type forms may collide. This is intentionally not
+    // a general Type hash: resolved arguments and semantic equality govern
+    // reuse.
+    return absl::HashOf(type.GetDebugTypeName());
+  }
+}
+
 }  // namespace
 
 Type::~Type() = default;
+
+std::string Type::ToStringInternal(FullyQualify fully_qualify,
+                                   const FileTable* file_table) const {
+  TypeStringContext context{.root = *this, .root_fully_qualify = fully_qualify};
+  std::string output;
+  AppendToStringInternal(fully_qualify, file_table, context, output);
+  return output;
+}
 
 /* static */ bool Type::Equal(absl::Span<const std::unique_ptr<Type>> a,
                               absl::Span<const std::unique_ptr<Type>> b) {
@@ -175,9 +322,10 @@ absl::Status ModuleType::Accept(TypeVisitor& v) const {
   return v.HandleModule(*this);
 }
 
-std::string ModuleType::ToStringInternal(FullyQualify fully_qualify,
-                                         const FileTable*) const {
-  return absl::StrFormat("typeof(module:%s)", module_.name());
+void ModuleType::AppendToStringInternal(FullyQualify fully_qualify,
+                                        const FileTable*, TypeStringContext&,
+                                        std::string& output) const {
+  absl::StrAppendFormat(&output, "typeof(module:%s)", module_.name());
 }
 
 std::string TypeDim::ToDebugString() const {
@@ -403,9 +551,11 @@ bool BitsConstructorType::operator==(const Type& other) const {
   return false;
 }
 
-std::string BitsConstructorType::ToStringInternal(FullyQualify fully_qualify,
-                                                  const FileTable*) const {
-  return absl::StrFormat("xN[is_signed=%s]", is_signed_.ToString());
+void BitsConstructorType::AppendToStringInternal(FullyQualify fully_qualify,
+                                                 const FileTable*,
+                                                 TypeStringContext&,
+                                                 std::string& output) const {
+  absl::StrAppendFormat(&output, "xN[is_signed=%s]", is_signed_.ToString());
 }
 
 std::string BitsConstructorType::GetDebugTypeName() const {
@@ -455,9 +605,11 @@ bool BitsType::operator==(const Type& other) const {
   return false;
 }
 
-std::string BitsType::ToStringInternal(FullyQualify fully_qualify,
-                                       const FileTable*) const {
-  return absl::StrFormat("%cN[%s]", is_signed_ ? 's' : 'u', size_.ToString());
+void BitsType::AppendToStringInternal(FullyQualify fully_qualify,
+                                      const FileTable*, TypeStringContext&,
+                                      std::string& output) const {
+  absl::StrAppendFormat(&output, "%cN[%s]", is_signed_ ? 's' : 'u',
+                        size_.ToString());
 }
 
 std::string BitsType::GetDebugTypeName() const {
@@ -499,27 +651,30 @@ std::string StructTypeBase::ToErrorString() const {
                          ToStringInternal(FullyQualify::kNo, nullptr));
 }
 
-std::string StructTypeBase::ToStringInternal(
-    FullyQualify fully_qualify, const FileTable* file_table) const {
-  std::string guts;
-  for (int64_t i = 0; i < members().size(); ++i) {
-    if (i != 0) {
-      absl::StrAppend(&guts, ", ");
-    }
-    absl::StrAppendFormat(
-        &guts, "%s: %s", GetMemberName(i),
-        GetMemberType(i).ToStringInternal(fully_qualify, file_table));
-  }
-  if (!guts.empty()) {
-    guts = absl::StrCat(" ", guts, " ");
-  }
+void StructTypeBase::AppendToStringInternal(FullyQualify fully_qualify,
+                                            const FileTable* file_table,
+                                            TypeStringContext& context,
+                                            std::string& output) const {
   std::string struct_name = struct_def_base_.identifier();
   if (fully_qualify == FullyQualify::kYes) {
     CHECK(file_table != nullptr);
     struct_name = absl::StrCat(struct_def_base_.span().GetFilename(*file_table),
                                ":", struct_name);
   }
-  return absl::StrCat(struct_name, " {", guts, "}");
+  absl::StrAppend(&output, struct_name, " {");
+  if (!members().empty()) {
+    absl::StrAppend(&output, " ");
+    for (int64_t i = 0; i < members().size(); ++i) {
+      if (i != 0) {
+        absl::StrAppend(&output, ", ");
+      }
+      absl::StrAppend(&output, GetMemberName(i), ": ");
+      GetMemberType(i).AppendToStringInternal(fully_qualify, file_table,
+                                              context, output);
+    }
+    absl::StrAppend(&output, " ");
+  }
+  absl::StrAppend(&output, "}");
 }
 
 absl::StatusOr<std::vector<std::string>> StructTypeBase::GetMemberNames()
@@ -699,91 +854,229 @@ bool SumTypeVariant::HasToken() const {
 
 // -- SumType
 
-bool SumType::operator==(const Type& other) const {
-  if (auto* t = dynamic_cast<const SumType*>(&other)) {
-    if (&sum_def_ != &t->sum_def_ || variants_.size() != t->variants_.size()) {
-      return false;
+SumType::Data::Data(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
+                    std::optional<TypeDim> tag_bit_count,
+                    std::vector<InterpValue> discriminants,
+                    std::vector<ParametricArgument> parametric_arguments)
+    : sum_def(sum_def),
+      variants(std::move(variants)),
+      tag_bit_count(tag_bit_count.value_or(TypeDim::CreateU32(
+          this->variants.size() <= 1
+              ? 0
+              : Bits::MinBitCountUnsigned(this->variants.size() - 1)))),
+      discriminants(std::move(discriminants)),
+      parametric_arguments(std::move(parametric_arguments)),
+      parametric_arguments_hash(
+          SumType::HashParametricArguments(this->parametric_arguments)),
+      has_token(absl::c_any_of(
+          this->variants,
+          [](const SumTypeVariant& variant) { return variant.HasToken(); })) {
+  CHECK_EQ(this->variants.size(), sum_def.variants().size());
+  for (int64_t i = 0; i < this->variants.size(); ++i) {
+    CHECK_EQ(&this->variants[i].variant(), sum_def.variants()[i]);
+  }
+  if (this->discriminants.empty()) {
+    const int64_t bit_count = this->tag_bit_count.GetAsInt64().value();
+    this->discriminants.reserve(this->variants.size());
+    for (int64_t i = 0; i < this->variants.size(); ++i) {
+      this->discriminants.push_back(InterpValue::MakeUBits(bit_count, i));
     }
-    for (int64_t i = 0; i < variants_.size(); ++i) {
-      if (!(variants_[i] == t->variants_[i])) {
+  }
+  CHECK_EQ(this->discriminants.size(), this->variants.size());
+}
+
+SumType::SumType(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
+                 std::optional<TypeDim> tag_bit_count,
+                 std::vector<InterpValue> discriminants,
+                 std::vector<ParametricArgument> parametric_arguments)
+    : data_(std::make_shared<const Data>(
+          sum_def, std::move(variants), std::move(tag_bit_count),
+          std::move(discriminants), std::move(parametric_arguments))) {
+  for (int64_t i = 0; i < variant_count(); ++i) {
+    if (GetDiscriminant(i).GetBitsOrDie().IsZero()) {
+      zero_selection_ =
+          SelectedZeroVariant{std::cref(this->variants().at(i).variant())};
+      break;
+    }
+  }
+}
+
+SumType::SumType(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
+                 ZeroSelection zero_selection)
+    : SumType(sum_def, std::move(variants)) {
+  if (const auto* selected =
+          std::get_if<SelectedZeroVariant>(&zero_selection)) {
+    CHECK(absl::c_linear_search(sum_def.variants(), &selected->variant.get()));
+  }
+  zero_selection_ = std::move(zero_selection);
+}
+
+bool SumType::operator==(const Type& other) const {
+  if (const auto* t = dynamic_cast<const SumType*>(&other); t == nullptr) {
+    return false;
+  } else if (data_ == t->data_) {
+    return true;
+  } else if (&nominal_type() != &t->nominal_type() ||
+             data_->tag_bit_count != t->data_->tag_bit_count ||
+             data_->discriminants != t->data_->discriminants) {
+    return false;
+  } else {
+    // A shared child can appear in both arguments and payloads. Keep completed
+    // comparisons for this outer sum comparison, including recursive calls
+    // through ordinary aggregate operators. The thread-local pointer carries
+    // only this scoped context; no results or borrowed pointers outlive it.
+    using EqualPairs = absl::flat_hash_set<std::pair<const Data*, const Data*>>;
+    static thread_local EqualPairs* current_equal_pairs = nullptr;
+    auto compare_contents = [&] {
+      return HasSameParametricArguments(t->parametric_arguments()) &&
+             absl::c_equal(variants(), t->variants());
+    };
+    if (current_equal_pairs == nullptr) {
+      EqualPairs equal_pairs;
+      current_equal_pairs = &equal_pairs;
+      absl::Cleanup reset_context([&] { current_equal_pairs = nullptr; });
+      // Types are acyclic, so the root pair cannot recur. Avoid inserting it,
+      // which also keeps shallow comparisons from allocating cache storage.
+      return compare_contents();
+    } else {
+      const auto pair = std::make_pair(data_.get(), t->data_.get());
+      if (current_equal_pairs->contains(pair)) {
+        return true;
+      } else if (compare_contents()) {
+        current_equal_pairs->insert(pair);
+        return true;
+      } else {
         return false;
       }
     }
-    return true;
   }
-  return false;
 }
 
-std::string SumType::ToStringInternal(FullyQualify fully_qualify,
-                                      const FileTable* file_table) const {
-  std::string sum_name = sum_def_.identifier();
-  if (fully_qualify == FullyQualify::kYes) {
-    CHECK(file_table != nullptr);
-    sum_name =
-        absl::StrCat(sum_def_.span().GetFilename(*file_table), ":", sum_name);
-  }
+bool SumType::HasSameParametricArguments(
+    absl::Span<const ParametricArgument> arguments) const {
+  return absl::c_equal(
+      parametric_arguments(), arguments,
+      [](const ParametricArgument& lhs, const ParametricArgument& rhs) {
+        if (lhs.index() != rhs.index()) {
+          return false;
+        } else if (const auto* value = std::get_if<InterpValue>(&lhs)) {
+          return *value == std::get<InterpValue>(rhs);
+        } else {
+          return *std::get<std::unique_ptr<const Type>>(lhs) ==
+                 *std::get<std::unique_ptr<const Type>>(rhs);
+        }
+      });
+}
 
-  std::string variants_string;
-  for (int64_t i = 0; i < variants_.size(); ++i) {
-    if (i != 0) {
-      absl::StrAppend(&variants_string, " | ");
-    }
-    const SumTypeVariant& variant = variants_[i];
-    if (variant.is_unit()) {
-      absl::StrAppend(&variants_string, variant.variant().identifier());
-    } else if (variant.is_tuple()) {
-      absl::StrAppend(&variants_string, variant.variant().identifier(), "(");
-      for (int64_t member_i = 0; member_i < variant.size(); ++member_i) {
-        if (member_i != 0) {
-          absl::StrAppend(&variants_string, ", ");
-        }
-        absl::StrAppend(&variants_string,
-                        variant.GetMemberType(member_i).ToStringInternal(
-                            fully_qualify, file_table));
-      }
-      absl::StrAppend(&variants_string, ")");
+/* static */ size_t SumType::HashParametricArguments(
+    absl::Span<const ParametricArgument> arguments) {
+  size_t hash = absl::HashOf(arguments.size());
+  for (const ParametricArgument& argument : arguments) {
+    if (const auto* value = std::get_if<InterpValue>(&argument)) {
+      hash = absl::HashOf(hash, argument.index(), HashSumArgumentValue(*value));
     } else {
-      if (variant.size() == 0) {
-        absl::StrAppend(&variants_string, variant.variant().identifier(),
-                        " {}");
-        continue;
-      }
-      absl::StrAppend(&variants_string, variant.variant().identifier(), " { ");
-      for (int64_t member_i = 0; member_i < variant.size(); ++member_i) {
-        if (member_i != 0) {
-          absl::StrAppend(&variants_string, ", ");
-        }
-        absl::StrAppendFormat(&variants_string, "%s: %s",
-                              variant.GetMemberName(member_i),
-                              variant.GetMemberType(member_i).ToStringInternal(
-                                  fully_qualify, file_table));
-      }
-      absl::StrAppend(&variants_string, " }");
+      hash =
+          absl::HashOf(hash, argument.index(),
+                       HashSumArgumentType(
+                           *std::get<std::unique_ptr<const Type>>(argument)));
     }
   }
-  return absl::StrCat(sum_name, " { ", variants_string, " }");
+  return hash;
+}
+
+void SumType::AppendToStringInternal(FullyQualify fully_qualify,
+                                     const FileTable* file_table,
+                                     TypeStringContext& context,
+                                     std::string& output) const {
+  // Ordinary type trees need no counting pass. The first sum counts from the
+  // original root, including siblings and their original qualification.
+  if (context.sums.empty()) {
+    CountSumsForPrinting(context.root, context.root_fully_qualify, context);
+  }
+  TypeStringContext::SumUse& use =
+      context.sums.at({&variants(), fully_qualify});
+  if (use.reference_id.has_value()) {
+    absl::StrAppend(&output, "@", *use.reference_id);
+  } else {
+    if (use.count > 1) {
+      use.reference_id = context.next_reference_id++;
+      absl::StrAppend(&output, "@", *use.reference_id, "=");
+    }
+    if (fully_qualify == FullyQualify::kYes) {
+      CHECK(file_table != nullptr);
+      absl::StrAppend(&output, nominal_type().span().GetFilename(*file_table),
+                      ":");
+    }
+    absl::StrAppend(&output, nominal_type().identifier());
+    if (!parametric_arguments().empty()) {
+      absl::StrAppend(&output, "<");
+      for (int64_t i = 0; i < parametric_arguments().size(); ++i) {
+        if (i != 0) {
+          absl::StrAppend(&output, ", ");
+        }
+        const ParametricArgument& argument = parametric_arguments().at(i);
+        if (const auto* value = std::get_if<InterpValue>(&argument)) {
+          absl::StrAppend(&output, value->ToString());
+        } else {
+          std::get<std::unique_ptr<const Type>>(argument)
+              ->AppendToStringInternal(fully_qualify, file_table, context,
+                                       output);
+        }
+      }
+      absl::StrAppend(&output, ">");
+    }
+    absl::StrAppend(&output, " { ");
+    for (int64_t i = 0; i < variants().size(); ++i) {
+      if (i != 0) {
+        absl::StrAppend(&output, " | ");
+      }
+      const SumTypeVariant& variant = variants()[i];
+      absl::StrAppend(&output, variant.variant().identifier());
+      if (variant.is_tuple()) {
+        absl::StrAppend(&output, "(");
+        for (int64_t member_i = 0; member_i < variant.size(); ++member_i) {
+          if (member_i != 0) {
+            absl::StrAppend(&output, ", ");
+          }
+          variant.GetMemberType(member_i).AppendToStringInternal(
+              fully_qualify, file_table, context, output);
+        }
+        absl::StrAppend(&output, ")");
+      } else if (variant.is_struct() && variant.size() == 0) {
+        absl::StrAppend(&output, " {}");
+      } else if (variant.is_struct()) {
+        absl::StrAppend(&output, " { ");
+        for (int64_t member_i = 0; member_i < variant.size(); ++member_i) {
+          if (member_i != 0) {
+            absl::StrAppend(&output, ", ");
+          }
+          absl::StrAppend(&output, variant.GetMemberName(member_i), ": ");
+          variant.GetMemberType(member_i).AppendToStringInternal(
+              fully_qualify, file_table, context, output);
+        }
+        absl::StrAppend(&output, " }");
+      }
+    }
+    absl::StrAppend(&output, " }");
+  }
 }
 
 std::string SumType::ToErrorString() const {
-  return absl::StrFormat("sum '%s' structure: %s", sum_def_.identifier(),
+  return absl::StrFormat("sum '%s' structure: %s", nominal_type().identifier(),
                          ToStringInternal(FullyQualify::kNo, nullptr));
 }
 
 bool SumType::HasEnum() const {
-  return absl::c_any_of(variants_, [](const SumTypeVariant& variant) {
+  return absl::c_any_of(variants(), [](const SumTypeVariant& variant) {
     return variant.HasEnum();
   });
 }
 
-bool SumType::HasToken() const {
-  return absl::c_any_of(variants_, [](const SumTypeVariant& variant) {
-    return variant.HasToken();
-  });
-}
+bool SumType::HasToken() const { return data_->has_token; }
 
 std::vector<TypeDim> SumType::GetAllDims() const {
   std::vector<TypeDim> results = {storage_tag_bit_count()};
-  for (const SumTypeVariant& variant : variants_) {
+  for (const SumTypeVariant& variant : variants()) {
     std::vector<TypeDim> variant_dims = variant.GetAllDims();
     for (TypeDim& dim : variant_dims) {
       results.push_back(std::move(dim));
@@ -794,7 +1087,7 @@ std::vector<TypeDim> SumType::GetAllDims() const {
 
 absl::StatusOr<TypeDim> SumType::GetTotalBitCount() const {
   TypeDim sum = storage_tag_bit_count();
-  for (const SumTypeVariant& variant : variants_) {
+  for (const SumTypeVariant& variant : variants()) {
     XLS_ASSIGN_OR_RETURN(TypeDim variant_bits, variant.GetTotalBitCount());
     XLS_ASSIGN_OR_RETURN(sum, sum.Add(variant_bits));
   }
@@ -802,19 +1095,14 @@ absl::StatusOr<TypeDim> SumType::GetTotalBitCount() const {
 }
 
 std::unique_ptr<Type> SumType::CloneToUnique() const {
-  std::vector<SumTypeVariant> variants;
-  variants.reserve(variants_.size());
-  for (const SumTypeVariant& variant : variants_) {
-    variants.push_back(variant.Clone());
-  }
-  return std::make_unique<SumType>(sum_def_, std::move(variants),
-                                   zero_selection_);
+  return std::unique_ptr<Type>(new SumType(data_, zero_selection_));
 }
 
 TypeDim SumType::storage_tag_bit_count() const {
-  int64_t bit_count =
-      variant_count() <= 1 ? 1 : Bits::MinBitCountUnsigned(variant_count() - 1);
-  return TypeDim::CreateU32(bit_count);
+  return TypeDim::CreateU32(
+      variants().size() <= 1
+          ? 1
+          : Bits::MinBitCountUnsigned(variants().size() - 1));
 }
 
 // -- TupleType
@@ -866,15 +1154,19 @@ std::unique_ptr<Type> TupleType::CloneToUnique() const {
   return std::make_unique<TupleType>(CloneSpan(members_));
 }
 
-std::string TupleType::ToStringInternal(FullyQualify fully_qualify,
-                                        const FileTable* file_table) const {
-  std::string guts = absl::StrJoin(
-      members_, ", ",
-      [file_table](std::string* out, const std::unique_ptr<Type>& m) {
-        absl::StrAppend(out,
-                        m->ToStringInternal(FullyQualify::kNo, file_table));
-      });
-  return absl::StrCat("(", guts, ")");
+void TupleType::AppendToStringInternal(FullyQualify fully_qualify,
+                                       const FileTable* file_table,
+                                       TypeStringContext& context,
+                                       std::string& output) const {
+  absl::StrAppend(&output, "(");
+  for (int64_t i = 0; i < members_.size(); ++i) {
+    if (i != 0) {
+      absl::StrAppend(&output, ", ");
+    }
+    members_[i]->AppendToStringInternal(FullyQualify::kNo, file_table, context,
+                                        output);
+  }
+  absl::StrAppend(&output, ")");
 }
 
 std::string TupleType::ToInlayHintString() const {
@@ -916,11 +1208,13 @@ ArrayType::ArrayType(std::unique_ptr<Type> element_type, const TypeDim& size)
       << element_type_->ToStringInternal(FullyQualify::kNo, nullptr);
 }
 
-std::string ArrayType::ToStringInternal(FullyQualify fully_qualify,
-                                        const FileTable* file_table) const {
-  return absl::StrFormat(
-      "%s[%s]", element_type_->ToStringInternal(fully_qualify, file_table),
-      size_.ToString());
+void ArrayType::AppendToStringInternal(FullyQualify fully_qualify,
+                                       const FileTable* file_table,
+                                       TypeStringContext& context,
+                                       std::string& output) const {
+  element_type_->AppendToStringInternal(fully_qualify, file_table, context,
+                                        output);
+  absl::StrAppend(&output, "[", size_.ToString(), "]");
 }
 
 std::string ArrayType::ToInlayHintString() const {
@@ -1008,6 +1302,13 @@ std::string EnumType::ToStringInternal(FullyQualify fully_qualify,
   return enum_def_.identifier();
 }
 
+void EnumType::AppendToStringInternal(FullyQualify fully_qualify,
+                                      const FileTable* file_table,
+                                      TypeStringContext&,
+                                      std::string& output) const {
+  absl::StrAppend(&output, ToStringInternal(fully_qualify, file_table));
+}
+
 std::vector<TypeDim> EnumType::GetAllDims() const {
   std::vector<TypeDim> result;
   result.push_back(size_.Clone());
@@ -1040,17 +1341,21 @@ std::vector<const Type*> FunctionType::GetParams() const {
   return results;
 }
 
-std::string FunctionType::ToStringInternal(FullyQualify fully_qualify,
-                                           const FileTable* file_table) const {
-  std::string params_str = absl::StrJoin(
-      params_, ", ",
-      [fully_qualify, file_table](std::string* out,
-                                  const std::unique_ptr<Type>& t) {
-        absl::StrAppend(out, t->ToStringInternal(fully_qualify, file_table));
-      });
-  return absl::StrFormat(
-      "(%s) -> %s", params_str,
-      return_type_->ToStringInternal(fully_qualify, file_table));
+void FunctionType::AppendToStringInternal(FullyQualify fully_qualify,
+                                          const FileTable* file_table,
+                                          TypeStringContext& context,
+                                          std::string& output) const {
+  absl::StrAppend(&output, "(");
+  for (int64_t i = 0; i < params_.size(); ++i) {
+    if (i != 0) {
+      absl::StrAppend(&output, ", ");
+    }
+    params_[i]->AppendToStringInternal(fully_qualify, file_table, context,
+                                       output);
+  }
+  absl::StrAppend(&output, ") -> ");
+  return_type_->AppendToStringInternal(fully_qualify, file_table, context,
+                                       output);
 }
 
 std::vector<TypeDim> FunctionType::GetAllDims() const {
@@ -1080,12 +1385,16 @@ ChannelType::ChannelType(std::unique_ptr<Type> payload_type,
   CHECK(!payload_type_->IsMeta());
 }
 
-std::string ChannelType::ToStringInternal(FullyQualify fully_qualify,
-                                          const FileTable* file_table) const {
-  return absl::StrFormat(
-      "chan(%s, dir=%s)",
-      payload_type_->ToStringInternal(fully_qualify, file_table),
-      direction_ == ChannelDirection::kIn ? "in" : "out");
+void ChannelType::AppendToStringInternal(FullyQualify fully_qualify,
+                                         const FileTable* file_table,
+                                         TypeStringContext& context,
+                                         std::string& output) const {
+  absl::StrAppend(&output, "chan(");
+  payload_type_->AppendToStringInternal(fully_qualify, file_table, context,
+                                        output);
+  absl::StrAppend(&output,
+                  ", dir=", direction_ == ChannelDirection::kIn ? "in" : "out",
+                  ")");
 }
 
 std::vector<TypeDim> ChannelType::GetAllDims() const {
@@ -1197,41 +1506,125 @@ bool IsKnownU32(const BitsLikeProperties& properties) {
 bool TypeContainsSemanticSum(const Type& type) {
   if (type.IsSum()) {
     return true;
-  } else if (const auto* array_type = dynamic_cast<const ArrayType*>(&type);
-             array_type != nullptr) {
-    return TypeContainsSemanticSum(array_type->element_type());
-  } else if (const auto* tuple_type = dynamic_cast<const TupleType*>(&type);
-             tuple_type != nullptr) {
-    for (int64_t i = 0; i < tuple_type->size(); ++i) {
-      if (TypeContainsSemanticSum(tuple_type->GetMemberType(i))) {
-        return true;
-      }
-    }
-    return false;
-  } else if (const auto* struct_type =
-                 dynamic_cast<const StructTypeBase*>(&type);
-             struct_type != nullptr) {
-    for (int64_t i = 0; i < struct_type->size(); ++i) {
-      if (TypeContainsSemanticSum(struct_type->GetMemberType(i))) {
-        return true;
-      }
-    }
-    return false;
-  } else if (const auto* function_type =
-                 dynamic_cast<const FunctionType*>(&type);
-             function_type != nullptr) {
-    for (const std::unique_ptr<Type>& param : function_type->params()) {
-      if (TypeContainsSemanticSum(*param)) {
-        return true;
-      }
-    }
-    return TypeContainsSemanticSum(function_type->return_type());
-  } else if (const auto* channel_type = dynamic_cast<const ChannelType*>(&type);
-             channel_type != nullptr) {
+  } else if (auto* channel_type = dynamic_cast<const ChannelType*>(&type)) {
     return TypeContainsSemanticSum(channel_type->payload_type());
+  } else if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
+    return absl::c_any_of(tuple_type->members(),
+                          [](const std::unique_ptr<Type>& member_type) {
+                            return TypeContainsSemanticSum(*member_type);
+                          });
+  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type)) {
+    return absl::c_any_of(struct_type->members(),
+                          [](const std::unique_ptr<Type>& member_type) {
+                            return TypeContainsSemanticSum(*member_type);
+                          });
+  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type)) {
+    return TypeContainsSemanticSum(array_type->element_type());
+  } else if (auto* function_type = dynamic_cast<const FunctionType*>(&type)) {
+    return absl::c_any_of(function_type->GetParams(),
+                          [](const Type* param_type) {
+                            return TypeContainsSemanticSum(*param_type);
+                          }) ||
+           TypeContainsSemanticSum(function_type->return_type());
   } else {
     return false;
   }
+}
+
+namespace {
+
+// Cloned wrappers share their immutable variant vector. Keep results only for
+// this traversal, so repeated alternatives visit each description once.
+using SumInhabitanceMemo =
+    absl::flat_hash_map<const std::vector<SumTypeVariant>*, bool>;
+
+absl::StatusOr<bool> TypeIsInhabitedInternal(
+    const Type& type, SumInhabitanceMemo& inhabited_sums);
+
+absl::StatusOr<bool> SumVariantIsInhabitedInternal(
+    const SumTypeVariant& variant, SumInhabitanceMemo& inhabited_sums) {
+  for (int64_t i = 0; i < variant.size(); ++i) {
+    XLS_ASSIGN_OR_RETURN(
+        bool member_is_inhabited,
+        TypeIsInhabitedInternal(variant.GetMemberType(i), inhabited_sums));
+    if (!member_is_inhabited) {
+      return false;
+    }
+  }
+  return true;
+}
+
+absl::StatusOr<bool> TypeIsInhabitedInternal(
+    const Type& type, SumInhabitanceMemo& inhabited_sums) {
+  if (auto* channel_type = dynamic_cast<const ChannelType*>(&type)) {
+    return TypeIsInhabitedInternal(channel_type->payload_type(),
+                                   inhabited_sums);
+  } else if (GetBitsLike(type).has_value()) {
+    return true;
+  } else if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
+    for (const std::unique_ptr<Type>& member_type : tuple_type->members()) {
+      XLS_ASSIGN_OR_RETURN(
+          bool member_is_inhabited,
+          TypeIsInhabitedInternal(*member_type, inhabited_sums));
+      if (!member_is_inhabited) {
+        return false;
+      }
+    }
+    return true;
+  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type)) {
+    for (int64_t i = 0; i < struct_type->size(); ++i) {
+      XLS_ASSIGN_OR_RETURN(bool member_is_inhabited,
+                           TypeIsInhabitedInternal(
+                               struct_type->GetMemberType(i), inhabited_sums));
+      if (!member_is_inhabited) {
+        return false;
+      }
+    }
+    return true;
+  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(int64_t size, array_type->size().GetAsInt64());
+    if (size == 0) {
+      return true;
+    } else {
+      return TypeIsInhabitedInternal(array_type->element_type(),
+                                     inhabited_sums);
+    }
+  } else if (auto* sum_type = dynamic_cast<const SumType*>(&type)) {
+    const auto* description = &sum_type->variants();
+    auto cached = inhabited_sums.find(description);
+    if (cached != inhabited_sums.end()) {
+      return cached->second;
+    } else {
+      bool is_inhabited = false;
+      for (const SumTypeVariant& variant : sum_type->variants()) {
+        XLS_ASSIGN_OR_RETURN(
+            bool variant_is_inhabited,
+            SumVariantIsInhabitedInternal(variant, inhabited_sums));
+        if (variant_is_inhabited) {
+          is_inhabited = true;
+          break;
+        }
+      }
+      inhabited_sums.emplace(description, is_inhabited);
+      return is_inhabited;
+    }
+  } else if (auto* enum_type = dynamic_cast<const EnumType*>(&type)) {
+    return !enum_type->members().empty();
+  } else {
+    return true;
+  }
+}
+
+}  // namespace
+
+absl::StatusOr<bool> SumVariantIsInhabited(const SumTypeVariant& variant) {
+  SumInhabitanceMemo inhabited_sums;
+  return SumVariantIsInhabitedInternal(variant, inhabited_sums);
+}
+
+absl::StatusOr<bool> TypeIsInhabited(const Type& type) {
+  SumInhabitanceMemo inhabited_sums;
+  return TypeIsInhabitedInternal(type, inhabited_sums);
 }
 
 }  // namespace xls::dslx

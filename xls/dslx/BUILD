@@ -244,6 +244,7 @@ cc_library(
     deps = [
         "//xls/common/status:status_macros",
         "//xls/dslx/type_system:type",
+        "//xls/ir:bits",
         "@abseil-cpp//absl/functional:function_ref",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -255,6 +256,7 @@ cc_test(
     name = "sum_type_encoding_test",
     srcs = ["sum_type_encoding_test.cc"],
     deps = [
+        ":interp_value",
         ":sum_type_encoding",
         "//xls/common:xls_gunit_main",
         "//xls/common/status:matchers",
@@ -263,6 +265,7 @@ cc_test(
         "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:pos",
         "//xls/dslx/type_system:type",
+        "//xls/ir:bits",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
         "@googletest//:gtest",

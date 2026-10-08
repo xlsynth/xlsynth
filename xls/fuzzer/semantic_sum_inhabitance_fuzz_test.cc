@@ -67,14 +67,14 @@ std::filesystem::path GetManifestPath() {
       .value();
 }
 
-absl::StatusOr<bool> TypeIsInhabited(const dslx::Type& type);
+absl::StatusOr<bool> OracleTypeIsInhabited(const dslx::Type& type);
 
 // Returns whether every payload member of a variant can hold a value.
-absl::StatusOr<bool> SumVariantIsInhabited(
+absl::StatusOr<bool> OracleSumVariantIsInhabited(
     const dslx::SumTypeVariant& variant) {
   for (int64_t i = 0; i < variant.size(); ++i) {
     XLS_ASSIGN_OR_RETURN(bool member_is_inhabited,
-                         TypeIsInhabited(variant.GetMemberType(i)));
+                         OracleTypeIsInhabited(variant.GetMemberType(i)));
     if (!member_is_inhabited) {
       return false;
     }
@@ -83,7 +83,7 @@ absl::StatusOr<bool> SumVariantIsInhabited(
 }
 
 // Recursively classifies the type forms exercised by the value generator.
-absl::StatusOr<bool> TypeIsInhabited(const dslx::Type& type) {
+absl::StatusOr<bool> OracleTypeIsInhabited(const dslx::Type& type) {
   if (dslx::GetBitsLike(type).has_value()) {
     return true;
   }
@@ -92,7 +92,8 @@ absl::StatusOr<bool> TypeIsInhabited(const dslx::Type& type) {
   }
   if (auto* tuple_type = dynamic_cast<const dslx::TupleType*>(&type)) {
     for (const std::unique_ptr<dslx::Type>& member : tuple_type->members()) {
-      XLS_ASSIGN_OR_RETURN(bool member_is_inhabited, TypeIsInhabited(*member));
+      XLS_ASSIGN_OR_RETURN(bool member_is_inhabited,
+                           OracleTypeIsInhabited(*member));
       if (!member_is_inhabited) {
         return false;
       }
@@ -104,12 +105,12 @@ absl::StatusOr<bool> TypeIsInhabited(const dslx::Type& type) {
     if (size == 0) {
       return true;
     }
-    return TypeIsInhabited(array_type->element_type());
+    return OracleTypeIsInhabited(array_type->element_type());
   }
   if (auto* sum_type = dynamic_cast<const dslx::SumType*>(&type)) {
     for (const dslx::SumTypeVariant& variant : sum_type->variants()) {
       XLS_ASSIGN_OR_RETURN(bool variant_is_inhabited,
-                           SumVariantIsInhabited(variant));
+                           OracleSumVariantIsInhabited(variant));
       if (variant_is_inhabited) {
         return true;
       }
@@ -139,7 +140,7 @@ absl::Status VerifyGeneratedSumValue(const dslx::SumType& sum_type,
   }
   const dslx::SumTypeVariant& variant = sum_type.variants().at(variant_index);
   XLS_ASSIGN_OR_RETURN(bool variant_is_inhabited,
-                       SumVariantIsInhabited(variant));
+                       OracleSumVariantIsInhabited(variant));
   if (!variant_is_inhabited) {
     return absl::FailedPreconditionError(
         absl::StrCat("Generated uninhabited sum variant '",
@@ -268,22 +269,27 @@ absl::StatusOr<dslx::Function*> GetEntryFunction(dslx::Module& module) {
                    module.name(), "'"));
 }
 
-// Parses a reviewed source fixture and clones its entry parameter types.
-absl::StatusOr<std::vector<std::unique_ptr<dslx::Type>>> GetFunctionParamTypes(
+// Nominal types borrow their declaration AST even after CloneToUnique. Keep the
+// import owner alive through generation and recursive inspection of those
+// types.
+struct SourceInhabitanceContext {
+  std::unique_ptr<dslx::ImportData> import_data;
+  const dslx::FunctionType* function_type;
+};
+
+absl::StatusOr<SourceInhabitanceContext> PrepareSourceContext(
     const std::string& seed_text, std::string_view seed_id) {
-  dslx::ImportData import_data = dslx::CreateImportDataForTest();
+  auto import_data =
+      std::make_unique<dslx::ImportData>(dslx::CreateImportDataForTest());
   XLS_ASSIGN_OR_RETURN(
       dslx::TypecheckedModule tm,
       dslx::ParseAndTypecheck(seed_text, absl::StrCat(seed_id, ".x"), seed_id,
-                              &import_data));
+                              import_data.get()));
   XLS_ASSIGN_OR_RETURN(dslx::Function * function, GetEntryFunction(*tm.module));
   XLS_ASSIGN_OR_RETURN(dslx::FunctionType * function_type,
                        tm.type_info->GetItemAs<dslx::FunctionType>(function));
-  std::vector<std::unique_ptr<dslx::Type>> params;
-  for (const std::unique_ptr<dslx::Type>& param : function_type->params()) {
-    params.push_back(param->CloneToUnique());
-  }
-  return params;
+  return SourceInhabitanceContext{.import_data = std::move(import_data),
+                                  .function_type = function_type};
 }
 
 // Verifies: reviewed inhabitance seeds generate only valid values.
@@ -299,8 +305,9 @@ TEST(SemanticSumInhabitanceFuzzTest, ReplaysManifestCases) {
         if (seed.outcome() != fuzzer::SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS) {
           return absl::OkStatus();
         }
-        XLS_ASSIGN_OR_RETURN(std::vector<std::unique_ptr<dslx::Type>> params,
-                             GetFunctionParamTypes(seed_text, seed.seed_id()));
+        XLS_ASSIGN_OR_RETURN(SourceInhabitanceContext context,
+                             PrepareSourceContext(seed_text, seed.seed_id()));
+        const auto& params = context.function_type->params();
         std::vector<const dslx::Type*> param_ptrs;
         param_ptrs.reserve(params.size());
         for (const std::unique_ptr<dslx::Type>& param : params) {
