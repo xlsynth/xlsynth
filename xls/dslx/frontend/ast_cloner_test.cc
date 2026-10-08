@@ -1757,9 +1757,50 @@ TEST(AstClonerTest, IfElseIf) {
   FileTable file_table;
   XLS_ASSERT_OK_AND_ASSIGN(auto module, ParseModule(kProgram, "fake_path.x",
                                                     "the_module", file_table));
-  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> clone,
-                           CloneModule(*module.get()));
+  std::vector<Conditional*> completed;
+  auto check_enclosing = [&](const AstNode*,
+                             AstNode* clone) -> absl::StatusOr<AstNode*> {
+    if (auto* conditional = dynamic_cast<Conditional*>(clone)) {
+      // A post-replacer sees the current chain before its parent is cloned.
+      EXPECT_EQ(conditional->consequent()->GetEnclosing(), conditional);
+      if (std::holds_alternative<StatementBlock*>(conditional->alternate())) {
+        EXPECT_EQ(
+            std::get<StatementBlock*>(conditional->alternate())->GetEnclosing(),
+            conditional);
+      } else {
+        EXPECT_EQ(std::get<Conditional*>(conditional->alternate())
+                      ->consequent()
+                      ->GetEnclosing(),
+                  conditional);
+      }
+      completed.push_back(conditional);
+    }
+    return clone;
+  };
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<Module> clone,
+      CloneModule(*module, NoopCloneReplacer, check_enclosing));
   EXPECT_EQ(kProgram, clone->ToString());
+  ASSERT_EQ(completed.size(), 2);
+  Conditional* inner = completed[0];
+  Conditional* outer = completed[1];
+  EXPECT_EQ(std::get<Conditional*>(outer->alternate()), inner);
+  EXPECT_THAT(
+      outer->GatherBlocks(),
+      ::testing::ElementsAre(outer->consequent(), inner->consequent(),
+                             std::get<StatementBlock*>(inner->alternate())));
+  EXPECT_EQ(inner->consequent()->GetEnclosing(), outer);
+  EXPECT_EQ(std::get<StatementBlock*>(inner->alternate())->GetEnclosing(),
+            outer);
+
+  // Cloning only the suffix gives it a new enclosing root of its own.
+  XLS_ASSERT_OK_AND_ASSIGN(AstNode * suffix, CloneAst(inner));
+  auto* suffix_conditional = absl::down_cast<Conditional*>(suffix);
+  EXPECT_EQ(suffix_conditional->consequent()->GetEnclosing(),
+            suffix_conditional);
+  EXPECT_EQ(std::get<StatementBlock*>(suffix_conditional->alternate())
+                ->GetEnclosing(),
+            suffix_conditional);
 }
 
 TEST(AstClonerTest, FormatMacro) {
@@ -2953,11 +2994,12 @@ fn foo<T: type>(x: T) -> T {
   TypeAnnotation* binding_annotation =
       clone_foo->parametric_bindings().at(0)->type_annotation();
   Param* param = clone_foo->params().at(0);
-  const AstNode* param_annotation_definer =
+  const auto* param_annotation =
       absl::down_cast<const TypeVariableTypeAnnotation*>(
-          param->type_annotation())
-          ->type_variable()
-          ->GetDefiner();
+          param->type_annotation());
+  EXPECT_FALSE(param_annotation->internal());
+  const AstNode* param_annotation_definer =
+      param_annotation->type_variable()->GetDefiner();
   ASSERT_EQ(binding_annotation, param_annotation_definer);
 }
 
@@ -3172,13 +3214,13 @@ struct Point {
   EXPECT_FALSE(cloned_annotation->use_wrapped_type_if_proc_state());
 }
 
-// Verifies that CloneModuleRemovingMembers does not clone AST nodes that belong
+// Verifies that module cloning does not clone AST nodes that belong
 // to external modules. If a TypeRef in the module being cloned points directly
 // to a StructDef in an external module (which happens for the builtin `State`
 // struct in stateful procs), the cloner must preserve the pointer to the
 // external StructDef instead of cloning it into the target module. Cloning it
 // would break pointer identity checks in the typechecker.
-TEST(AstClonerTest, CloneModuleRemovingMembersPreservesExternalNodes) {
+TEST(AstClonerTest, ModuleClonesPreserveExternalNodes) {
   FileTable file_table;
   XLS_ASSERT_OK_AND_ASSIGN(
       auto ext_parsed,
@@ -3201,24 +3243,28 @@ TEST(AstClonerTest, CloneModuleRemovingMembersPreservesExternalNodes) {
 
   member->set_type(ext_type_annot);
 
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> plain_clone,
+                           CloneModule(*main_module));
   const std::array<const AstNode*, 0> removed = {};
-  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> cloned_module,
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> pruned_clone,
                            CloneModuleRemovingMembers(*main_module, removed));
 
-  XLS_ASSERT_OK_AND_ASSIGN(StructDef * cloned_s,
-                           cloned_module->GetMemberOrError<StructDef>("S"));
-  ASSERT_EQ(cloned_s->members().size(), 1);
-  StructMemberNode* cloned_member = cloned_s->members()[0];
+  for (Module* cloned_module : {plain_clone.get(), pruned_clone.get()}) {
+    XLS_ASSERT_OK_AND_ASSIGN(StructDef * cloned_s,
+                             cloned_module->GetMemberOrError<StructDef>("S"));
+    ASSERT_EQ(cloned_s->members().size(), 1);
+    StructMemberNode* cloned_member = cloned_s->members()[0];
 
-  auto* cloned_type_annot =
-      dynamic_cast<TypeRefTypeAnnotation*>(cloned_member->type());
-  ASSERT_NE(cloned_type_annot, nullptr);
-  TypeRef* cloned_type_ref = cloned_type_annot->type_ref();
+    auto* cloned_type_annot =
+        dynamic_cast<TypeRefTypeAnnotation*>(cloned_member->type());
+    ASSERT_NE(cloned_type_annot, nullptr);
+    TypeRef* cloned_type_ref = cloned_type_annot->type_ref();
 
-  EXPECT_TRUE(
-      std::holds_alternative<StructDef*>(cloned_type_ref->type_definition()));
-  EXPECT_EQ(std::get<StructDef*>(cloned_type_ref->type_definition()),
-            ext_struct);
+    ASSERT_TRUE(
+        std::holds_alternative<StructDef*>(cloned_type_ref->type_definition()));
+    EXPECT_EQ(std::get<StructDef*>(cloned_type_ref->type_definition()),
+              ext_struct);
+  }
 }
 
 TEST(AstClonerTest, RetypePrunedModuleWithImportedParametricStruct) {
