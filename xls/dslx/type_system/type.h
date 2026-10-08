@@ -931,6 +931,13 @@ class SumType : public Type {
   bool IsAggregate() const override { return true; }
 
   std::vector<TypeDim> GetAllDims() const override;
+  // Returns the largest shared payload width among this sum's variants,
+  // excluding this sum's own tag. A nested sum contributes its semantic tag
+  // width plus its largest variant payload width. Returns an error if any
+  // variant's shared payload width or any nested sum's own width exceeds the
+  // uint32_t range. Reuses the width or error stored with the immutable shared
+  // description.
+  absl::StatusOr<TypeDim> GetMaxPayloadBitCount() const;
   absl::StatusOr<TypeDim> GetTotalBitCount() const override;
   std::string GetDebugTypeName() const override { return "sum"; }
   std::unique_ptr<Type> CloneToUnique() const override;
@@ -960,6 +967,8 @@ class SumType : public Type {
 
     const SumDef& sum_def;
     std::vector<SumTypeVariant> variants;
+    // Keep width errors queryable without rejecting description construction.
+    absl::StatusOr<uint32_t> max_payload_bit_count;
     TypeDim tag_bit_count;
     std::vector<InterpValue> discriminants;
     std::vector<ParametricArgument> parametric_arguments;
@@ -1389,6 +1398,22 @@ absl::StatusOr<bool> TypeIsInhabited(const Type& type);
 // Returns whether every payload member of a semantic-sum constructor can hold
 // a value.
 absl::StatusOr<bool> SumVariantIsInhabited(const SumTypeVariant& variant);
+
+namespace internal {
+
+// Returns the flattened width when each semantic sum uses its tag and only
+// the widest of its payloads, including sums nested in other types.
+absl::StatusOr<TypeDim> GetBitCountWithSharedSumPayload(const Type& type);
+// Returns the combined width of one variant's members using the same layout.
+absl::StatusOr<TypeDim> GetBitCountWithSharedSumPayload(
+    const SumTypeVariant& variant);
+
+// Checks the widths of semantic sums nested in a known-empty array's element.
+// The empty array erases ordinary aggregate width but cannot erase an invalid
+// nested sum. An element without a semantic sum does not need a width.
+absl::Status ValidateEmptyArrayElementSumWidths(const ArrayType& array);
+
+}  // namespace internal
 
 }  // namespace xls::dslx
 
