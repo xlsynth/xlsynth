@@ -28,6 +28,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/format_preference.h"
@@ -38,6 +39,17 @@ class ValueFormatDescriptor;
 
 class ValueFormatSumVariantDescriptor;
 class ValueFormatSumVariantView;
+
+namespace internal {
+
+// Builds a descriptor from the packed layout supplied by the sum encoder.
+ValueFormatDescriptor MakePackedSumValueFormatDescriptor(
+    std::string_view sum_name,
+    absl::Span<const ValueFormatSumVariantDescriptor> variants,
+    int64_t tag_bit_count, int64_t payload_slot_bit_count,
+    absl::Span<const Bits> variant_tag_bits);
+
+}  // namespace internal
 
 enum class ValueFormatSumVariantKind : int8_t {
   kUnit,
@@ -187,6 +199,24 @@ class ValueFormatDescriptor {
         ->payload_slot_count;
   }
 
+  // Requires a sum with packed layout metadata, indicated by a present
+  // flat_bit_count(). Zero is a valid tag or payload-slot width.
+  int64_t sum_tag_bit_count() const {
+    CHECK(IsSum());
+    CHECK(flat_bit_count().has_value());
+    return std::get<std::shared_ptr<const SumFormat>>(nominal_format_)
+        ->tag_bit_count;
+  }
+  int64_t sum_payload_slot_bit_count() const {
+    CHECK(IsSum());
+    CHECK(flat_bit_count().has_value());
+    return std::get<std::shared_ptr<const SumFormat>>(nominal_format_)
+        ->payload_slot_bit_count;
+  }
+  std::optional<size_t> sum_variant_index_for_tag_bits(
+      const Bits& tag_bits) const;
+  absl::StatusOr<Bits> sum_variant_tag_bits(size_t i) const;
+
   std::optional<int64_t> flat_bit_count() const { return flat_bit_count_; }
 
   // Number of elements in tuple, array, or struct descriptors. Sum descriptors
@@ -200,6 +230,11 @@ class ValueFormatDescriptor {
 
  private:
   friend class ValueFormatDescriptorBuilder;
+  friend ValueFormatDescriptor internal::MakePackedSumValueFormatDescriptor(
+      std::string_view sum_name,
+      absl::Span<const ValueFormatSumVariantDescriptor> variants,
+      int64_t tag_bit_count, int64_t payload_slot_bit_count,
+      absl::Span<const Bits> variant_tag_bits);
 
   explicit ValueFormatDescriptor(ValueFormatDescriptorKind kind)
       : kind_(kind) {}
@@ -210,7 +245,22 @@ class ValueFormatDescriptor {
       absl::Span<const ValueFormatSumVariantDescriptor> variants,
       absl::Span<const size_t> payload_starts, size_t payload_slot_count);
 
+  // Sum formatting receives packed tag and payload metadata from its encoder.
+  static ValueFormatDescriptor MakeSum(
+      std::string_view sum_name,
+      absl::Span<const ValueFormatSumVariantDescriptor> variants,
+      int64_t tag_bit_count, int64_t payload_slot_bit_count,
+      absl::Span<const Bits> variant_tag_bits);
+
   struct SumVariantFormat {
+    SumVariantFormat(std::string name, ValueFormatSumVariantKind kind,
+                     std::vector<std::string> field_names,
+                     std::vector<ValueFormatDescriptor> payload_formats)
+        : name(std::move(name)),
+          kind(kind),
+          field_names(std::move(field_names)),
+          payload_formats(std::move(payload_formats)) {}
+
     SumVariantFormat(std::string name, ValueFormatSumVariantKind kind,
                      size_t payload_start, std::vector<std::string> field_names,
                      std::vector<ValueFormatDescriptor> payload_formats)
@@ -222,7 +272,7 @@ class ValueFormatDescriptor {
 
     std::string name;
     ValueFormatSumVariantKind kind;
-    size_t payload_start;
+    size_t payload_start = 0;
     std::vector<std::string> field_names;
     std::vector<ValueFormatDescriptor> payload_formats;
   };
@@ -241,6 +291,9 @@ class ValueFormatDescriptor {
     std::string name;
     std::vector<SumVariantFormat> variants;
     size_t payload_slot_count = 0;
+    int64_t tag_bit_count = 0;
+    int64_t payload_slot_bit_count = 0;
+    std::vector<Bits> variant_tag_bits;
   };
 
   ValueFormatDescriptorKind kind_;
@@ -310,6 +363,7 @@ class ValueFormatSumVariantView {
   ValueFormatSumVariantKind kind() const { return kind_; }
   size_t payload_start() const { return payload_start_; }
   size_t payload_slot_count() const { return payload_formats_.size(); }
+  size_t payload_member_count() const { return payload_formats_.size(); }
   absl::Span<const std::string> field_names() const { return field_names_; }
   absl::Span<const ValueFormatDescriptor> payload_formats() const {
     return payload_formats_;
