@@ -12,15 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Covers value generation for a fixed partially inhabited semantic sum:
-// Unit is inhabited and Impossible(Empty) is not. FUZZ_TEST varies an
-// arbitrary 64-bit generator seed and a closed selector domain {0, 1, 2};
-// selectors choose the root sum, tuple(sum, u8), or array[2] of sums.
-//
-// The property validates that generated values select only inhabited variants
-// and that nested leaves round-trip through raw IR. It does not synthesize
-// arbitrary DSLX declarations, malformed raw encodings, source-pattern errors,
-// or uninhabited-only sums.
+// Checks value generation against an independent inhabitance oracle. Alongside
+// the synthetic empty-enum probe, bounded declared nested sums vary payload
+// widths and aggregate placement, including empty and nonempty arrays of an
+// uninhabited type. Malformed raw values belong to the raw-boundary property.
 
 #include <cstdint>
 #include <filesystem>
@@ -59,6 +54,8 @@
 namespace xls {
 namespace {
 
+using ::absl_testing::IsOkAndHolds;
+
 // Resolves the checked-in corpus manifest from Bazel runfiles.
 std::filesystem::path GetManifestPath() {
   return GetXlsRunfilePath(
@@ -68,7 +65,8 @@ std::filesystem::path GetManifestPath() {
 
 absl::StatusOr<bool> OracleTypeIsInhabited(const dslx::Type& type);
 
-// Returns whether every payload member of a variant can hold a value.
+// Keep this oracle independent of production inhabitance analysis so a shared
+// generation/type-analysis mistake cannot validate its own output.
 absl::StatusOr<bool> OracleSumVariantIsInhabited(
     const dslx::SumTypeVariant& variant) {
   for (int64_t i = 0; i < variant.size(); ++i) {
@@ -81,42 +79,54 @@ absl::StatusOr<bool> OracleSumVariantIsInhabited(
   return true;
 }
 
-// Recursively classifies the type forms exercised by the value generator.
 absl::StatusOr<bool> OracleTypeIsInhabited(const dslx::Type& type) {
   if (dslx::GetBitsLike(type).has_value()) {
     return true;
-  }
-  if (auto* enum_type = dynamic_cast<const dslx::EnumType*>(&type)) {
-    return !enum_type->members().empty();
-  }
-  if (auto* tuple_type = dynamic_cast<const dslx::TupleType*>(&type)) {
-    for (const std::unique_ptr<dslx::Type>& member : tuple_type->members()) {
-      XLS_ASSIGN_OR_RETURN(bool member_is_inhabited,
-                           OracleTypeIsInhabited(*member));
-      if (!member_is_inhabited) {
-        return false;
-      }
-    }
-    return true;
-  }
-  if (auto* array_type = dynamic_cast<const dslx::ArrayType*>(&type)) {
-    XLS_ASSIGN_OR_RETURN(int64_t size, array_type->size().GetAsInt64());
-    if (size == 0) {
-      return true;
-    }
-    return OracleTypeIsInhabited(array_type->element_type());
-  }
-  if (auto* sum_type = dynamic_cast<const dslx::SumType*>(&type)) {
-    for (const dslx::SumTypeVariant& variant : sum_type->variants()) {
-      XLS_ASSIGN_OR_RETURN(bool variant_is_inhabited,
+  } else if (const auto* sum = dynamic_cast<const dslx::SumType*>(&type)) {
+    for (const dslx::SumTypeVariant& variant : sum->variants()) {
+      XLS_ASSIGN_OR_RETURN(bool inhabited,
                            OracleSumVariantIsInhabited(variant));
-      if (variant_is_inhabited) {
+      if (inhabited) {
         return true;
       }
     }
     return false;
+  } else if (const auto* enumeration =
+                 dynamic_cast<const dslx::EnumType*>(&type)) {
+    return !enumeration->members().empty();
+  } else if (const auto* array = dynamic_cast<const dslx::ArrayType*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(int64_t size, array->size().GetAsInt64());
+    if (size == 0) {
+      return true;
+    } else {
+      return OracleTypeIsInhabited(array->element_type());
+    }
+  } else if (const auto* tuple = dynamic_cast<const dslx::TupleType*>(&type)) {
+    for (const std::unique_ptr<dslx::Type>& member : tuple->members()) {
+      XLS_ASSIGN_OR_RETURN(bool inhabited, OracleTypeIsInhabited(*member));
+      if (!inhabited) {
+        return false;
+      }
+    }
+    return true;
+  } else if (const auto* structure =
+                 dynamic_cast<const dslx::StructTypeBase*>(&type)) {
+    for (const std::unique_ptr<dslx::Type>& member : structure->members()) {
+      XLS_ASSIGN_OR_RETURN(bool inhabited, OracleTypeIsInhabited(*member));
+      if (!inhabited) {
+        return false;
+      }
+    }
+    return true;
+  } else if (const auto* channel =
+                 dynamic_cast<const dslx::ChannelType*>(&type)) {
+    return OracleTypeIsInhabited(channel->payload_type());
+  } else if (dynamic_cast<const dslx::TokenType*>(&type) != nullptr) {
+    return true;
+  } else {
+    return absl::UnimplementedError(
+        absl::StrCat("Inhabitance oracle does not support ", type.ToString()));
   }
-  return true;
 }
 
 absl::Status VerifyGeneratedValue(const dslx::Type& type,
@@ -169,26 +179,33 @@ absl::Status VerifyGeneratedValue(const dslx::Type& type,
           VerifyGeneratedValue(tuple_type->GetMemberType(i), members.at(i)));
     }
     return absl::OkStatus();
-  }
-  if (auto* array_type = dynamic_cast<const dslx::ArrayType*>(&type)) {
+  } else if (auto* array_type = dynamic_cast<const dslx::ArrayType*>(&type)) {
     for (const dslx::InterpValue& element : value.GetValuesOrDie()) {
       XLS_RETURN_IF_ERROR(
           VerifyGeneratedValue(array_type->element_type(), element));
     }
     return absl::OkStatus();
-  }
-  if (auto* sum_type = dynamic_cast<const dslx::SumType*>(&type)) {
+  } else if (auto* sum_type = dynamic_cast<const dslx::SumType*>(&type)) {
     return VerifyGeneratedSumValue(*sum_type, value);
+  } else if (auto* structure =
+                 dynamic_cast<const dslx::StructTypeBase*>(&type)) {
+    const auto& members = value.GetValuesOrDie();
+    for (int64_t i = 0; i < structure->members().size(); ++i) {
+      XLS_RETURN_IF_ERROR(
+          VerifyGeneratedValue(structure->GetMemberType(i), members.at(i)));
+    }
+    return absl::OkStatus();
+  } else {
+    XLS_ASSIGN_OR_RETURN(Value raw_value, value.ConvertToIr());
+    XLS_ASSIGN_OR_RETURN(dslx::InterpValue roundtrip,
+                         dslx::ValueToInterpValue(raw_value, &type));
+    if (roundtrip != value) {
+      return absl::FailedPreconditionError(
+          absl::StrCat("Generated value did not roundtrip through raw form: '",
+                       value.ToString(), "' vs '", roundtrip.ToString(), "'."));
+    }
+    return absl::OkStatus();
   }
-  XLS_ASSIGN_OR_RETURN(Value raw_value, value.ConvertToIr());
-  XLS_ASSIGN_OR_RETURN(dslx::InterpValue roundtrip,
-                       dslx::ValueToInterpValue(raw_value, &type));
-  if (roundtrip != value) {
-    return absl::FailedPreconditionError(
-        absl::StrCat("Generated value did not roundtrip through raw form: '",
-                     value.ToString(), "' vs '", roundtrip.ToString(), "'."));
-  }
-  return absl::OkStatus();
 }
 
 // Builds an AST type reference for the synthetic empty enum payload.
@@ -249,6 +266,32 @@ absl::StatusOr<dslx::SumType> MakePartiallyInhabitedEnumPayloadSumType(
   variants.push_back(dslx::SumTypeVariant::MakeTuple(
       *impossible_variant, std::move(payload_members)));
   return dslx::SumType(*sum_def, std::move(variants));
+}
+
+TEST(SemanticSumInhabitanceFuzzTest, OracleDistinguishesEmptyPayloadDomains) {
+  dslx::FileTable file_table;
+  dslx::Module module("oracle_test", std::nullopt, file_table);
+  XLS_ASSERT_OK_AND_ASSIGN(dslx::SumType sum,
+                           MakePartiallyInhabitedEnumPayloadSumType(module));
+  EXPECT_THAT(OracleSumVariantIsInhabited(sum.variants().at(0)),
+              IsOkAndHolds(true));
+  EXPECT_THAT(OracleSumVariantIsInhabited(sum.variants().at(1)),
+              IsOkAndHolds(false));
+  EXPECT_THAT(OracleTypeIsInhabited(sum), IsOkAndHolds(true));
+
+  const dslx::Type& empty_enum = sum.variants().at(1).GetMemberType(0);
+  EXPECT_THAT(OracleTypeIsInhabited(empty_enum), IsOkAndHolds(false));
+  dslx::ArrayType zero_elements(empty_enum.CloneToUnique(),
+                                dslx::TypeDim::CreateU32(0));
+  dslx::ArrayType one_element(empty_enum.CloneToUnique(),
+                              dslx::TypeDim::CreateU32(1));
+  EXPECT_THAT(OracleTypeIsInhabited(zero_elements), IsOkAndHolds(true));
+  EXPECT_THAT(OracleTypeIsInhabited(one_element), IsOkAndHolds(false));
+  std::vector<std::unique_ptr<dslx::Type>> members;
+  members.push_back(sum.CloneToUnique());
+  members.push_back(one_element.CloneToUnique());
+  dslx::TupleType tuple(std::move(members));
+  EXPECT_THAT(OracleTypeIsInhabited(tuple), IsOkAndHolds(false));
 }
 
 // Selects main, or the only function, from a reviewed source fixture.
@@ -362,6 +405,89 @@ void GeneratedValueIsInhabited(uint64_t generator_seed,
 FUZZ_TEST(SemanticSumInhabitanceFuzzTest, GeneratedValueIsInhabited)
     .WithDomains(fuzztest::Arbitrary<uint64_t>(),
                  fuzztest::InRange<uint8_t>(0, 2));
+
+std::string DeclaredNestedProgram(uint8_t payload_width,
+                                  uint8_t shape_selector) {
+  std::string program = absl::StrCat(
+      "enum Empty: u2 {}\n", "struct Blocked { empty: Empty }\n",
+      "struct Live { flag: u1, value: u", payload_width, " }\n",
+      "enum Leaf: u3 { Vacant(Empty[0]) = 0, Value(u", payload_width,
+      ") = 2, Impossible(Empty[1]) = 5 }\n",
+      "enum Outer: u3 { Unit = 0, Nested(Leaf[2], (Leaf, u2)) = 2,\n",
+      "Record { payload: Live } = 5, Impossible(Blocked) = 7 }\n",
+      "struct Container { value: Outer, pair: (Outer, u1), items: Outer[2] "
+      "}\n");
+  std::string parameter_type;
+  if (shape_selector == 0) {
+    parameter_type = "Outer";
+  } else if (shape_selector == 1) {
+    parameter_type = "(Outer, u8)";
+  } else if (shape_selector == 2) {
+    parameter_type = "Outer[2]";
+  } else {
+    parameter_type = "Container";
+  }
+  absl::StrAppend(&program, "fn main(x: ", parameter_type, ", _leaf: Leaf) -> ",
+                  parameter_type, " { x }\n");
+  return program;
+}
+
+void DeclaredNestedValuesAreInhabited(uint64_t generator_seed,
+                                      uint8_t payload_width,
+                                      uint8_t shape_selector) {
+  const std::string program =
+      DeclaredNestedProgram(payload_width, shape_selector);
+  SCOPED_TRACE(program);
+  SCOPED_TRACE(generator_seed);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      SourceInhabitanceContext context,
+      PrepareSourceContext(program, "declared_inhabitance"));
+  const auto& params = context.function_type->params();
+  const auto* leaf = dynamic_cast<const dslx::SumType*>(params.at(1).get());
+  ASSERT_NE(leaf, nullptr);
+  ASSERT_EQ(leaf->variant_count(), 3);
+  // The zero-length array has one inhabitant even though Empty does not. Pin
+  // all variants so mistakenly filtering out Vacant cannot hide in generation.
+  for (int64_t i = 0; i < leaf->variant_count(); ++i) {
+    XLS_ASSERT_OK_AND_ASSIGN(
+        bool oracle_inhabited,
+        OracleSumVariantIsInhabited(leaf->variants().at(i)));
+    EXPECT_EQ(oracle_inhabited, i != 2);
+    EXPECT_THAT(dslx::SumVariantIsInhabited(leaf->variants().at(i)),
+                IsOkAndHolds(oracle_inhabited));
+  }
+  std::vector<const dslx::Type*> param_ptrs;
+  for (const auto& param : params) {
+    XLS_ASSERT_OK_AND_ASSIGN(bool oracle_inhabited,
+                             OracleTypeIsInhabited(*param));
+    EXPECT_TRUE(oracle_inhabited);
+    EXPECT_THAT(dslx::TypeIsInhabited(*param), IsOkAndHolds(oracle_inhabited));
+    param_ptrs.push_back(param.get());
+  }
+  std::mt19937_64 generator(generator_seed);
+  absl::BitGenRef bit_gen(generator);
+  XLS_ASSERT_OK_AND_ASSIGN(std::vector<dslx::InterpValue> values,
+                           GenerateInterpValues(bit_gen, param_ptrs));
+  ASSERT_EQ(values.size(), params.size());
+  for (int64_t i = 0; i < values.size(); ++i) {
+    XLS_ASSERT_OK(VerifyGeneratedValue(*params.at(i), values.at(i)));
+  }
+}
+
+TEST(SemanticSumInhabitanceFuzzTest, DeclaredNestedInhabitanceWitnesses) {
+  for (uint8_t width : {uint8_t{1}, uint8_t{8}}) {
+    for (uint8_t shape = 0; shape < 4; ++shape) {
+      for (uint64_t seed : {uint64_t{0}, uint64_t{2026031503}}) {
+        DeclaredNestedValuesAreInhabited(seed, width, shape);
+      }
+    }
+  }
+}
+
+FUZZ_TEST(SemanticSumInhabitanceFuzzTest, DeclaredNestedValuesAreInhabited)
+    .WithDomains(fuzztest::Arbitrary<uint64_t>(),
+                 fuzztest::InRange<uint8_t>(1, 8),
+                 fuzztest::InRange<uint8_t>(0, 3));
 
 }  // namespace
 }  // namespace xls

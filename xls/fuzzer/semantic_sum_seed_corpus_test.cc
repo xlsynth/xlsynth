@@ -48,7 +48,7 @@ TEST(SemanticSumSeedCorpusTest, LoadsManifestAndFiltersBySurface) {
   XLS_ASSERT_OK_AND_ASSIGN(fuzzer::SemanticSumSeedManifest manifest,
                            LoadSemanticSumSeedManifest(GetManifestPath()));
 
-  EXPECT_THAT(manifest.seeds(), SizeIs(17));
+  EXPECT_THAT(manifest.seeds(), SizeIs(19));
 
   std::vector<std::string> source_seed_ids;
   for (const fuzzer::SemanticSumSeed* seed :
@@ -60,6 +60,9 @@ TEST(SemanticSumSeedCorpusTest, LoadsManifestAndFiltersBySurface) {
               Contains("source_exhaustive_constructor_match_without_wildcard"));
   EXPECT_THAT(source_seed_ids,
               Contains("source_sample_runner_semantic_sum_argument"));
+  EXPECT_THAT(
+      source_seed_ids,
+      Contains("source_phase2_signed_sparse_if_let_and_invalid_fallback"));
 
   std::vector<std::string> raw_seed_ids;
   for (const fuzzer::SemanticSumSeed* seed :
@@ -67,7 +70,7 @@ TEST(SemanticSumSeedCorpusTest, LoadsManifestAndFiltersBySurface) {
            manifest, fuzzer::SEMANTIC_SUM_SEED_SURFACE_RAW_BOUNDARY)) {
     raw_seed_ids.push_back(seed->seed_id());
   }
-  EXPECT_THAT(raw_seed_ids, SizeIs(2));
+  EXPECT_THAT(raw_seed_ids, SizeIs(3));
 
   const fuzzer::SemanticSumSeed* assert_eq_seed = nullptr;
   for (const fuzzer::SemanticSumSeed& seed : manifest.seeds()) {
