@@ -26,6 +26,7 @@
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "xls/dslx/bytecode/bytecode.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/pos.h"
@@ -124,6 +125,10 @@ class BytecodeEmitter : public ExprVisitor {
   absl::Status HandleWidthSlice(const Index* node, WidthSlice* width_slice);
 
   absl::Status HandleInvocation(const Invocation* node) override;
+  // Emits payload_exprs, already in declaration order, then constructs the sum.
+  absl::Status EmitSumConstruction(
+      const Span& span, const SumType& sum_type, int64_t variant_index,
+      absl::Span<Expr* const> payload_exprs);
   absl::Status HandleSumConstructorInvocation(const Invocation* node,
                                               const SumType& sum_type,
                                               const ColonRef* constructor_ref);

@@ -24,7 +24,6 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <random>
@@ -126,19 +125,24 @@ absl::Status VerifyGeneratedValue(const dslx::Type& type,
 // Validates the encoded variant and recursively checks its active payload.
 absl::Status VerifyGeneratedSumValue(const dslx::SumType& sum_type,
                                      const dslx::InterpValue& value) {
-  const dslx::Phase1SumTypeEncoding encoding(sum_type);
   const std::vector<dslx::InterpValue>& elements = value.GetValuesOrDie();
   if (elements.size() != 2) {
     return absl::FailedPreconditionError(
         "Generated sum value was not encoded as a pair.");
   }
-  XLS_ASSIGN_OR_RETURN(uint64_t variant_index,
-                       elements.at(0).GetBitValueUnsigned());
-  if (variant_index >= sum_type.variant_count()) {
-    return absl::FailedPreconditionError(
-        "Generated sum selected an invalid variant index.");
+  std::optional<int64_t> variant_index;
+  for (int64_t i = 0; i < sum_type.variant_count(); ++i) {
+    if (elements.at(0).GetBitsOrDie() ==
+        sum_type.GetDiscriminant(i).GetBitsOrDie()) {
+      variant_index = i;
+      break;
+    }
   }
-  const dslx::SumTypeVariant& variant = sum_type.variants().at(variant_index);
+  if (!variant_index.has_value()) {
+    return absl::FailedPreconditionError(
+        "Generated sum selected an undeclared discriminant.");
+  }
+  const dslx::SumTypeVariant& variant = sum_type.variants().at(*variant_index);
   XLS_ASSIGN_OR_RETURN(bool variant_is_inhabited,
                        OracleSumVariantIsInhabited(variant));
   if (!variant_is_inhabited) {
@@ -146,16 +150,12 @@ absl::Status VerifyGeneratedSumValue(const dslx::SumType& sum_type,
         absl::StrCat("Generated uninhabited sum variant '",
                      variant.variant().identifier(), "'."));
   }
-  const std::vector<dslx::InterpValue>& payload_slots =
-      elements.at(1).GetValuesOrDie();
-  XLS_ASSIGN_OR_RETURN(dslx::Phase1SumTypeEncoding::VariantInfo variant_info,
-                       encoding.GetVariant(variant.variant().identifier()));
-  XLS_RETURN_IF_ERROR(encoding.ForEachActivePayloadSlot(
-      variant_info,
-      [&](int64_t slot_index, int64_t,
-          const dslx::Type& member_type) -> absl::Status {
-        return VerifyGeneratedValue(member_type, payload_slots.at(slot_index));
-      }));
+  XLS_ASSIGN_OR_RETURN(std::vector<dslx::InterpValue> payload_values,
+                       dslx::GetSumPayloadValues(sum_type, value));
+  for (int64_t i = 0; i < variant.size(); ++i) {
+    XLS_RETURN_IF_ERROR(
+        VerifyGeneratedValue(variant.GetMemberType(i), payload_values.at(i)));
+  }
   return absl::OkStatus();
 }
 
@@ -248,9 +248,7 @@ absl::StatusOr<dslx::SumType> MakePartiallyInhabitedEnumPayloadSumType(
       std::vector<dslx::InterpValue>{}));
   variants.push_back(dslx::SumTypeVariant::MakeTuple(
       *impossible_variant, std::move(payload_members)));
-  return dslx::SumType(
-      *sum_def, std::move(variants),
-      dslx::SumType::SelectedZeroVariant{std::cref(*unit_variant)});
+  return dslx::SumType(*sum_def, std::move(variants));
 }
 
 // Selects main, or the only function, from a reviewed source fixture.

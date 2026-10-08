@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -26,6 +27,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/substitute.h"
 #include "xls/common/file/filesystem.h"
+#include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/errors.h"
 #include "xls/dslx/frontend/ast.h"
@@ -113,7 +115,7 @@ absl::StatusOr<std::unique_ptr<ModuleInfo>> TypecheckModuleV2(
   if (canonical_module.has_value()) {
     module = std::move(*canonical_module);
   }
-  std::string_view module_name = module->name();
+  std::string module_name(module->name());
   if (semantics_analysis != nullptr) {
     XLS_RETURN_IF_ERROR(semantics_analysis->RunPreTypeCheckPass(
         *module, *warnings, *import_data, typecheck_imported_module));
