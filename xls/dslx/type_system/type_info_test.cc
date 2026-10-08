@@ -16,15 +16,16 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/base/casts.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/substitute.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/frontend/ast.h"
@@ -132,7 +133,8 @@ fn main() -> u32 { f() }
 
 TEST(TypeInfoTest, GetUniqueInvocationCalleeDataOneParametricCall) {
   const std::string kInvocation = R"(
-fn f<N: u32>() -> u32 { u32:42 }
+fn g<N: u32>() -> u32 { u32:42 }
+fn f<N: u32>() -> u32 { g<N>() }
 fn main() -> u32 { f<u32:0>() }
 )";
   XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(kInvocation));
@@ -141,7 +143,52 @@ fn main() -> u32 { f<u32:0>() }
   ASSERT_TRUE(f.has_value());
 
   auto invocations = result.tm.type_info->GetUniqueInvocationCalleeData(*f);
-  EXPECT_EQ(invocations.size(), 1);
+  ASSERT_EQ(invocations.size(), 1);
+  ASSERT_NE(invocations[0].derived_type_info, nullptr);
+  EXPECT_NE(invocations[0].derived_type_info, result.tm.type_info);
+  Function* g = result.tm.module->GetFunction("g").value();
+  auto callees = result.tm.type_info->GetUniqueInvocationCalleeData(g);
+  ASSERT_EQ(callees.size(), 1);
+  EXPECT_EQ(callees[0].caller_type_info, invocations[0].derived_type_info);
+  EXPECT_EQ(callees[0].caller_parametric_owner, *f);
+  EXPECT_EQ(callees[0].caller_bindings, invocations[0].callee_bindings);
+}
+
+TEST(TypeInfoTest, NonParametricMethodRetainsActualCallerContext) {
+  constexpr std::string_view kProgram = R"(
+enum Choice { None, Some(u8) }
+struct S { x: u32 }
+impl S { fn get(self: Self) -> u32 { self.x } }
+fn caller<V: Choice>(s: S) -> u32 { s.get() }
+pub fn main() -> u32 {
+  caller<{Choice::Some(u8:3)}>(S { x: u32:7 })
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(kProgram));
+  Function* caller = result.tm.module->GetFunctionByName().at("caller");
+  const auto* invocation = absl::down_cast<const Invocation*>(
+      ToAstNode(caller->body()->statements().at(0)->wrapped()));
+  auto callers = result.tm.type_info->GetUniqueInvocationCalleeData(caller);
+  ASSERT_EQ(callers.size(), 1);
+  TypeInfo* caller_type_info = callers[0].derived_type_info;
+  ASSERT_NE(caller_type_info, nullptr);
+
+  // This nonparametric method is recorded in the caller's derived TypeInfo.
+  // The invocation-indexed API exposes it without changing root enumeration.
+  auto methods = result.tm.type_info->GetUniqueInvocationCalleeData(invocation);
+  ASSERT_EQ(methods.size(), 1);
+  const InvocationCalleeData& method = methods[0];
+  ASSERT_NE(method.callee, nullptr);
+  EXPECT_FALSE(method.callee->IsParametric());
+  EXPECT_TRUE(
+      result.tm.type_info->GetAllInvocationCalleeData(method.callee).empty());
+  EXPECT_EQ(method.caller_type_info, caller_type_info);
+  EXPECT_EQ(method.caller_parametric_owner, caller);
+  EXPECT_EQ(method.caller_bindings, callers[0].callee_bindings);
+  ASSERT_EQ(method.caller_bindings.size(), 1);
+  auto lexical_data = caller_type_info->GetInvocationData(invocation);
+  ASSERT_TRUE(lexical_data.has_value());
+  EXPECT_EQ((*lexical_data)->caller(), caller);
 }
 
 TEST(TypeInfoTest, FunctionCallGraphBasic) {
