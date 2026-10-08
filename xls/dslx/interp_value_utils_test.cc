@@ -666,10 +666,13 @@ TEST(InterpValueHelpersTest,
               IsOkAndHolds(TypeDim::CreateU32(0)));
 
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue empty, InterpValue::MakeArray({}));
+  EXPECT_THAT(ValidateInterpValueMatchesType(empty, invalid_empty), overflow);
   EXPECT_THAT(SemanticValuesEqual(empty, empty, invalid_empty), overflow);
   EXPECT_THAT(CreateZeroValueFromType(invalid_empty), overflow);
   EXPECT_THAT(internal::CreateInternalPlaceholderValueFromType(invalid_empty),
               overflow);
+  EXPECT_THAT(ValidateInterpValueMatchesType(empty, valid_empty),
+              absl_testing::IsOk());
   EXPECT_THAT(SemanticValuesEqual(empty, empty, valid_empty),
               IsOkAndHolds(true));
   EXPECT_THAT(CreateZeroValueFromType(valid_empty), IsOkAndHolds(empty));
