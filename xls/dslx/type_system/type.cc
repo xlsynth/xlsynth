@@ -253,6 +253,16 @@ absl::StatusOr<TypeDim> ComputeTypeBitCount(const Type& type,
   }
 }
 
+absl::StatusOr<TypeDim> GetPublicAggregateBitCount(const Type& type) {
+  // Function results do not contribute to GetTotalBitCount. Select the policy
+  // once so nested aggregates neither wrap within a sum nor rescan descendants.
+  const BitCountOverflow overflow =
+      ContainsSemanticSum(type, FunctionResultTraversal::kExclude)
+          ? BitCountOverflow::kReject
+          : BitCountOverflow::kWrap;
+  return ComputeTypeBitCount(type, overflow);
+}
+
 absl::StatusOr<uint32_t> ComputeMaxSumPayloadBitCount(
     absl::Span<const SumTypeVariant> variants) {
   TypeDim payload_bit_count = TypeDim::CreateU32(0);
@@ -858,13 +868,7 @@ std::vector<TypeDim> StructTypeBase::GetAllDims() const {
 }
 
 absl::StatusOr<TypeDim> StructTypeBase::GetTotalBitCount() const {
-  auto sum = TypeDim::CreateU32(0);
-  for (const std::unique_ptr<Type>& t : members_) {
-    XLS_ASSIGN_OR_RETURN(TypeDim elem_bit_count, t->GetTotalBitCount());
-    XLS_ASSIGN_OR_RETURN(sum, sum.Add(elem_bit_count));
-  }
-
-  return sum;
+  return GetPublicAggregateBitCount(*this);
 }
 
 bool StructTypeBase::HasNamedMember(std::string_view target) const {
@@ -971,12 +975,7 @@ std::vector<TypeDim> SumTypeVariant::GetAllDims() const {
 }
 
 absl::StatusOr<TypeDim> SumTypeVariant::GetTotalBitCount() const {
-  TypeDim sum = TypeDim::CreateU32(0);
-  for (const auto& member : payload_members()) {
-    XLS_ASSIGN_OR_RETURN(TypeDim member_bits, member->GetTotalBitCount());
-    XLS_ASSIGN_OR_RETURN(sum, sum.Add(member_bits));
-  }
-  return sum;
+  return internal::GetBitCountWithSharedSumPayload(*this);
 }
 
 bool SumTypeVariant::HasEnum() const {
@@ -1310,13 +1309,7 @@ std::vector<TypeDim> TupleType::GetAllDims() const {
 }
 
 absl::StatusOr<TypeDim> TupleType::GetTotalBitCount() const {
-  auto sum = TypeDim::CreateU32(0);
-  for (const std::unique_ptr<Type>& t : members_) {
-    XLS_ASSIGN_OR_RETURN(TypeDim elem_bit_count, t->GetTotalBitCount());
-    XLS_ASSIGN_OR_RETURN(sum, sum.Add(elem_bit_count));
-  }
-
-  return sum;
+  return GetPublicAggregateBitCount(*this);
 }
 
 // -- ArrayType
@@ -1373,16 +1366,7 @@ std::vector<TypeDim> ArrayType::GetAllDims() const {
 }
 
 absl::StatusOr<TypeDim> ArrayType::GetTotalBitCount() const {
-  // For the bits constructor (xN) although the element type is "sizeless"
-  // (i.e. like `bits`, `xN[false]` doesn't have a size on its own, it needs to
-  // be placed in an array), when it is instantiated via an array type it has
-  // the given size; i.e. the size of `xN[false][N]` is `N`.
-  if (IsBitsConstructor(element_type())) {
-    return size_;
-  }
-
-  XLS_ASSIGN_OR_RETURN(TypeDim elem_bits, element_type_->GetTotalBitCount());
-  return elem_bits.Mul(size_);
+  return GetPublicAggregateBitCount(*this);
 }
 
 ArrayType::InnerMostElementType ArrayType::GetInnermostElementType() const {
@@ -1491,12 +1475,7 @@ std::vector<TypeDim> FunctionType::GetAllDims() const {
 }
 
 absl::StatusOr<TypeDim> FunctionType::GetTotalBitCount() const {
-  auto sum = TypeDim::CreateU32(0);
-  for (const auto& param : params_) {
-    XLS_ASSIGN_OR_RETURN(TypeDim param_bits, param->GetTotalBitCount());
-    XLS_ASSIGN_OR_RETURN(sum, sum.Add(param_bits));
-  }
-  return sum;
+  return GetPublicAggregateBitCount(*this);
 }
 
 ChannelType::ChannelType(std::unique_ptr<Type> payload_type,

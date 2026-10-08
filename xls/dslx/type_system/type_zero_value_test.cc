@@ -14,9 +14,11 @@
 
 #include "xls/dslx/type_system/type_zero_value.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -247,6 +249,122 @@ TEST(TypeZeroValueTest, RejectsAnEmptySumWithoutAZeroVariant) {
   ImportData import_data = CreateImportDataForTest();
 
   EXPECT_FALSE(MakeZeroValue(never, import_data, span).ok());
+}
+
+TEST(TypeZeroValueTest, RejectsSumWidthBeforeConstructingZeroPayload) {
+  constexpr char kProgram[] = R"(
+enum NoZero: u1 { One = 1 }
+enum HasZero: u1 { Zero = 0 }
+enum Outer: u1 { Active(NoZero, u2[2]) = 0 }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test.x", "test", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(SumDef * sum_def,
+                           tm.module->GetMemberOrError<SumDef>("Outer"));
+  XLS_ASSERT_OK_AND_ASSIGN(EnumDef * no_zero_def,
+                           tm.module->GetMemberOrError<EnumDef>("NoZero"));
+  XLS_ASSERT_OK_AND_ASSIGN(EnumDef * has_zero_def,
+                           tm.module->GetMemberOrError<EnumDef>("HasZero"));
+  EnumType no_zero(*no_zero_def, TypeDim::CreateU32(1), /*is_signed=*/false,
+                   {InterpValue::MakeUBits(1, 1)});
+  EnumType has_zero(*has_zero_def, TypeDim::CreateU32(1), /*is_signed=*/false,
+                    {InterpValue::MakeUBits(1, 0)});
+  auto make_sum = [&](const EnumType& first, uint32_t array_size) {
+    std::vector<std::unique_ptr<Type>> payload;
+    payload.push_back(first.CloneToUnique());
+    payload.push_back(std::make_unique<ArrayType>(
+        std::make_unique<BitsType>(false, 2), TypeDim::CreateU32(array_size)));
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(SumTypeVariant::MakeTuple(*sum_def->variants().front(),
+                                                 std::move(payload)));
+    return SumType(*sum_def, std::move(variants), TypeDim::CreateU32(1));
+  };
+  SumType overflow = make_sum(no_zero, 2147483647);
+  XLS_ASSERT_OK_AND_ASSIGN(TypeDim payload_width,
+                           overflow.GetMaxPayloadBitCount());
+  XLS_ASSERT_OK_AND_ASSIGN(int64_t payload_bits, payload_width.GetAsInt64());
+  ASSERT_EQ(payload_bits, 4294967295);
+
+  // The first member safely stops the old traversal before it can enter the
+  // enormous array. Width rejection must take place before zeroing either.
+  EXPECT_THAT(MakeZeroValue(overflow, import_data, tm.module->span()),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("shared sum bit count exceeds")));
+
+  SumType ordinary_without_zero = make_sum(no_zero, 2);
+  EXPECT_THAT(
+      MakeZeroValue(ordinary_without_zero, import_data, tm.module->span()),
+      StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          HasSubstr("Enum type 'NoZero' does not have a known zero value")));
+  SumType ordinary_with_zero = make_sum(has_zero, 2);
+  XLS_ASSERT_OK(
+      MakeZeroValue(ordinary_with_zero, import_data, tm.module->span()));
+}
+
+TEST(TypeZeroValueTest,
+     EmptyArrayRejectsIntrinsicallyOversizedSumBeforeConstructingValues) {
+  constexpr int64_t kMaximumWidth = 4'294'967'295;
+  constexpr int64_t kHalfRange = 2'147'483'648;
+  const Span span = Span::Fake();
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  auto* unsigned_bits = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kUN,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kUN));
+  auto* u32 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU32,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU32));
+  auto make_sum = [&](int64_t payload_width) {
+    auto* dimension = module.Make<Number>(span, std::to_string(payload_width),
+                                          NumberKind::kOther, u32);
+    auto* annotation =
+        module.Make<ArrayTypeAnnotation>(span, unsigned_bits, dimension);
+    auto* sum_name = module.Make<NameDef>(span, "Element", nullptr);
+    auto* variant = module.Make<SumVariant>(
+        span, module.Make<NameDef>(span, "Payload", nullptr),
+        SumVariant::PayloadShape::kTuple,
+        std::vector<TypeAnnotation*>{annotation},
+        std::vector<StructMemberNode*>{});
+    auto* definition = module.Make<SumDef>(
+        span, sum_name, std::vector<ParametricBinding*>{},
+        std::vector<SumVariant*>{variant}, /*is_public=*/false);
+    sum_name->set_definer(definition);
+    std::vector<std::unique_ptr<Type>> payload;
+    payload.push_back(std::make_unique<BitsType>(false, payload_width));
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(SumTypeVariant::MakeTuple(*variant, std::move(payload)));
+    return SumType(*definition, std::move(variants), TypeDim::CreateU32(1));
+  };
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+  const SumType invalid_sum = make_sum(kMaximumWidth);
+  ASSERT_THAT(invalid_sum.GetTotalBitCount(), overflow);
+  const ArrayType invalid_empty(invalid_sum.CloneToUnique(),
+                                TypeDim::CreateU32(0));
+  ASSERT_THAT(invalid_empty.GetTotalBitCount(), overflow);
+
+  const SumType valid_sum = make_sum(kHalfRange - 1);
+  ASSERT_THAT(valid_sum.GetTotalBitCount(),
+              absl_testing::IsOkAndHolds(TypeDim::CreateU32(kHalfRange)));
+  auto ordinary_tuple =
+      TupleType::Create2(valid_sum.CloneToUnique(), valid_sum.CloneToUnique());
+  ASSERT_THAT(ordinary_tuple->GetTotalBitCount(), overflow);
+  const ArrayType valid_empty(std::move(ordinary_tuple), TypeDim::CreateU32(0));
+  ASSERT_THAT(valid_empty.GetTotalBitCount(),
+              absl_testing::IsOkAndHolds(TypeDim::CreateU32(0)));
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue empty, InterpValue::MakeArray({}));
+  EXPECT_THAT(MakeZeroValue(invalid_empty, import_data, span), overflow);
+  EXPECT_THAT(MakeAllOnesValue(invalid_empty, import_data, span), overflow);
+  EXPECT_THAT(MakeZeroValue(valid_empty, import_data, span),
+              absl_testing::IsOkAndHolds(empty));
+  EXPECT_THAT(MakeAllOnesValue(valid_empty, import_data, span),
+              absl_testing::IsOkAndHolds(empty));
 }
 
 TEST(TypeZeroValueTest, EmptyArraysDoNotMaterializeUninhabitedSumElements) {

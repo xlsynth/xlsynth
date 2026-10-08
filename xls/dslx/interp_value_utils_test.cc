@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <set>
@@ -271,6 +272,27 @@ SumType MakeOptionalPayloadSumType(Module& module, BuiltinType annotation_kind,
       module.GetOrCreateBuiltinNameDef(annotation_kind));
   return MakeOptionalPayloadSumType(module, annotation,
                                     std::move(payload_type));
+}
+
+SumType MakeSumWithMaxWidthInactiveArray(Module& module) {
+  const Span span = Span::Fake();
+  auto* u1 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU1,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU1));
+  auto* u32 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU32,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU32));
+  auto* inner_count =
+      module.Make<Number>(span, "65535", NumberKind::kOther, u32);
+  auto* outer_count =
+      module.Make<Number>(span, "65537", NumberKind::kOther, u32);
+  auto* inner = module.Make<ArrayTypeAnnotation>(span, u1, inner_count);
+  auto* outer = module.Make<ArrayTypeAnnotation>(span, inner, outer_count);
+  auto payload = std::make_unique<ArrayType>(
+      std::make_unique<ArrayType>(BitsType::MakeU1(),
+                                  TypeDim::CreateU32(65535)),
+      TypeDim::CreateU32(65537));
+  return MakeOptionalPayloadSumType(module, outer, std::move(payload));
 }
 
 TEST(InterpValueHelpersTest, CastBitsToArray) {
@@ -564,6 +586,160 @@ TEST(InterpValueHelpersTest, PackedSumReadsActiveBitsAcrossWordBoundary) {
               IsOkAndHolds(testing::ElementsAre(InterpValue::MakeU8(0xa5))));
   EXPECT_THAT(GetSumPayloadValues(sum_type, packed(2)),
               IsOkAndHolds(testing::ElementsAre(payload)));
+}
+
+TEST(InterpValueHelpersTest, ObservesEmptySumPayloadWithOversizedArrayElement) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const Span span = Span::Fake();
+  auto* u1 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU1,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU1));
+  auto array_annotation = [&](TypeAnnotation* element, const char* size) {
+    return module.Make<ArrayTypeAnnotation>(
+        span, element,
+        module.Make<Number>(span, size, NumberKind::kOther, nullptr));
+  };
+  auto* payload_annotation = array_annotation(
+      array_annotation(array_annotation(u1, "65536"), "65536"), "0");
+  auto payload_type = std::make_unique<ArrayType>(
+      std::make_unique<ArrayType>(
+          std::make_unique<ArrayType>(BitsType::MakeU1(),
+                                      TypeDim::CreateU32(65536)),
+          TypeDim::CreateU32(65536)),
+      TypeDim::CreateU32(0));
+  const SumType sum = MakeOptionalPayloadSumType(module, payload_annotation,
+                                                 std::move(payload_type));
+  ASSERT_THAT(sum.GetTotalBitCount(), IsOkAndHolds(TypeDim::CreateU32(1)));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue empty, InterpValue::MakeArray({}));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue some,
+                           CreateSumValue(sum, "Some", {empty}));
+  EXPECT_EQ(some,
+            internal::CreateEncodedSumTuple(InterpValue::MakeUBits(1, 1),
+                                            InterpValue::MakeUBits(0, 0)));
+  EXPECT_THAT(GetSumPayloadValues(sum, some),
+              IsOkAndHolds(testing::ElementsAre(empty)));
+  EXPECT_THAT(ValidateInterpValueMatchesType(some, sum), absl_testing::IsOk());
+}
+
+TEST(InterpValueHelpersTest,
+     TypedEmptyArrayOperationsRejectIntrinsicallyOversizedSumElements) {
+  constexpr int64_t kMaximumWidth = std::numeric_limits<uint32_t>::max();
+  constexpr int64_t kHalfRange = 2'147'483'648;
+  const Span span = Span::Fake();
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  auto* unsigned_bits = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kUN,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kUN));
+  auto* u32 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU32,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU32));
+  auto make_sum = [&](int64_t payload_width) {
+    auto* dimension = module.Make<Number>(span, absl::StrCat(payload_width),
+                                          NumberKind::kOther, u32);
+    auto* annotation =
+        module.Make<ArrayTypeAnnotation>(span, unsigned_bits, dimension);
+    return MakeOptionalPayloadSumType(
+        module, annotation,
+        std::make_unique<BitsType>(/*is_signed=*/false, payload_width));
+  };
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+  const SumType invalid_sum = make_sum(kMaximumWidth);
+  ASSERT_THAT(invalid_sum.GetTotalBitCount(), overflow);
+  const ArrayType invalid_empty(invalid_sum.CloneToUnique(),
+                                TypeDim::CreateU32(0));
+  ASSERT_THAT(invalid_empty.GetTotalBitCount(), overflow);
+
+  // The control's sums are valid individually. Only their ordinary tuple is
+  // oversized, and the empty array erases its width.
+  const SumType valid_sum = make_sum(kHalfRange - 1);
+  ASSERT_THAT(valid_sum.GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(kHalfRange)));
+  auto ordinary_tuple =
+      TupleType::Create2(valid_sum.CloneToUnique(), valid_sum.CloneToUnique());
+  ASSERT_THAT(ordinary_tuple->GetTotalBitCount(), overflow);
+  const ArrayType valid_empty(std::move(ordinary_tuple), TypeDim::CreateU32(0));
+  ASSERT_THAT(valid_empty.GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(0)));
+
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue empty, InterpValue::MakeArray({}));
+  EXPECT_THAT(SemanticValuesEqual(empty, empty, invalid_empty), overflow);
+  EXPECT_THAT(CreateZeroValueFromType(invalid_empty), overflow);
+  EXPECT_THAT(internal::CreateInternalPlaceholderValueFromType(invalid_empty),
+              overflow);
+  EXPECT_THAT(SemanticValuesEqual(empty, empty, valid_empty),
+              IsOkAndHolds(true));
+  EXPECT_THAT(CreateZeroValueFromType(valid_empty), IsOkAndHolds(empty));
+  EXPECT_THAT(internal::CreateInternalPlaceholderValueFromType(valid_empty),
+              IsOkAndHolds(empty));
+}
+
+TEST(InterpValueHelpersTest, SumConstructorsRejectTotalOverflowBeforePayload) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const SumType type = MakeSumWithMaxWidthInactiveArray(module);
+  EXPECT_THAT(
+      type.GetMaxPayloadBitCount(),
+      IsOkAndHolds(TypeDim::CreateU32(std::numeric_limits<uint32_t>::max())));
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+  EXPECT_THAT(type.GetTotalBitCount(), overflow);
+
+  // The extra argument keeps even a broken constructor from allocating the
+  // 512 MiB inactive slot. The declared type and slot width are real; its
+  // one-bit tag makes the total unrepresentable before payload inspection.
+  const std::vector<InterpValue> extra_payload = {InterpValue::MakeU8(1)};
+  EXPECT_THAT(CreateSumValue(type, "None", extra_payload), overflow);
+  EXPECT_THAT(CreateSumValue(type, 0, extra_payload), overflow);
+  EXPECT_THAT(internal::CreateSumValueFromValidatedZeroPayload(type, "None",
+                                                               extra_payload),
+              overflow);
+  EXPECT_THAT(internal::CreateSumValueFromValidatedGeneratedPayload(
+                  type, 0, std::numeric_limits<uint32_t>::max(), extra_payload),
+              overflow);
+
+  const SumType ordinary = MakeMixedPayloadSumType(module);
+  const auto arity_error = StatusIs(absl::StatusCode::kInvalidArgument,
+                                    HasSubstr("expected 0 payload values"));
+  EXPECT_THAT(CreateSumValue(ordinary, "None", extra_payload), arity_error);
+  EXPECT_THAT(CreateSumValue(ordinary, 0, extra_payload), arity_error);
+}
+
+TEST(InterpValueHelpersTest, SumPlaceholderRejectsTotalOverflow) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+  const SumType ordinary = MakeMixedPayloadSumType(module);
+  std::vector<SumTypeVariant> variants;
+  std::vector<InterpValue> short_discriminants;
+  for (int64_t i = 0; i < ordinary.variant_count(); ++i) {
+    variants.push_back(ordinary.variants().at(i).Clone());
+    short_discriminants.push_back(ordinary.GetDiscriminant(i));
+  }
+  const SumType overflow_with_small_values(
+      ordinary.nominal_type(), std::move(variants),
+      TypeDim::CreateU32(std::numeric_limits<uint32_t>::max()),
+      std::move(short_discriminants));
+  // This synthetic type declares a maximal tag width, but its explicit tag
+  // values and 16-bit payload are small. If the placeholder's total-width
+  // check is removed, it cheaply returns a value and this fatal assertion
+  // stops the test before the real wide-slot case below can allocate 512 MiB.
+  ASSERT_THAT(internal::CreateInternalPlaceholderValueFromType(
+                  overflow_with_small_values),
+              overflow);
+
+  const SumType type = MakeSumWithMaxWidthInactiveArray(module);
+  EXPECT_THAT(internal::CreateInternalPlaceholderValueFromType(type), overflow);
+  EXPECT_THAT(internal::CreateInternalPlaceholderValueFromType(ordinary),
+              IsOkAndHolds(InterpValue::MakeTuple(
+                  {InterpValue::MakeUBits(2, 0),
+                   InterpValue::MakeTuple({InterpValue::MakeUBits(16, 0)})})));
 }
 
 TEST(InterpValueHelpersTest, PackedOperationsRejectTotalOverflowBeforePayload) {
@@ -1261,6 +1437,127 @@ TEST(InterpValueHelpersTest, CreateSumValueRejectsMalformedArrayPayload) {
   EXPECT_THAT(CreateSumValue(sum_type, "Some", {wide_array}),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        HasSubstr("does not match")));
+}
+
+TEST(InterpValueHelpersTest, MakeSumValueFormatDescriptorRejectsWidthOverflow) {
+  constexpr int64_t kMaxWidth = std::numeric_limits<uint32_t>::max();
+  const Span span = Span::Fake();
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  auto* unsigned_bits = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kUN,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kUN));
+  auto* u32 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU32,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU32));
+  auto make_sum = [&](int64_t payload_width) {
+    auto* dimension = module.Make<Number>(span, absl::StrCat(payload_width),
+                                          NumberKind::kOther, u32);
+    auto* annotation =
+        module.Make<ArrayTypeAnnotation>(span, unsigned_bits, dimension);
+    return MakeOptionalPayloadSumType(
+        module, annotation,
+        std::make_unique<BitsType>(/*is_signed=*/false, payload_width));
+  };
+
+  const SumType boundary = make_sum(kMaxWidth - 1);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      ValueFormatDescriptor descriptor,
+      MakeValueFormatDescriptor(boundary, FormatPreference::kDefault));
+  EXPECT_EQ(descriptor.sum_tag_bit_count(), 1);
+  EXPECT_EQ(descriptor.sum_payload_slot_bit_count(), kMaxWidth - 1);
+  EXPECT_EQ(descriptor.flat_bit_count(), kMaxWidth);
+
+  // Neither input width overflows; only their combined sum width does. No value
+  // or storage proportional to the represented payload is constructed.
+  const SumType overflow = make_sum(kMaxWidth);
+  EXPECT_THAT(
+      MakeValueFormatDescriptor(overflow, FormatPreference::kDefault),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits")));
+}
+
+TEST(InterpValueHelpersTest,
+     MakeSumValueFormatDescriptorRejectsWidthBeforePayloadTraversal) {
+  class DescriptorSentinelBitsType : public BitsType {
+   public:
+    explicit DescriptorSentinelBitsType(bool& visited)
+        : BitsType(/*is_signed=*/false, 1), visited_(visited) {}
+
+    absl::Status Accept(TypeVisitor&) const override {
+      visited_ = true;
+      return absl::InternalError("payload descriptor sentinel reached");
+    }
+
+    std::unique_ptr<Type> CloneToUnique() const override {
+      return std::make_unique<DescriptorSentinelBitsType>(visited_);
+    }
+
+   private:
+    bool& visited_;
+  };
+
+  const Span span = Span::Fake();
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  auto* u1 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU1,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU1));
+  auto* u32 = module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kU32,
+      module.GetOrCreateBuiltinNameDef(BuiltinType::kU32));
+  auto make_sum = [&](uint32_t repeated_size, uint32_t outer_size,
+                      bool& visited) {
+    auto* repeated = module.Make<Number>(span, absl::StrCat(repeated_size),
+                                         NumberKind::kOther, u32);
+    auto* outer = module.Make<Number>(span, absl::StrCat(outer_size),
+                                      NumberKind::kOther, u32);
+    auto* inner_array = module.Make<ArrayTypeAnnotation>(span, u1, repeated);
+    auto* middle_array =
+        module.Make<ArrayTypeAnnotation>(span, inner_array, repeated);
+    auto* outer_array =
+        module.Make<ArrayTypeAnnotation>(span, middle_array, outer);
+    auto* tuple = module.Make<TupleTypeAnnotation>(
+        span, std::vector<TypeAnnotation*>{outer_array, outer_array});
+    auto make_array = [&](std::unique_ptr<Type> leaf) {
+      return std::make_unique<ArrayType>(
+          std::make_unique<ArrayType>(
+              std::make_unique<ArrayType>(std::move(leaf),
+                                          TypeDim::CreateU32(repeated_size)),
+              TypeDim::CreateU32(repeated_size)),
+          TypeDim::CreateU32(outer_size));
+    };
+    return MakeOptionalPayloadSumType(
+        module, tuple,
+        TupleType::Create2(
+            make_array(BitsType::MakeU1()),
+            make_array(std::make_unique<DescriptorSentinelBitsType>(visited))));
+  };
+
+  bool ordinary_visited = false;
+  const SumType ordinary = make_sum(2, 2, ordinary_visited);
+  EXPECT_THAT(ordinary.GetTotalBitCount(),
+              IsOkAndHolds(TypeDim::CreateU32(17)));
+  EXPECT_FALSE(ordinary_visited);
+  EXPECT_THAT(MakeValueFormatDescriptor(ordinary, FormatPreference::kDefault),
+              StatusIs(absl::StatusCode::kInternal,
+                       HasSubstr("payload descriptor sentinel reached")));
+  EXPECT_TRUE(ordinary_visited);
+
+  bool overflowing_visited = false;
+  const SumType overflowing = make_sum(65536, 1073741824, overflowing_visited);
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+  EXPECT_THAT(overflowing.GetTotalBitCount(), overflow);
+  EXPECT_FALSE(overflowing_visited);
+  // Each array would produce a 2^62-bit descriptor. The sentinel stops the
+  // second array before tuple construction can add the two signed widths.
+  // No hardware values or storage proportional to their widths are created.
+  ASSERT_THAT(
+      MakeValueFormatDescriptor(overflowing, FormatPreference::kDefault),
+      overflow);
+  ASSERT_FALSE(overflowing_visited);
 }
 
 // Verifies: Production sum formatting ignores inactive padding.
@@ -1962,6 +2259,33 @@ TEST(InterpValueHelpersTest, ValueToInterpValueSumPreservesMalformedTag) {
   EXPECT_THAT(GetSumPayloadValues(sum_type, actual),
               StatusIs(absl::StatusCode::kNotFound,
                        HasSubstr("No variant with tag bits")));
+}
+
+TEST(InterpValueHelpersTest,
+     RawSumConversionRejectsTotalOverflowBeforePayload) {
+  FileTable file_table;
+  Module module("test", /*fs_path=*/std::nullopt, file_table);
+  const SumType overflowing = MakeSumWithMaxWidthInactiveArray(module);
+  const SumType ordinary =
+      MakeOptionalPayloadSumType(module, BuiltinType::kU8, BitsType::MakeU8());
+  const Value raw =
+      Value::Tuple({Value(UBits(0, 1)), Value::Tuple({Value(UBits(0, 0))})});
+  const InterpValue interp = internal::CreateEncodedSumTuple(
+      InterpValue::MakeUBits(1, 0), InterpValue::MakeUBits(0, 0));
+  const auto overflow =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("shared sum bit count exceeds 4294967295 bits"));
+
+  // The type and tag are exact; a short raw payload keeps the check bounded
+  // while demonstrating that the declared total must be rejected first.
+  EXPECT_THAT(ValueToInterpValue(raw, &overflowing), overflow);
+  EXPECT_THAT(ValidateInterpValueMatchesType(interp, overflowing), overflow);
+
+  const auto narrow_payload =
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("expected a 8-bit payload slot; got 0 bits"));
+  EXPECT_THAT(ValueToInterpValue(raw, &ordinary), narrow_payload);
+  EXPECT_THAT(ValidateInterpValueMatchesType(interp, ordinary), narrow_payload);
 }
 
 TEST(InterpValueHelpersTest, ValueToInterpValueSumRejectsMalformedRawShape) {

@@ -116,6 +116,7 @@ TEST(TypecheckV2Test, SemanticSumDeclarationRejectsTotalWidthOverflow) {
   for (std::string_view program : {
            R"(enum S { Unit, Huge(u1[65535][65537]) })",
            R"(enum S: u3 { Huge(u1[65535][65537]) = 0 })",
+           R"(enum S { V(u1[65536][65536][1]) })",
            R"(
 enum Inner { Data(u1[65535][65537]) }
 enum Outer { Unit, Nested(Inner) }
@@ -149,6 +150,22 @@ fn consume(a: Implicit, b: Explicit) { () }
   }
 }
 
+TEST(TypecheckV2Test,
+     SemanticSumZeroLengthArrayDiscardsEnclosingWidthOverflow) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+enum EmptyArray { V(u1[65536][65536][0]) }
+pub fn identity(x: EmptyArray) -> EmptyArray { x }
+enum HalfRange { V(u1[32768][65536]) }
+const N = bit_count<(HalfRange, HalfRange)[0]>();
+const_assert!(N == u32:0);
+pub fn n() -> u32 { N }
+)"));
+  XLS_ASSERT_OK_AND_ASSIGN(ConstantDef * width,
+                           result.tm.module->GetConstantDef("N"));
+  EXPECT_THAT(result.tm.type_info->GetConstExpr(width),
+              IsOkAndHolds(InterpValue::MakeU32(0)));
+}
+
 TEST(TypecheckV2Test, GenericSemanticSumChecksTotalWidthWhenConcretized) {
   constexpr std::string_view kDefinition = R"(
 #![feature(generics)]
@@ -163,12 +180,213 @@ enum S<N: u32> { Unit, Payload(u1[65535][N]) }
 enum Outer<T: type> { Wrap(T) }
 fn consume(value: Outer<S<u32:65537>>) { () }
 )",
+           R"(
+fn consume(value: S<u32:65537>[0]) { () }
+)",
        }) {
     SCOPED_TRACE(use);
     EXPECT_THAT(absl::Substitute("$0\n$1", kDefinition, use),
                 TypecheckFails(
                     HasSubstr("shared sum bit count exceeds 4294967295 bits")));
   }
+}
+
+TEST(TypecheckV2Test, GenericStructChecksTotalWidthOfPhysicalSumMember) {
+  constexpr std::string_view kProgram = R"(#![feature(generics)]
+enum S<N: u32> { Unit, Payload(u1[65535][N]) }
+struct Box<T: type> { value: T }
+fn consume(value: Box<S<u32:$0>>) { () }
+)";
+  XLS_EXPECT_OK(TypecheckV2(absl::Substitute(kProgram, "2")));
+  EXPECT_THAT(
+      absl::Substitute(kProgram, "65537"),
+      TypecheckFails(AllOf(
+          HasSubstr("TypeInferenceError: fake.x:"),
+          HasSubstr("S<u32:65537> shared sum bit count exceeds 4294967295 "
+                    "bits"))));
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumBitCountReportsTotalWidthOverflow) {
+  EXPECT_THAT(
+      R"(#![feature(generics)]
+enum Big<N: u32> { None, Data(u1[65535][N]) }
+const BITS = bit_count<Big<u32:65537>>();
+fn observed() -> u32 { BITS }
+)",
+      TypecheckFails(AllOf(
+          HasSubstr("TypeInferenceError: fake.x:5:24-5:38"),
+          HasSubstr("Big<u32:65537> shared sum bit count exceeds 4294967295 "
+                    "bits"))));
+}
+
+TEST(TypecheckV2Test, GenericSemanticSumBitCountPreservesRepresentableQueries) {
+  constexpr std::string_view kDefinition = R"(#![feature(generics)]
+enum Big<N: u32> { None, Data(u1[65535][N]) }
+fn generic_width<N: u32>() -> u32 { bit_count<Big<N>>() }
+)";
+  XLS_EXPECT_OK(TypecheckV2(kDefinition));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result,
+                           TypecheckV2(absl::Substitute(R"($0
+const BITS = bit_count<Big<u32:3>>();
+const_assert!(BITS == u32:196606);
+const GENERIC_BITS = generic_width<u32:3>();
+const_assert!(GENERIC_BITS == u32:196606);
+fn observed() -> u32 { GENERIC_BITS }
+)",
+                                                        kDefinition)));
+  XLS_ASSERT_OK_AND_ASSIGN(ConstantDef * width,
+                           result.tm.module->GetConstantDef("GENERIC_BITS"));
+  EXPECT_THAT(result.tm.type_info->GetConstExpr(width),
+              IsOkAndHolds(InterpValue::MakeU32(196606)));
+}
+
+TEST(TypecheckV2Test,
+     GenericSemanticSumBitCountReportsOverflowWhenInstantiationIsConsumed) {
+  EXPECT_THAT(
+      R"(#![feature(generics)]
+enum Big<N: u32> { None, Data(u1[65535][N]) }
+fn generic_width<N: u32>() -> u32 { bit_count<Big<N>>() }
+const BITS = generic_width<u32:65537>();
+fn observed() -> u32 { BITS }
+)",
+      TypecheckFails(
+          AllOf(HasSubstr("TypeInferenceError: fake.x:5:47-5:53"),
+                HasSubstr("shared sum bit count exceeds 4294967295 bits"))));
+}
+
+TEST(TypecheckV2Test,
+     GenericSemanticSumBitCountPreservesNonConstantDiagnostic) {
+  EXPECT_THAT(TypecheckV2(R"(#![feature(generics)]
+enum Big<N: u32> { None, Data(u1[65535][N]) }
+pub fn runtime(n: u32) -> u32 { bit_count<Big<n>>() }
+)"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       AllOf(HasSubstr("NotConstantError: fake.x:5:47-5:48"),
+                             HasSubstr("expr `n` is not constexpr."))));
+}
+
+TEST(TypecheckV2Test, SemanticSumElementCountReportsTotalWidthOverflow) {
+  EXPECT_THAT(
+      R"(#![feature(generics)]
+enum Big<N: u32> { None, Data(u1[65535][N]) }
+const COUNT = element_count<Big<u32:65537>>();
+fn observed() -> u32 { COUNT }
+)",
+      TypecheckFails(AllOf(
+          HasSubstr("TypeInferenceError: fake.x:5:29-5:43"),
+          HasSubstr("Big<u32:65537> shared sum bit count exceeds 4294967295 "
+                    "bits"))));
+}
+
+TEST(TypecheckV2Test,
+     SemanticSumElementCountPreservesSumWidthAndAggregateCardinality) {
+  constexpr std::string_view kDefinition = R"(#![feature(generics)]
+enum Big<N: u32> { None, Data(u1[65535][N]) }
+fn generic_count<N: u32>() -> u32 { element_count<Big<N>>() }
+)";
+  XLS_EXPECT_OK(TypecheckV2(kDefinition));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result,
+                           TypecheckV2(absl::Substitute(R"($0
+enum HalfRange { Data(u1[32768][65536]) }
+struct Pair { first: HalfRange, second: HalfRange }
+const GENERIC_WIDTH = generic_count<u32:3>();
+const_assert!(GENERIC_WIDTH == u32:196606);
+const_assert!(element_count<Big<u32:3>>() == GENERIC_WIDTH);
+const_assert!(element_count<HalfRange>() == u32:2147483648);
+const_assert!(element_count<(HalfRange, HalfRange)>() == u32:2);
+const_assert!(element_count<HalfRange[2]>() == u32:2);
+const_assert!(element_count<Pair>() == u32:2);
+)",
+                                                        kDefinition)));
+  XLS_ASSERT_OK_AND_ASSIGN(ConstantDef * width,
+                           result.tm.module->GetConstantDef("GENERIC_WIDTH"));
+  EXPECT_THAT(result.tm.type_info->GetConstExpr(width),
+              IsOkAndHolds(InterpValue::MakeU32(196606)));
+}
+
+TEST(TypecheckV2Test,
+     SemanticSumElementCountReportsOverflowWhenInstantiationIsConsumed) {
+  EXPECT_THAT(
+      R"(#![feature(generics)]
+enum Big<N: u32> { None, Data(u1[65535][N]) }
+fn generic_count<N: u32>() -> u32 { element_count<Big<N>>() }
+const COUNT = generic_count<u32:65537>();
+fn observed() -> u32 { COUNT }
+)",
+      TypecheckFails(
+          AllOf(HasSubstr("TypeInferenceError: fake.x:5:51-5:57"),
+                HasSubstr("shared sum bit count exceeds 4294967295 bits"))));
+}
+
+TEST(TypecheckV2Test, SemanticSumElementCountPreservesNonConstantDiagnostic) {
+  EXPECT_THAT(TypecheckV2(R"(#![feature(generics)]
+enum Big<N: u32> { None, Data(u1[65535][N]) }
+pub fn runtime(n: u32) -> u32 { element_count<Big<n>>() }
+)"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       AllOf(HasSubstr("NotConstantError: fake.x:5:51-5:52"),
+                             HasSubstr("expr `n` is not constexpr."))));
+}
+
+TEST(TypecheckV2Test, SemanticSumAggregateBitCountReportsTotalWidthOverflow) {
+  constexpr std::string_view kProgram = R"(#![feature(generics)]
+enum S { V(u1[32768][65536]) }
+struct Pair { a: S, b: S }
+const N = bit_count<$0>();
+fn observed() -> u32 { N }
+)";
+  for (std::string_view type : {"(S, S)", "S[2]", "Pair"}) {
+    SCOPED_TRACE(type);
+    EXPECT_THAT(
+        absl::Substitute(kProgram, type),
+        TypecheckFails(
+            AllOf(HasSubstr("TypeInferenceError: fake.x:6:21-6:"),
+                  HasSubstr("shared sum bit count exceeds 4294967295 bits"))));
+  }
+  XLS_EXPECT_OK(TypecheckV2(R"(
+enum A { Data(u1[32768][65536]) }
+enum B { Data(u1[2147483647]) }
+const N = bit_count<(A, B)>();
+const_assert!(N == u32:4294967295);
+fn observed() -> u32 { N }
+)"));
+}
+
+TEST(TypecheckV2Test, ImportedSemanticSumAggregateBitCountReportsOverflow) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(TypecheckV2(R"(pub enum S { V(u1[32768][65536]) }
+pub struct Pair { a: S, b: S }
+)",
+                            "widths", &import_data));
+  EXPECT_THAT(
+      TypecheckV2(R"(import widths;
+const N = bit_count<widths::Pair>();
+fn observed() -> u32 { N }
+)",
+                  "main", &import_data),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               AllOf(HasSubstr("TypeInferenceError: main.x:4:21-4:33"),
+                     HasSubstr("shared sum bit count exceeds 4294967295 "
+                               "bits"))));
+}
+
+TEST(TypecheckV2Test, ImportedGenericSemanticSumBitCountReportsOverflow) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(TypecheckV2(R"(#![feature(generics)]
+pub enum Big<N: u32> { None, Data(u1[65535][N]) }
+)",
+                            "widths", &import_data));
+  EXPECT_THAT(
+      TypecheckV2(R"(#![feature(generics)]
+import widths;
+const N = bit_count<widths::Big<u32:65537>>();
+fn observed() -> u32 { N }
+)",
+                  "main", &import_data),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               AllOf(HasSubstr("TypeInferenceError: main.x:5:21-5:43"),
+                     HasSubstr("shared sum bit count exceeds 4294967295 "
+                               "bits"))));
 }
 
 TEST(TypecheckV2Test, SemanticSumTagErrorPrecedesTotalWidthOverflow) {
