@@ -848,6 +848,8 @@ class SumTypeVariant {
 // variant.
 class SumType : public Type {
  public:
+  static std::string GetDebugName() { return "SumType"; }
+
   struct SelectedZeroVariant {
     std::reference_wrapper<const SumVariant> variant;
   };
