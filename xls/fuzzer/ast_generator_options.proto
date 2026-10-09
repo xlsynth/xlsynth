@@ -45,4 +45,9 @@ message AstGeneratorOptionsProto {
 
   // Whether to emit zero-width bits types.
   optional bool emit_zero_width_bits_types = 8;
+
+  // Whether to require each generated function sample to include a semantic
+  // sum definition and constructor use. This is not supported for proc
+  // generation.
+  optional bool require_sum_type = 9;
 }

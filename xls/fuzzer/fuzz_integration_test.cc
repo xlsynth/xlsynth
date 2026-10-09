@@ -70,6 +70,10 @@ ABSL_FLAG(
 ABSL_FLAG(bool, generate_proc, false, "Generate a proc sample.");
 ABSL_FLAG(bool, with_valid_holdoff, false,
           "If true, emit valid random holdoffs on proc input channels.");
+ABSL_FLAG(bool, require_sum_type, false,
+          "Require each generated function sample to include a semantic sum "
+          "definition and constructor use. Not supported with "
+          "`--generate_proc`.");
 
 // The maximum number of failures before the test aborts.
 constexpr int64_t kMaxFailures = 10;
@@ -110,7 +114,11 @@ TEST(FuzzIntegrationTest, Fuzzing) {
       .max_width_aggregate_types =
           absl::GetFlag(FLAGS_max_width_aggregate_types),
       .emit_gate = !absl::GetFlag(FLAGS_simulate),
-      .generate_proc = absl::GetFlag(FLAGS_generate_proc)};
+      .generate_proc = absl::GetFlag(FLAGS_generate_proc),
+      .require_sum_type = absl::GetFlag(FLAGS_require_sum_type)};
+  ASSERT_FALSE(absl::GetFlag(FLAGS_generate_proc) &&
+               absl::GetFlag(FLAGS_require_sum_type))
+      << "require_sum_type is only supported for function samples.";
 
   SampleOptions sample_options;
   sample_options.set_input_is_dslx(true);
