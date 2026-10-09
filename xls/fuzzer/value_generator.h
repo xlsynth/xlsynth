@@ -38,12 +38,14 @@ absl::StatusOr<dslx::Expr*> GenerateDslxConstant(absl::BitGenRef bit_gen,
                                                  dslx::Module* module,
                                                  dslx::TypeAnnotation* type);
 
-// Returns a single value of the given type.
+// Returns a single value of the given type, including well-formed semantic sum
+// values.
 absl::StatusOr<dslx::InterpValue> GenerateInterpValue(
     absl::BitGenRef bit_gen, const dslx::Type& arg_type,
     absl::Span<const dslx::InterpValue> prior);
 
-// Returns randomly generated values of the given types.
+// Returns randomly generated values of the given types, including recursive
+// semantic-sum members in the supported container types.
 absl::StatusOr<std::vector<dslx::InterpValue>> GenerateInterpValues(
     absl::BitGenRef bit_gen, absl::Span<const dslx::Type* const> arg_types);
 
