@@ -4426,9 +4426,7 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
   struct ParsedEntry {
     Span span;
     NameDef* name_def;
-    SumVariant::PayloadShape payload_shape;
-    std::vector<TypeAnnotation*> tuple_members;
-    std::vector<StructMemberNode*> struct_members;
+    SumVariant::Payload payload;
     Expr* discriminant;
     std::optional<Span> payload_span;
     std::optional<Span> discriminant_equals_span;
@@ -4478,9 +4476,8 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
       return ParsedEntry{
           .span = Span(variant_start, GetPos()),
           .name_def = variant_name,
-          .payload_shape = SumVariant::PayloadShape::kTuple,
-          .tuple_members = std::move(tuple_members),
-          .struct_members = {},
+          .payload = module_->Make<TupleTypeAnnotation>(
+              payload_span, std::move(tuple_members)),
           .discriminant = discriminant,
           .payload_span = payload_span,
           .discriminant_equals_span = discriminant_equals_span,
@@ -4518,9 +4515,7 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
       return ParsedEntry{
           .span = Span(variant_start, GetPos()),
           .name_def = variant_name,
-          .payload_shape = SumVariant::PayloadShape::kStruct,
-          .tuple_members = {},
-          .struct_members = std::move(struct_members),
+          .payload = NamedFields(std::move(struct_members)),
           .discriminant = discriminant,
           .payload_span = payload_span,
           .discriminant_equals_span = discriminant_equals_span,
@@ -4538,9 +4533,7 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
     return ParsedEntry{
         .span = Span(variant_start, GetPos()),
         .name_def = variant_name,
-        .payload_shape = SumVariant::PayloadShape::kUnit,
-        .tuple_members = {},
-        .struct_members = {},
+        .payload = std::monostate{},
         .discriminant = discriminant,
         .payload_span = std::nullopt,
         .discriminant_equals_span = discriminant_equals_span,
@@ -4553,7 +4546,7 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
 
   const bool has_payload_syntax =
       absl::c_any_of(entries, [](const ParsedEntry& entry) {
-        return entry.payload_shape != SumVariant::PayloadShape::kUnit;
+        return !std::holds_alternative<std::monostate>(entry.payload);
       });
   const bool is_semantic_sum =
       has_payload_syntax || (entries.empty() && type_annotation == nullptr);
@@ -4614,8 +4607,7 @@ absl::StatusOr<std::variant<EnumDef*, SumDef*>> Parser::ParseEnumDef(
   variants.reserve(entries.size());
   for (ParsedEntry& entry : entries) {
     variants.push_back(module_->Make<SumVariant>(
-        entry.span, entry.name_def, entry.payload_shape,
-        std::move(entry.tuple_members), std::move(entry.struct_members),
+        entry.span, entry.name_def, std::move(entry.payload),
         entry.discriminant == nullptr
             ? std::nullopt
             : std::optional<Expr*>(entry.discriminant),
