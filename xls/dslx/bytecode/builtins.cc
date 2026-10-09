@@ -419,6 +419,23 @@ static absl::Status RunBuiltinRelationalAssert(
                             stack.file_table());
 }
 
+static absl::StatusOr<const Type*> GetAssertOperandType(
+    const Bytecode& bytecode, const Frame& frame) {
+  const TypeInfo* type_info = frame.type_info();
+  XLS_ASSIGN_OR_RETURN(Bytecode::InvocationData invocation_data,
+                       bytecode.invocation_data());
+  XLS_ASSIGN_OR_RETURN(
+      Type * lhs_type,
+      type_info->GetItemOrError(invocation_data.invocation()->args()[0]));
+  XLS_ASSIGN_OR_RETURN(
+      Type * rhs_type,
+      type_info->GetItemOrError(invocation_data.invocation()->args()[1]));
+  XLS_RET_CHECK_EQ(*lhs_type, *rhs_type) << absl::StreamFormat(
+      "Assert arguments are not the same type: `%s` vs `%s`",
+      lhs_type->ToString(), rhs_type->ToString());
+  return lhs_type;
+}
+
 absl::Status RunBuiltinAssertEq(const Bytecode& bytecode,
                                 InterpreterStack& stack, const Frame& frame,
                                 const BytecodeInterpreterOptions& options,
@@ -427,26 +444,35 @@ absl::Status RunBuiltinAssertEq(const Bytecode& bytecode,
   XLS_ASSIGN_OR_RETURN((auto [lhs, rhs]), PopAssertOperands(stack));
   bool eq = lhs.value.Eq(rhs.value);
   if (!eq) {
-    XLS_ASSIGN_OR_RETURN(
-        (const auto& [lhs_string, rhs_string]),
-        GetAssertFormattedStrings(lhs, rhs, bytecode, frame, options));
-    std::string message =
-        absl::StrContains(lhs_string, '\n')
-            ? absl::StrCat(
-                  "\n  lhs and rhs were not equal:\n",
-                  HighlightLineByLineDifferences(lhs_string, rhs_string))
-            : absl::StrFormat("\n  lhs: %s\n  rhs: %s\n  were not equal",
-                              lhs_string, rhs_string);
-    if (lhs.value.IsArray() && rhs.value.IsArray()) {
-      XLS_ASSIGN_OR_RETURN(std::optional<int64_t> i,
-                           FindFirstDifferingIndex(lhs.value.GetValuesOrDie(),
-                                                   rhs.value.GetValuesOrDie()));
-      XLS_RET_CHECK(i.has_value());
-      const auto& lhs_values = lhs.value.GetValuesOrDie();
-      const auto& rhs_values = rhs.value.GetValuesOrDie();
-      message += absl::StrFormat("; first differing index: %d :: %s vs %s", *i,
-                                 lhs_values[*i].ToHumanString(),
-                                 rhs_values[*i].ToHumanString());
+    XLS_ASSIGN_OR_RETURN(const Type* operand_type,
+                         GetAssertOperandType(bytecode, frame));
+    std::string message;
+    if (TypeContainsSemanticSum(*operand_type)) {
+      message =
+          "\n  lhs and rhs were not equal; formatting values containing "
+          "semantic sums is not supported.";
+    } else {
+      XLS_ASSIGN_OR_RETURN(
+          (const auto& [lhs_string, rhs_string]),
+          GetAssertFormattedStrings(lhs, rhs, bytecode, frame, options));
+      message =
+          absl::StrContains(lhs_string, '\n')
+              ? absl::StrCat(
+                    "\n  lhs and rhs were not equal:\n",
+                    HighlightLineByLineDifferences(lhs_string, rhs_string))
+              : absl::StrFormat("\n  lhs: %s\n  rhs: %s\n  were not equal",
+                                lhs_string, rhs_string);
+      if (lhs.value.IsArray() && rhs.value.IsArray()) {
+        XLS_ASSIGN_OR_RETURN(std::optional<int64_t> i,
+                             FindFirstDifferingIndex(lhs.value.GetValuesOrDie(),
+                                                     rhs.value.GetValuesOrDie()));
+        XLS_RET_CHECK(i.has_value());
+        const auto& lhs_values = lhs.value.GetValuesOrDie();
+        const auto& rhs_values = rhs.value.GetValuesOrDie();
+        message += absl::StrFormat("; first differing index: %d :: %s vs %s",
+                                   *i, lhs_values[*i].ToHumanString(),
+                                   rhs_values[*i].ToHumanString());
+      }
     }
     if (caller_proc_id.has_value()) {
       message += absl::StrFormat(" (called from %s)",
@@ -466,11 +492,20 @@ absl::Status RunBuiltinAssertNe(const Bytecode& bytecode,
   VLOG(3) << "Executing builtin AssertNe.";
   XLS_ASSIGN_OR_RETURN((auto [lhs, rhs]), PopAssertOperands(stack));
   if (!lhs.value.Ne(rhs.value)) {
-    XLS_ASSIGN_OR_RETURN(
-        (const auto& [lhs_string, rhs_string]),
-        GetAssertFormattedStrings(lhs, rhs, bytecode, frame, options));
-    std::string message = absl::StrFormat(
-        "\n  lhs: %s\n  rhs: %s\n  were equal", lhs_string, rhs_string);
+    XLS_ASSIGN_OR_RETURN(const Type* operand_type,
+                         GetAssertOperandType(bytecode, frame));
+    std::string message;
+    if (TypeContainsSemanticSum(*operand_type)) {
+      message =
+          "\n  lhs and rhs were equal; formatting values containing "
+          "semantic sums is not supported.";
+    } else {
+      XLS_ASSIGN_OR_RETURN(
+          (const auto& [lhs_string, rhs_string]),
+          GetAssertFormattedStrings(lhs, rhs, bytecode, frame, options));
+      message = absl::StrFormat("\n  lhs: %s\n  rhs: %s\n  were equal",
+                                lhs_string, rhs_string);
+    }
     if (caller_proc_id.has_value()) {
       message += absl::StrFormat(" (called from %s)",
                                  caller_proc_id.value().ToString());

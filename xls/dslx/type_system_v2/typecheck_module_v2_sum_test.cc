@@ -149,8 +149,7 @@ fn f(x: E) -> E { E::V { ..x } }
           "Struct-style sum constructors do not support splat syntax.")));
 }
 
-TEST(TypecheckV2Test,
-     SemanticSumConstructorsRejectConstantEvaluationAndBytecode) {
+TEST(TypecheckV2Test, SemanticSumConstructorsSupportRootAndDerivedTypeInfo) {
   constexpr std::string_view kProgram = R"(
 enum E { Unit, Tuple(u32), Named { value: u32 } }
 const X = $0;
@@ -167,20 +166,19 @@ const X = $0;
         TypeInfo * derived,
         result.import_data->type_info_owner().New(
             result.import_data->file_table(), "derived", result.tm.type_info));
+    XLS_ASSERT_OK_AND_ASSIGN(
+        InterpValue expected,
+        result.tm.type_info->GetConstExpr(constant->value()));
     for (TypeInfo* type_info : {result.tm.type_info, derived}) {
-      EXPECT_THAT(
+      XLS_EXPECT_OK(
           ConstexprEvaluator::Evaluate(result.import_data.get(), type_info,
                                        /*warning_collector=*/nullptr,
-                                       /*bindings=*/{}, constant->value()),
-          StatusIs(absl::StatusCode::kUnimplemented,
-                   HasSubstr("Semantic sum constants are not supported.")));
-      EXPECT_THAT(
-          BytecodeEmitter::EmitExpression(
-              result.import_data.get(), type_info, constant->value(),
-              /*env=*/{}, /*caller_bindings=*/std::nullopt),
-          StatusIs(absl::StatusCode::kUnimplemented,
-                   HasSubstr("Semantic sum execution is not supported by the "
-                             "bytecode runtime.")));
+                                       /*bindings=*/{}, constant->value()));
+      EXPECT_THAT(type_info->GetConstExpr(constant->value()),
+                  IsOkAndHolds(expected));
+      XLS_EXPECT_OK(BytecodeEmitter::EmitExpression(
+          result.import_data.get(), type_info, constant->value(),
+          /*env=*/{}, /*caller_bindings=*/std::nullopt));
     }
   }
 }
