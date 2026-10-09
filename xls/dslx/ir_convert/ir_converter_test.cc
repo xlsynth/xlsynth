@@ -26,12 +26,12 @@
 #include <string_view>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/base/casts.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/file/temp_file.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/create_import_data.h"
@@ -43,9 +43,13 @@
 #include "xls/dslx/run_routines/run_comparator.h"
 #include "xls/dslx/run_routines/run_routines.h"
 #include "xls/dslx/type_system/typecheck_test_utils.h"
+#include "xls/ir/bits.h"
 #include "xls/ir/channel.h"
+#include "xls/ir/function.h"
 #include "xls/ir/ir_matcher.h"
+#include "xls/ir/package.h"
 #include "xls/ir/proc.h"
+#include "xls/ir/value.h"
 
 namespace xls::dslx {
 namespace {
@@ -58,22 +62,45 @@ using ::testing::SizeIs;
 
 namespace m = ::xls::op_matchers;
 
-TEST_F(IrConverterTest, SemanticSumConstructorExpressionIsRejected) {
-  // The bits-only signature reaches expression conversion rather than failing
-  // earlier while lowering a sum parameter or return type.
-  for (std::string_view constructor :
-       {"E::Unit", "E::Tuple(x)", "E::Named { value: x }"}) {
-    SCOPED_TRACE(constructor);
-    std::string program =
-        "enum E { Unit, Tuple(u32), Named { value: u32 } }\n"
-        "fn main(x: u32) -> u32 { let _ = " +
-        std::string(constructor) + "; x }";
-    EXPECT_THAT(
-        ConvertOneFunctionForTest(program, "main"),
-        StatusIs(absl::StatusCode::kUnimplemented,
-                 HasSubstr("Semantic sum construction is not supported by "
-                           "IR conversion.")));
-  }
+TEST_F(IrConverterTest, ConvertsOriginalSemanticSumConstructorExpressions) {
+  constexpr std::string_view program = R"(
+enum E { Unit, Tuple(u32), Named { lhs: u32, rhs: u32 } }
+fn unit() -> E { E::Unit }
+fn positional(x: u32) -> E { E::Tuple(x) }
+fn named(x: u32, y: u32) -> E { E::Named { rhs: y, lhs: x } }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(PackageConversionData converted,
+                           ConvertModuleToPackage(tm.module, &import_data,
+                                                  kProcScopedChannelOptions));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * unit, converted.package->GetFunction(
+                                                     "__test_module__unit"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      xls::Function * positional,
+      converted.package->GetFunction("__test_module__positional"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      xls::Function * named,
+      converted.package->GetFunction("__test_module__named"));
+
+  // Phase One retains one slot per declared payload member, including inactive
+  // variants. Named operands enter those slots in declaration order.
+  EXPECT_EQ(unit->node_count(), 1);
+  EXPECT_THAT(unit->return_value(),
+              m::Literal(Value::Tuple(
+                  {Value(UBits(0, 2)),
+                   Value::Tuple({Value(UBits(0, 32)), Value(UBits(0, 32)),
+                                 Value(UBits(0, 32))})})));
+  EXPECT_THAT(positional->return_value(),
+              m::Tuple(m::Literal("bits[2]:1"),
+                       m::Tuple(m::Param("x"), m::Literal("bits[32]:0"),
+                                m::Literal("bits[32]:0"))));
+  EXPECT_THAT(named->return_value(),
+              m::Tuple(m::Literal("bits[2]:2"),
+                       m::Tuple(m::Literal("bits[32]:0"), m::Param("x"),
+                                m::Param("y"))));
 }
 
 TEST_F(IrConverterTest, NamedConstant) {
@@ -8508,6 +8535,123 @@ impl TopProc {
   EXPECT_THAT(converted, HasSubstr("proc __test_module__ChildProc_next"));
   EXPECT_THAT(converted, HasSubstr("proc __test_module__TopProc_next"));
   EXPECT_THAT(converted, Not(HasSubstr("TestProc")));
+}
+
+TEST_F(IrConverterTest, SemanticSumConstructorsCompareWithInterpreter) {
+  constexpr std::string_view program = R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+fn unwrap_or_sum(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    Option::Pair { rhs, lhs } => lhs - rhs,
+    Option::None => u32:0,
+  }
+}
+
+#[test]
+fn option_test() {
+  assert_eq(unwrap_or_sum(Option::Some(u32:7)), u32:7);
+  assert_eq(unwrap_or_sum(Option::Pair { lhs: u32:11, rhs: u32:4 }), u32:7);
+  assert_eq(unwrap_or_sum(Option::None), u32:0);
+  assert_eq(Option::Some(u32:5) == Option::Some(u32:5), true);
+  assert_eq(Option::Some(u32:5) != Option::Pair { lhs: u32:5, rhs: u32:0 },
+            true);
+}
+)";
+  RunComparator run_comparator(CompareMode::kInterpreter);
+  XLS_ASSERT_OK(ParseAndTest(program, "", "test_module.x",
+                             ParseAndTestOptions{
+                                 .run_comparator = &run_comparator,
+                             }));
+}
+
+TEST_F(IrConverterTest,
+       SemanticSumEqualityInsideAggregatesCompareWithInterpreter) {
+  constexpr std::string_view program = R"(
+enum Option {
+  None,
+  Some(u32),
+  Pair { lhs: u32, rhs: u32 },
+}
+
+struct Holder {
+  left: Option,
+  right: Option,
+}
+
+#[test]
+fn aggregate_eq_test() {
+  let some = Option::Some(u32:5);
+  let same = Option::Some(u32:5);
+  let different = Option::Some(u32:6);
+  let other = Option::Pair { lhs: u32:5, rhs: u32:0 };
+  let none = Option::None;
+  let array_lhs = Option[2]:[some, none];
+  let array_rhs = Option[2]:[same, none];
+  let array_different = Option[2]:[different, none];
+  let array_other = Option[2]:[other, none];
+  let tuple_lhs = (some, none);
+  let tuple_rhs = (same, none);
+  let tuple_different = (different, none);
+  let tuple_other = (other, none);
+  let struct_lhs = Holder { left: some, right: none };
+  let struct_rhs = Holder { left: same, right: none };
+  let struct_different = Holder { left: different, right: none };
+  let struct_other = Holder { left: other, right: none };
+
+  assert_eq(array_lhs == array_rhs, true);
+  assert_eq(array_lhs != array_different, true);
+  assert_eq(array_lhs != array_other, true);
+  assert_eq(tuple_lhs == tuple_rhs, true);
+  assert_eq(tuple_lhs != tuple_different, true);
+  assert_eq(tuple_lhs != tuple_other, true);
+  assert_eq(struct_lhs == struct_rhs, true);
+  assert_eq(struct_lhs != struct_different, true);
+  assert_eq(struct_lhs != struct_other, true);
+}
+)";
+  RunComparator run_comparator(CompareMode::kInterpreter);
+  XLS_ASSERT_OK(ParseAndTest(program, "", "test_module.x",
+                             ParseAndTestOptions{
+                                 .run_comparator = &run_comparator,
+                             }));
+}
+
+TEST_F(IrConverterTest, ImportedSumReturningFunctionWithoutConstructorDispatch) {
+  constexpr std::string_view kImported = R"(
+pub enum Option {
+  None,
+  Some(u32),
+}
+
+pub fn make_some(x: u32) -> Option {
+  Option::Some(x)
+}
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn f(x: u32) -> u32 {
+  match imported::make_some(x) {
+    imported::Option::Some(v) => v,
+    imported::Option::None => u32:0,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(
+      ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(std::string converted,
+                           ConvertOneFunctionForTest(kProgram, "f",
+                                                     import_data));
+  EXPECT_THAT(converted, HasSubstr("__imported__make_some"));
+  EXPECT_THAT(converted, HasSubstr("__test_module__f"));
 }
 
 }  // namespace

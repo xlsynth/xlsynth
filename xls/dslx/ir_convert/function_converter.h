@@ -35,6 +35,7 @@
 #include "xls/common/attribute_data.h"
 #include "xls/dslx/channel_direction.h"
 #include "xls/dslx/conversion_record.h"
+#include "xls/dslx/frontend/aggregate_construction.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/frontend/proc_id.h"
@@ -383,6 +384,13 @@ class FunctionConverter {
   }
 
   // Helpers for HandleBinop().
+  absl::StatusOr<BValue> BuildEqByType(const Type& type, BValue lhs, BValue rhs,
+                                       const SourceInfo& loc);
+  absl::StatusOr<BValue> BuildPhase1WellFormedPredicateByType(
+      const Type& type, BValue value, const SourceInfo& loc);
+  absl::Status AssertPhase1SemanticSumValueIsWellFormed(
+      const Type& type, BValue value, const SourceInfo& loc, const Span& span,
+      std::string_view message_observer, std::string_view label_suffix);
   absl::Status HandleConcat(const Binop* node, BValue lhs, BValue rhs);
   absl::Status HandleEq(const Binop* node, BValue lhs, BValue rhs);
   absl::Status HandleNe(const Binop* node, BValue lhs, BValue rhs);
@@ -461,6 +469,7 @@ class FunctionConverter {
   absl::Status HandleRange(const Range* node);
   absl::Status HandleSplatStructInstance(const SplatStructInstance* node);
   absl::Status HandleStatement(const Statement* node);
+  absl::Status HandleSumConstruction(const BoundConstruction& construction);
   absl::Status HandleStructInstance(const StructInstance* node);
   absl::Status HandleConditional(const Conditional* node);
   absl::Status HandleTupleIndex(const TupleIndex* node);
@@ -491,6 +500,9 @@ class FunctionConverter {
   absl::StatusOr<BValue> HandleMatcher(const PatternTree& matcher,
                                        const BValue& matched_value,
                                        const Type& matched_type);
+  absl::StatusOr<BValue> HandleSumVariantPayloadPattern(
+      const PatternTree& matcher, const SumVariantPayloadPattern* pattern,
+      const BValue& matched_value, const SumType& matched_type);
 
   // Makes the specified builtin available to the package.
   absl::StatusOr<BValue> DefMapWithBuiltin(const Invocation* parent_node,
@@ -519,12 +531,6 @@ class FunctionConverter {
   absl::Status HandleBuiltinLabeledRead(const Invocation* node);
   absl::Status HandleBuiltinLabeledWrite(const Invocation* node);
   absl::Status HandleBuiltinOneHot(const Invocation* node);
-
-  // Returns the scalar select cases represented by an inline array literal,
-  // including ellipsis expansion, without materializing an IR array value.
-  absl::StatusOr<std::vector<BValue>> GetSelectCasesForArrayLiteral(
-      const Array* array);
-
   absl::Status HandleBuiltinOneHotSel(const Invocation* node);
   absl::Status HandleBuiltinOrReduce(const Invocation* node);
   absl::Status HandleBuiltinPrioritySel(const Invocation* node);
@@ -546,6 +552,11 @@ class FunctionConverter {
   absl::Status HandleBuiltinXorReduce(const Invocation* node);
   absl::Status HandleBuiltinZip(const Invocation* node);
   // keep-sorted end
+
+  // Returns the scalar select cases represented by an inline array literal,
+  // including ellipsis expansion, without materializing an IR array value.
+  absl::StatusOr<std::vector<BValue>> GetSelectCasesForArrayLiteral(
+      const Array* array);
 
   absl::Status HandleProcDef(const ProcDef* proc_def,
                              const Function* constructor);
