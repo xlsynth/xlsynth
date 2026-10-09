@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "absl/functional/function_ref.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xls/dslx/channel_direction.h"
@@ -44,6 +45,11 @@ absl::StatusOr<InterpValue> CastBitsToEnum(const InterpValue& bits_value,
 
 // Creates a zero-valued InterpValue with the same structure as the input.
 absl::StatusOr<InterpValue> CreateZeroValue(const InterpValue& value);
+
+// Validates the value's representation and members against the supplied DSLX
+// type without reconstructing a nominal type from its storage representation.
+absl::Status ValidateInterpValueMatchesType(const InterpValue& value,
+                                            const Type& type);
 
 // Creates a canonical zero-like InterpValue from the given Type for
 // interpreter/support-code internals. Semantic sums are rejected because their
