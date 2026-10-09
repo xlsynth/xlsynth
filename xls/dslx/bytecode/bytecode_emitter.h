@@ -27,6 +27,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xls/dslx/bytecode/bytecode.h"
+#include "xls/dslx/frontend/aggregate_construction.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
@@ -123,6 +124,7 @@ class BytecodeEmitter : public ExprVisitor {
   absl::Status HandleWidthSlice(const Index* node, WidthSlice* width_slice);
 
   absl::Status HandleInvocation(const Invocation* node) override;
+  absl::Status HandleSumConstruction(const BoundConstruction& construction);
   absl::Status HandleLambda(const Lambda* node) override;
   absl::Status HandleLet(const Let* node);
   absl::Status HandleMatch(const Match* node) override;
@@ -188,9 +190,13 @@ class BytecodeEmitter : public ExprVisitor {
                                                    const TypeInfo* type_info);
   absl::StatusOr<InterpValue> HandleColonRefToValue(Module* module,
                                                     const ColonRef* colon_ref);
+  absl::StatusOr<InterpValue> HandleUnitSumConstructor(
+      const ColonRef* colon_ref, const SumType& sum_type);
 
   absl::StatusOr<Bytecode::MatchArmItem> HandlePatternExpr(
       const PatternTree& pattern, Type* type = nullptr);
+  absl::StatusOr<Bytecode::MatchArmItem> HandleSumVariantPayloadPattern(
+      const SumVariantPayloadPattern* pattern, const SumType& sum_type);
 
   absl::Status DestructureLet(const PatternTree& pattern,
                               std::variant<Type*, int64_t> type_or_size);

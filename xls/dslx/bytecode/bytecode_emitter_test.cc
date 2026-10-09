@@ -2041,5 +2041,65 @@ proc Foo {
                                               ParametricEnv(), members));
 }
 
+TEST(BytecodeEmitterTest, UnitSumConstructorEmitsOneLiteral) {
+  constexpr std::string_view kProgram = R"(#![feature(type_inference_v2)]
+enum E { None, Pair(u32, u32) }
+fn main() -> E { E::None }
+)";
+  auto import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<BytecodeFunction> function,
+                           EmitBytecodes(&import_data, kProgram, "main"));
+
+  ASSERT_EQ(function->bytecodes().size(), 1);
+  const Bytecode& literal = function->bytecodes()[0];
+  ASSERT_EQ(literal.op(), Bytecode::Op::kLiteral);
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue value, literal.value_data());
+  EXPECT_EQ(value, InterpValue::MakeTuple(
+                       {InterpValue::MakeUBits(1, 0),
+                        InterpValue::MakeTuple({InterpValue::MakeU32(0),
+                                                InterpValue::MakeU32(0)})}));
+}
+
+TEST(BytecodeEmitterTest, ImportedSumConstantEmitsLiteralValue) {
+  constexpr std::string_view kImported = R"(
+pub enum Option {
+  None,
+  Some(u32),
+}
+
+pub const SOME: Option = Option::Some(u32:7);
+)";
+  constexpr std::string_view kProgram = R"(
+import imported;
+
+fn main() -> imported::Option {
+  imported::SOME
+}
+)";
+
+  ImportData import_data(CreateImportDataForTest());
+  XLS_ASSERT_OK(
+      ParseAndTypecheck(kImported, "imported.x", "imported", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test.x", "test", &import_data));
+
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f,
+                           tm.module->GetMemberOrError<Function>("main"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<BytecodeFunction> bf,
+      BytecodeEmitter::Emit(&import_data, tm.type_info, *f, ParametricEnv()));
+
+  const std::vector<Bytecode>& bytecodes = bf->bytecodes();
+  ASSERT_EQ(bytecodes.size(), 1);
+  EXPECT_EQ(bytecodes[0].op(), Bytecode::Op::kLiteral);
+  ASSERT_TRUE(bytecodes[0].has_data());
+  EXPECT_EQ(
+      bytecodes[0].value_data().value(),
+      InterpValue::MakeTuple(
+          {InterpValue::MakeUBits(1, 1),
+           InterpValue::MakeTuple({InterpValue::MakeU32(7)})}));
+}
+
 }  // namespace
 }  // namespace xls::dslx

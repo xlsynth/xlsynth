@@ -309,8 +309,8 @@ absl::Status ConstexprEvaluator::HandleColonRef(const ColonRef* expr) {
     is_sum_constructor = constructor.has_value();
   }
   if (is_sum_constructor) {
-    return absl::UnimplementedError(
-        "Semantic sum constants are not supported.");
+    XLS_RETURN_IF_ERROR(type_info_->GetItemAs<SumType>(expr).status());
+    return InterpretExpr(expr);
   } else {
     return absl::OkStatus();
   }
@@ -365,8 +365,7 @@ absl::Status ConstexprEvaluator::HandleInvocation(const Invocation* expr) {
   std::optional<std::string_view> called_name;
   auto* callee_name_ref = dynamic_cast<NameRef*>(expr->callee());
   if (is_sum_constructor) {
-    return absl::UnimplementedError(
-        "Semantic sum constants are not supported.");
+    XLS_RETURN_IF_ERROR(type_info_->GetItemAs<SumType>(expr).status());
   } else if (callee_name_ref != nullptr) {
     called_name = callee_name_ref->identifier();
     if (called_name == "send" || called_name == "send_if" ||
@@ -542,17 +541,12 @@ absl::Status ConstexprEvaluator::HandleString(const String* expr) {
 
 absl::Status ConstexprEvaluator::HandleStructInstance(
     const StructInstance* expr) {
-  if (std::optional<Type*> type = type_info_->GetItem(expr);
-      type.has_value() && (*type)->IsSum()) {
-    return absl::UnimplementedError(
-        "Semantic sum constants are not supported.");
-  } else {
-    // A struct instance is constexpr iff all its members are constexpr.
-    for (const auto& [k, v] : expr->GetUnorderedMembers()) {
-      EVAL_AS_CONSTEXPR_OR_RETURN(v);
-    }
-    return InterpretExpr(expr);
+  // A struct or named sum instance is constexpr iff all its members are
+  // constexpr.
+  for (const auto& [k, v] : expr->GetUnorderedMembers()) {
+    EVAL_AS_CONSTEXPR_OR_RETURN(v);
   }
+  return InterpretExpr(expr);
 }
 
 absl::Status ConstexprEvaluator::HandleConditional(const Conditional* expr) {

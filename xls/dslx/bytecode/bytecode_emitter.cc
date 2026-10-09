@@ -46,6 +46,7 @@
 #include "xls/dslx/bytecode/bytecode.h"
 #include "xls/dslx/dslx_builtins.h"
 #include "xls/dslx/errors.h"
+#include "xls/dslx/frontend/aggregate_construction.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/ast_utils.h"
 #include "xls/dslx/frontend/module.h"
@@ -54,6 +55,7 @@
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/interp_value_utils.h"
 #include "xls/dslx/make_value_format_descriptor.h"
+#include "xls/dslx/sum_type_encoding.h"
 #include "xls/dslx/type_system/deduce_utils.h"
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
@@ -100,10 +102,11 @@ absl::StatusOr<Bytecode::ChannelData> CreateChannelData(
   XLS_ASSIGN_OR_RETURN(ValueFormatDescriptor struct_fmt_desc,
                        MakeValueFormatDescriptor(*channel_payload_type.get(),
                                                  format_preference));
+  const bool redact_value = TypeContainsSemanticSum(*channel_payload_type);
 
   return Bytecode::ChannelData(absl::StripPrefix(channel->ToString(), "self."),
                                std::move(channel_payload_type),
-                               std::move(struct_fmt_desc));
+                               std::move(struct_fmt_desc), redact_value);
 }
 
 absl::StatusOr<ValueFormatDescriptor> ExprToValueFormatDescriptor(
@@ -615,7 +618,8 @@ absl::Status BytecodeEmitter::HandleBuiltinRecv(const Invocation* node) {
   // true. Required because the Recv bytecode has a predicate and default value
   // operand.
   XLS_ASSIGN_OR_RETURN(InterpValue default_value,
-                       CreateZeroValueFromType(channel_data.payload_type()));
+                       CreateInternalPlaceholderValueFromType(
+                           channel_data.payload_type()));
   Add(Bytecode::MakeLiteral(node->span(), default_value));
   Add(Bytecode::MakeRecv(node->span(), std::move(channel_data)));
   return absl::OkStatus();
@@ -723,12 +727,16 @@ absl::Status BytecodeEmitter::HandleBuiltinTrace(const Invocation* node) {
   }
 
   XLS_RETURN_IF_ERROR(node->args().at(0)->AcceptExpr(this));
+  XLS_ASSIGN_OR_RETURN(Type * argument_type,
+                       type_info_->GetItemOrError(node->args().at(0)));
 
   std::vector<FormatStep> steps;
   steps.push_back(absl::StrCat("trace of ", node->args()[0]->ToString(), ": "));
   steps.push_back(options_.format_preference);
-  bytecode_.push_back(Bytecode(node->span(), Bytecode::Op::kTraceArg,
-                               Bytecode::TraceData(std::move(steps), {})));
+  bytecode_.push_back(
+      Bytecode(node->span(), Bytecode::Op::kTraceArg,
+               Bytecode::TraceData(std::move(steps), {},
+                                   {TypeContainsSemanticSum(*argument_type)})));
   return absl::OkStatus();
 }
 
@@ -883,9 +891,11 @@ absl::StatusOr<InterpValue> BytecodeEmitter::HandleColonRefToValue(
 }
 
 absl::Status BytecodeEmitter::HandleColonRef(const ColonRef* node) {
-  if (type_info_->IsSumConstructor(node)) {
-    return absl::UnimplementedError(
-        "Semantic sum execution is not supported by the bytecode runtime.");
+  if (std::optional<const BoundConstruction*> construction =
+          type_info_->GetBoundConstruction(node);
+      construction.has_value() && std::holds_alternative<const SumVariant*>(
+                                      (*construction)->declaration())) {
+    return HandleSumConstruction(**construction);
   } else {
     XLS_ASSIGN_OR_RETURN(InterpValue value, HandleColonRefInternal(node));
     Add(Bytecode::MakeLiteral(node->span(), value));
@@ -893,8 +903,21 @@ absl::Status BytecodeEmitter::HandleColonRef(const ColonRef* node) {
   }
 }
 
+absl::StatusOr<InterpValue> BytecodeEmitter::HandleUnitSumConstructor(
+    const ColonRef* colon_ref, const SumType& sum_type) {
+  return CreateSumValue(sum_type, colon_ref->attr(), {});
+}
+
 absl::StatusOr<InterpValue> BytecodeEmitter::HandleColonRefInternal(
     const ColonRef* node) {
+  XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> sum_constructor_ref,
+                       ResolveSumConstructor(node, *import_data_));
+  if (sum_constructor_ref.has_value()) {
+    std::optional<Type*> type = type_info_->GetItem(node);
+    XLS_RET_CHECK(type.has_value());
+    XLS_RET_CHECK((*type)->IsSum());
+    return HandleUnitSumConstructor(node, (*type)->AsSum());
+  }
   return type_info_->GetConstExpr(node);
 }
 
@@ -1181,10 +1204,63 @@ absl::Status BytecodeEmitter::PushResolvedCallee(const Invocation* invocation) {
   return absl::OkStatus();
 }
 
+absl::Status BytecodeEmitter::HandleSumConstruction(
+    const BoundConstruction& construction) {
+  const Expr* node = construction.expression();
+  XLS_ASSIGN_OR_RETURN(SumType * sum_type,
+                       type_info_->GetItemAs<SumType>(node));
+  const SumVariant* declaration =
+      std::get<const SumVariant*>(construction.declaration());
+  if (declaration->is_unit()) {
+    // Unit constructors have no runtime operands. Keep inactive payload
+    // assembly at emission time instead of repeating it in the interpreter.
+    XLS_ASSIGN_OR_RETURN(
+        InterpValue value,
+        CreateSumValue(*sum_type, declaration->identifier(), {}));
+    Add(Bytecode::MakeLiteral(node->span(), value));
+  } else {
+    const Phase1SumTypeEncoding encoding(*sum_type);
+    XLS_ASSIGN_OR_RETURN(Phase1SumTypeEncoding::VariantInfo variant,
+                         encoding.GetVariant(declaration->identifier()));
+    XLS_RET_CHECK_EQ(construction.member_count(), variant.payload_size());
+
+    // Named operands are evaluated in declaration order, as in the existing
+    // runtime, even when their source order differs.
+    XLS_RETURN_IF_ERROR(encoding.VisitPayloadAssemblyOrder(
+        variant,
+        [&](int64_t active_index) -> absl::Status {
+          std::optional<const Expr*> operand =
+              construction.GetMember(active_index);
+          XLS_RET_CHECK(operand.has_value());
+          return (*operand)->AcceptExpr(this);
+        },
+        [&](const Type& inactive_type) -> absl::Status {
+          XLS_ASSIGN_OR_RETURN(
+              InterpValue zero,
+              CreateInternalPlaceholderValueFromType(inactive_type));
+          Add(Bytecode::MakeLiteral(node->span(), zero));
+          return absl::OkStatus();
+        }));
+
+    Add(Bytecode(node->span(), Bytecode::Op::kCreateTuple,
+                 Bytecode::NumElements(encoding.payload_slot_count())));
+    XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
+    Add(Bytecode::MakeLiteral(
+        node->span(),
+        InterpValue::MakeUBits(tag_bit_count, variant.variant_index)));
+    Add(Bytecode(node->span(), Bytecode::Op::kSwap));
+    Add(Bytecode(node->span(), Bytecode::Op::kCreateTuple,
+                 Bytecode::NumElements(2)));
+  }
+  return absl::OkStatus();
+}
+
 absl::Status BytecodeEmitter::HandleInvocation(const Invocation* node) {
-  if (type_info_->IsSumConstructor(node)) {
-    return absl::UnimplementedError(
-        "Semantic sum execution is not supported by the bytecode runtime.");
+  if (std::optional<const BoundConstruction*> construction =
+          type_info_->GetBoundConstruction(node);
+      construction.has_value() && std::holds_alternative<const SumVariant*>(
+                                      (*construction)->declaration())) {
+    return HandleSumConstruction(**construction);
   } else if (NameRef* name_ref = dynamic_cast<NameRef*>(node->callee());
              name_ref != nullptr && name_ref->IsBuiltin()) {
     VLOG(10) << "HandleInvocation; builtin name_ref: " << name_ref->ToString();
@@ -1274,6 +1350,62 @@ absl::Status BytecodeEmitter::HandleInvocation(const Invocation* node) {
   return absl::OkStatus();
 }
 
+absl::StatusOr<Bytecode::MatchArmItem>
+BytecodeEmitter::HandleSumVariantPayloadPattern(
+    const SumVariantPayloadPattern* pattern, const SumType& sum_type) {
+  const Phase1SumTypeEncoding encoding(sum_type);
+  XLS_ASSIGN_OR_RETURN(Phase1SumTypeEncoding::VariantInfo variant,
+                       encoding.GetVariant(pattern->constructor_ref()->attr()));
+  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
+
+  std::vector<Bytecode::MatchArmItem> payload_items(
+      encoding.payload_slot_count(), Bytecode::MatchArmItem::MakeWildcard());
+  if (const auto* tuple = std::get_if<TuplePattern*>(&pattern->payload())) {
+    const std::vector<PatternTree>& members = (*tuple)->members();
+    XLS_RET_CHECK_EQ(members.size(), variant.payload_size());
+    XLS_RETURN_IF_ERROR(encoding.ForEachActivePayloadSlot(
+        variant,
+        [&](int64_t slot_index, int64_t active_index,
+            const Type& slot_type) -> absl::Status {
+          XLS_ASSIGN_OR_RETURN(
+              payload_items[slot_index],
+              HandlePatternExpr(members.at(active_index),
+                                const_cast<Type*>(&slot_type)));
+          return absl::OkStatus();
+        }));
+  } else if (const auto* fields =
+                 std::get_if<StructPattern*>(&pattern->payload())) {
+    const SumTypeVariant& sum_variant = *variant.variant;
+    std::vector<std::string_view> names;
+    names.reserve((*fields)->fields().size());
+    for (const auto& [name, subpattern] : (*fields)->fields()) {
+      names.push_back(name);
+    }
+    NamedFieldBindingResult binding =
+        BindNamedFields(sum_variant.variant().named_fields(), names);
+    XLS_RET_CHECK(std::holds_alternative<NamedFieldCorrespondence>(binding));
+    const auto& correspondence = std::get<NamedFieldCorrespondence>(binding);
+    XLS_RETURN_IF_ERROR(encoding.ForEachActivePayloadSlot(
+        variant,
+        [&](int64_t slot_index, int64_t active_index,
+            const Type& slot_type) -> absl::Status {
+          const std::optional<int64_t>& source_index =
+              correspondence[active_index];
+          XLS_RET_CHECK(source_index.has_value());
+          XLS_ASSIGN_OR_RETURN(
+              payload_items[slot_index],
+              HandlePatternExpr((*fields)->fields()[*source_index].second,
+                                const_cast<Type*>(&slot_type)));
+          return absl::OkStatus();
+        }));
+  }
+
+  return Bytecode::MatchArmItem::MakeTuple(
+      {Bytecode::MatchArmItem::MakeInterpValue(
+           InterpValue::MakeUBits(tag_bit_count, variant.variant_index)),
+       Bytecode::MatchArmItem::MakeTuple(std::move(payload_items))});
+}
+
 absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
     const PatternTree& pattern, Type* type) {
   if (!std::holds_alternative<TuplePattern*>(pattern)) {
@@ -1322,11 +1454,14 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
             [&](WildcardPattern* n) -> absl::StatusOr<Bytecode::MatchArmItem> {
               return Bytecode::MatchArmItem::MakeWildcard();
             },
-            [&](SumVariantPayloadPattern* /*n*/)
+            [&](SumVariantPayloadPattern* constructor_pattern)
                 -> absl::StatusOr<Bytecode::MatchArmItem> {
-              return absl::UnimplementedError(
-                  "Semantic sum patterns are not supported by the bytecode "
-                  "runtime.");
+              auto* sum_type = dynamic_cast<SumType*>(type);
+              XLS_RET_CHECK(sum_type != nullptr)
+                  << "Constructor pattern expected sum type; got: "
+                  << (type == nullptr ? "<null>" : type->ToString());
+              return HandleSumVariantPayloadPattern(constructor_pattern,
+                                                    *sum_type);
             },
             [&](RestOfTuple* n) -> absl::StatusOr<Bytecode::MatchArmItem> {
               return Bytecode::MatchArmItem::MakeRestOfTuple();
@@ -1699,10 +1834,11 @@ absl::Status BytecodeEmitter::HandleString(const String* node) {
 }
 
 absl::Status BytecodeEmitter::HandleStructInstance(const StructInstance* node) {
-  if (std::optional<Type*> type = type_info_->GetItem(node);
-      type.has_value() && (*type)->IsSum()) {
-    return absl::UnimplementedError(
-        "Semantic sum execution is not supported by the bytecode runtime.");
+  if (std::optional<const BoundConstruction*> construction =
+          type_info_->GetBoundConstruction(node);
+      construction.has_value() && std::holds_alternative<const SumVariant*>(
+                                      (*construction)->declaration())) {
+    return HandleSumConstruction(**construction);
   } else {
     XLS_ASSIGN_OR_RETURN(StructTypeBase * struct_type,
                          type_info_->GetItemAs<StructTypeBase>(node));

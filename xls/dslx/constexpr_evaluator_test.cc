@@ -13,6 +13,7 @@
 // limitations under the License.
 #include "xls/dslx/constexpr_evaluator.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -98,9 +99,37 @@ const TUPLE = E::Tuple(u32:0);
         ConstexprEvaluator::Evaluate(&import_data, type_info,
                                      /*warning_collector=*/nullptr,
                                      /*bindings=*/{}, constant->value()),
-        StatusIs(absl::StatusCode::kUnimplemented,
-                 HasSubstr("Semantic sum constants are not supported.")));
+        StatusIs(absl::StatusCode::kNotFound,
+                 HasSubstr("No type found for AST node")));
   }
+}
+
+TEST(ConstexprEvaluatorTest, SumConstructorsEvaluateOriginalExpressions) {
+  XLS_ASSERT_OK_AND_ASSIGN(TestData test_data, CreateTestData(R"(
+enum E { Unit, Tuple(u8, u16), Named { first: u8, second: u16 } }
+const UNIT = E::Unit;
+const TUPLE = E::Tuple(u8:3, u16:5);
+const NAMED = E::Named { second: u16:11, first: u8:7 };
+)"));
+  auto expect_value = [&](std::string_view name, AstNodeKind kind, int64_t tag,
+                          std::vector<InterpValue> payload) {
+    XLS_ASSERT_OK_AND_ASSIGN(ConstantDef * constant,
+                             test_data.module->GetConstantDef(name));
+    EXPECT_EQ(constant->value()->kind(), kind);
+    EXPECT_THAT(test_data.type_info->GetConstExpr(constant->value()),
+                IsOkAndHolds(InterpValue::MakeTuple(
+                    {InterpValue::MakeUBits(2, tag),
+                     InterpValue::MakeTuple(std::move(payload))})));
+  };
+  expect_value("UNIT", AstNodeKind::kColonRef, 0,
+               {InterpValue::MakeU8(0), InterpValue::MakeUBits(16, 0),
+                InterpValue::MakeU8(0), InterpValue::MakeUBits(16, 0)});
+  expect_value("TUPLE", AstNodeKind::kInvocation, 1,
+               {InterpValue::MakeU8(3), InterpValue::MakeUBits(16, 5),
+                InterpValue::MakeU8(0), InterpValue::MakeUBits(16, 0)});
+  expect_value("NAMED", AstNodeKind::kStructInstance, 2,
+               {InterpValue::MakeU8(0), InterpValue::MakeUBits(16, 0),
+                InterpValue::MakeU8(7), InterpValue::MakeUBits(16, 11)});
 }
 
 TEST(ConstexprEvaluatorTest, HandleAttrSimple) {
