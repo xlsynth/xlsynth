@@ -59,26 +59,6 @@
 namespace xls::dslx {
 namespace {
 
-bool ContainsConstructorPattern(const PatternTree& pattern) {
-  if (std::holds_alternative<SumVariantPayloadPattern*>(pattern)) {
-    return true;
-  }
-  if (const auto* tuple = std::get_if<TuplePattern*>(&pattern)) {
-    for (const PatternTree& member : (*tuple)->members()) {
-      if (ContainsConstructorPattern(member)) {
-        return true;
-      }
-    }
-  } else if (const auto* fields = std::get_if<StructPattern*>(&pattern)) {
-    for (const auto& [name, member] : (*fields)->fields()) {
-      if (ContainsConstructorPattern(member)) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
 // Returns whether `type` is a `Source`/`Sink` io object, or an array or tuple
 // that contains one.
 bool ContainsIoObject(const Type& type) {
@@ -437,13 +417,6 @@ class TypeValidator : public AstNodeVisitorWithDefault {
 
     for (MatchArm* arm : node->arms()) {
       for (const PatternTree& pattern : arm->patterns()) {
-        if (ContainsConstructorPattern(pattern)) {
-          return TypeInferenceErrorStatus(
-              GetPatternSpan(pattern), matched,
-              "Constructor patterns are not supported before semantic-sum "
-              "pattern typechecking is enabled.",
-              file_table_);
-        }
         bool exhaustive_before = exhaustiveness_checker.IsExhaustive();
         exhaustiveness_checker.AddPattern(pattern);
         if (exhaustive_before) {
