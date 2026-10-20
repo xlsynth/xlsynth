@@ -962,6 +962,7 @@ cc_test(
     name = "ast_generator_test",
     timeout = "long",
     srcs = ["ast_generator_test.cc"],
+    data = [":semantic_sum_provider_files"],
     deps = [
         ":ast_generator",
         "//xls/common:xls_gunit_main",
@@ -970,6 +971,7 @@ cc_test(
         "//xls/common/status:status_macros",
         "//xls/dslx:command_line_utils",
         "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
         "//xls/dslx:parse_and_typecheck",
         "//xls/dslx:virtualizable_file_system",
         "//xls/dslx/frontend:ast",

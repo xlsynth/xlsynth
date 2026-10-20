@@ -39,6 +39,7 @@
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/pos.h"
+#include "xls/dslx/import_data.h"
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/virtualizable_file_system.h"
 
@@ -51,20 +52,28 @@ using ::testing::ContainsRegex;
 // the screen in a useful way for debugging if they fail parsing / typechecking.
 template <typename ModuleMember>
 absl::Status ParseAndTypecheck(std::string_view text,
-                               std::string_view module_name) {
+                               std::string_view module_name,
+                               ImportData& import_data) {
   XLS_LOG_LINES(INFO, text);
 
   std::string filename = absl::StrCat(module_name, ".x");
 
-  auto import_data = CreateImportDataForTest();
   absl::StatusOr<TypecheckedModule> parsed = ParseAndTypecheck(
       text, /*path=*/filename, /*module_name=*/module_name, &import_data);
 
   UniformContentFilesystem vfs(text, /*expect_path=*/filename);
   TryPrintError(parsed.status(), import_data.file_table(), vfs);
+  XLS_RETURN_IF_ERROR(parsed.status());
   XLS_RETURN_IF_ERROR(
       parsed->module->GetMemberOrError<ModuleMember>("main").status());
   return absl::OkStatus();
+}
+
+template <typename ModuleMember>
+absl::Status ParseAndTypecheck(std::string_view text,
+                               std::string_view module_name) {
+  auto import_data = CreateImportDataForTest();
+  return ParseAndTypecheck<ModuleMember>(text, module_name, import_data);
 }
 
 }  // namespace
@@ -144,6 +153,9 @@ TEST(AstGeneratorMultiTest, GeneratesValidFunctions) {
     XLS_ASSERT_OK_AND_ASSIGN(AnnotatedModule module,
                              g.Generate("main", module_name));
     std::string text = module.module->ToString();
+    EXPECT_THAT(text, ::testing::Not(::testing::HasSubstr("import float32")));
+    EXPECT_THAT(text,
+                ::testing::Not(::testing::HasSubstr("semantic_sum_provider")));
     // Parses/typechecks as well, which is primarily what we're testing here.
     XLS_ASSERT_OK(ParseAndTypecheck<Function>(text, module_name));
   }
@@ -278,37 +290,119 @@ TEST(AstGeneratorMultiTest, GeneratesRequiredSumTypes) {
   }
 }
 
-TEST(AstGeneratorOptionsTest, CrossModuleSumTypeOptionRoundTrips) {
-  AstGeneratorOptions options;
-  options.require_sum_type = true;
-  options.require_cross_module_sum_type = true;
+TEST(AstGeneratorOptionsTest, ImportedTypesOptionRoundTripsIndependently) {
+  EXPECT_FALSE(AstGeneratorOptions().emit_imported_types);
+  for (bool require_sum_type : {false, true}) {
+    for (bool emit_imported_types : {false, true}) {
+      AstGeneratorOptions options;
+      options.require_sum_type = require_sum_type;
+      options.emit_imported_types = emit_imported_types;
 
-  XLS_ASSERT_OK_AND_ASSIGN(AstGeneratorOptions decoded,
-                           AstGeneratorOptions::FromProto(options.ToProto()));
-  EXPECT_TRUE(decoded.require_sum_type);
-  EXPECT_TRUE(decoded.require_cross_module_sum_type);
+      XLS_ASSERT_OK(options.Validate());
+      XLS_ASSERT_OK_AND_ASSIGN(AstGeneratorOptions decoded,
+                              AstGeneratorOptions::FromProto(options.ToProto()));
+      EXPECT_EQ(decoded.require_sum_type, require_sum_type);
+      EXPECT_EQ(decoded.emit_imported_types, emit_imported_types);
+    }
+  }
 }
 
-TEST(AstGeneratorOptionsTest, RejectsUnsupportedCrossModuleSumTypes) {
+TEST(AstGeneratorOptionsTest, ImportedTypesPermitNarrowBudgetsAndProcs) {
   AstGeneratorOptions options;
-  options.require_cross_module_sum_type = true;
-  EXPECT_THAT(options.Validate().message(),
-              testing::HasSubstr("requires require_sum_type"));
+  options.emit_imported_types = true;
+  options.max_width_bits_types = 1;
+  options.max_width_aggregate_types = 1;
+  XLS_ASSERT_OK(options.Validate());
 
-  options.require_sum_type = true;
-  options.max_width_bits_types = 22;
-  EXPECT_THAT(options.Validate().message(),
-              testing::HasSubstr("max_width_bits_types of at least 23"));
-
-  options.max_width_bits_types = 23;
-  options.max_width_aggregate_types = 31;
-  EXPECT_THAT(options.Validate().message(),
-              testing::HasSubstr("max_width_aggregate_types of at least 32"));
-
-  options.max_width_aggregate_types = 32;
   options.generate_proc = true;
-  EXPECT_THAT(options.Validate().message(),
-              testing::HasSubstr("only supported for function generation"));
+  XLS_ASSERT_OK(options.Validate());
+}
+
+TEST(AstGeneratorMultiTest, ImportedTypesParticipateInOrdinaryExpressions) {
+  FileTable file_table;
+  std::mt19937_64 rng{0};
+  AstGeneratorOptions options;
+  options.emit_imported_types = true;
+  std::string programs;
+  std::string return_types;
+  // Reuse the expensive stdlib import while checking every generated module.
+  auto import_data = CreateImportDataForTest();
+  for (int64_t i = 0; i < 32; ++i) {
+    SCOPED_TRACE(i);
+    AstGenerator generator(options, rng, file_table);
+    std::string module_name = absl::StrFormat("sample_%d", i);
+    XLS_ASSERT_OK_AND_ASSIGN(AnnotatedModule generated,
+                             generator.Generate("main", module_name));
+    std::string text = generated.module->ToString();
+    SCOPED_TRACE(text);
+    XLS_ASSERT_OK(ParseAndTypecheck<Function>(text, module_name, import_data));
+    EXPECT_TRUE(generated.module->GetSumDefs().empty());
+    XLS_ASSERT_OK_AND_ASSIGN(
+        Function * main, generated.module->GetMemberOrError<Function>("main"));
+    programs.append(text);
+    return_types.append(main->return_type()->ToString());
+  }
+  // Nominal values must reach the ordinary return selection, rather than a
+  // discarded forced prefix or a wrapper that replaces the generated result.
+  EXPECT_THAT(return_types, ::testing::HasSubstr("float32::F32"));
+  EXPECT_THAT(return_types, ::testing::HasSubstr("semantic_sum_provider::Tag"));
+  EXPECT_THAT(return_types,
+              ::testing::HasSubstr("semantic_sum_provider::Option"));
+  EXPECT_THAT(programs, ContainsRegex(R"(\.(sign|bexp|fraction))"));
+  EXPECT_THAT(programs, ContainsRegex(R"(Option::Some\(x[0-9]+\) =>)"));
+}
+
+TEST(AstGeneratorMultiTest, ImportedTypesRespectNarrowWidthLimits) {
+  FileTable file_table;
+  std::mt19937_64 rng{0};
+  AstGeneratorOptions options;
+  options.emit_imported_types = true;
+  options.max_width_bits_types = 2;
+  options.max_width_aggregate_types = 2;
+  std::string programs;
+  auto import_data = CreateImportDataForTest();
+  for (int64_t i = 0; i < 8; ++i) {
+    SCOPED_TRACE(i);
+    AstGenerator generator(options, rng, file_table);
+    std::string module_name = absl::StrFormat("sample_%d", i);
+    XLS_ASSERT_OK_AND_ASSIGN(AnnotatedModule generated,
+                             generator.Generate("main", module_name));
+    std::string text = generated.module->ToString();
+    XLS_ASSERT_OK(ParseAndTypecheck<Function>(text, module_name, import_data));
+    EXPECT_THAT(text, ::testing::Not(::testing::HasSubstr("float32::F32")));
+    EXPECT_THAT(
+        text,
+        ::testing::Not(::testing::HasSubstr("semantic_sum_provider::Option")));
+    programs.append(text);
+  }
+  EXPECT_THAT(programs, ::testing::HasSubstr("semantic_sum_provider::Tag"));
+}
+
+TEST(AstGeneratorMultiTest, ImportedTypesKeepProcStateConstructible) {
+  FileTable file_table;
+  std::mt19937_64 rng{0};
+  AstGeneratorOptions options;
+  options.emit_imported_types = true;
+  options.generate_proc = true;
+  std::string programs;
+  auto import_data = CreateImportDataForTest();
+  for (int64_t i = 0; i < 8; ++i) {
+    SCOPED_TRACE(i);
+    AstGenerator generator(options, rng, file_table);
+    std::string module_name = absl::StrFormat("sample_%d", i);
+    XLS_ASSERT_OK_AND_ASSIGN(AnnotatedModule generated,
+                             generator.Generate("main", module_name));
+    std::string text = generated.module->ToString();
+    // Generation constructs the initial state through GenerateDslxConstant;
+    // importing a nominal state type would fail before this typecheck.
+    XLS_ASSERT_OK(ParseAndTypecheck<Proc>(text, module_name, import_data));
+    EXPECT_THAT(
+        text,
+        ::testing::Not(::testing::HasSubstr("semantic_sum_provider::Option")));
+    programs.append(text);
+  }
+  EXPECT_THAT(programs, ::testing::HasSubstr("float32::F32"));
+  EXPECT_THAT(programs, ::testing::HasSubstr("semantic_sum_provider::Tag"));
 }
 
 TEST(AstGeneratorMultiTest,

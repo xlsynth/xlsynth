@@ -74,10 +74,10 @@ ABSL_FLAG(bool, require_sum_type, false,
           "Require each generated function sample to include a semantic sum "
           "definition and constructor use. Not supported with "
           "`--generate_proc`.");
-ABSL_FLAG(bool, require_cross_module_sum_type, false,
-          "Require each semantic-sum function sample to instantiate an "
-          "imported parametric type and construct, pass, return, and match "
-          "an imported semantic sum. Requires `--require_sum_type`.");
+ABSL_FLAG(
+    bool, emit_imported_types, false,
+    "Sample curated imported types during ordinary expression generation. "
+    "Independent of `--require_sum_type`.");
 
 // The maximum number of failures before the test aborts.
 constexpr int64_t kMaxFailures = 10;
@@ -120,8 +120,7 @@ TEST(FuzzIntegrationTest, Fuzzing) {
       .emit_gate = !absl::GetFlag(FLAGS_simulate),
       .generate_proc = absl::GetFlag(FLAGS_generate_proc),
       .require_sum_type = absl::GetFlag(FLAGS_require_sum_type),
-      .require_cross_module_sum_type =
-          absl::GetFlag(FLAGS_require_cross_module_sum_type)};
+      .emit_imported_types = absl::GetFlag(FLAGS_emit_imported_types)};
   XLS_ASSERT_OK(ast_generator_options.Validate());
 
   SampleOptions sample_options;

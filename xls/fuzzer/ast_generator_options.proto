@@ -51,10 +51,11 @@ message AstGeneratorOptionsProto {
   // generation.
   optional bool require_sum_type = 9;
 
-  // Whether each required-sum function must instantiate an imported parametric
-  // standard-library value and construct, transport, and match a semantic sum
-  // declared in another module. Imported structs remain private; imported sums
-  // are also used as generated function arguments and return values.
-  // This is supported only for function generation with require_sum_type.
-  optional bool require_cross_module_sum_type = 10;
+  reserved 10;
+  reserved "require_cross_module_sum_type";
+
+  // Whether to sample from a curated set of imported types during ordinary
+  // expression generation. Independent of require_sum_type; no imported type
+  // is guaranteed to appear in any particular sample.
+  optional bool emit_imported_types = 11;
 }

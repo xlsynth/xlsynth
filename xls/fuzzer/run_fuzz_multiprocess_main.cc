@@ -52,10 +52,10 @@ ABSL_FLAG(bool, require_sum_type, false,
           "Require each generated function sample to include a semantic sum "
           "definition and constructor use. Not supported with "
           "`--generate_proc`.");
-ABSL_FLAG(bool, require_cross_module_sum_type, false,
-          "Require each semantic-sum function sample to instantiate an "
-          "imported parametric type and construct, pass, return, and match "
-          "an imported semantic sum. Requires `--require_sum_type`.");
+ABSL_FLAG(
+    bool, emit_imported_types, false,
+    "Sample curated imported types during ordinary expression generation. "
+    "Independent of `--require_sum_type`.");
 ABSL_FLAG(int64_t, max_width_aggregate_types, 1024,
           "The maximum width of aggregate types (tuples and arrays) in the "
           "generated samples.");
@@ -110,7 +110,7 @@ struct Options {
   bool force_failure;
   bool generate_proc;
   bool require_sum_type;
-  bool require_cross_module_sum_type;
+  bool emit_imported_types;
   int64_t max_width_aggregate_types;
   int64_t max_width_bits_types;
   int64_t proc_ticks;
@@ -147,8 +147,7 @@ absl::Status RealMain(const Options& options) {
       options.max_width_aggregate_types;
   ast_generator_options.generate_proc = options.generate_proc;
   ast_generator_options.require_sum_type = options.require_sum_type;
-  ast_generator_options.require_cross_module_sum_type =
-      options.require_cross_module_sum_type;
+  ast_generator_options.emit_imported_types = options.emit_imported_types;
   XLS_RETURN_IF_ERROR(ast_generator_options.Validate());
 
   if (options.crash_path.has_value()) {
@@ -242,8 +241,7 @@ int main(int argc, char** argv) {
       .force_failure = absl::GetFlag(FLAGS_force_failure),
       .generate_proc = absl::GetFlag(FLAGS_generate_proc),
       .require_sum_type = absl::GetFlag(FLAGS_require_sum_type),
-      .require_cross_module_sum_type =
-          absl::GetFlag(FLAGS_require_cross_module_sum_type),
+      .emit_imported_types = absl::GetFlag(FLAGS_emit_imported_types),
       .max_width_aggregate_types =
           absl::GetFlag(FLAGS_max_width_aggregate_types),
       .max_width_bits_types = absl::GetFlag(FLAGS_max_width_bits_types),

@@ -74,6 +74,37 @@ namespace xls::dslx {
 
 namespace {
 
+enum class ImportedType { kFloat32, kTag, kOption };
+
+std::optional<ImportedType> GetImportedType(std::string_view name) {
+  if (name == "float32::F32") {
+    return ImportedType::kFloat32;
+  } else if (name == "semantic_sum_provider::Tag") {
+    return ImportedType::kTag;
+  } else if (name == "semantic_sum_provider::Option") {
+    return ImportedType::kOption;
+  } else {
+    return std::nullopt;
+  }
+}
+
+// Array elements may refer to a local alias of an imported nominal type.
+std::optional<ImportedType> GetImportedType(const TypeAnnotation* type) {
+  auto* type_ref = dynamic_cast<const TypeRefTypeAnnotation*>(type);
+  if (type_ref == nullptr) {
+    return std::nullopt;
+  } else {
+    const TypeDefinition& definition = type_ref->type_ref()->type_definition();
+    if (auto* alias = std::get_if<TypeAlias*>(&definition)) {
+      return GetImportedType(&(*alias)->type_annotation());
+    } else if (auto* imported = std::get_if<ColonRef*>(&definition)) {
+      return GetImportedType((*imported)->ToString());
+    } else {
+      return std::nullopt;
+    }
+  }
+}
+
 // Given a collection of delaying operations for the dependencies of a value,
 // determine the effective delaying operation we need to propagate along with
 // that value.
@@ -114,21 +145,6 @@ absl::Status AstGeneratorOptions::Validate() const {
   if (generate_proc && require_sum_type) {
     return absl::InvalidArgumentError(
         "require_sum_type is only supported for function generation.");
-  } else if (require_cross_module_sum_type && generate_proc) {
-    return absl::InvalidArgumentError(
-        "require_cross_module_sum_type is only supported for function "
-        "generation.");
-  } else if (require_cross_module_sum_type && !require_sum_type) {
-    return absl::InvalidArgumentError(
-        "require_cross_module_sum_type requires require_sum_type.");
-  } else if (require_cross_module_sum_type && max_width_bits_types < 23) {
-    return absl::InvalidArgumentError(
-        "require_cross_module_sum_type requires max_width_bits_types "
-        "of at least 23.");
-  } else if (require_cross_module_sum_type && max_width_aggregate_types < 32) {
-    return absl::InvalidArgumentError(
-        "require_cross_module_sum_type requires "
-        "max_width_aggregate_types of at least 32.");
   } else {
     return absl::OkStatus();
   }
@@ -146,7 +162,7 @@ absl::Status AstGeneratorOptions::Validate() const {
       .emit_stateless_proc = proto.emit_stateless_proc(),
       .emit_zero_width_bits_types = proto.emit_zero_width_bits_types(),
       .require_sum_type = proto.require_sum_type(),
-      .require_cross_module_sum_type = proto.require_cross_module_sum_type(),
+      .emit_imported_types = proto.emit_imported_types(),
   };
   XLS_RETURN_IF_ERROR(options.Validate());
   return options;
@@ -163,7 +179,7 @@ AstGeneratorOptionsProto AstGeneratorOptions::ToProto() const {
   proto.set_emit_stateless_proc(emit_stateless_proc);
   proto.set_emit_zero_width_bits_types(emit_zero_width_bits_types);
   proto.set_require_sum_type(require_sum_type);
-  proto.set_require_cross_module_sum_type(require_cross_module_sum_type);
+  proto.set_emit_imported_types(emit_imported_types);
   return proto;
 }
 
@@ -512,8 +528,9 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateChannelOp(Context* ctx) {
     max_width_aggregate_types = options_.max_width_aggregate_types - 1;
   }
   // Generate an arbitrary type for the channel.
-  TypeAnnotation* channel_type =
-      GenerateType(0, max_width_bits_types, max_width_aggregate_types);
+  TypeAnnotation* channel_type = GenerateType(
+      0, max_width_bits_types, max_width_aggregate_types,
+      /*allow_imported_types=*/true, /*allow_imported_structs=*/false);
 
   // If needed, generate a default value.
   std::optional<TypedExpr> default_value;
@@ -807,7 +824,13 @@ class FindTypeVisitor : public AstNodeVisitorWithDefault {
   }
 
   absl::Status HandleColonRef(const ColonRef* colon_def) override {
-    return absl::InternalError("ColonRef are not supported by the fuzzer.");
+    // The curated nominal types contain neither tokens nor arrays. Unknown
+    // imported definitions still require explicit support before traversal.
+    if (GetImportedType(colon_def->ToString()).has_value()) {
+      return absl::OkStatus();
+    } else {
+      return absl::InternalError("ColonRef are not supported by the fuzzer.");
+    }
   }
 
   absl::Status HandleProcAlias(const ProcAlias* proc_alias) override {
@@ -828,6 +851,18 @@ class FindTypeVisitor : public AstNodeVisitorWithDefault {
   const std::function<bool(const TypeAnnotation*)> is_target_type_;
   bool found_ = false;
 };
+
+namespace {
+
+absl::StatusOr<bool> ContainsImportedSum(const TypeAnnotation* type) {
+  FindTypeVisitor visitor([](const TypeAnnotation* candidate) {
+    return GetImportedType(candidate) == ImportedType::kOption;
+  });
+  XLS_RETURN_IF_ERROR(type->Accept(&visitor));
+  return visitor.found();
+}
+
+}  // namespace
 
 /* static */ absl::StatusOr<bool> AstGenerator::ContainsToken(
     const TypeAnnotation* type) {
@@ -896,7 +931,9 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateCompareTuple(Context* ctx) {
 
 absl::StatusOr<TypedExpr> AstGenerator::GenerateExprOfType(
     Context* ctx, TypeAnnotation* type) {
-  if (IsTuple(type)) {
+  if (GetImportedType(type).has_value()) {
+    return GenerateImportedValue(ctx, type);
+  } else if (IsTuple(type)) {
     auto tuple_type = dynamic_cast<TupleTypeAnnotation*>(type);
     std::vector<TypedExpr> candidates = GatherAllValues(&ctx->env, tuple_type);
     // Twenty percent of the time, generate a reference if one exists.
@@ -1406,6 +1443,17 @@ Number* AstGenerator::GenerateNumberFromBits(const Bits& value,
 }
 
 int64_t AstGenerator::GetTypeBitCount(const TypeAnnotation* type) {
+  if (std::optional<ImportedType> imported = GetImportedType(type);
+      imported.has_value()) {
+    switch (*imported) {
+      case ImportedType::kFloat32:
+        return 32;
+      case ImportedType::kTag:
+        return 2;
+      case ImportedType::kOption:
+        return 9;
+    }
+  }
   absl::StatusOr<int64_t> bit_count = BitsTypeGetBitCount(type);
   if (bit_count.ok()) {
     return bit_count.value();
@@ -1612,7 +1660,15 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateSignExtendBuiltin(
 }
 
 absl::StatusOr<TypedExpr> AstGenerator::GenerateArrayConcat(Context* ctx) {
-  XLS_ASSIGN_OR_RETURN(TypedExpr lhs, ChooseEnvValueArray(&ctx->env));
+  // Concat inference queries element_count, which Phase 1 rejects for any
+  // type containing a semantic sum, including nested arrays and tuples.
+  auto supports_element_count = [](ArrayTypeAnnotation* type) {
+    absl::StatusOr<bool> contains_sum = ContainsImportedSum(type);
+    CHECK_OK(contains_sum);
+    return !*contains_sum;
+  };
+  XLS_ASSIGN_OR_RETURN(
+      TypedExpr lhs, ChooseEnvValueArray(&ctx->env, supports_element_count));
   auto* lhs_array_type = dynamic_cast<ArrayTypeAnnotation*>(lhs.type);
   XLS_RET_CHECK(lhs_array_type != nullptr);
 
@@ -2143,10 +2199,20 @@ TypeAnnotation* AstGenerator::GenerateBitsType(
 
 TypeAnnotation* AstGenerator::GenerateType(
     int64_t nesting, std::optional<int64_t> max_width_bits_types,
-    std::optional<int64_t> max_width_aggregate_types) {
+    std::optional<int64_t> max_width_aggregate_types, bool allow_imported_types,
+    bool allow_imported_structs) {
   int64_t max_width = options_.max_width_aggregate_types;
   if (max_width_aggregate_types.has_value()) {
     max_width = max_width_aggregate_types.value();
+  }
+  if (options_.emit_imported_types && allow_imported_types &&
+      RandomBool(0.15)) {
+    TypeAnnotation* imported = GenerateImportedType(
+        max_width_bits_types.value_or(options_.max_width_bits_types), max_width,
+        allow_imported_structs);
+    if (imported != nullptr) {
+      return imported;
+    }
   }
   if (RandomBool(0.1 * std::pow(2.0, -nesting))) {
     // Generate tuple type. Use a mean value of 3 elements so the tuple isn't
@@ -2154,7 +2220,11 @@ TypeAnnotation* AstGenerator::GenerateType(
     int64_t total_width = 0;
     std::vector<TypeAnnotation*> element_types;
     for (int64_t i = 0; i < RandomIntWithExpectedValue(3, 0); ++i) {
-      TypeAnnotation* element_type = GenerateType(nesting + 1);
+      TypeAnnotation* element_type =
+          options_.emit_imported_types
+              ? GenerateType(nesting + 1, max_width_bits_types, max_width,
+                             allow_imported_types, allow_imported_structs)
+              : GenerateType(nesting + 1);
       int64_t element_width = GetTypeBitCount(element_type);
       if (total_width + element_width > max_width) {
         break;
@@ -2167,7 +2237,8 @@ TypeAnnotation* AstGenerator::GenerateType(
   if (RandomBool(0.1 * std::pow(2.0, -nesting))) {
     // Generate array type.
     TypeAnnotation* element_type =
-        GenerateType(nesting + 1, max_width_bits_types, max_width);
+        GenerateType(nesting + 1, max_width_bits_types, max_width,
+                     allow_imported_types, allow_imported_structs);
     int64_t element_width = GetTypeBitCount(element_type);
     int64_t element_count = RandomIntWithExpectedValue(10, /*lower_limit=*/1);
     if (element_count * element_width > max_width) {
@@ -2178,73 +2249,174 @@ TypeAnnotation* AstGenerator::GenerateType(
   return GenerateBitsType(max_width_bits_types);
 }
 
-TypeRefTypeAnnotation* AstGenerator::MakeImportedSumTypeAnnotation() {
-  CHECK(imported_semantic_sum_name_def_ != nullptr);
-  auto* type_ref = module_->Make<ColonRef>(
-      fake_span_, MakeNameRef(imported_semantic_sum_name_def_), "Option");
-  return MakeTypeRefTypeAnnotation(TypeDefinition(type_ref));
+TypeAnnotation* AstGenerator::GenerateImportedType(int64_t max_bits,
+                                                   int64_t max_aggregate,
+                                                   bool allow_structs) {
+  std::vector<ImportedType> candidates;
+  if (allow_structs && max_bits >= 23 && max_aggregate >= 32) {
+    candidates.push_back(ImportedType::kFloat32);
+  }
+  if (max_bits >= 2 && max_aggregate >= 2) {
+    candidates.push_back(ImportedType::kTag);
+  }
+  // Phase 1 sums are supported in functions, including helpers, but not in
+  // proc modules. A helper's local Context alone cannot distinguish that case.
+  if (!options_.generate_proc && max_bits >= 8 && max_aggregate >= 9) {
+    candidates.push_back(ImportedType::kOption);
+  }
+  if (candidates.empty()) {
+    return nullptr;
+  } else {
+    ImportedType selected =
+        RandomChoice(absl::MakeConstSpan(candidates), bit_gen_);
+    NameDef* provider = imported_semantic_sum_name_def_;
+    std::string name;
+    switch (selected) {
+      case ImportedType::kFloat32:
+        provider = imported_float32_name_def_;
+        name = "F32";
+        break;
+      case ImportedType::kTag:
+        name = "Tag";
+        break;
+      case ImportedType::kOption:
+        name = "Option";
+        break;
+    }
+    auto* reference =
+        module_->Make<ColonRef>(fake_span_, MakeNameRef(provider), name);
+    return MakeTypeRefTypeAnnotation(TypeDefinition(reference));
+  }
 }
 
-absl::Status AstGenerator::GenerateImportedSumStatements(
-    NameDef* imported_float32_value, std::vector<Statement*>* statements) {
-  XLS_RET_CHECK(imported_float32_value != nullptr);
-  XLS_RET_CHECK(imported_semantic_sum_name_def_ != nullptr);
-  XLS_RET_CHECK(statements != nullptr);
+absl::StatusOr<TypedExpr> AstGenerator::GenerateImportedValue(
+    Context* ctx, TypeAnnotation* type) {
+  std::vector<TypedExpr> candidates = GatherAllValues(&ctx->env, type);
+  if (!candidates.empty() && RandomBool(0.20)) {
+    return RandomChoice(absl::MakeConstSpan(candidates), bit_gen_);
+  } else {
+    switch (GetImportedType(type).value()) {
+      case ImportedType::kFloat32: {
+        std::vector<TypedExpr> fields;
+        for (int64_t width : {1, 8, 23}) {
+          XLS_ASSIGN_OR_RETURN(
+              TypedExpr field,
+              GenerateExprOfType(ctx, MakeTypeAnnotation(false, width, false)));
+          fields.push_back(field);
+        }
+        auto [values, types, delaying_ops] = Unzip(fields);
+        return TypedExpr{
+            .expr = module_->Make<StructInstance>(
+                fake_span_, static_cast<TypeRefTypeAnnotation*>(type),
+                std::vector<std::pair<std::string, Expr*>>{
+                    {"sign", values[0]},
+                    {"bexp", values[1]},
+                    {"fraction", values[2]}}),
+            .type = type,
+            .last_delaying_op = ComposeDelayingOps(delaying_ops),
+            .min_stage = std::max({fields[0].min_stage, fields[1].min_stage,
+                                   fields[2].min_stage})};
+      }
+      case ImportedType::kTag: {
+        static constexpr std::string_view kMembers[] = {"Zero", "One", "Two",
+                                                        "Three"};
+        auto* enum_ref = module_->Make<ColonRef>(
+            fake_span_, MakeNameRef(imported_semantic_sum_name_def_), "Tag");
+        return TypedExpr{.expr = module_->Make<ColonRef>(
+                             fake_span_, enum_ref,
+                             std::string(RandomChoice(
+                                 absl::MakeConstSpan(kMembers), bit_gen_))),
+                         .type = type};
+      }
+      case ImportedType::kOption: {
+        auto* sum_ref = module_->Make<ColonRef>(
+            fake_span_, MakeNameRef(imported_semantic_sum_name_def_), "Option");
+        if (RandomBool(0.5)) {
+          return TypedExpr{
+              .expr = module_->Make<ColonRef>(fake_span_, sum_ref, "None"),
+              .type = type};
+        } else {
+          XLS_ASSIGN_OR_RETURN(
+              TypedExpr payload,
+              GenerateExprOfType(ctx, MakeTypeAnnotation(false, 8, false)));
+          return TypedExpr{
+              .expr = module_->Make<Invocation>(
+                  fake_span_,
+                  module_->Make<ColonRef>(fake_span_, sum_ref, "Some"),
+                  std::vector<Expr*>{payload.expr}),
+              .type = type,
+              .last_delaying_op = payload.last_delaying_op,
+              .min_stage = payload.min_stage};
+        }
+      }
+    }
+  }
+  return absl::InternalError("Unknown imported type.");
+}
 
-  auto make_imported_constructor = [&](std::string_view variant) {
-    auto* type_ref = module_->Make<ColonRef>(
-        fake_span_, MakeNameRef(imported_semantic_sum_name_def_), "Option");
-    return module_->Make<ColonRef>(fake_span_, type_ref, std::string(variant));
-  };
-  auto* payload_type = MakeTypeAnnotation(/*is_signed=*/false, /*width=*/8,
-                                          /*use_xn=*/false);
-  auto make_payload = [&]() -> Expr* {
-    auto* fraction = module_->Make<Attr>(
-        fake_span_, MakeNameRef(imported_float32_value), "fraction");
-    return module_->Make<Cast>(fake_span_, fraction, payload_type);
-  };
-
-  auto* imported_sum =
-      module_->Make<Invocation>(fake_span_, make_imported_constructor("Some"),
-                                std::vector<Expr*>{make_payload()});
-  auto* imported_sum_name =
-      module_->Make<NameDef>(fake_span_, GenSym(), imported_sum);
-  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
-      fake_span_, imported_sum_name, MakeImportedSumTypeAnnotation(),
-      imported_sum, /*is_const=*/false)));
-
-  auto* identity_ref = module_->Make<ColonRef>(
-      fake_span_, MakeNameRef(imported_semantic_sum_name_def_), "identity");
-  auto* identity_call = module_->Make<Invocation>(
-      fake_span_, identity_ref,
-      std::vector<Expr*>{MakeNameRef(imported_sum_name)});
-  auto* roundtripped_sum_name =
-      module_->Make<NameDef>(fake_span_, GenSym(), identity_call);
-  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
-      fake_span_, roundtripped_sum_name, MakeImportedSumTypeAnnotation(),
-      identity_call, /*is_const=*/false)));
-
-  auto* matched_payload_name = MakeNameDef(GenSym());
-  auto* some_pattern = module_->Make<SumVariantPayloadPattern>(
-      fake_span_, make_imported_constructor("Some"),
-      PatternTree{module_->Make<TuplePattern>(
-          fake_span_, std::vector<PatternTree>{matched_payload_name})});
-  auto* some_arm = module_->Make<MatchArm>(
-      fake_span_, std::vector<PatternTree>{some_pattern},
-      MakeNameRef(matched_payload_name));
-  auto* none_arm = module_->Make<MatchArm>(
-      fake_span_, std::vector<PatternTree>{make_imported_constructor("None")},
-      GenerateNumber(/*value=*/0, payload_type));
-  auto* match =
-      module_->Make<Match>(fake_span_, MakeNameRef(roundtripped_sum_name),
-                           std::vector<MatchArm*>{some_arm, none_arm});
-  auto* matched_payload = module_->Make<NameDef>(fake_span_, GenSym(), match);
-  statements->push_back(module_->Make<Statement>(module_->Make<Let>(
-      fake_span_, matched_payload, payload_type, match, /*is_const=*/false)));
-  statements->push_back(module_->Make<Statement>(module_->Make<Invocation>(
-      fake_span_, MakeBuiltinNameRef("assert_eq"),
-      std::vector<Expr*>{MakeNameRef(matched_payload), make_payload()})));
-  return absl::OkStatus();
+absl::StatusOr<TypedExpr> AstGenerator::GenerateImportedExpr(Context* ctx) {
+  std::vector<TypedExpr> candidates =
+      GatherAllValues(&ctx->env, [](const TypedExpr& value) {
+        return GetImportedType(value.type).has_value();
+      });
+  if (!candidates.empty() && RandomBool(0.5)) {
+    TypedExpr value = RandomChoice(absl::MakeConstSpan(candidates), bit_gen_);
+    Expr* observed = nullptr;
+    TypeAnnotation* result_type = nullptr;
+    switch (GetImportedType(value.type).value()) {
+      case ImportedType::kFloat32: {
+        static constexpr std::pair<std::string_view, int64_t> kFields[] = {
+            {"sign", 1}, {"bexp", 8}, {"fraction", 23}};
+        const auto& [name, width] =
+            RandomChoice(absl::MakeConstSpan(kFields), bit_gen_);
+        observed =
+            module_->Make<Attr>(fake_span_, value.expr, std::string(name));
+        result_type = MakeTypeAnnotation(false, width, false);
+        break;
+      }
+      case ImportedType::kTag:
+        result_type = MakeTypeAnnotation(false, 2, false);
+        observed = module_->Make<Cast>(fake_span_, value.expr, result_type);
+        break;
+      case ImportedType::kOption: {
+        auto make_constructor = [&](std::string_view variant) {
+          auto* sum_ref = module_->Make<ColonRef>(
+              fake_span_, MakeNameRef(imported_semantic_sum_name_def_),
+              "Option");
+          return module_->Make<ColonRef>(fake_span_, sum_ref,
+                                         std::string(variant));
+        };
+        result_type = MakeTypeAnnotation(false, 8, false);
+        NameDef* payload = MakeNameDef(GenSym());
+        auto* some_pattern = module_->Make<SumVariantPayloadPattern>(
+            fake_span_, make_constructor("Some"),
+            PatternTree{module_->Make<TuplePattern>(
+                fake_span_, std::vector<PatternTree>{payload})});
+        auto* some_arm = module_->Make<MatchArm>(
+            fake_span_, std::vector<PatternTree>{some_pattern},
+            MakeNameRef(payload));
+        auto* none_arm = module_->Make<MatchArm>(
+            fake_span_, std::vector<PatternTree>{make_constructor("None")},
+            MakeNumber(0, result_type));
+        observed = module_->Make<Match>(
+            fake_span_, value.expr, std::vector<MatchArm*>{some_arm, none_arm});
+        break;
+      }
+    }
+    return TypedExpr{.expr = observed,
+                     .type = result_type,
+                     .last_delaying_op = value.last_delaying_op,
+                     .min_stage = value.min_stage};
+  } else {
+    TypeAnnotation* type = GenerateImportedType(
+        options_.max_width_bits_types, options_.max_width_aggregate_types,
+        /*allow_structs=*/true);
+    if (type == nullptr) {
+      return RecoverableError("No imported type fits the width limits.");
+    } else {
+      return GenerateExprOfType(ctx, type);
+    }
+  }
 }
 
 absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
@@ -2283,41 +2455,6 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
   sum_defs_.push_back(sum_def);
   generated_required_sum_ = true;
 
-  NameDef* imported_value_name_def = nullptr;
-  if (options_.require_cross_module_sum_type) {
-    XLS_RET_CHECK(imported_float32_name_def_ != nullptr);
-    XLS_RET_CHECK(payload_type.has_value());
-
-    auto* imported_type_ref = module_->Make<ColonRef>(
-        fake_span_, MakeNameRef(imported_float32_name_def_), "F32");
-    auto* imported_type =
-        MakeTypeRefTypeAnnotation(TypeDefinition(imported_type_ref));
-    auto* sign_type = MakeTypeAnnotation(/*is_signed=*/false, /*width=*/1,
-                                         /*use_xn=*/false);
-    auto* exponent_type = MakeTypeAnnotation(/*is_signed=*/false, /*width=*/8,
-                                             /*use_xn=*/false);
-    auto* fraction_type = MakeTypeAnnotation(/*is_signed=*/false, /*width=*/23,
-                                             /*use_xn=*/false);
-    auto* imported_value = module_->Make<StructInstance>(
-        fake_span_, imported_type,
-        std::vector<std::pair<std::string, Expr*>>{
-            {"sign",
-             GenerateNumber(absl::Uniform<int64_t>(bit_gen_, 0, 2), sign_type)},
-            {"bexp", GenerateNumber(absl::Uniform<int64_t>(bit_gen_, 0, 256),
-                                    exponent_type)},
-            {"fraction",
-             GenerateNumber(absl::Uniform<int64_t>(bit_gen_, 0, 1 << 23),
-                            fraction_type)},
-        });
-    imported_value_name_def =
-        module_->Make<NameDef>(fake_span_, GenSym(), imported_value);
-    statements->push_back(module_->Make<Statement>(module_->Make<Let>(
-        fake_span_, imported_value_name_def, imported_type, imported_value,
-        /*is_const=*/false)));
-    XLS_RETURN_IF_ERROR(
-        GenerateImportedSumStatements(imported_value_name_def, statements));
-  }
-
   auto make_constructor_ref = [&](NameDef* variant_name_def) {
     return module_->Make<ColonRef>(fake_span_,
                                    MakeTypeRefTypeAnnotation(sum_def),
@@ -2335,19 +2472,10 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateRequiredSumPredicate(
       }
       return constructor_ref;
     }
-    if (imported_value_name_def != nullptr) {
-      auto* fraction = module_->Make<Attr>(
-          fake_span_, MakeNameRef(imported_value_name_def), "fraction");
-      auto* payload_value =
-          module_->Make<Cast>(fake_span_, fraction, *want_payload_type);
-      return module_->Make<Invocation>(fake_span_, constructor_ref,
-                                       std::vector<Expr*>{payload_value});
-    } else {
-      XLS_ASSIGN_OR_RETURN(TypedExpr payload_value,
-                           GenerateExprOfType(ctx, *want_payload_type));
-      return module_->Make<Invocation>(fake_span_, constructor_ref,
-                                       std::vector<Expr*>{payload_value.expr});
-    }
+    XLS_ASSIGN_OR_RETURN(TypedExpr payload_value,
+                         GenerateExprOfType(ctx, *want_payload_type));
+    return module_->Make<Invocation>(fake_span_, constructor_ref,
+                                    std::vector<Expr*>{payload_value.expr});
   };
   XLS_ASSIGN_OR_RETURN(
       Expr * active_sum_expr,
@@ -2958,102 +3086,107 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateExpr(int64_t call_depth,
                                                      Context* ctx) {
   absl::StatusOr<TypedExpr> generated = RecoverableError("Not yet generated.");
   while (IsRecoverableError(generated.status())) {
-    switch (ChooseOp(bit_gen_, ctx->is_generating_proc, options_.emit_loops)) {
-      case kArray:
-        generated = GenerateArray(ctx);
-        break;
-      case kArrayIndex:
-        generated = GenerateArrayIndex(ctx);
-        break;
-      case kArrayUpdate:
-        generated = GenerateArrayUpdate(ctx);
-        break;
-      case kArraySlice:
-        generated = GenerateArraySlice(ctx);
-        break;
-      case kCountedFor:
-        generated = GenerateCountedFor(ctx);
-        break;
-      case kTupleOrIndex:
-        generated = GenerateTupleOrIndex(ctx);
-        break;
-      case kConcat:
-        generated = GenerateConcat(ctx);
-        break;
-      case kBinop:
-        generated = GenerateBinop(ctx);
-        break;
-      case kCompareOp:
-        generated = GenerateCompare(ctx);
-        break;
-      case kCompareArrayOp:
-        generated = GenerateCompareArray(ctx);
-        break;
-      case kCompareTupleOp:
-        generated = GenerateCompareTuple(ctx);
-        break;
-      case kMatchOp:
-        generated = GenerateMatch(ctx);
-        break;
-      case kShiftOp:
-        generated = GenerateShift(ctx);
-        break;
-      case kLogical:
-        generated = GenerateLogicalOp(ctx);
-        break;
-      case kGate:
-        if (!options_.emit_gate) {
-          continue;
-        }
-        generated = GenerateGate(ctx);
-        break;
-      case kChannelOp:
-        generated = GenerateChannelOp(ctx);
-        break;
-      case kJoinOp:
-        generated = GenerateJoinOp(ctx);
-        break;
-      case kMap:
-        generated = GenerateMap(call_depth, ctx);
-        break;
-      case kInvoke:
-        generated = GenerateInvoke(call_depth, ctx);
-        break;
-      case kUnop:
-        generated = GenerateUnop(ctx);
-        break;
-      case kUnopBuiltin:
-        generated = GenerateUnopBuiltin(ctx);
-        break;
-      case kOneHotSelectBuiltin:
-        generated = GenerateOneHotSelectBuiltin(ctx);
-        break;
-      case kPartialProduct:
-        generated = GeneratePartialProductDeterministicGroup(ctx);
-        break;
-      case kPrioritySelectBuiltin:
-        generated = GeneratePrioritySelectBuiltin(ctx);
-        break;
-      case kSignExtendBuiltin:
-        generated = GenerateSignExtendBuiltin(ctx);
-        break;
-      case kNumber:
-        generated = GenerateNumberWithType();
-        break;
-      case kBitwiseReduction:
-        generated = GenerateBitwiseReduction(ctx);
-        break;
-      case kBitSlice:
-        generated = GenerateBitSlice(ctx);
-        break;
-      case kCastToBitsArray:
-        generated = GenerateCastBitsToArray(ctx);
-        break;
-      case kBitSliceUpdate:
-        generated = GenerateBitSliceUpdate(ctx);
-        break;
-      case kEndSentinel:
-        LOG(FATAL) << "Should not have selected end sentinel";
+    if (options_.emit_imported_types && RandomBool(0.15)) {
+      generated = GenerateImportedExpr(ctx);
+    } else {
+      switch (
+          ChooseOp(bit_gen_, ctx->is_generating_proc, options_.emit_loops)) {
+        case kArray:
+          generated = GenerateArray(ctx);
+          break;
+        case kArrayIndex:
+          generated = GenerateArrayIndex(ctx);
+          break;
+        case kArrayUpdate:
+          generated = GenerateArrayUpdate(ctx);
+          break;
+        case kArraySlice:
+          generated = GenerateArraySlice(ctx);
+          break;
+        case kCountedFor:
+          generated = GenerateCountedFor(ctx);
+          break;
+        case kTupleOrIndex:
+          generated = GenerateTupleOrIndex(ctx);
+          break;
+        case kConcat:
+          generated = GenerateConcat(ctx);
+          break;
+        case kBinop:
+          generated = GenerateBinop(ctx);
+          break;
+        case kCompareOp:
+          generated = GenerateCompare(ctx);
+          break;
+        case kCompareArrayOp:
+          generated = GenerateCompareArray(ctx);
+          break;
+        case kCompareTupleOp:
+          generated = GenerateCompareTuple(ctx);
+          break;
+        case kMatchOp:
+          generated = GenerateMatch(ctx);
+          break;
+        case kShiftOp:
+          generated = GenerateShift(ctx);
+          break;
+        case kLogical:
+          generated = GenerateLogicalOp(ctx);
+          break;
+        case kGate:
+          if (!options_.emit_gate) {
+            continue;
+          }
+          generated = GenerateGate(ctx);
+          break;
+        case kChannelOp:
+          generated = GenerateChannelOp(ctx);
+          break;
+        case kJoinOp:
+          generated = GenerateJoinOp(ctx);
+          break;
+        case kMap:
+          generated = GenerateMap(call_depth, ctx);
+          break;
+        case kInvoke:
+          generated = GenerateInvoke(call_depth, ctx);
+          break;
+        case kUnop:
+          generated = GenerateUnop(ctx);
+          break;
+        case kUnopBuiltin:
+          generated = GenerateUnopBuiltin(ctx);
+          break;
+        case kOneHotSelectBuiltin:
+          generated = GenerateOneHotSelectBuiltin(ctx);
+          break;
+        case kPartialProduct:
+          generated = GeneratePartialProductDeterministicGroup(ctx);
+          break;
+        case kPrioritySelectBuiltin:
+          generated = GeneratePrioritySelectBuiltin(ctx);
+          break;
+        case kSignExtendBuiltin:
+          generated = GenerateSignExtendBuiltin(ctx);
+          break;
+        case kNumber:
+          generated = GenerateNumberWithType();
+          break;
+        case kBitwiseReduction:
+          generated = GenerateBitwiseReduction(ctx);
+          break;
+        case kBitSlice:
+          generated = GenerateBitSlice(ctx);
+          break;
+        case kCastToBitsArray:
+          generated = GenerateCastBitsToArray(ctx);
+          break;
+        case kBitSliceUpdate:
+          generated = GenerateBitSliceUpdate(ctx);
+          break;
+        case kEndSentinel:
+          LOG(FATAL) << "Should not have selected end sentinel";
+      }
     }
   }
 
@@ -3065,7 +3198,8 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateExpr(int64_t call_depth,
                        options_.max_width_bits_types)
           << absl::StreamFormat("Bits-typed expression is too wide: %s",
                                 generated->expr->ToString());
-    } else if (IsArray(generated->type) || IsTuple(generated->type)) {
+    } else if (IsArray(generated->type) || IsTuple(generated->type) ||
+               GetImportedType(generated->type).has_value()) {
       XLS_RET_CHECK_LE(GetTypeBitCount(generated->type),
                        options_.max_width_aggregate_types)
           << absl::StreamFormat("Aggregate-typed expression is too wide: %s",
@@ -3274,6 +3408,8 @@ void AstGenerator::GenerateTupleAssignment(
     NameRef* name_ref, TypedExpr& rhs, Context* ctx,
     std::vector<Statement*>& statements) {
   auto* tuple_type = dynamic_cast<TupleTypeAnnotation*>(rhs.type);
+  absl::StatusOr<bool> contains_sum = ContainsImportedSum(tuple_type);
+  CHECK_OK(contains_sum);
   if (tuple_type->empty()) {
     return;
   }
@@ -3324,7 +3460,10 @@ void AstGenerator::GenerateTupleAssignment(
         continue;
       }
 
-      if (rhs_type == nullptr && !has_rest_of_tuple && RandomBool(0.1)) {
+      // A trailing binding after ".." infers its index with element_count.
+      // Fully destructuring sum-containing tuples avoids that unsupported query.
+      if (rhs_type == nullptr && !has_rest_of_tuple && !*contains_sum &&
+          RandomBool(0.1)) {
         has_rest_of_tuple = true;
         // Insert a "rest of tuple", but we might keep this name.
         RestOfTuple* rest = module_->Make<RestOfTuple>(fake_span_);
@@ -3396,28 +3535,7 @@ absl::StatusOr<AnnotatedFunction> AstGenerator::GenerateFunction(
   }
 
   XLS_ASSIGN_OR_RETURN(TypedExpr retval, GenerateBody(call_depth, &context));
-  std::vector<Statement*> statements;
-  if (call_depth == 0 && options_.require_cross_module_sum_type) {
-    Param* imported_sum_param =
-        GenerateParam({.type = MakeImportedSumTypeAnnotation()}).param;
-    params.push_back(imported_sum_param);
-
-    auto* original_result = module_->Make<NameDef>(
-        fake_span_, absl::StrCat("_", GenSym()), retval.expr);
-    statements.push_back(module_->Make<Statement>(module_->Make<Let>(
-        fake_span_, original_result, retval.type, retval.expr,
-        /*is_const=*/false)));
-
-    auto* identity_ref = module_->Make<ColonRef>(
-        fake_span_, MakeNameRef(imported_semantic_sum_name_def_), "identity");
-    auto* identity_call = module_->Make<Invocation>(
-        fake_span_, identity_ref,
-        std::vector<Expr*>{MakeNameRef(imported_sum_param->name_def())});
-    statements.push_back(module_->Make<Statement>(identity_call));
-    retval.type = MakeImportedSumTypeAnnotation();
-  } else {
-    statements.push_back(module_->Make<Statement>(retval.expr));
-  }
+  std::vector<Statement*> statements{module_->Make<Statement>(retval.expr)};
 
   NameDef* name_def =
       module_->Make<NameDef>(fake_span_, name, /*definer=*/nullptr);
@@ -3449,7 +3567,11 @@ absl::StatusOr<int64_t> AstGenerator::GenerateFunctionInModule(
   int64_t num_params = RandomIntWithExpectedValue(4, /*lower_limit=*/1);
   std::vector<AnnotatedType> param_types(num_params);
   for (int64_t i = 0; i < num_params; ++i) {
-    param_types[i] = {.type = GenerateType()};
+    // The input-value generator supports imported enums and sums, but not
+    // structs. Apply this restriction through nested tuples and arrays too.
+    param_types[i] = {.type = GenerateType(0, std::nullopt, std::nullopt,
+                                           /*allow_imported_types=*/true,
+                                           /*allow_imported_structs=*/false)};
   }
   XLS_ASSIGN_OR_RETURN(AnnotatedFunction f,
                        GenerateFunction(name, /*call_depth=*/0, param_types));
@@ -3514,7 +3636,10 @@ absl::StatusOr<AnnotatedFunction> AstGenerator::GenerateProcNextFunction(
   if (options_.emit_stateless_proc) {
     state_param_type = MakeTupleType({});
   } else {
-    state_param_type = GenerateType();
+    // Proc initialization uses the constant generator, which cannot construct
+    // imported nominal types. Ordinary proc expressions may still use them.
+    state_param_type = GenerateType(0, std::nullopt, std::nullopt,
+                                    /*allow_imported_types=*/false);
   }
   params.insert(params.end(), GenerateParam({.type = state_param_type}).param);
   proc_properties_.state_types.push_back(params.back()->type_annotation());
@@ -3637,7 +3762,7 @@ absl::StatusOr<AnnotatedModule> AstGenerator::Generate(
   XLS_RETURN_IF_ERROR(options_.Validate());
   module_ = std::make_unique<Module>(module_name, /*fs_path=*/std::nullopt,
                                      file_table_);
-  if (options_.require_cross_module_sum_type) {
+  if (options_.emit_imported_types) {
     imported_float32_name_def_ = MakeNameDef("float32");
     auto* import =
         module_->Make<Import>(fake_span_, std::vector<std::string>{"float32"},
