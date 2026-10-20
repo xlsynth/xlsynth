@@ -486,9 +486,10 @@ class AstGenerator {
   TypeAnnotation* GenerateBitsType(
       std::optional<int64_t> max_width_bits_types = std::nullopt);
 
-  // Generates a random type (bits, array, or tuple). Nesting is the amount of
-  // nesting within the currently generated type (e.g., element type of a
-  // tuple). Used to limit the depth of compound types. When set, the
+  // Generates a random bits, array, or tuple type, or an eligible curated
+  // imported type when imports are enabled. Nesting is the amount of nesting
+  // within the currently generated type (e.g., element type of a tuple). Used
+  // to limit the depth of compound types. When set, the
   // max_width_bits_types overwrites the value of the max_width_bits_types
   // parameter from the options. When set, the max_width_aggregate_types
   // overwrites the value of the max_width_aggregate_types parameter from the
