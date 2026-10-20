@@ -3763,13 +3763,18 @@ absl::StatusOr<AnnotatedModule> AstGenerator::Generate(
   module_ = std::make_unique<Module>(module_name, /*fs_path=*/std::nullopt,
                                      file_table_);
   if (options_.emit_imported_types) {
-    imported_float32_name_def_ = MakeNameDef("float32");
-    auto* import =
-        module_->Make<Import>(fake_span_, std::vector<std::string>{"float32"},
-                              *imported_float32_name_def_, std::nullopt);
-    imported_float32_name_def_->set_definer(import);
-    XLS_RETURN_IF_ERROR(
-        module_->AddTop(import, /*make_collision_error=*/nullptr));
+    // Importing float32 typechecks its sizeable dependency tree. Avoid that
+    // work when the width limits cannot admit F32 or its u23 fraction field.
+    if (options_.max_width_bits_types >= 23 &&
+        options_.max_width_aggregate_types >= 32) {
+      imported_float32_name_def_ = MakeNameDef("float32");
+      auto* import =
+          module_->Make<Import>(fake_span_, std::vector<std::string>{"float32"},
+                                *imported_float32_name_def_, std::nullopt);
+      imported_float32_name_def_->set_definer(import);
+      XLS_RETURN_IF_ERROR(
+          module_->AddTop(import, /*make_collision_error=*/nullptr));
+    }
 
     imported_semantic_sum_name_def_ = MakeNameDef("semantic_sum_provider");
     auto* semantic_sum_import = module_->Make<Import>(

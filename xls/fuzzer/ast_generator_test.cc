@@ -325,6 +325,7 @@ TEST(AstGeneratorMultiTest, ImportedTypesParticipateInOrdinaryExpressions) {
   options.emit_imported_types = true;
   std::string programs;
   std::string return_types;
+  std::string parameter_types;
   // Reuse the expensive stdlib import while checking every generated module.
   auto import_data = CreateImportDataForTest();
   for (int64_t i = 0; i < 32; ++i) {
@@ -341,6 +342,9 @@ TEST(AstGeneratorMultiTest, ImportedTypesParticipateInOrdinaryExpressions) {
         Function * main, generated.module->GetMemberOrError<Function>("main"));
     programs.append(text);
     return_types.append(main->return_type()->ToString());
+    for (const Param* param : main->params()) {
+      parameter_types.append(param->type_annotation()->ToString());
+    }
   }
   // Nominal values must reach the ordinary return selection, rather than a
   // discarded forced prefix or a wrapper that replaces the generated result.
@@ -348,6 +352,12 @@ TEST(AstGeneratorMultiTest, ImportedTypesParticipateInOrdinaryExpressions) {
   EXPECT_THAT(return_types, ::testing::HasSubstr("semantic_sum_provider::Tag"));
   EXPECT_THAT(return_types,
               ::testing::HasSubstr("semantic_sum_provider::Option"));
+  EXPECT_THAT(parameter_types,
+              ::testing::HasSubstr("semantic_sum_provider::Tag"));
+  EXPECT_THAT(parameter_types,
+              ::testing::HasSubstr("semantic_sum_provider::Option"));
+  EXPECT_THAT(parameter_types,
+              ::testing::Not(::testing::HasSubstr("float32::F32")));
   EXPECT_THAT(programs, ContainsRegex(R"(\.(sign|bexp|fraction))"));
   EXPECT_THAT(programs, ContainsRegex(R"(Option::Some\(x[0-9]+\) =>)"));
 }
@@ -369,6 +379,7 @@ TEST(AstGeneratorMultiTest, ImportedTypesRespectNarrowWidthLimits) {
                              generator.Generate("main", module_name));
     std::string text = generated.module->ToString();
     XLS_ASSERT_OK(ParseAndTypecheck<Function>(text, module_name, import_data));
+    EXPECT_THAT(text, ::testing::Not(::testing::HasSubstr("import float32")));
     EXPECT_THAT(text, ::testing::Not(::testing::HasSubstr("float32::F32")));
     EXPECT_THAT(
         text,

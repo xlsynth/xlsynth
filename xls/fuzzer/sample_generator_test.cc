@@ -63,7 +63,7 @@ TEST(SampleGeneratorTest, GenerateBasicFunctionSample) {
 
 TEST(SampleGeneratorTest, GenerateImportedTypeFunctionSample) {
   dslx::FileTable file_table;
-  std::mt19937_64 rng{0};
+  std::mt19937_64 rng{2};
   SampleOptions sample_options;
   constexpr int kCallsPerSample = 2;
   sample_options.set_calls_per_sample(kCallsPerSample);
@@ -71,8 +71,8 @@ TEST(SampleGeneratorTest, GenerateImportedTypeFunctionSample) {
   dslx::AstGeneratorOptions generator_options;
   generator_options.emit_imported_types = true;
   generator_options.require_sum_type = false;
-  // The AST tests sweep seeds; this seed covers all three nominal types through
-  // the full sample boundary, including input-value and testvector generation.
+  // The AST tests sweep seeds. This seed selects Tag and Option as public
+  // parameters, covering their input-value and testvector generation.
   XLS_ASSERT_OK_AND_ASSIGN(
       Sample sample,
       GenerateSample(generator_options, sample_options, rng, file_table));
@@ -82,10 +82,28 @@ TEST(SampleGeneratorTest, GenerateImportedTypeFunctionSample) {
   EXPECT_THAT(sample.input_text(), HasSubstr("float32::F32"));
   EXPECT_THAT(sample.input_text(), HasSubstr("semantic_sum_provider::Tag"));
   EXPECT_THAT(sample.input_text(), HasSubstr("semantic_sum_provider::Option"));
+  EXPECT_THAT(sample.input_text(),
+              ContainsRegex(R"(fn main\([^)]*x2: semantic_sum_provider::Tag, )"
+                            R"(x3: semantic_sum_provider::Option,)"));
 
   std::vector<std::vector<dslx::InterpValue>> args_batch;
   XLS_ASSERT_OK(sample.GetArgsAndChannels(args_batch));
-  EXPECT_EQ(args_batch.size(), kCallsPerSample);
+  ASSERT_EQ(args_batch.size(), kCallsPerSample);
+  for (const std::vector<dslx::InterpValue>& args : args_batch) {
+    ASSERT_EQ(args.size(), 6);
+    EXPECT_TRUE(args[2].IsUBits());
+    EXPECT_THAT(args[2].GetBitCount(), IsOkAndHolds(2));
+    ASSERT_TRUE(args[3].IsTuple());
+    const auto& sum = args[3].GetValuesOrDie();
+    ASSERT_EQ(sum.size(), 2);
+    EXPECT_TRUE(sum[0].IsUBits());
+    EXPECT_THAT(sum[0].GetBitCount(), IsOkAndHolds(1));
+    ASSERT_TRUE(sum[1].IsTuple());
+    const auto& payload = sum[1].GetValuesOrDie();
+    ASSERT_EQ(payload.size(), 1);
+    EXPECT_TRUE(payload[0].IsUBits());
+    EXPECT_THAT(payload[0].GetBitCount(), IsOkAndHolds(8));
+  }
   EXPECT_EQ(sample.testvector().function_args().args_size(), kCallsPerSample);
 }
 
