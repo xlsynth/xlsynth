@@ -2330,26 +2330,39 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
             Concretize(parametric_free_member_type, parametric_context));
         member_types.push_back(std::move(concrete_member_type));
       }
-      absl::flat_hash_map<const NameDef*, ExprOrType> resolved_annotations;
-      XLS_ASSIGN_OR_RETURN(
-          std::vector<SpecializationArgument> resolved_parametrics,
-          GetStructSpecializationArguments(*struct_or_proc, parametric_context,
-                                           struct_context,
-                                           resolved_annotations));
-      if (struct_def_base->kind() == AstNodeKind::kStructDef) {
-        std::unique_ptr<Type> type =
-            StructType::CreateWithSpecializationArguments(
-                std::move(member_types),
-                *absl::down_cast<const StructDef*>(struct_def_base),
-                std::move(resolved_parametrics));
-        XLS_RETURN_IF_ERROR(
-            AddCachedType(struct_def_base, struct_context, *type));
-        return type;
+      std::optional<Function*> call_function =
+          struct_def_base->impl().has_value()
+              ? (*struct_def_base->impl())->GetFunction(Lambda::kCallLambdaFn)
+              : std::nullopt;
+      std::unique_ptr<Type> type;
+      if (struct_def_base->kind() == AstNodeKind::kStructDef &&
+          call_function.has_value() &&
+          (*call_function)->tag() == FunctionTag::kGeneratedFromLambda) {
+        // A lambda can capture an unspecialized type alias (e.g. MyS = S) and
+        // specialize it in its body (MyS<N>). Its private capture struct has a
+        // concrete layout but cannot require complete nominal arguments here.
+        type = std::make_unique<StructType>(
+            std::move(member_types),
+            *absl::down_cast<const StructDef*>(struct_def_base));
+      } else {
+        absl::flat_hash_map<const NameDef*, ExprOrType> resolved_annotations;
+        XLS_ASSIGN_OR_RETURN(
+            std::vector<SpecializationArgument> resolved_parametrics,
+            GetStructSpecializationArguments(*struct_or_proc,
+                                             parametric_context, struct_context,
+                                             resolved_annotations));
+        if (struct_def_base->kind() == AstNodeKind::kStructDef) {
+          type = StructType::CreateWithSpecializationArguments(
+              std::move(member_types),
+              *absl::down_cast<const StructDef*>(struct_def_base),
+              std::move(resolved_parametrics));
+        } else {
+          type = ProcType::CreateWithSpecializationArguments(
+              std::move(member_types),
+              *absl::down_cast<const ProcDef*>(struct_def_base),
+              std::move(resolved_parametrics));
+        }
       }
-      std::unique_ptr<Type> type = ProcType::CreateWithSpecializationArguments(
-          std::move(member_types),
-          *absl::down_cast<const ProcDef*>(struct_def_base),
-          std::move(resolved_parametrics));
       XLS_RETURN_IF_ERROR(
           AddCachedType(struct_def_base, struct_context, *type));
       return type;

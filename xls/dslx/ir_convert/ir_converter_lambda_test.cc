@@ -184,6 +184,28 @@ const_assert!(main() == 6);
   ExpectIr(converted);
 }
 
+TEST_F(IrConverterTest, MapLambdaCapturesUnspecializedStructAlias) {
+  constexpr std::string_view kModule = R"(
+struct S<N: u32> { x: uN[N] }
+
+fn make_array<N: u32>() -> S<N>[5] {
+  type MyS = S;
+  map(uN[N]:0..5, |i| { MyS<N>{x: i} })
+}
+
+fn main() -> (S<16>[5], S<8>[5]) {
+  (make_array<16>(), make_array<8>())
+}
+
+const_assert!(main().0[1] == S<16>{x: 1});
+const_assert!(main().1[4] == S<8>{x: 4});
+)";
+
+  // The closure captures MyS before its body supplies N; both specializations
+  // must survive typechecking and conversion to IR.
+  XLS_EXPECT_OK(ConvertModuleForTest(kModule).status());
+}
+
 TEST_F(IrConverterTest, MapLambdaImplicitReturn) {
   constexpr std::string_view kModule = R"(
 fn add_five(arr: u32[4]) -> u32[4] {

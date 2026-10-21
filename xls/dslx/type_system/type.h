@@ -669,13 +669,15 @@ class StructTypeBase : public Type {
   const StructDefBase& struct_def_base() const { return struct_def_base_; }
 
   // Full arguments only when explicitly supplied to the legacy constructor.
-  // Compiler-created records retain compact nominal identity instead.
+  // Source-defined records retain compact nominal identity instead. Generated
+  // lambda capture structs may contain unspecialized type arguments.
   const std::optional<std::vector<NominalParametricArgument>>&
   resolved_parametric_arguments() const;
 
   // All concrete arguments in source-declaration order, including defaulted and
   // unused bindings. An empty vector is distinct from missing information on a
-  // manually constructed type. Ordinary record equality still ignores them.
+  // manually constructed type or generated lambda capture struct. Ordinary
+  // record equality still ignores them.
   const std::vector<SpecializationArgument>* specialization_arguments() const {
     const auto& full = resolved_parametric_data_->full;
     return full == nullptr ? nullptr : &full->arguments();
