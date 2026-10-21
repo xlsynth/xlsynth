@@ -50,4 +50,9 @@ message AstGeneratorOptionsProto {
   // sum definition and constructor use. This is not supported for proc
   // generation.
   optional bool require_sum_type = 9;
+
+  // Whether to sample from a curated set of imported types during ordinary
+  // expression generation. Independent of require_sum_type; no imported type
+  // is guaranteed to appear in any particular sample.
+  optional bool emit_imported_types = 11;
 }
