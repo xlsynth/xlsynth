@@ -190,7 +190,10 @@ struct S<N: u32> { x: uN[N] }
 
 fn make_array<N: u32>() -> S<N>[5] {
   type MyS = S;
-  map(uN[N]:0..5, |i| { MyS<N>{x: i} })
+  map(uN[N]:0..5, |i| {
+    let s: MyS<N> = S<N>{x: i};
+    s
+  })
 }
 
 fn main() -> (S<16>[5], S<8>[5]) {
