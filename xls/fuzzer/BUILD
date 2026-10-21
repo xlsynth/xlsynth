@@ -44,6 +44,11 @@ filegroup(
     srcs = glob(["testdata/semantic_sum_phase1/**"]),
 )
 
+filegroup(
+    name = "semantic_sum_provider_files",
+    srcs = ["testdata/semantic_sum_provider.x"],
+)
+
 dslx_strip_comments(
     name = "x_files_stripped",
     srcs = [":x_files"],
@@ -294,6 +299,7 @@ cc_library(
     srcs = ["sample_runner.cc"],
     hdrs = ["sample_runner.h"],
     data = [
+        ":semantic_sum_provider_files",
         "//xls/dslx/ir_convert:ir_converter_main",
         "//xls/tools:codegen_main",
         "//xls/tools:eval_ir_main",
@@ -958,6 +964,7 @@ cc_test(
     name = "ast_generator_test",
     timeout = "long",
     srcs = ["ast_generator_test.cc"],
+    data = [":semantic_sum_provider_files"],
     deps = [
         ":ast_generator",
         "//xls/common:xls_gunit_main",
@@ -966,6 +973,7 @@ cc_test(
         "//xls/common/status:status_macros",
         "//xls/dslx:command_line_utils",
         "//xls/dslx:create_import_data",
+        "//xls/dslx:import_data",
         "//xls/dslx:parse_and_typecheck",
         "//xls/dslx:virtualizable_file_system",
         "//xls/dslx/frontend:ast",
@@ -985,6 +993,7 @@ cc_library(
     name = "sample_generator",
     srcs = ["sample_generator.cc"],
     hdrs = ["sample_generator.h"],
+    data = [":semantic_sum_provider_files"],
     deps = [
         ":ast_generator",
         ":sample",
@@ -995,6 +1004,7 @@ cc_library(
         "//xls/common/status:status_macros",
         "//xls/dslx:channel_direction",
         "//xls/dslx:create_import_data",
+        "//xls/dslx:default_dslx_stdlib_path",
         "//xls/dslx:import_data",
         "//xls/dslx:interp_value",
         "//xls/dslx:parse_and_typecheck",
