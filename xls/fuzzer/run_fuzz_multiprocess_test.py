@@ -162,6 +162,81 @@ class RunFuzzMultiprocessTest(test_base.TestCase):
     )
     self.assertIn('source_seed_replay.binarypb', os.listdir(summaries_path))
 
+  def test_imported_type_samples(self):
+    crasher_path = self.create_tempdir().full_path
+    samples_path = self.create_tempdir().full_path
+
+    subprocess.check_call([
+        RUN_FUZZ_MULTIPROCESS_PATH,
+        '--seed=0',
+        '--emit_imported_types',
+        '--crash_path=' + crasher_path,
+        '--save_temps_path=' + samples_path,
+        '--sample_count=1',
+        '--calls_per_sample=1',
+        '--worker_count=1',
+    ])
+
+    self.assertSequenceEqual(os.listdir(crasher_path), ('test',))
+    self.assertCountEqual(
+        os.listdir(samples_path),
+        ['worker0-sample0'],
+    )
+    sample_path = os.path.join(samples_path, 'worker0-sample0')
+    with open(
+        os.path.join(sample_path, 'sample.x'), encoding='utf-8'
+    ) as source:
+      program = source.read()
+    for nominal_type in (
+        'float32::F32',
+        'semantic_sum_provider::Tag',
+        'semantic_sum_provider::Option',
+    ):
+      self.assertIn(nominal_type, program)
+    self.assertNotIn('semantic_sum_provider.x', os.listdir(sample_path))
+
+    generated_artifacts = (
+        'sample.x.results',
+        'sample.ir',
+        'sample.ir.results',
+        'sample.opt.ir',
+        'sample.opt.ir.results',
+    )
+    result_artifacts = (
+        'sample.x.results',
+        'sample.ir.results',
+        'sample.opt.ir.results',
+    )
+    results_before_replay = {}
+    for artifact in generated_artifacts:
+      artifact_path = os.path.join(sample_path, artifact)
+      self.assertTrue(os.path.isfile(artifact_path), artifact)
+      self.assertGreater(os.path.getsize(artifact_path), 0, artifact)
+      if artifact in result_artifacts:
+        with open(artifact_path, encoding='utf-8') as results:
+          results_before_replay[artifact] = results.read()
+
+    self.assertEqual(
+        results_before_replay['sample.x.results'],
+        results_before_replay['sample.ir.results'],
+    )
+    self.assertEqual(
+        results_before_replay['sample.x.results'],
+        results_before_replay['sample.opt.ir.results'],
+    )
+    for artifact in generated_artifacts:
+      os.remove(os.path.join(sample_path, artifact))
+
+    subprocess.check_call([os.path.join(sample_path, 'run.sh')], cwd=sample_path)
+
+    for artifact in generated_artifacts:
+      artifact_path = os.path.join(sample_path, artifact)
+      self.assertTrue(os.path.isfile(artifact_path), artifact)
+      self.assertGreater(os.path.getsize(artifact_path), 0, artifact)
+      if artifact in result_artifacts:
+        with open(artifact_path, encoding='utf-8') as results:
+          self.assertEqual(results.read(), results_before_replay[artifact])
+
   def test_codegen_and_simulate(self):
     crasher_path = self.create_tempdir().full_path
     samples_path = self.create_tempdir().full_path
