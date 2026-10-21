@@ -41,6 +41,7 @@
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/channel_direction.h"
 #include "xls/dslx/create_import_data.h"
+#include "xls/dslx/default_dslx_stdlib_path.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/ast_node.h"
 #include "xls/dslx/frontend/ast_node_visitor_with_default.h"
@@ -481,7 +482,7 @@ absl::StatusOr<Sample> GenerateSample(
   // Parse and type check the DSLX input to retrieve the top entity. The top
   // member must be a proc or a function.
   ImportData import_data(
-      dslx::CreateImportData(/*stdlib_path=*/"",
+      dslx::CreateImportData(/*stdlib_path=*/kDefaultDslxStdlibPath,
                              /*additional_search_paths=*/{},
                              /*enabled_warnings=*/dslx::kAllWarningsSet,
                              std::make_unique<dslx::RealFilesystem>()));

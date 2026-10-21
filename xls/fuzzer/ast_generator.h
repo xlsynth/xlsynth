@@ -122,6 +122,10 @@ struct AstGeneratorOptions {
   // true.
   bool emit_zero_width_bits_types = false;
   bool require_sum_type = false;
+  bool emit_imported_types = false;
+
+  // Returns an error when requested generation modes cannot be used together.
+  absl::Status Validate() const;
 
   static absl::StatusOr<AstGeneratorOptions> FromProto(
       const AstGeneratorOptionsProto& proto);
@@ -482,9 +486,10 @@ class AstGenerator {
   TypeAnnotation* GenerateBitsType(
       std::optional<int64_t> max_width_bits_types = std::nullopt);
 
-  // Generates a random type (bits, array, or tuple). Nesting is the amount of
-  // nesting within the currently generated type (e.g., element type of a
-  // tuple). Used to limit the depth of compound types. When set, the
+  // Generates a random bits, array, or tuple type, or an eligible curated
+  // imported type when imports are enabled. Nesting is the amount of nesting
+  // within the currently generated type (e.g., element type of a tuple). Used
+  // to limit the depth of compound types. When set, the
   // max_width_bits_types overwrites the value of the max_width_bits_types
   // parameter from the options. When set, the max_width_aggregate_types
   // overwrites the value of the max_width_aggregate_types parameter from the
@@ -492,7 +497,8 @@ class AstGenerator {
   TypeAnnotation* GenerateType(
       int64_t nesting = 0,
       std::optional<int64_t> max_width_bits_types = std::nullopt,
-      std::optional<int64_t> max_width_aggregate_types = std::nullopt);
+      std::optional<int64_t> max_width_aggregate_types = std::nullopt,
+      bool allow_imported_types = true, bool allow_imported_structs = true);
 
   // Generates a primitive builtin type. When set, the max_width_bits_types
   // overwrites the value of the max_width_bits_types parameter from the
@@ -598,9 +604,16 @@ class AstGenerator {
   absl::StatusOr<TypedExpr> GenerateRequiredSumPredicate(
       Context* ctx, std::vector<Statement*>* statements);
 
+  // Returns a curated imported type that fits the current generation boundary,
+  // or nullptr when none is eligible.
+  TypeAnnotation* GenerateImportedType(int64_t max_bits, int64_t max_aggregate,
+                                       bool allow_structs);
+  absl::StatusOr<TypedExpr> GenerateImportedValue(Context* ctx,
+                                                  TypeAnnotation* type);
+  absl::StatusOr<TypedExpr> GenerateImportedExpr(Context* ctx);
+
   TypeRefTypeAnnotation* MakeTypeRefTypeAnnotation(
-      TypeDefinition type_definition,
-      std::vector<ExprOrType> parametrics = {},
+      TypeDefinition type_definition, std::vector<ExprOrType> parametrics = {},
       std::optional<const StructInstanceBase*> instantiator = std::nullopt) {
     auto* type_ref = module_->Make<TypeRef>(fake_span_, std::move(type_definition));
     return module_->Make<TypeRefTypeAnnotation>(
@@ -775,6 +788,10 @@ class AstGenerator {
   // Types defined during module generation.
   std::vector<TypeAlias*> type_aliases_;
   std::vector<SumDef*> sum_defs_;
+
+  // Module bindings for the optional cross-module semantic-sum mode.
+  NameDef* imported_float32_name_def_ = nullptr;
+  NameDef* imported_semantic_sum_name_def_ = nullptr;
 
   // Widths of the aggregate types, indexed by TypeAnnotation::ToString().
   absl::flat_hash_map<std::string, int64_t> type_bit_counts_;
