@@ -837,12 +837,24 @@ class InferenceTableImpl : public InferenceTable {
   absl::StatusOr<AstNode*> Clone(
       const AstNode* input, CloneReplacer replacer,
       std::optional<Module*> target_module) override {
+    absl::flat_hash_set<const AstNode*> replaced_nodes;
+    CloneReplacer track_replacements =
+        [&](const AstNode* node, Module* module,
+            const absl::flat_hash_map<const AstNode*, AstNode*>& old_to_new)
+        -> absl::StatusOr<std::optional<AstNode*>> {
+      XLS_ASSIGN_OR_RETURN(std::optional<AstNode*> replacement,
+                           replacer(node, module, old_to_new));
+      if (replacement.has_value()) {
+        replaced_nodes.insert(node);
+      }
+      return replacement;
+    };
     absl::flat_hash_map<const AstNode*, AstNode*> all_pairs;
     XLS_ASSIGN_OR_RETURN(
         all_pairs, CloneAstAndGetAllPairs(
                        input, target_module,
                        ChainCloneReplacers(&PreserveTypeDefinitionsReplacer,
-                                           std::move(replacer))));
+                                           std::move(track_replacements))));
     // VerifyClone won't pass here.
     // XLS_RETURN_IF_ERROR(
     //     VerifyClone(input, all_pairs.at(input),
@@ -855,7 +867,11 @@ class InferenceTableImpl : public InferenceTable {
           NodeData copy = it->second;
           node_data_[new_node] = std::move(copy);
         }
-        if (new_node->kind() == AstNodeKind::kTypeAnnotation) {
+        // Replacements can be shared declaration annotations. Their flags
+        // must not inherit the provenance of the constraint being resolved.
+        if (old_node->kind() == AstNodeKind::kTypeAnnotation &&
+            new_node->kind() == AstNodeKind::kTypeAnnotation &&
+            !replaced_nodes.contains(old_node)) {
           const auto flag_it = annotation_flags_.find(
               absl::down_cast<const TypeAnnotation*>(old_node));
           if (flag_it != annotation_flags_.end()) {

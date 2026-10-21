@@ -180,6 +180,18 @@ const X = f(S { x: u24:1 }.x);
       TypecheckSucceeds(HasNodeWithType("X", "uN[24]")));
 }
 
+TEST(TypecheckV2StructTest, ConstructedArrayMemberUsedForParametricInference) {
+  EXPECT_THAT(
+      R"(
+struct S { items: u32[2] }
+fn f(x: u32) -> u32[2] {
+  let s = S { items: [x, x] };
+  update(s.items, u32:1, x)
+}
+)",
+      TypecheckSucceeds(HasNodeWithType("s.items", "uN[32][2]")));
+}
+
 TEST(TypecheckV2StructTest,
      ParametricStructWithInferredParametricFromOtherStruct) {
   EXPECT_THAT(
