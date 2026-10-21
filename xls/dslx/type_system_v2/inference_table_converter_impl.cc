@@ -1985,9 +1985,9 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
             sum_ref->parametrics[i]);
       }
       XLS_ASSIGN_OR_RETURN(
-          SumType::ZeroSelection zero_selection,
-          ValidateSemanticSumDiscriminants(*sum_def, parametric_context,
-                                           resolved_parametrics));
+          std::vector<InterpValue> discriminants,
+          ConcretizeSemanticSumDiscriminants(*sum_def, parametric_context,
+                                             resolved_parametrics));
       if (!sum_def->IsParametric()) {
         std::unique_ptr<Type> cached_type =
             GetCachedType(sum_def, std::nullopt);
@@ -2037,10 +2037,17 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
               SumTypeVariant::MakeStruct(*variant, std::move(payload_members)));
         }
       }
-      // Preserve `sum_def->variants()` declaration order: `SumType` derives
-      // tag numbering and payload-slot layout from this vector order.
-      std::unique_ptr<Type> type = std::make_unique<SumType>(
-          *sum_def, std::move(variants), zero_selection);
+      // Explicit discriminants share one resolved type, including its declared
+      // width. With no explicit tags, SumType assigns declaration indices.
+      std::optional<TypeDim> tag_bit_count;
+      if (!discriminants.empty()) {
+        XLS_ASSIGN_OR_RETURN(int64_t bit_count,
+                             discriminants.front().GetBitCount());
+        tag_bit_count = TypeDim::CreateU32(bit_count);
+      }
+      std::unique_ptr<Type> type =
+          std::make_unique<SumType>(*sum_def, std::move(variants),
+                                    tag_bit_count, std::move(discriminants));
       if (!sum_def->IsParametric()) {
         XLS_RETURN_IF_ERROR(AddCachedType(sum_def, std::nullopt, *type));
       }
@@ -2431,7 +2438,10 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
     return discriminants;
   }
 
-  absl::StatusOr<SumType::ZeroSelection> ValidateSemanticSumDiscriminants(
+  // Evaluates and validates explicit tags in the concrete instance's context.
+  // Returned values share the resolved tag type; an empty vector leaves
+  // declaration-order tag assignment to SumType.
+  absl::StatusOr<std::vector<InterpValue>> ConcretizeSemanticSumDiscriminants(
       const SumDef& sum_def,
       std::optional<const ParametricContext*> parametric_context,
       const absl::flat_hash_map<const NameDef*, ExprOrType>&
@@ -2451,11 +2461,8 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
               "variant has an explicit discriminant.",
               sum_def.identifier()),
           file_table_);
-    } else if (sum_def.variants().empty()) {
-      return SumType::NoZeroVariant{};
     } else if (discriminants.empty()) {
-      return SumType::SelectedZeroVariant{
-          std::cref(*sum_def.variants().front())};
+      return std::vector<InterpValue>{};
     }
     XLS_RET_CHECK_EQ(discriminants.size(), sum_def.variants().size());
     if (sum_def.IsParametric()) {
@@ -2470,7 +2477,8 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
 
     XLS_ASSIGN_OR_RETURN(TypeInfo * type_info, GetTypeInfo(parametric_context));
     absl::flat_hash_set<std::string> seen_values;
-    SumType::ZeroSelection zero_selection = SumType::NoZeroVariant{};
+    std::vector<InterpValue> values;
+    values.reserve(discriminants.size());
     for (int i = 0; i < discriminants.size(); ++i) {
       Expr* discriminant = discriminants[i];
       absl::StatusOr<InterpValue> evaluated_value =
@@ -2498,12 +2506,9 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
                 sum_def.identifier(), discriminant->ToString()),
             file_table_);
       }
-      if (bits.IsZero()) {
-        zero_selection =
-            SumType::SelectedZeroVariant{std::cref(*sum_def.variants()[i])};
-      }
+      values.push_back(std::move(*evaluated_value));
     }
-    return zero_selection;
+    return values;
   }
 
   // Given an invocation of the `map` builtin, creates a FunctionTypeAnnotation
