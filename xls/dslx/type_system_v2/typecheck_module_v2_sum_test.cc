@@ -647,6 +647,51 @@ fn identity(x: imported::Option) -> imported::Option {
                   HasNodeWithType("x", "Option { None | Some(uN[32]) }"))));
 }
 
+// Verifies: inferred sum metadata retains the declared tag width and values.
+// Catches: declaration indices silently replacing evaluated tags.
+TEST(TypecheckV2Test, SemanticSumRetainsExplicitDiscriminantMetadata) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+enum E: u3 { A() = 1, B() = 7 }
+fn identity(x: E) -> E { x }
+)"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Function * function,
+      result.tm.module->GetMemberOrError<Function>("identity"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  ASSERT_EQ(function_type->params().size(), 1);
+  ASSERT_TRUE(function_type->params()[0]->IsSum());
+  const SumType& sum = function_type->params()[0]->AsSum();
+  EXPECT_THAT(sum.tag_bit_count().GetAsInt64(), IsOkAndHolds(3));
+  EXPECT_EQ(sum.GetDiscriminant(0), InterpValue::MakeUBits(3, 1));
+  EXPECT_EQ(sum.GetDiscriminant(1), InterpValue::MakeUBits(3, 7));
+}
+
+// Verifies: each generic sum instance retains its own resolved tag width.
+// Catches: tag metadata being lost or shared across distinct instances.
+TEST(TypecheckV2Test, SemanticSumRetainsParametricDiscriminantMetadata) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+#![feature(generics)]
+enum E<N: u32>: uN[N] { A() = 1, B() = 7 }
+fn identity(x: E<u32:3>, y: E<u32:4>) -> (E<u32:3>, E<u32:4>) { (x, y) }
+)"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Function * function,
+      result.tm.module->GetMemberOrError<Function>("identity"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      FunctionType * function_type,
+      result.tm.type_info->GetItemAs<FunctionType>(function));
+  ASSERT_EQ(function_type->params().size(), 2);
+  for (int64_t i = 0; i < 2; ++i) {
+    ASSERT_TRUE(function_type->params()[i]->IsSum());
+    const SumType& sum = function_type->params()[i]->AsSum();
+    EXPECT_THAT(sum.tag_bit_count().GetAsInt64(), IsOkAndHolds(3 + i));
+    EXPECT_EQ(sum.GetDiscriminant(0), InterpValue::MakeUBits(3 + i, 1));
+    EXPECT_EQ(sum.GetDiscriminant(1), InterpValue::MakeUBits(3 + i, 7));
+  }
+}
+
 TEST(TypecheckV2Test, SemanticSumExplicitDiscriminantsMustBeDistinct) {
   EXPECT_THAT(
       R"(
