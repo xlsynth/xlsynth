@@ -677,26 +677,35 @@ absl::StatusOr<std::unique_ptr<Type>> ScalarTypeFromProto(
                              import_data.GetRootTypeInfoForNode(enum_def));
         members.reserve(etp.members_size());
         for (int64_t i = 0; i < etp.members_size(); ++i) {
-          XLS_ASSIGN_OR_RETURN(InterpValue member, FromProto(etp.members(i)));
-          XLS_ASSIGN_OR_RETURN(int64_t actual_bit_count, member.GetBitCount());
-          if (actual_bit_count != expected_bit_count ||
-              member.IsSigned() != etp.is_signed()) {
+          const InterpValueProto& member_proto = etp.members(i);
+          const BitsValueProto& bits = member_proto.bits();
+          if (!member_proto.has_bits() || !bits.has_bit_count() ||
+              bits.bit_count() < 0 || bits.bit_count() != expected_bit_count ||
+              bits.is_signed() != etp.is_signed()) {
             return absl::InvalidArgumentError(absl::StrFormat(
                 "Enum member type mismatch for `%s` at index %d; expected "
                 "%s %d-bit value",
                 enum_def->identifier(), i,
                 etp.is_signed() ? "signed" : "unsigned", expected_bit_count));
-          }
-          XLS_ASSIGN_OR_RETURN(
-              InterpValue declared_member,
-              enum_type_info->GetConstExpr(enum_def->values()[i].value));
-          if (member.GetBitsOrDie() != declared_member.GetBitsOrDie()) {
+          } else if (bits.data().size() <
+                     (static_cast<int64_t>(bits.bit_count()) + 7) / 8) {
             return absl::InvalidArgumentError(absl::StrFormat(
-                "Enum member value mismatch for `%s` at index %d",
+                "Enum member encoding is truncated for `%s` at index %d",
                 enum_def->identifier(), i));
+          } else {
+            XLS_ASSIGN_OR_RETURN(InterpValue member, FromProto(member_proto));
+            XLS_ASSIGN_OR_RETURN(
+                InterpValue declared_member,
+                enum_type_info->GetConstExpr(enum_def->values()[i].value));
+            if (member.GetBitsOrDie() != declared_member.GetBitsOrDie()) {
+              return absl::InvalidArgumentError(absl::StrFormat(
+                  "Enum member value mismatch for `%s` at index %d",
+                  enum_def->identifier(), i));
+            } else {
+              members.push_back(InterpValue::MakeEnum(
+                  member.GetBitsOrDie(), etp.is_signed(), enum_def));
+            }
           }
-          members.push_back(InterpValue::MakeEnum(member.GetBitsOrDie(),
-                                                  etp.is_signed(), enum_def));
         }
       }
 

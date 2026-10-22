@@ -180,6 +180,17 @@ fn f() -> E { E::A }
   XLS_ASSERT_OK(
       ToHumanString(populated, import_data, import_data.file_table()));
 
+  TypeInfoProto truncated_member = populated;
+  truncated_member.mutable_nodes(enum_index)
+      ->mutable_type()
+      ->mutable_enum_type()
+      ->mutable_members(0)
+      ->mutable_bits()
+      ->clear_data();
+  EXPECT_THAT(
+      ToHumanString(truncated_member, import_data, import_data.file_table()),
+      absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+
   TypeInfoProto extra_member = populated;
   EnumTypeProto* extra_enum = extra_member.mutable_nodes(enum_index)
                                   ->mutable_type()
