@@ -1365,7 +1365,17 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
                     "discriminant.",
                     variant->identifier()));
               } else {
-                return FromProto(variant_proto.discriminant());
+                const BitsValueProto& bits =
+                    variant_proto.discriminant().bits();
+                if (!bits.has_bit_count() || bits.bit_count() < 0 ||
+                    bits.data().size() <
+                        (static_cast<int64_t>(bits.bit_count()) + 7) / 8) {
+                  return absl::InvalidArgumentError(absl::StrFormat(
+                      "Sum variant `%s` has an invalid discriminant encoding.",
+                      variant->identifier()));
+                } else {
+                  return FromProto(variant_proto.discriminant());
+                }
               }
             }());
         XLS_ASSIGN_OR_RETURN(int64_t actual_tag_width,

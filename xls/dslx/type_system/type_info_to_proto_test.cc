@@ -495,6 +495,16 @@ TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
   }
   XLS_ASSERT_OK(
       ToHumanString(with_layout, import_data, import_data.file_table()));
+  AstNodeTypeInfoProto truncated_discriminant = with_layout;
+  truncated_discriminant.mutable_type()
+      ->mutable_sum_type()
+      ->mutable_variants(0)
+      ->mutable_discriminant()
+      ->mutable_bits()
+      ->clear_data();
+  EXPECT_THAT(ToHumanString(truncated_discriminant, import_data,
+                           import_data.file_table()),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
   *sum->mutable_variants(1)->mutable_discriminant() =
       sum->variants(0).discriminant();
   EXPECT_THAT(ToHumanString(with_layout, import_data, import_data.file_table()),
