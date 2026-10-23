@@ -164,6 +164,12 @@ absl::StatusOr<bool> SemanticValuesEqual(const InterpValue& lhs,
 absl::StatusOr<std::optional<int64_t>> FindFirstDifferingIndex(
     absl::Span<const InterpValue> lhs, absl::Span<const InterpValue> rhs);
 
+// As above, comparing elements with their DSLX semantic type rather than raw
+// representation equality.
+absl::StatusOr<std::optional<int64_t>> FindFirstDifferingIndex(
+    absl::Span<const InterpValue> lhs, absl::Span<const InterpValue> rhs,
+    const Type& element_type);
+
 // Converts the values to matched the signedness of the concrete type.
 //
 // Converts bits-typed Values contained within the given Value to match the
