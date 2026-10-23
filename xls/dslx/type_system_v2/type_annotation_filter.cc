@@ -203,12 +203,13 @@ TypeAnnotationFilter TypeAnnotationFilter::FilterMultiAny() {
       })));
 }
 
-TypeAnnotationFilter TypeAnnotationFilter::FilterParamTypes() {
+TypeAnnotationFilter TypeAnnotationFilter::FilterArgumentParamTypes() {
   return TypeAnnotationFilter(std::make_unique<Impl>(FilterElement(
       TypeAnnotationFilterKind::kMultiAny,
       [](const TypeAnnotation* annotation) {
-        return annotation->IsAnnotation<ParamTypeAnnotation>() ||
-               annotation->IsAnnotation<DeclaredMemberTypeAnnotation>();
+        // Declared members are filtered separately by their formal-member
+        // flag, so projections from matched values remain inference evidence.
+        return annotation->IsAnnotation<ParamTypeAnnotation>();
       })));
 }
 
