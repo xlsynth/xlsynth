@@ -47,6 +47,30 @@ TEST(NameUniquerTest, SimpleUniquer) {
   EXPECT_EQ("abc__5", uniquer.GetSanitizedUniqueName("abc"));
 }
 
+TEST(NameUniquerTest, ClonePreservesSuffixHistoryAndIsIndependent) {
+  NameUniquer original("__", {"reserved"});
+  EXPECT_EQ(original.GetSanitizedUniqueName("foo"), "foo");
+  EXPECT_EQ(original.GetSanitizedUniqueName("foo"), "foo__1");
+  EXPECT_EQ(original.GetSanitizedUniqueName("foo"), "foo__2");
+  EXPECT_THAT(original.ReleaseIdentifier("foo__1"), IsOk());
+  EXPECT_THAT(original.ReserveIdentifier("foo__8"), IsOk());
+  EXPECT_EQ(original.GetSanitizedUniqueName("reserved"), "_reserved");
+
+  NameUniquer cloned = original.Clone();
+  NameUniquer* uniquers[] = {&original, &cloned};
+  for (NameUniquer* uniquer : uniquers) {
+    EXPECT_EQ(uniquer->GetSanitizedUniqueName("foo"), "foo__3");
+    EXPECT_EQ(uniquer->GetSanitizedUniqueName("foo__1"), "foo__1");
+    EXPECT_EQ(uniquer->GetSanitizedUniqueName("foo__8"), "foo__4");
+    EXPECT_EQ(uniquer->GetSanitizedUniqueName("reserved"), "_reserved__1");
+  }
+  EXPECT_THAT(cloned.ReleaseIdentifier("foo"), IsOk());
+  EXPECT_EQ(cloned.GetSanitizedUniqueName("foo"), "foo");
+  EXPECT_EQ(original.GetSanitizedUniqueName("foo"), "foo__5");
+  EXPECT_THAT(cloned.ReserveIdentifier("clone_only"), IsOk());
+  EXPECT_EQ(original.GetSanitizedUniqueName("clone_only"), "clone_only");
+}
+
 TEST(NameUniquerTest, ReserveIdentifier) {
   NameUniquer uniquer("__");
   EXPECT_THAT(uniquer.ReserveIdentifier("foo"), IsOk());
