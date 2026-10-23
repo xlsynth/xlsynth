@@ -392,14 +392,33 @@ fn main(x: MaybeImpossible) -> u32 {
 }
 
 TEST(ExhaustivenessMatchTest,
+     MissingTupleCaseNamesInhabitedConstructorAfterLeadingHole) {
+  constexpr std::string_view kProgram = R"(#![feature(type_inference_v2)]
+enum Never {}
+enum MaybeImpossible { Impossible(Never), Unit }
+fn main(x: (MaybeImpossible, bool)) -> u32 {
+  match x { (MaybeImpossible::Unit, true) => u32:1 }
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  EXPECT_THAT(
+      ParseAndTypecheck(kProgram, "test.x", "test", &import_data).status(),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               ::testing::AllOf(
+                   HasSubstr("Match patterns are not exhaustive"),
+                   HasSubstr("MaybeImpossible::Unit"),
+                   ::testing::Not(HasSubstr("MaybeImpossible::Impossible")))));
+}
+
+TEST(ExhaustivenessMatchTest,
      MatchTupleContainingSumWithUninhabitedVariantNeedsInhabitedCases) {
   constexpr std::string_view kMatch = R"(#![feature(type_inference_v2)]
 
 enum Never {}
 
 enum MaybeImpossible {
-  Unit,
   Impossible(Never),
+  Unit,
 }
 
 fn main(x: (MaybeImpossible, bool)) -> u32 {
