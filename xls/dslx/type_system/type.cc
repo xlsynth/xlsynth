@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -132,6 +133,142 @@ void ValidateSumTypeVariantPayload(
   for (const std::unique_ptr<Type>& member_type : payload_members) {
     CHECK(!member_type->IsMeta()) << *member_type;
   }
+}
+
+enum class FunctionResultTraversal { kInclude, kExclude };
+
+bool ContainsSemanticSum(const Type& type,
+                         FunctionResultTraversal function_result) {
+  auto member_contains_sum =
+      [function_result](const std::unique_ptr<Type>& member) {
+        return ContainsSemanticSum(*member, function_result);
+      };
+  if (type.IsSum()) {
+    return true;
+  } else if (const auto* channel = dynamic_cast<const ChannelType*>(&type)) {
+    return ContainsSemanticSum(channel->payload_type(), function_result);
+  } else if (const auto* tuple = dynamic_cast<const TupleType*>(&type)) {
+    return absl::c_any_of(tuple->members(), member_contains_sum);
+  } else if (const auto* structure =
+                 dynamic_cast<const StructTypeBase*>(&type)) {
+    return absl::c_any_of(structure->members(), member_contains_sum);
+  } else if (const auto* array = dynamic_cast<const ArrayType*>(&type)) {
+    return ContainsSemanticSum(array->element_type(), function_result);
+  } else if (const auto* function = dynamic_cast<const FunctionType*>(&type)) {
+    return absl::c_any_of(function->params(), member_contains_sum) ||
+           (function_result == FunctionResultTraversal::kInclude &&
+            ContainsSemanticSum(function->return_type(), function_result));
+  } else {
+    return false;
+  }
+}
+
+enum class BitCountOperation { kAdd, kMultiply };
+enum class BitCountOverflow { kWrap, kReject };
+
+absl::StatusOr<TypeDim> ComputeBitCountOperation(const TypeDim& lhs,
+                                                 const TypeDim& rhs,
+                                                 BitCountOperation operation,
+                                                 BitCountOverflow overflow) {
+  // Keep the original diagnostics for malformed dimensions. Actual shared sum
+  // widths are unsigned 32-bit dimensions; compute them again without wrapping.
+  XLS_ASSIGN_OR_RETURN(TypeDim result, operation == BitCountOperation::kAdd
+                                           ? lhs.Add(rhs)
+                                           : lhs.Mul(rhs));
+  uint64_t bit_count = 0;
+  if (overflow == BitCountOverflow::kReject && lhs.value().IsUBits() &&
+      lhs.value().GetBitsOrDie().bit_count() == 32 && rhs.value().IsUBits() &&
+      rhs.value().GetBitsOrDie().bit_count() == 32) {
+    XLS_ASSIGN_OR_RETURN(uint64_t lhs_width, lhs.value().GetBitValueUnsigned());
+    XLS_ASSIGN_OR_RETURN(uint64_t rhs_width, rhs.value().GetBitValueUnsigned());
+    bit_count = operation == BitCountOperation::kAdd ? lhs_width + rhs_width
+                                                     : lhs_width * rhs_width;
+  }
+  if (bit_count > std::numeric_limits<uint32_t>::max()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("shared sum bit count exceeds ",
+                     std::numeric_limits<uint32_t>::max(), " bits"));
+  } else {
+    return result;
+  }
+}
+
+absl::StatusOr<TypeDim> ComputeTypeBitCount(const Type& type,
+                                            BitCountOverflow overflow);
+
+absl::StatusOr<TypeDim> ComputeMemberBitCount(
+    absl::Span<const std::unique_ptr<Type>> members,
+    BitCountOverflow overflow) {
+  TypeDim bit_count = TypeDim::CreateU32(0);
+  for (const auto& member : members) {
+    XLS_ASSIGN_OR_RETURN(TypeDim member_bit_count,
+                         ComputeTypeBitCount(*member, overflow));
+    XLS_ASSIGN_OR_RETURN(
+        bit_count, ComputeBitCountOperation(bit_count, member_bit_count,
+                                            BitCountOperation::kAdd, overflow));
+  }
+  return bit_count;
+}
+
+absl::StatusOr<TypeDim> ComputeTypeBitCount(const Type& type,
+                                            BitCountOverflow overflow) {
+  if (const auto* sum = dynamic_cast<const SumType*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(TypeDim payload_bit_count,
+                         sum->GetMaxPayloadBitCount());
+    return ComputeBitCountOperation(sum->tag_bit_count(), payload_bit_count,
+                                    BitCountOperation::kAdd,
+                                    BitCountOverflow::kReject);
+  } else if (const auto* structure =
+                 dynamic_cast<const StructTypeBase*>(&type)) {
+    return ComputeMemberBitCount(structure->members(), overflow);
+  } else if (const auto* tuple = dynamic_cast<const TupleType*>(&type)) {
+    return ComputeMemberBitCount(tuple->members(), overflow);
+  } else if (const auto* array = dynamic_cast<const ArrayType*>(&type)) {
+    // The size of the instantiated bits constructor xN[is_signed][N] is N;
+    // its element type xN[is_signed] has no width of its own.
+    if (IsBitsConstructor(array->element_type())) {
+      return array->size();
+    } else {
+      const InterpValue& size = array->size().value();
+      // A zero-length array needs none of the bits in its element. Let
+      // enclosing element arithmetic wrap, but still visit nested sums, whose
+      // own widths are always checked.
+      const BitCountOverflow element_overflow =
+          size.IsUBits() && size.GetBitsOrDie().bit_count() == 32 &&
+                  size.GetBitsOrDie().IsZero()
+              ? BitCountOverflow::kWrap
+              : overflow;
+      XLS_ASSIGN_OR_RETURN(
+          TypeDim element_bit_count,
+          ComputeTypeBitCount(array->element_type(), element_overflow));
+      return ComputeBitCountOperation(element_bit_count, array->size(),
+                                      BitCountOperation::kMultiply, overflow);
+    }
+  } else if (const auto* function = dynamic_cast<const FunctionType*>(&type)) {
+    return ComputeMemberBitCount(function->params(), overflow);
+  } else if (const auto* channel = dynamic_cast<const ChannelType*>(&type)) {
+    return ComputeTypeBitCount(channel->payload_type(), overflow);
+  } else {
+    return type.GetTotalBitCount();
+  }
+}
+
+absl::StatusOr<uint32_t> ComputeMaxSumPayloadBitCount(
+    absl::Span<const SumTypeVariant> variants) {
+  TypeDim payload_bit_count = TypeDim::CreateU32(0);
+  for (const SumTypeVariant& variant : variants) {
+    XLS_ASSIGN_OR_RETURN(TypeDim variant_bits,
+                         internal::GetBitCountWithSharedSumPayload(variant));
+    XLS_ASSIGN_OR_RETURN(InterpValue variant_is_wider,
+                         variant_bits.value().Gt(payload_bit_count.value()));
+    if (variant_is_wider.IsTrue()) {
+      payload_bit_count = std::move(variant_bits);
+    }
+  }
+  // Variant widths accumulate as u32 TypeDims, so the successful maximum is
+  // losslessly representable without retaining a full InterpValue.
+  XLS_ASSIGN_OR_RETURN(int64_t bit_count, payload_bit_count.GetAsInt64());
+  return static_cast<uint32_t>(bit_count);
 }
 
 // These hashes only narrow the sum cache's semantic comparisons. In particular,
@@ -860,6 +997,7 @@ SumType::Data::Data(const SumDef& sum_def, std::vector<SumTypeVariant> variants,
                     std::vector<ParametricArgument> parametric_arguments)
     : sum_def(sum_def),
       variants(std::move(variants)),
+      max_payload_bit_count(ComputeMaxSumPayloadBitCount(this->variants)),
       tag_bit_count(tag_bit_count.value_or(TypeDim::CreateU32(
           this->variants.size() <= 1
               ? 0
@@ -1083,6 +1221,12 @@ std::vector<TypeDim> SumType::GetAllDims() const {
     }
   }
   return results;
+}
+
+absl::StatusOr<TypeDim> SumType::GetMaxPayloadBitCount() const {
+  XLS_ASSIGN_OR_RETURN(uint32_t payload_bit_count,
+                       data_->max_payload_bit_count);
+  return TypeDim::CreateU32(payload_bit_count);
 }
 
 absl::StatusOr<TypeDim> SumType::GetTotalBitCount() const {
@@ -1504,31 +1648,7 @@ bool IsKnownU32(const BitsLikeProperties& properties) {
 }
 
 bool TypeContainsSemanticSum(const Type& type) {
-  if (type.IsSum()) {
-    return true;
-  } else if (auto* channel_type = dynamic_cast<const ChannelType*>(&type)) {
-    return TypeContainsSemanticSum(channel_type->payload_type());
-  } else if (auto* tuple_type = dynamic_cast<const TupleType*>(&type)) {
-    return absl::c_any_of(tuple_type->members(),
-                          [](const std::unique_ptr<Type>& member_type) {
-                            return TypeContainsSemanticSum(*member_type);
-                          });
-  } else if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type)) {
-    return absl::c_any_of(struct_type->members(),
-                          [](const std::unique_ptr<Type>& member_type) {
-                            return TypeContainsSemanticSum(*member_type);
-                          });
-  } else if (auto* array_type = dynamic_cast<const ArrayType*>(&type)) {
-    return TypeContainsSemanticSum(array_type->element_type());
-  } else if (auto* function_type = dynamic_cast<const FunctionType*>(&type)) {
-    return absl::c_any_of(function_type->GetParams(),
-                          [](const Type* param_type) {
-                            return TypeContainsSemanticSum(*param_type);
-                          }) ||
-           TypeContainsSemanticSum(function_type->return_type());
-  } else {
-    return false;
-  }
+  return ContainsSemanticSum(type, FunctionResultTraversal::kInclude);
 }
 
 namespace {
@@ -1626,5 +1746,37 @@ absl::StatusOr<bool> TypeIsInhabited(const Type& type) {
   SumInhabitanceMemo inhabited_sums;
   return TypeIsInhabitedInternal(type, inhabited_sums);
 }
+
+namespace internal {
+
+absl::StatusOr<TypeDim> GetBitCountWithSharedSumPayload(
+    const SumTypeVariant& variant) {
+  TypeDim variant_bits = TypeDim::CreateU32(0);
+  for (int64_t i = 0; i < variant.size(); ++i) {
+    XLS_ASSIGN_OR_RETURN(TypeDim member_bits,
+                         ComputeTypeBitCount(variant.GetMemberType(i),
+                                             BitCountOverflow::kReject));
+    XLS_ASSIGN_OR_RETURN(variant_bits,
+                         ComputeBitCountOperation(variant_bits, member_bits,
+                                                  BitCountOperation::kAdd,
+                                                  BitCountOverflow::kReject));
+  }
+  return variant_bits;
+}
+
+absl::StatusOr<TypeDim> GetBitCountWithSharedSumPayload(const Type& type) {
+  return ComputeTypeBitCount(type, BitCountOverflow::kReject);
+}
+
+absl::Status ValidateEmptyArrayElementSumWidths(const ArrayType& array) {
+  if (ContainsSemanticSum(array.element_type(),
+                          FunctionResultTraversal::kExclude)) {
+    return GetBitCountWithSharedSumPayload(array).status();
+  } else {
+    return absl::OkStatus();
+  }
+}
+
+}  // namespace internal
 
 }  // namespace xls::dslx
