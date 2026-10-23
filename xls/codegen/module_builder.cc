@@ -1235,15 +1235,71 @@ absl::StatusOr<Display*> ModuleBuilder::EmitTrace(
   Conditional* trace_if =
       trace_always->statements()->Add<Conditional>(trace->loc(), condition);
 
-  Expression* format_arg = file_->Make<QuotedString>(
-      trace->loc(), StepsToVerilogFormatString(trace->format()));
+  const bool has_conditional_sections =
+      std::any_of(trace->format().begin(), trace->format().end(),
+                  [](const FormatStep& step) {
+                    return std::holds_alternative<FormatControl>(step);
+                  });
+  if (!has_conditional_sections) {
+    Expression* format_arg = file_->Make<QuotedString>(
+        trace->loc(), StepsToVerilogFormatString(trace->format()));
 
-  std::vector<Expression*> display_args = {format_arg};
-  for (Expression* arg : trace_args) {
-    display_args.push_back(arg);
+    std::vector<Expression*> display_args = {format_arg};
+    for (Expression* arg : trace_args) {
+      display_args.push_back(arg);
+    }
+    return trace_if->consequent()->Add<Display>(trace->loc(), display_args);
+  } else {
+    StatementBlock* current_block = trace_if->consequent();
+    std::vector<StatementBlock*> enclosing_blocks;
+    std::vector<FormatStep> pending_steps;
+    std::vector<Expression*> pending_args;
+    auto flush_fragment = [&]() {
+      if (!pending_steps.empty()) {
+        Expression* format_arg = file_->Make<QuotedString>(
+            trace->loc(), StepsToVerilogFormatString(pending_steps));
+        std::vector<Expression*> write_args = {format_arg};
+        write_args.insert(write_args.end(), pending_args.begin(),
+                          pending_args.end());
+        current_block->Add<SystemTaskCall>(trace->loc(), "write", write_args);
+        pending_steps.clear();
+        pending_args.clear();
+      }
+    };
+
+    int64_t operand_index = 0;
+    for (const FormatStep& step : trace->format()) {
+      if (std::holds_alternative<std::string>(step)) {
+        pending_steps.push_back(step);
+      } else if (std::holds_alternative<FormatPreference>(step)) {
+        XLS_RET_CHECK_LT(operand_index, trace_args.size());
+        pending_steps.push_back(step);
+        pending_args.push_back(trace_args[operand_index]);
+        ++operand_index;
+      } else if (std::get<FormatControl>(step) ==
+                 FormatControl::kBeginConditional) {
+        flush_fragment();
+        XLS_RET_CHECK_LT(operand_index, trace_args.size());
+        Conditional* guarded = current_block->Add<Conditional>(
+            trace->loc(), trace_args[operand_index]);
+        ++operand_index;
+        enclosing_blocks.push_back(current_block);
+        current_block = guarded->consequent();
+      } else {
+        flush_fragment();
+        XLS_RET_CHECK(!enclosing_blocks.empty());
+        current_block = enclosing_blocks.back();
+        enclosing_blocks.pop_back();
+      }
+    }
+    flush_fragment();
+    XLS_RET_CHECK(enclosing_blocks.empty());
+    XLS_RET_CHECK_EQ(operand_index, trace_args.size());
+
+    Expression* newline = file_->Make<QuotedString>(trace->loc(), "");
+    return trace_if->consequent()->Add<Display>(
+        trace->loc(), std::vector<Expression*>{newline});
   }
-
-  return trace_if->consequent()->Add<Display>(trace->loc(), display_args);
 }
 
 absl::StatusOr<IndexableExpression*> ModuleBuilder::EmitGate(
