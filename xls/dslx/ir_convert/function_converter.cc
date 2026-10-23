@@ -63,6 +63,7 @@
 #include "xls/dslx/ir_convert/convert_options.h"
 #include "xls/dslx/ir_convert/fuzz_test_converter.h"
 #include "xls/dslx/ir_convert/ir_conversion_utils.h"
+#include "xls/dslx/ir_convert/packed_sum_ir.h"
 #include "xls/dslx/ir_convert/proc_config_ir_converter.h"
 #include "xls/dslx/ir_convert/proc_scoped_channel_scope.h"
 #include "xls/dslx/mangle.h"
@@ -790,103 +791,8 @@ absl::Status FunctionConverter::HandleConcat(const Binop* node, BValue lhs,
 absl::StatusOr<BValue> FunctionConverter::BuildEqByType(const Type& type,
                                                         BValue lhs, BValue rhs,
                                                         const SourceInfo& loc) {
-  if (auto* sum_type = dynamic_cast<const SumType*>(&type);
-      sum_type != nullptr) {
-    if (sum_type->variant_count() == 0) {
-      return function_builder_->Eq(lhs, rhs, loc);
-    }
-    const Phase1SumTypeEncoding encoding(*sum_type);
-    XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
-    BValue lhs_tag = function_builder_->TupleIndex(lhs, 0, loc);
-    BValue rhs_tag = function_builder_->TupleIndex(rhs, 0, loc);
-    BValue lhs_payload = function_builder_->TupleIndex(lhs, 1, loc);
-    BValue rhs_payload = function_builder_->TupleIndex(rhs, 1, loc);
-    BValue tag_eq = function_builder_->Eq(lhs_tag, rhs_tag, loc);
-    std::vector<BValue> case_payload_eqs;
-    case_payload_eqs.reserve(sum_type->variant_count());
-    XLS_RETURN_IF_ERROR(encoding.ForEachVariant(
-        [&](const Phase1SumTypeEncoding::VariantInfo& variant) -> absl::Status {
-          BValue case_payload_eq = function_builder_->Literal(UBits(1, 1), loc);
-          XLS_RETURN_IF_ERROR(encoding.ForEachActivePayloadSlot(
-              variant,
-              [&](int64_t payload_slot_index, int64_t active_index,
-                  const Type& slot_type) -> absl::Status {
-                static_cast<void>(active_index);
-                XLS_ASSIGN_OR_RETURN(
-                    BValue member_eq,
-                    BuildEqByType(slot_type,
-                                  function_builder_->TupleIndex(
-                                      lhs_payload, payload_slot_index, loc),
-                                  function_builder_->TupleIndex(
-                                      rhs_payload, payload_slot_index, loc),
-                                  loc));
-                case_payload_eq =
-                    function_builder_->And(case_payload_eq, member_eq, loc);
-                return absl::OkStatus();
-              }));
-          case_payload_eqs.push_back(case_payload_eq);
-          return absl::OkStatus();
-        }));
-    // TODO: Phase 2 owns malformed-sum equality. Phase 1 only defines equality
-    // for well-formed semantic sums, so invalid tag encodings fall through to a
-    // conservative `false` default instead of reifying malformed-value
-    // comparisons here.
-    const bool covers_full_dense_tag_space =
-        tag_bit_count < 63 &&
-        sum_type->variant_count() == (int64_t{1} << tag_bit_count);
-    std::optional<BValue> default_payload_eq = std::nullopt;
-    if (!covers_full_dense_tag_space) {
-      default_payload_eq = function_builder_->Literal(UBits(0, 1), loc);
-    }
-    BValue payload_eq = function_builder_->Select(lhs_tag, case_payload_eqs,
-                                                  default_payload_eq, loc);
-    return function_builder_->And(tag_eq, payload_eq, loc);
-  }
-  if (!TypeContainsSum(type)) {
-    return function_builder_->Eq(lhs, rhs, loc);
-  }
-  if (auto* tuple_type = dynamic_cast<const TupleType*>(&type);
-      tuple_type != nullptr) {
-    BValue result = function_builder_->Literal(UBits(1, 1), loc);
-    for (int64_t i = 0; i < tuple_type->size(); ++i) {
-      XLS_ASSIGN_OR_RETURN(
-          BValue member_eq,
-          BuildEqByType(tuple_type->GetMemberType(i),
-                        function_builder_->TupleIndex(lhs, i, loc),
-                        function_builder_->TupleIndex(rhs, i, loc), loc));
-      result = function_builder_->And(result, member_eq, loc);
-    }
-    return result;
-  }
-  if (auto* struct_type = dynamic_cast<const StructTypeBase*>(&type);
-      struct_type != nullptr) {
-    BValue result = function_builder_->Literal(UBits(1, 1), loc);
-    for (int64_t i = 0; i < struct_type->size(); ++i) {
-      XLS_ASSIGN_OR_RETURN(
-          BValue member_eq,
-          BuildEqByType(struct_type->GetMemberType(i),
-                        function_builder_->TupleIndex(lhs, i, loc),
-                        function_builder_->TupleIndex(rhs, i, loc), loc));
-      result = function_builder_->And(result, member_eq, loc);
-    }
-    return result;
-  }
-  if (auto* array_type = dynamic_cast<const ArrayType*>(&type);
-      array_type != nullptr) {
-    XLS_ASSIGN_OR_RETURN(int64_t size, array_type->size().GetAsInt64());
-    BValue result = function_builder_->Literal(UBits(1, 1), loc);
-    for (int64_t i = 0; i < size; ++i) {
-      BValue index = function_builder_->Literal(UBits(i, kUsizeBits), loc);
-      XLS_ASSIGN_OR_RETURN(
-          BValue element_eq,
-          BuildEqByType(array_type->element_type(),
-                        function_builder_->ArrayIndex(lhs, {index}, loc),
-                        function_builder_->ArrayIndex(rhs, {index}, loc), loc));
-      result = function_builder_->And(result, element_eq, loc);
-    }
-    return result;
-  }
-  return function_builder_->Eq(lhs, rhs, loc);
+  return internal::BuildPackedSumEquality(*function_builder_, type, lhs, rhs,
+                                          loc);
 }
 
 absl::StatusOr<BValue> FunctionConverter::BuildPhase1WellFormedPredicateByType(
@@ -1020,49 +926,58 @@ absl::Status FunctionConverter::AssertPhase1SemanticSumValueIsWellFormed(
   return absl::OkStatus();
 }
 
+absl::StatusOr<BValue>
+FunctionConverter::BuildSemanticSumTagIsDeclaredPredicate(
+    const SumType& sum_type, BValue value, const SourceInfo& loc) {
+  if (sum_type.variant_count() == 0) {
+    return function_builder_->Literal(UBits(0, 1), loc);
+  }
+  BValue tag = internal::GetPackedSumTag(*function_builder_, value, loc);
+  BValue result = function_builder_->Literal(UBits(0, 1), loc);
+  for (int64_t variant_index = 0; variant_index < sum_type.variant_count();
+       ++variant_index) {
+    XLS_ASSIGN_OR_RETURN(BValue discriminant,
+                         internal::BuildPackedSumDiscriminant(
+                             *function_builder_, sum_type, variant_index, loc));
+    result = function_builder_->Or(
+        result, function_builder_->Eq(tag, discriminant, loc), loc);
+  }
+  return result;
+}
+
 absl::Status FunctionConverter::HandleEq(const Binop* node, BValue lhs,
                                          BValue rhs) {
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> type, ResolveType(node->lhs()));
-  if (!TypeContainsSum(*type)) {
+  if (!TypeContainsSemanticSum(*type)) {
     return DefWithStatus(node,
                          [&](const SourceInfo& loc) {
                            return function_builder_->Eq(lhs, rhs, loc);
                          })
         .status();
   }
-  return DefWithStatus(
-             node,
-             [&](const SourceInfo& loc) -> absl::StatusOr<BValue> {
-               XLS_RETURN_IF_ERROR(AssertPhase1SemanticSumValueIsWellFormed(
-                   *type, lhs, loc, node->span(), "equality", "equality"));
-               XLS_RETURN_IF_ERROR(AssertPhase1SemanticSumValueIsWellFormed(
-                   *type, rhs, loc, node->span(), "equality", "equality"));
-               return BuildEqByType(*type, lhs, rhs, loc);
-             })
+  return DefWithStatus(node,
+                       [&](const SourceInfo& loc) -> absl::StatusOr<BValue> {
+                         return BuildEqByType(*type, lhs, rhs, loc);
+                       })
       .status();
 }
 
 absl::Status FunctionConverter::HandleNe(const Binop* node, BValue lhs,
                                          BValue rhs) {
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> type, ResolveType(node->lhs()));
-  if (!TypeContainsSum(*type)) {
+  if (!TypeContainsSemanticSum(*type)) {
     return DefWithStatus(node,
                          [&](const SourceInfo& loc) {
                            return function_builder_->Ne(lhs, rhs, loc);
                          })
         .status();
   }
-  return DefWithStatus(
-             node,
-             [&](const SourceInfo& loc) -> absl::StatusOr<BValue> {
-               XLS_RETURN_IF_ERROR(AssertPhase1SemanticSumValueIsWellFormed(
-                   *type, lhs, loc, node->span(), "inequality", "inequality"));
-               XLS_RETURN_IF_ERROR(AssertPhase1SemanticSumValueIsWellFormed(
-                   *type, rhs, loc, node->span(), "inequality", "inequality"));
-               XLS_ASSIGN_OR_RETURN(BValue eq,
-                                    BuildEqByType(*type, lhs, rhs, loc));
-               return function_builder_->Not(eq, loc);
-             })
+  return DefWithStatus(node,
+                       [&](const SourceInfo& loc) -> absl::StatusOr<BValue> {
+                         XLS_ASSIGN_OR_RETURN(
+                             BValue eq, BuildEqByType(*type, lhs, rhs, loc));
+                         return function_builder_->Not(eq, loc);
+                       })
       .status();
 }
 
@@ -1153,9 +1068,8 @@ absl::Status FunctionConverter::HandleParam(const Param* node) {
   VLOG(5) << "FunctionConverter::HandleParam: " << node->ToString();
   XLS_ASSIGN_OR_RETURN(xls::Type * type,
                        ResolveTypeToIr(node->type_annotation()));
-  Def(node->name_def(), [&](const SourceInfo& loc) {
-    return function_builder_->Param(node->identifier(), type);
-  });
+  BValue value = function_builder_->Param(node->identifier(), type);
+  Def(node->name_def(), [&](const SourceInfo& loc) { return value; });
   XLS_RET_CHECK(function_proto_);
   PackageInterfaceProto::NamedValue* param =
       function_proto_.value()->add_parameters();
@@ -1649,9 +1563,6 @@ absl::Status FunctionConverter::HandleMatch(const Match* node) {
   XLS_ASSIGN_OR_RETURN(BValue matched, Use(node->matched()));
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> matched_type,
                        ResolveType(node->matched()));
-  XLS_RETURN_IF_ERROR(AssertPhase1SemanticSumValueIsWellFormed(
-      *matched_type, matched, ToSourceInfo(node->matched()->span()),
-      node->matched()->span(), "match", "match"));
 
   std::vector<BValue> arm_selectors;
   std::vector<BValue> arm_values;
@@ -1727,13 +1638,10 @@ absl::Status FunctionConverter::HandleMatch(const Match* node) {
             {orig_control_predicate(), not_any_prev_selected});
       });
 
-  // We are guaranteed from exhaustiveness checking that the last arm handles
-  // all remaining cases in that checker's constructor-space model aside from
-  // the ones covered by the earlier match arms. For sums, HandleMatch already
-  // asserted the Phase 1 precondition that the matched value is a well-formed
-  // semantic value, not an arbitrary raw boundary encoding with an undeclared
-  // tag, and so the final arm can still be emitted as the "default" in the
-  // selection IR.
+  // Exhaustiveness checking proves that the final arm handles all remaining
+  // declared-constructor cases. In Phase 2 lowering it is also the malformed
+  // fallback arm when the match has no explicit `invalid!` arm; type checking
+  // restricts that fallback to `_` or an irrefutable constructor payload shape.
   MatchArm* default_arm = node->arms().back();
   XLS_RETURN_IF_ERROR(
       HandleMatcher(default_arm->patterns()[0], matched, *matched_type)
@@ -2220,30 +2128,88 @@ absl::Status FunctionConverter::HandleFor(const For* node) {
   return absl::OkStatus();
 }
 
+absl::StatusOr<BValue> FunctionConverter::HandlePackedSumPayloadMatcher(
+    const PatternTree& matcher, BValue packed_value, const Type& matched_type) {
+  SourceInfo loc = ToSourceInfo(GetPatternSpan(matcher));
+  if (std::holds_alternative<WildcardPattern*>(matcher)) {
+    // This is a nested payload, not the match root: ignoring it does not
+    // inspect a constructor or require reconstruction of its value.
+    BValue result = function_builder_->Literal(UBits(1, 1), loc);
+    SetNodeToIr(ToAstNode(matcher), result);
+    return result;
+  } else if (const auto* tuple = std::get_if<TuplePattern*>(&matcher)) {
+    const auto* tuple_type = dynamic_cast<const TupleType*>(&matched_type);
+    XLS_ASSIGN_OR_RETURN((auto [tuple_size, non_rest_size]),
+                         GetTupleSizes(*tuple, tuple_type));
+    XLS_ASSIGN_OR_RETURN(int64_t bit_count,
+                         internal::GetPackedSumBitCount(matched_type));
+    internal::PackedSumMemberLayout layout(bit_count);
+    int64_t tuple_index = 0;
+    BValue result = function_builder_->Literal(UBits(1, 1), loc);
+    for (const PatternTree& member : (*tuple)->members()) {
+      if (IsRestOfTupleLeaf(member)) {
+        const int64_t limit = tuple_index + tuple_size - non_rest_size;
+        for (; tuple_index < limit; ++tuple_index) {
+          XLS_RETURN_IF_ERROR(
+              layout.Next(tuple_type->GetMemberType(tuple_index)).status());
+        }
+      } else {
+        const Type& member_type = tuple_type->GetMemberType(tuple_index++);
+        XLS_ASSIGN_OR_RETURN(internal::PackedSumMemberLayout::Slice slice,
+                             layout.Next(member_type));
+        XLS_ASSIGN_OR_RETURN(
+            BValue condition,
+            HandlePackedSumPayloadMatcher(
+                member,
+                function_builder_->BitSlice(packed_value, slice.offset,
+                                            slice.width, loc),
+                member_type));
+        result = function_builder_->And(result, condition, loc);
+      }
+    }
+    return result;
+  } else {
+    const ParametricEnv bindings = GetParametricEnv();
+    auto resolve_type = [this, &bindings](const Type& type) {
+      return TypeToIr(package(), type, bindings);
+    };
+    XLS_ASSIGN_OR_RETURN(BValue value, internal::UnpackPackedSumPayload(
+                                           *function_builder_, matched_type,
+                                           packed_value, resolve_type, loc));
+    return HandleMatcher(matcher, value, matched_type, /*is_match_root=*/false);
+  }
+}
+
 absl::StatusOr<BValue> FunctionConverter::HandleSumVariantPayloadPattern(
     const PatternTree& matcher, const SumVariantPayloadPattern* pattern,
     const BValue& matched_value, const SumType& matched_type) {
-  const Phase1SumTypeEncoding encoding(matched_type);
-  XLS_ASSIGN_OR_RETURN(Phase1SumTypeEncoding::VariantInfo variant,
+  const SumTypeEncoding encoding(matched_type);
+  XLS_ASSIGN_OR_RETURN(SumTypeEncoding::VariantInfo variant,
                        encoding.GetVariant(pattern->constructor_ref()->attr()));
-  XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
 
   SourceInfo loc = ToSourceInfo(pattern->span());
-  BValue tag = function_builder_->TupleIndex(matched_value, 0, loc);
-  BValue payload = function_builder_->TupleIndex(matched_value, 1, loc);
-  BValue result = function_builder_->Eq(
-      tag,
-      function_builder_->Literal(UBits(variant.variant_index, tag_bit_count),
-                                 loc),
-      loc);
+  BValue tag =
+      internal::GetPackedSumTag(*function_builder_, matched_value, loc);
+  BValue payload =
+      internal::GetPackedSumPayload(*function_builder_, matched_value, loc);
+  XLS_ASSIGN_OR_RETURN(
+      BValue discriminant,
+      internal::BuildPackedSumDiscriminant(*function_builder_, matched_type,
+                                           variant.variant_index, loc));
+  BValue result = function_builder_->Eq(tag, discriminant, loc);
+  XLS_ASSIGN_OR_RETURN(int64_t bit_count, variant.payload_bit_count());
+  internal::PackedSumMemberLayout layout(bit_count);
 
   auto append_condition = [&](const PatternTree& subpattern,
-                              int64_t payload_slot_index,
-                              const Type& payload_slot_type) -> absl::Status {
-    BValue slot_value =
-        function_builder_->TupleIndex(payload, payload_slot_index, loc);
-    XLS_ASSIGN_OR_RETURN(BValue condition, HandleMatcher(subpattern, slot_value,
-                                                         payload_slot_type));
+                              const Type& payload_member_type) -> absl::Status {
+    XLS_ASSIGN_OR_RETURN(internal::PackedSumMemberLayout::Slice slice,
+                         layout.Next(payload_member_type));
+    XLS_ASSIGN_OR_RETURN(BValue condition,
+                         HandlePackedSumPayloadMatcher(
+                             subpattern,
+                             function_builder_->BitSlice(payload, slice.offset,
+                                                         slice.width, loc),
+                             payload_member_type));
     result = function_builder_->And(result, condition, loc);
     return absl::OkStatus();
   };
@@ -2251,12 +2217,12 @@ absl::StatusOr<BValue> FunctionConverter::HandleSumVariantPayloadPattern(
   if (const auto* tuple = std::get_if<TuplePattern*>(&pattern->payload())) {
     const std::vector<PatternTree>& members = (*tuple)->members();
     XLS_RET_CHECK_EQ(members.size(), variant.payload_size());
-    XLS_RETURN_IF_ERROR(encoding.ForEachActivePayloadSlot(
+    XLS_RETURN_IF_ERROR(encoding.ForEachPayloadMember(
         variant,
-        [&](int64_t payload_slot_index, int64_t active_index,
-            const Type& payload_slot_type) -> absl::Status {
-          return append_condition(members.at(active_index), payload_slot_index,
-                                  payload_slot_type);
+        [&](int64_t active_index,
+            const Type& payload_member_type) -> absl::Status {
+          return append_condition(members.at(active_index),
+                                  payload_member_type);
         }));
   } else if (const auto* fields =
                  std::get_if<StructPattern*>(&pattern->payload())) {
@@ -2270,15 +2236,15 @@ absl::StatusOr<BValue> FunctionConverter::HandleSumVariantPayloadPattern(
         BindNamedFields(sum_variant.variant().named_fields(), names);
     XLS_RET_CHECK(std::holds_alternative<NamedFieldCorrespondence>(binding));
     const auto& correspondence = std::get<NamedFieldCorrespondence>(binding);
-    XLS_RETURN_IF_ERROR(encoding.ForEachActivePayloadSlot(
+    XLS_RETURN_IF_ERROR(encoding.ForEachPayloadMember(
         variant,
-        [&](int64_t payload_slot_index, int64_t active_index,
-            const Type& payload_slot_type) -> absl::Status {
+        [&](int64_t active_index,
+            const Type& payload_member_type) -> absl::Status {
           const std::optional<int64_t>& source_index =
               correspondence[active_index];
           XLS_RET_CHECK(source_index.has_value());
           return append_condition((*fields)->fields()[*source_index].second,
-                                  payload_slot_index, payload_slot_type);
+                                  payload_member_type);
         }));
   }
 
@@ -2288,14 +2254,14 @@ absl::StatusOr<BValue> FunctionConverter::HandleSumVariantPayloadPattern(
 
 absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
     const PatternTree& matcher, const BValue& matched_value,
-    const Type& matched_type) {
+    const Type& matched_type, bool is_match_root) {
   AstNode* matcher_node = ToAstNode(matcher);
   if (!std::holds_alternative<TuplePattern*>(matcher)) {
     VLOG(5) << absl::StreamFormat("Matcher is leaf: %s (%s)",
                                   matcher_node->ToString(),
                                   matcher_node->GetNodeTypeName());
     auto equality = [&](const BValue& to_match) -> absl::StatusOr<BValue> {
-      if (!TypeContainsSum(matched_type)) {
+      if (!TypeContainsSemanticSum(matched_type)) {
         return Def(matcher_node, [&](const SourceInfo& loc) {
           return function_builder_->Eq(to_match, matched_value);
         });
@@ -2311,12 +2277,21 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
       XLS_ASSIGN_OR_RETURN(BValue to_match, Use(matcher_node));
       return equality(to_match);
     };
+    auto irrefutable_predicate = [&]() -> absl::StatusOr<BValue> {
+      SourceInfo loc = ToSourceInfo(GetPatternSpan(matcher));
+      if (is_match_root && matched_type.IsSum()) {
+        return BuildSemanticSumTagIsDeclaredPredicate(matched_type.AsSum(),
+                                                      matched_value, loc);
+      } else {
+        return function_builder_->Literal(UBits(1, 1), loc);
+      }
+    };
     return absl::visit(
         Visitor{
             [&](WildcardPattern*) -> absl::StatusOr<BValue> {
-              return Def(matcher_node, [&](const SourceInfo& loc) {
-                return function_builder_->Literal(UBits(1, 1), loc);
-              });
+              XLS_ASSIGN_OR_RETURN(BValue result, irrefutable_predicate());
+              SetNodeToIr(matcher_node, result);
+              return result;
             },
             [&](SumVariantPayloadPattern* pattern) -> absl::StatusOr<BValue> {
               auto* sum_type = dynamic_cast<const SumType*>(&matched_type);
@@ -2385,10 +2360,8 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
               XLS_RETURN_IF_ERROR(DefAlias(name_def, n));
               return result;
             },
-            [&](NameDef* name_def) -> absl::StatusOr<BValue> {
-              BValue ok = Def(name_def, [&](const SourceInfo& loc) {
-                return function_builder_->Literal(UBits(1, 1));
-              });
+            [&](NameDef*) -> absl::StatusOr<BValue> {
+              XLS_ASSIGN_OR_RETURN(BValue ok, irrefutable_predicate());
               SetNodeToIr(matcher_node, matched_value);
               return ok;
             },
@@ -2424,7 +2397,8 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
     const Type& element_type = matched_tuple_type->GetMemberType(tuple_index);
     BValue member = function_builder_->TupleIndex(matched_value, tuple_index);
     XLS_ASSIGN_OR_RETURN(BValue cond,
-                         HandleMatcher(element, member, element_type));
+                         HandleMatcher(element, member, element_type,
+                                       /*is_match_root=*/false));
     ok = function_builder_->And(ok, cond);
     tuple_index++;
   }
@@ -2907,13 +2881,7 @@ absl::Status FunctionConverter::HandleAssertEqBuiltin(const Invocation* node,
   std::optional<Type*> lhs_type = current_type_info_->GetItem(node->args()[0]);
   XLS_RET_CHECK(lhs_type.has_value());
   BValue cmp = function_builder_->Eq(lhs, rhs);
-  if (TypeContainsSum(*lhs_type.value())) {
-    XLS_RETURN_IF_ERROR(AssertPhase1SemanticSumValueIsWellFormed(
-        *lhs_type.value(), lhs, ToSourceInfo(node->span()), node->span(),
-        "assert_eq", "assert_eq"));
-    XLS_RETURN_IF_ERROR(AssertPhase1SemanticSumValueIsWellFormed(
-        *lhs_type.value(), rhs, ToSourceInfo(node->span()), node->span(),
-        "assert_eq", "assert_eq"));
+  if (TypeContainsSemanticSum(*lhs_type.value())) {
     XLS_ASSIGN_OR_RETURN(cmp, BuildEqByType(*lhs_type.value(), lhs, rhs,
                                             ToSourceInfo(node->span())));
   }
@@ -3244,51 +3212,33 @@ absl::Status FunctionConverter::HandleSumConstruction(
                        current_type_info_->GetItemAs<SumType>(node));
   const SumVariant* declaration =
       std::get<const SumVariant*>(construction.declaration());
-  if (declaration->is_unit()) {
-    XLS_ASSIGN_OR_RETURN(
-        InterpValue value,
-        CreateSumValue(*sum_type, declaration->identifier(), {}));
-    XLS_ASSIGN_OR_RETURN(Value ir_value, value.ConvertToIr());
-    DefConst(node, ir_value);
-  } else {
-    const Phase1SumTypeEncoding encoding(*sum_type);
-    XLS_ASSIGN_OR_RETURN(Phase1SumTypeEncoding::VariantInfo variant,
-                         encoding.GetVariant(declaration->identifier()));
-    XLS_RET_CHECK_EQ(construction.member_count(), variant.payload_size());
+  const SumTypeEncoding encoding(*sum_type);
+  XLS_ASSIGN_OR_RETURN(SumTypeEncoding::VariantInfo variant,
+                       encoding.GetVariant(declaration->identifier()));
+  XLS_RET_CHECK_EQ(construction.member_count(), variant.payload_size());
 
-    std::vector<BValue> payload_slots;
-    payload_slots.reserve(encoding.payload_slot_count());
-    // Preserve declaration-order evaluation for named operands, including when
-    // they occur in a different order in the original expression.
-    XLS_RETURN_IF_ERROR(encoding.VisitPayloadAssemblyOrder(
-        variant,
-        [&](int64_t active_index) -> absl::Status {
-          std::optional<const Expr*> operand =
-              construction.GetMember(active_index);
-          XLS_RET_CHECK(operand.has_value());
-          XLS_RETURN_IF_ERROR(Visit(*operand));
-          XLS_ASSIGN_OR_RETURN(BValue ir_value, Use(*operand));
-          payload_slots.push_back(ir_value);
-          return absl::OkStatus();
-        },
-        [&](const Type& inactive_type) -> absl::Status {
-          XLS_ASSIGN_OR_RETURN(
-              InterpValue zero,
-              CreateInternalPlaceholderValueFromType(inactive_type));
-          XLS_ASSIGN_OR_RETURN(Value zero_value, zero.ConvertToIr());
-          payload_slots.push_back(function_builder_->Literal(zero_value));
-          return absl::OkStatus();
-        }));
-
-    XLS_ASSIGN_OR_RETURN(int64_t tag_bit_count, encoding.tag_bit_count());
-    Def(node,
-        [this, &payload_slots, variant, tag_bit_count](const SourceInfo& loc) {
-          BValue payload = function_builder_->Tuple(payload_slots, loc);
-          BValue tag = function_builder_->Literal(
-              UBits(variant.variant_index, tag_bit_count), loc);
-          return function_builder_->Tuple({tag, payload}, loc);
-        });
+  std::vector<BValue> payload_members;
+  payload_members.reserve(variant.payload_size());
+  // Preserve declaration-order evaluation for named operands, including when
+  // they occur in a different order in the original expression.
+  for (int64_t active_index = 0; active_index < variant.payload_size();
+       ++active_index) {
+    std::optional<const Expr*> operand = construction.GetMember(active_index);
+    XLS_RET_CHECK(operand.has_value());
+    XLS_RETURN_IF_ERROR(Visit(*operand));
+    XLS_ASSIGN_OR_RETURN(BValue value, Use(*operand));
+    payload_members.push_back(value);
   }
+
+  XLS_RETURN_IF_ERROR(
+      DefWithStatus(node,
+                    [this, &payload_members, &encoding,
+                     variant](const SourceInfo& loc) -> absl::StatusOr<BValue> {
+                      return internal::BuildPackedSumValue(
+                          *function_builder_, encoding, variant,
+                          payload_members, loc);
+                    })
+          .status());
   return absl::OkStatus();
 }
 
@@ -4047,7 +3997,6 @@ absl::Status FunctionConverter::HandleFunction(
   XLS_RETURN_IF_ERROR(Visit(f.body()));
 
   XLS_ASSIGN_OR_RETURN(BValue return_value, Use(f.body()));
-
   if (requires_implicit_token) {
     // Now join all the assertion tokens together to make the output token.
     // This set may be empty if "emit_assert" is false.

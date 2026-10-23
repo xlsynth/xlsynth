@@ -85,22 +85,21 @@ fn named(x: u32, y: u32) -> E { E::Named { rhs: y, lhs: x } }
       xls::Function * named,
       converted.package->GetFunction("__test_module__named"));
 
-  // Phase One retains one slot per declared payload member, including inactive
-  // variants. Named operands enter those slots in declaration order.
-  EXPECT_EQ(unit->node_count(), 1);
+  // Each carrier has one packed payload slot, padded to the widest variant.
+  // Named operands enter that slot in declaration order.
   EXPECT_THAT(unit->return_value(),
-              m::Literal(Value::Tuple(
-                  {Value(UBits(0, 2)),
-                   Value::Tuple({Value(UBits(0, 32)), Value(UBits(0, 32)),
-                                 Value(UBits(0, 32))})})));
+              m::Tuple(m::Literal("bits[2]:0"),
+                       m::Tuple(::testing::AllOf(
+                           m::ZeroExt(m::Literal("bits[0]:0")),
+                           m::Type("bits[64]")))));
   EXPECT_THAT(positional->return_value(),
               m::Tuple(m::Literal("bits[2]:1"),
-                       m::Tuple(m::Param("x"), m::Literal("bits[32]:0"),
-                                m::Literal("bits[32]:0"))));
+                       m::Tuple(::testing::AllOf(
+                           m::ZeroExt(m::Concat(m::Param("x"))),
+                           m::Type("bits[64]")))));
   EXPECT_THAT(named->return_value(),
               m::Tuple(m::Literal("bits[2]:2"),
-                       m::Tuple(m::Literal("bits[32]:0"), m::Param("x"),
-                                m::Param("y"))));
+                       m::Tuple(m::Concat(m::Param("x"), m::Param("y")))));
 }
 
 TEST_F(IrConverterTest, NamedConstant) {
