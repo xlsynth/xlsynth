@@ -74,9 +74,8 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeEnum(
     std::string_view enum_name,
     absl::flat_hash_map<Bits, std::string> value_to_name) {
   ValueFormatDescriptor vfd(ValueFormatDescriptorKind::kEnum);
-  EnumFormat& enum_format = vfd.nominal_format_.emplace<EnumFormat>();
-  enum_format.name = enum_name;
-  enum_format.value_to_name = std::move(value_to_name);
+  vfd.nominal_format_ = std::make_shared<const EnumFormat>(
+      EnumFormat{std::string(enum_name), std::move(value_to_name)});
   return vfd;
 }
 
