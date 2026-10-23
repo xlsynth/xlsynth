@@ -288,6 +288,56 @@ TEST(InterpValueTest, TestPredicates) {
   EXPECT_FALSE(InterpValue::MakeU32(1).IsTrue());
 }
 
+TEST(InterpValueTest, OrdinaryFormatDescriptorsPreserveBitMetadata) {
+  const auto unsigned_leaf = ValueFormatDescriptor::MakeLeafValue(
+      FormatPreference::kHex, /*bit_count=*/3, /*is_signed=*/false);
+  const auto signed_leaf = ValueFormatDescriptor::MakeLeafValue(
+      FormatPreference::kSignedDecimal, /*bit_count=*/5, /*is_signed=*/true);
+  EXPECT_THAT(unsigned_leaf.flat_bit_count(), testing::Optional(3));
+  EXPECT_THAT(unsigned_leaf.leaf_is_signed(), testing::Optional(false));
+  EXPECT_THAT(signed_leaf.flat_bit_count(), testing::Optional(5));
+  EXPECT_THAT(signed_leaf.leaf_is_signed(), testing::Optional(true));
+
+  const auto enumeration = ValueFormatDescriptor::MakeEnum(
+      "E", {{UBits(1, 4), "A"}}, /*bit_count=*/4, /*is_signed=*/true);
+  EXPECT_THAT(enumeration.flat_bit_count(), testing::Optional(4));
+  EXPECT_THAT(enumeration.enum_is_signed(), testing::Optional(true));
+
+  const auto array = ValueFormatDescriptor::MakeArray(signed_leaf, 2);
+  const auto tuple =
+      ValueFormatDescriptor::MakeTuple({unsigned_leaf, enumeration});
+  const auto structure =
+      ValueFormatDescriptor::MakeStruct("S", {"a", "b"}, {array, tuple});
+  EXPECT_THAT(array.flat_bit_count(), testing::Optional(10));
+  EXPECT_THAT(tuple.flat_bit_count(), testing::Optional(7));
+  EXPECT_THAT(structure.flat_bit_count(), testing::Optional(17));
+
+  const auto unknown =
+      ValueFormatDescriptor::MakeLeafValue(FormatPreference::kDefault);
+  EXPECT_FALSE(unknown.flat_bit_count().has_value());
+  EXPECT_FALSE(unknown.leaf_is_signed().has_value());
+  EXPECT_FALSE(ValueFormatDescriptor::MakeTuple({unsigned_leaf, unknown})
+                   .flat_bit_count()
+                   .has_value());
+}
+
+TEST(InterpValueTest, RawSumCarrierPreservesBitsAndRejectsWrongSlotCount) {
+  const auto tag = InterpValue::MakeSBits(/*bit_count=*/4, -3);
+  const auto payload = InterpValue::MakeUBits(/*bit_count=*/16, 0xabcd);
+  const auto value = internal::CreateEncodedSumTuple(tag, payload);
+  XLS_ASSERT_OK_AND_ASSIGN(internal::EncodedSumView view,
+                           internal::GetEncodedSumView(value));
+  EXPECT_EQ(view.tag, tag);
+  EXPECT_EQ(view.payload_slot, payload);
+
+  const auto malformed =
+      InterpValue::MakeTuple({tag, InterpValue::MakeTuple({payload, payload})});
+  EXPECT_THAT(
+      internal::GetEncodedSumView(malformed),
+      absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                             testing::HasSubstr("have 1 element; got 2")));
+}
+
 TEST(InterpValueTest, FormatNilTupleWrongElementCount) {
   auto tuple = InterpValue::MakeTuple({});
 
