@@ -1199,6 +1199,12 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
                                        UnwrapMetaType(**annotation_type));
                   XLS_ASSIGN_OR_RETURN(InterpValue value,
                                        FromProto(argument.value()));
+                  // Validate the supplied value's type, not equality with
+                  // the source argument. For a u32 binding, both u32:3 and
+                  // u32:5 pass this check. Callers must supply the source
+                  // snapshot that produced the metadata proto; pairing
+                  // metadata with edited source violates that requirement
+                  // and may go undetected here.
                   absl::Status status =
                       ValidateInterpValueMatchesType(value, *binding_type);
                   if (!status.ok()) {
