@@ -22,6 +22,8 @@
 
 namespace xls::dslx {
 
+// Builds owned formatting metadata, sharing repeated immutable sum descriptions
+// within this call. The result does not retain Type or AST pointers.
 absl::StatusOr<ValueFormatDescriptor> MakeValueFormatDescriptor(
     const Type& type, FormatPreference field_preference);
 
