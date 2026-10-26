@@ -15,6 +15,7 @@
 #define XLS_DSLX_INTERP_VALUE_UTILS_H_
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -29,6 +30,7 @@
 #include "xls/dslx/frontend/ast_node.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/type.h"
+#include "xls/ir/bits.h"
 #include "xls/ir/format_preference.h"
 #include "xls/ir/value.h"
 
@@ -50,6 +52,17 @@ absl::StatusOr<InterpValue> CreateZeroValue(const InterpValue& value);
 // type without reconstructing a nominal type from its storage representation.
 absl::Status ValidateInterpValueMatchesType(const InterpValue& value,
                                             const Type& type);
+
+namespace internal {
+
+// Restores structure, signedness and enum identity from a packed image.
+// Tuple/struct members are MSB-first; array element zero is LSB-first. Checks
+// the width but preserves raw sum tags and padding; it does not validate source
+// values.
+absl::StatusOr<InterpValue> UnflattenValueForType(const Type& type,
+                                                  const Bits& bits);
+
+}  // namespace internal
 
 // Creates a canonical zero-like InterpValue from the given Type for
 // interpreter/support-code internals. Semantic sums are rejected because their
@@ -74,6 +87,65 @@ absl::StatusOr<InterpValue> CreateSumValueFromValidatedZeroPayload(
 absl::StatusOr<InterpValue> CreateSumValue(
     const SumType& type, std::string_view variant_name,
     absl::Span<const InterpValue> payload_values);
+
+// Creates a declared packed sum constructor by source-declaration index,
+// zeroing only its newly introduced padding. Existing nested sums retain all
+// their bits without observing their tags; ordinary numeric enums are checked.
+absl::StatusOr<InterpValue> CreateSumValue(
+    const SumType& type, int64_t variant_index,
+    absl::Span<const InterpValue> payload_values);
+
+// Checks the outer packed constructor and returns its active payload members,
+// ignoring inactive padding. Nested sum images retain their unobserved tags.
+absl::StatusOr<std::vector<InterpValue>> GetSumPayloadValues(
+    const SumType& type, const InterpValue& value);
+
+namespace internal {
+
+// Observations of one immutable match scrutinee, discarded before its selected
+// arm executes. Paths identify tuple/struct/array or active payload members,
+// not Type objects (which may be cloned between arms). Retained payloads are
+// owned here, since the interpreter's per-arm matchee is temporary.
+// Every path must keep the same value and semantic type throughout this
+// lifetime; reusing an owner for another scrutinee could skip required checks.
+class MatchValueObservation {
+ public:
+  using Path = std::vector<int64_t>;
+
+  // As GetSumPayloadValues, with stable storage shared by subsequent shallow
+  // and complete observations at this path. Does not inspect nested sum tags.
+  absl::StatusOr<const std::vector<InterpValue>*> GetSumPayloadValues(
+      const SumType& type, const InterpValue& value, const Path& path);
+
+  // Validates the complete constant first, then completes/reuses validation of
+  // this scrutinee subtree before comparing meaningful values. No equality
+  // results or failed checks are retained.
+  absl::StatusOr<bool> EqualsConstant(const InterpValue& constant,
+                                      const InterpValue& value,
+                                      const Type& type, const Path& path);
+
+ private:
+  friend class ValueTraversal;
+
+  // Decoding alone is not validation; a shallow check does not validate active
+  // nested tags. Complete validity is recorded only after all descendants pass.
+  enum class Validation { kNone, kShallow, kComplete };
+  struct Observation {
+    std::optional<std::vector<InterpValue>> payload;
+    Validation validation = Validation::kNone;
+  };
+  // Map nodes keep payload references stable during recursive insertion.
+  std::map<Path, Observation> observations_;
+};
+
+// Compares declared constructors and meaningful payloads recursively, ignoring
+// packed sum padding. Validates all active constructors in both operands, even
+// if an earlier member differs. Neither operand is rewritten.
+absl::StatusOr<bool> PackedValuesEqual(const InterpValue& lhs,
+                                       const InterpValue& rhs,
+                                       const Type& type);
+
+}  // namespace internal
 
 // Finds the first index in the LHS and RHS sequences at which values differ or
 // nullopt if the two are equal.
