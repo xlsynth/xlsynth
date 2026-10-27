@@ -32,7 +32,10 @@
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/exhaustiveness/match_exhaustiveness_checker.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/module.h"
 #include "xls/dslx/import_data.h"
+#include "xls/dslx/interp_value.h"
+#include "xls/dslx/interp_value_utils.h"
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
@@ -355,6 +358,135 @@ fn main(x: MaybeU32) -> u32 {
   }
 })";
   CheckExhaustiveOnlyAfterLastPattern(kMatch);
+}
+
+// Give the checker real named-constant and wildcard patterns, then substitute
+// aggregate types and constexpr values at its input boundary. This keeps the
+// checks independent of frontend restrictions on aggregate patterns.
+constexpr std::string_view kAggregateSumPatternContext = R"(
+#![feature(type_inference_v2)]
+enum Maybe { None, Some(u1) }
+struct Box { value: u1 }
+const FIRST = u2:0;
+const SECOND = u2:1;
+const THIRD = u2:2;
+fn use_maybe(x: Maybe) -> Maybe { x }
+fn main(x: u2) -> u2 {
+  match x {
+    FIRST => u2:0,
+    SECOND => u2:1,
+    THIRD => u2:2,
+    _ => u2:3,
+  }
+}
+)";
+
+TEST(ExhaustivenessMatchTest, CheckerTraversesSumInsideStruct) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kAggregateSumPatternContext,
+                                             "test.x", "test", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * main,
+                           tm.module->GetMemberOrError<Function>("main"));
+  const Statement& statement = *main->body()->statements().back();
+  auto* match = dynamic_cast<Match*>(std::get<Expr*>(statement.wrapped()));
+  ASSERT_NE(match, nullptr);
+  std::vector<PatternTree> patterns = GetPatterns(*match);
+  ASSERT_EQ(patterns.size(), 4);
+  XLS_ASSERT_OK_AND_ASSIGN(SumDef * maybe_def,
+                           tm.module->GetMemberOrError<SumDef>("Maybe"));
+  std::optional<Type*> maybe_meta = tm.type_info->GetItem(maybe_def);
+  ASSERT_TRUE(maybe_meta.has_value());
+  const SumType& maybe_type = (*maybe_meta)->AsMeta().wrapped()->AsSum();
+  XLS_ASSERT_OK_AND_ASSIGN(StructDef * box_def,
+                           tm.module->GetMemberOrError<StructDef>("Box"));
+  std::vector<std::unique_ptr<Type>> members;
+  members.push_back(maybe_type.CloneToUnique());
+  StructType box_type(std::move(members), *box_def);
+
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue none,
+                           CreateSumValue(maybe_type, "None", {}));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue some_zero,
+      CreateSumValue(maybe_type, "Some", {InterpValue::MakeBool(false)}));
+  tm.type_info->NoteConstExpr(std::get<NameRef*>(patterns[0]),
+                              InterpValue::MakeTuple({none}));
+  tm.type_info->NoteConstExpr(std::get<NameRef*>(patterns[1]),
+                              InterpValue::MakeTuple({some_zero}));
+
+  MatchExhaustivenessChecker checker(match->matched()->span(), *tm.type_info,
+                                     box_type);
+  EXPECT_FALSE(checker.IsExhaustive());
+  EXPECT_EQ(checker.FormatSimplestUncoveredValue(),
+            "Box { value: Maybe::None }");
+  EXPECT_TRUE(checker.AddPattern(patterns[0]).adds_coverage());
+  EXPECT_EQ(checker.FormatSimplestUncoveredValue(),
+            "Box { value: Maybe::Some(u1:0) }");
+  EXPECT_TRUE(checker.AddPattern(patterns[1]).adds_coverage());
+  auto duplicate = checker.AddPattern(patterns[1]);
+  ASSERT_NE(duplicate.overlap(), nullptr);
+  EXPECT_EQ(duplicate.overlap()->kind,
+            MatchPatternOverlapKind::kExactDuplicate);
+  EXPECT_EQ(checker.FormatSimplestUncoveredValue(),
+            "Box { value: Maybe::Some(u1:1) }");
+  EXPECT_TRUE(checker.AddPattern(patterns[3]).adds_coverage());
+  EXPECT_TRUE(checker.IsExhaustive());
+  EXPECT_EQ(checker.FormatSimplestUncoveredValue(), std::nullopt);
+}
+
+TEST(ExhaustivenessMatchTest, CheckerTraversesEachSumInsideArray) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kAggregateSumPatternContext,
+                                             "test.x", "test", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * main,
+                           tm.module->GetMemberOrError<Function>("main"));
+  const Statement& statement = *main->body()->statements().back();
+  auto* match = dynamic_cast<Match*>(std::get<Expr*>(statement.wrapped()));
+  ASSERT_NE(match, nullptr);
+  std::vector<PatternTree> patterns = GetPatterns(*match);
+  ASSERT_EQ(patterns.size(), 4);
+  XLS_ASSERT_OK_AND_ASSIGN(SumDef * maybe_def,
+                           tm.module->GetMemberOrError<SumDef>("Maybe"));
+  std::optional<Type*> maybe_meta = tm.type_info->GetItem(maybe_def);
+  ASSERT_TRUE(maybe_meta.has_value());
+  const SumType& maybe_type = (*maybe_meta)->AsMeta().wrapped()->AsSum();
+  ArrayType array_type(maybe_type.CloneToUnique(), TypeDim::CreateU32(2));
+
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue none,
+                           CreateSumValue(maybe_type, "None", {}));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue some_zero,
+      CreateSumValue(maybe_type, "Some", {InterpValue::MakeBool(false)}));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue both_none,
+                           InterpValue::MakeArray({none, none}));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue some_first,
+                           InterpValue::MakeArray({some_zero, none}));
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue some_second,
+                           InterpValue::MakeArray({none, some_zero}));
+  tm.type_info->NoteConstExpr(std::get<NameRef*>(patterns[0]), both_none);
+  tm.type_info->NoteConstExpr(std::get<NameRef*>(patterns[1]), some_first);
+  tm.type_info->NoteConstExpr(std::get<NameRef*>(patterns[2]), some_second);
+
+  MatchExhaustivenessChecker checker(match->matched()->span(), *tm.type_info,
+                                     array_type);
+  EXPECT_FALSE(checker.IsExhaustive());
+  EXPECT_EQ(checker.FormatSimplestUncoveredValue(),
+            "[Maybe::None, Maybe::None]");
+  EXPECT_TRUE(checker.AddPattern(patterns[0]).adds_coverage());
+  EXPECT_EQ(checker.FormatSimplestUncoveredValue(),
+            "[Maybe::Some(u1:0), Maybe::None]");
+  EXPECT_TRUE(checker.AddPattern(patterns[1]).adds_coverage());
+  EXPECT_TRUE(checker.AddPattern(patterns[2]).adds_coverage());
+  auto duplicate = checker.AddPattern(patterns[1]);
+  ASSERT_NE(duplicate.overlap(), nullptr);
+  EXPECT_EQ(duplicate.overlap()->kind,
+            MatchPatternOverlapKind::kExactDuplicate);
+  EXPECT_EQ(checker.FormatSimplestUncoveredValue(),
+            "[Maybe::Some(u1:1), Maybe::None]");
+  EXPECT_TRUE(checker.AddPattern(patterns[3]).adds_coverage());
+  EXPECT_TRUE(checker.IsExhaustive());
+  EXPECT_EQ(checker.FormatSimplestUncoveredValue(), std::nullopt);
 }
 
 TEST(ExhaustivenessMatchTest,
