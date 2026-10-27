@@ -657,6 +657,106 @@ TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
   EXPECT_EQ(packed.data(), std::string("\x5b\xa4\x12", 3));
 }
 
+// Verifies: packed sum arguments round-trip and reject invalid active members.
+// Catches: validating shared payloads as legacy per-variant payload slots.
+TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
+       PackedSumNominalArgumentsRoundTrip) {
+  const InterpValue inner = internal::CreateEncodedSumTuple(
+      InterpValue::MakeUBits(2, 1), InterpValue::MakeU8(7));
+  struct TestCase {
+    std::string_view binding_type;
+    std::string_view source_argument;
+    InterpValue value;
+    int64_t bit_count;
+    std::string bytes;
+  };
+  const TestCase cases[] = {
+      {"Inner", "{Inner::B(Leaf::Seven)}", inner, 10,
+       std::string("\x01\x07", 2)},
+      {"Empty", "{Empty::Only()}",
+       internal::CreateEncodedSumTuple(InterpValue::MakeUBits(0, 0),
+                                       InterpValue::MakeUBits(0, 0)),
+       0, ""},
+      {"Wrapper", "{Wrapper { value: Inner::B(Leaf::Seven) }}",
+       InterpValue::MakeTuple({inner}), 10, std::string("\x01\x07", 2)},
+  };
+  for (const TestCase& test_case : cases) {
+    SCOPED_TRACE(test_case.binding_type);
+    const std::string program = absl::StrFormat(
+        R"(#![feature(generics)]
+enum Leaf: u8 { Three = 3, Seven = 7 }
+enum Inner { A(u8), B(Leaf), C }
+enum Empty { Only() }
+struct Wrapper { value: Inner }
+enum Phantom<V: %s> { Only() }
+fn f(x: Phantom<%s>) -> u1 { u1:0 }
+)",
+        test_case.binding_type, test_case.source_argument);
+    ImportData import_data = CreateImportDataForTest();
+    XLS_ASSERT_OK_AND_ASSIGN(
+        TypecheckedModule tm,
+        ParseAndTypecheck(program, "fake.x", "fake", &import_data));
+    XLS_ASSERT_OK_AND_ASSIGN(Function * function,
+                             tm.module->GetMemberOrError<Function>("f"));
+    const Param* param = function->params().front();
+    XLS_ASSERT_OK_AND_ASSIGN(Type * parsed_type,
+                             tm.type_info->GetItemOrError(param));
+    ASSERT_TRUE(parsed_type->IsSum());
+    const SumDef& sum_def = parsed_type->AsSum().nominal_type();
+    std::vector<SumTypeVariant> variants;
+    variants.push_back(
+        SumTypeVariant::MakeTuple(*sum_def.variants().front(), {}));
+    std::vector<SumType::ParametricArgument> arguments;
+    arguments.emplace_back(test_case.value);
+    // Exercise the metadata API independently of source typechecking's staged
+    // population of nominal arguments. Nested sums use their shared payload.
+    SumType semantic_sum(sum_def, std::move(variants), std::nullopt, {},
+                         std::move(arguments));
+    tm.type_info->SetItem(param, semantic_sum);
+    XLS_ASSERT_OK_AND_ASSIGN(TypeInfoProto proto,
+                             TypeInfoToProto(*tm.type_info, tm.module));
+    TypeInfoProto parsed;
+    ASSERT_TRUE(parsed.ParseFromString(proto.SerializeAsString()));
+    AstNodeTypeInfoProto* parameter = nullptr;
+    for (AstNodeTypeInfoProto& node : *parsed.mutable_nodes()) {
+      if (node.kind() == AST_NODE_KIND_PARAM && node.type().has_sum_type()) {
+        parameter = &node;
+        break;
+      }
+    }
+    ASSERT_NE(parameter, nullptr);
+    ASSERT_EQ(parameter->type().sum_type().parametric_arguments_size(), 1);
+    const SumTypeParametricProto& argument =
+        parameter->type().sum_type().parametric_arguments(0);
+    ASSERT_TRUE(argument.has_packed_value());
+    // Inner::B has tag 01 and payload 00000111. Empty has neither tag nor
+    // payload bits; the Wrapper adds no bits around its Inner member.
+    EXPECT_EQ(argument.packed_value().bit_count(), test_case.bit_count);
+    EXPECT_EQ(argument.packed_value().data(), test_case.bytes);
+    EXPECT_THAT(
+        ToHumanString(*parameter, import_data, import_data.file_table()),
+        absl_testing::IsOkAndHolds(
+            ::testing::EndsWith(" :: " + semantic_sum.ToString())));
+
+    if (test_case.binding_type == "Wrapper") {
+      BitsValueProto* packed = parameter->mutable_type()
+                                   ->mutable_sum_type()
+                                   ->mutable_parametric_arguments(0)
+                                   ->mutable_packed_value();
+      packed->set_data(std::string("\x03\x07", 2));  // Undeclared Inner tag 11.
+      EXPECT_THAT(
+          ToHumanString(*parameter, import_data, import_data.file_table()),
+          absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                 ::testing::HasSubstr("No variant with tag")));
+      packed->set_data(std::string("\x01\x05", 2));  // Undeclared Leaf value 5.
+      EXPECT_THAT(
+          ToHumanString(*parameter, import_data, import_data.file_table()),
+          absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                                 ::testing::HasSubstr("declared member")));
+    }
+  }
+}
+
 TEST_F(TypeInfoToProtoWithBothTypecheckVersionsTest,
        DependentSumArgumentsUseEachSourceSpecialization) {
   ImportData import_data = CreateImportDataForTest();

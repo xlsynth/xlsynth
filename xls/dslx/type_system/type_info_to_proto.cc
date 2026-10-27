@@ -255,6 +255,7 @@ absl::StatusOr<InterpValueProto> ToProto(const InterpValue& v) {
 // Nominal arguments already carry runtime structure. Pack it without the IR
 // value codec, which cannot represent empty arrays or zero-bit leaves. The
 // binding's declared type restores structure and nominal identity on read.
+// Sum values use a tag and one shared payload, including inside aggregates.
 absl::StatusOr<Bits> PackSumParametricValue(const InterpValue& value) {
   if (value.IsBits() || value.IsEnum()) {
     return value.GetBitsOrDie();
@@ -1275,7 +1276,8 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
                   // metadata with edited source violates that requirement
                   // and may go undetected here.
                   absl::Status status =
-                      ValidateInterpValueMatchesType(value, *binding_type);
+                      internal::ValidatePackedValueMatchesType(value,
+                                                               *binding_type);
                   if (!status.ok()) {
                     return type_mismatch(status.message());
                   } else {

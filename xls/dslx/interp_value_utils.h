@@ -55,6 +55,12 @@ absl::Status ValidateInterpValueMatchesType(const InterpValue& value,
 
 namespace internal {
 
+// Validates a structured value restored from packed bits, including every
+// active sum constructor and enum member. Sums, including those nested in
+// aggregates, must use shared-payload storage rather than per-variant slots.
+absl::Status ValidatePackedValueMatchesType(const InterpValue& value,
+                                          const Type& type);
+
 // Restores structure, signedness and enum identity from a packed image.
 // Tuple/struct members are MSB-first; array element zero is LSB-first. Checks
 // the width but preserves raw sum tags and padding; it does not validate source
