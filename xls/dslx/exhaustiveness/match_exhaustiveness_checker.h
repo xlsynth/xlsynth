@@ -44,8 +44,8 @@ class MatchExhaustivenessChecker {
     struct AddsCoverage {};
     // The pattern does not match any inhabited value in the original domain.
     struct Unmatchable {};
-    // Runtime values prevent proving coverage or overlap with earlier patterns.
-    struct UnknownCoverage {};
+    // A runtime-dependent value can match, but does not prove static coverage.
+    struct RuntimeDependent {};
     struct Overlap {
       // Equally refutable patterns covering the same inhabited values are
       // exact duplicates; differently spelled catch-alls are merely covered.
@@ -55,7 +55,7 @@ class MatchExhaustivenessChecker {
       Span previous_pattern_span;
     };
 
-    std::variant<AddsCoverage, Unmatchable, UnknownCoverage, Overlap> outcome;
+    std::variant<AddsCoverage, Unmatchable, RuntimeDependent, Overlap> outcome;
 
     bool adds_coverage() const {
       return std::holds_alternative<AddsCoverage>(outcome);
