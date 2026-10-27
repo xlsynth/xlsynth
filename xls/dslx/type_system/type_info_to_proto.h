@@ -27,7 +27,8 @@
 namespace xls::dslx {
 
 // Converts the given type information object to protobuf form for
-// serialization.
+// serialization. Sum-valued nominal arguments, including sums nested in
+// aggregates, must use shared-payload InterpValue storage.
 absl::StatusOr<TypeInfoProto> TypeInfoToProto(const TypeInfo& type_info,
                                               const Module* module);
 
