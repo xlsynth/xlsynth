@@ -919,6 +919,12 @@ absl::StatusOr<bool> PackedValuesEqual(const InterpValue& lhs,
   return traversal.Compare(lhs, rhs, type);
 }
 
+absl::Status ValidatePackedValueMatchesType(const InterpValue& value,
+                                          const Type& type) {
+  return ValueTraversal(SumValidation::kDeclaredConstructors)
+      .Validate(value, type);
+}
+
 }  // namespace internal
 
 namespace {
