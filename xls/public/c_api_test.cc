@@ -81,6 +81,50 @@ TEST(XlsCApiTest, ConvertDslxToIrSimple) {
   EXPECT_THAT(ir_out, HasSubstr("fn __my_module__id"));
 }
 
+TEST(XlsCApiTest, ConvertCheckedModuleWithNestedTupleReturn) {
+  constexpr char kProgram[] = R"(
+type Word = u8;
+fn wrap(x: Word) -> (Word, (Word, u1)) { (x, (x, u1:1)) }
+)";
+  xls_dslx_import_data* imports = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  absl::Cleanup free_imports([&] { xls_dslx_import_data_free(imports); });
+  char* error = nullptr;
+  absl::Cleanup free_error([&] { xls_c_str_free(error); });
+  xls_dslx_typechecked_module* checked = nullptr;
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kProgram, "wrap.x", "wrap", imports,
+                                           &error, &checked))
+      << error;
+  absl::Cleanup free_checked(
+      [&] { xls_dslx_typechecked_module_free(checked); });
+
+  xls_dslx_module* module = xls_dslx_typechecked_module_get_module(checked);
+  xls_dslx_function* fn = xls_dslx_module_member_get_function(
+      xls_dslx_module_get_member(module, 1));
+  ASSERT_NE(fn, nullptr);
+  xls_dslx_type_annotation* result = xls_dslx_function_get_return_type(fn);
+  int64_t count = -1;
+  ASSERT_TRUE(xls_dslx_type_annotation_get_tuple_member_count(result, &count));
+  EXPECT_EQ(count, 2);
+  auto* word = xls_dslx_type_annotation_get_tuple_member(result, 0);
+  EXPECT_NE(xls_dslx_type_annotation_get_type_ref_type_annotation(word),
+            nullptr);
+  EXPECT_FALSE(xls_dslx_type_annotation_get_tuple_member_count(word, &count));
+  auto* nested = xls_dslx_type_annotation_get_tuple_member(result, 1);
+  ASSERT_TRUE(xls_dslx_type_annotation_get_tuple_member_count(nested, &count));
+  EXPECT_EQ(count, 2);
+  EXPECT_EQ(xls_dslx_type_annotation_get_tuple_member(nested, 2), nullptr);
+
+  char* ir = nullptr;
+  absl::Cleanup free_ir([&] { xls_c_str_free(ir); });
+  ASSERT_TRUE(
+      xls_dslx_typechecked_module_convert_to_ir(checked, imports, &error, &ir))
+      << error;
+  EXPECT_EQ(error, nullptr);
+  EXPECT_THAT(ir, HasSubstr("fn __wrap__wrap(x: bits[8]"));
+  EXPECT_THAT(ir, HasSubstr("-> (bits[8], (bits[8], bits[1]))"));
+}
+
 TEST(XlsCApiTest, DslxBuildFunctionCallGraph) {
   constexpr std::string_view kProgram = R"DSLX(
 fn callee(x: u32) -> u32 {
