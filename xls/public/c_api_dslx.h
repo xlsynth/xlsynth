@@ -242,6 +242,12 @@ bool xls_dslx_typechecked_module_clone_removing_members(
 
 void xls_dslx_typechecked_module_free(struct xls_dslx_typechecked_module* tm);
 
+// Converts the checked module using the import data that owns it. The
+// resulting IR contains the full unoptimized package with source positions.
+bool xls_dslx_typechecked_module_convert_to_ir(
+    struct xls_dslx_typechecked_module* tm,
+    struct xls_dslx_import_data* import_data, char** error_out, char** ir_out);
+
 struct xls_dslx_module* xls_dslx_typechecked_module_get_module(
     struct xls_dslx_typechecked_module*);
 struct xls_dslx_type_info* xls_dslx_typechecked_module_get_type_info(
@@ -603,6 +609,15 @@ xls_dslx_type_annotation_get_type_ref_type_annotation(
 struct xls_dslx_array_type_annotation*
 xls_dslx_type_annotation_get_array_type_annotation(
     struct xls_dslx_type_annotation*);
+
+// Returns true and sets count_out for a tuple annotation, including ().
+bool xls_dslx_type_annotation_get_tuple_member_count(
+    const struct xls_dslx_type_annotation* annotation, int64_t* count_out);
+
+// Borrows a member's written annotation. Returns nullptr for a non-tuple
+// annotation or an out-of-range index.
+struct xls_dslx_type_annotation* xls_dslx_type_annotation_get_tuple_member(
+    const struct xls_dslx_type_annotation* annotation, int64_t index);
 
 // -- array_type_annotation
 

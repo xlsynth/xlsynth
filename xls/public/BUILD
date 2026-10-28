@@ -257,6 +257,8 @@ cc_library(
         "//xls/dslx/frontend:ast_node",
         "//xls/dslx/frontend:function_specializer",
         "//xls/dslx/frontend:module",
+        "//xls/dslx/ir_convert:convert_options",
+        "//xls/dslx/ir_convert:ir_converter",
         "//xls/dslx/type_system:parametric_env",
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info",
