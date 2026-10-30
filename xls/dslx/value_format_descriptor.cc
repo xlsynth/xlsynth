@@ -24,6 +24,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
 #include "xls/ir/bits.h"
@@ -140,6 +141,16 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeStruct(
   return vfd;
 }
 
+ValueFormatDescriptor internal::MakePackedSumValueFormatDescriptor(
+    std::string_view sum_name,
+    absl::Span<const ValueFormatSumVariantDescriptor> variants,
+    int64_t tag_bit_count, int64_t payload_slot_bit_count,
+    absl::Span<const Bits> variant_tag_bits) {
+  return ValueFormatDescriptor::MakeSum(sum_name, variants, tag_bit_count,
+                                        payload_slot_bit_count,
+                                        variant_tag_bits);
+}
+
 ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
     std::string_view sum_name,
     absl::Span<const ValueFormatSumVariantDescriptor> variants,
@@ -169,6 +180,35 @@ ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
   return vfd;
 }
 
+ValueFormatDescriptor ValueFormatDescriptor::MakeSum(
+    std::string_view sum_name,
+    absl::Span<const ValueFormatSumVariantDescriptor> variants,
+    int64_t tag_bit_count, int64_t payload_slot_bit_count,
+    absl::Span<const Bits> variant_tag_bits) {
+  CHECK_EQ(variants.size(), variant_tag_bits.size());
+  ValueFormatDescriptor vfd(ValueFormatDescriptorKind::kSum);
+  SumFormat sum_format;
+  sum_format.name = sum_name;
+
+  sum_format.variants.reserve(variants.size());
+  for (const ValueFormatSumVariantDescriptor& variant : variants) {
+    sum_format.variants.emplace_back(
+        std::string(variant.name()), variant.kind(),
+        std::vector<std::string>(variant.field_names().begin(),
+                                 variant.field_names().end()),
+        std::vector<ValueFormatDescriptor>(variant.payload_formats().begin(),
+                                           variant.payload_formats().end()));
+  }
+  sum_format.tag_bit_count = tag_bit_count;
+  sum_format.payload_slot_bit_count = payload_slot_bit_count;
+  sum_format.variant_tag_bits =
+      std::vector<Bits>(variant_tag_bits.begin(), variant_tag_bits.end());
+  vfd.nominal_format_ =
+      std::make_shared<const SumFormat>(std::move(sum_format));
+  vfd.flat_bit_count_ = tag_bit_count + payload_slot_bit_count;
+  return vfd;
+}
+
 ValueFormatSumVariantView ValueFormatDescriptor::sum_variant(size_t i) const {
   CHECK(IsSum());
   const SumVariantFormat& variant =
@@ -178,6 +218,31 @@ ValueFormatSumVariantView ValueFormatDescriptor::sum_variant(size_t i) const {
       variant.name, variant.kind, variant.payload_start,
       absl::MakeConstSpan(variant.field_names),
       absl::MakeConstSpan(variant.payload_formats));
+}
+
+std::optional<size_t> ValueFormatDescriptor::sum_variant_index_for_tag_bits(
+    const Bits& tag_bits) const {
+  CHECK(IsSum());
+  const SumFormat& sum_format =
+      *std::get<std::shared_ptr<const SumFormat>>(nominal_format_);
+  // Descriptors without packed layout have no variant tag bits.
+  for (size_t i = 0; i < sum_format.variant_tag_bits.size(); ++i) {
+    if (sum_format.variant_tag_bits[i] == tag_bits) {
+      return i;
+    }
+  }
+  return std::nullopt;
+}
+
+absl::StatusOr<Bits> ValueFormatDescriptor::sum_variant_tag_bits(
+    size_t i) const {
+  CHECK(IsSum());
+  if (!flat_bit_count().has_value()) {
+    return absl::InvalidArgumentError(
+        "Cannot look up a sum variant tag without packed layout metadata.");
+  }
+  return std::get<std::shared_ptr<const SumFormat>>(nominal_format_)
+      ->variant_tag_bits.at(i);
 }
 
 absl::Status ValueFormatDescriptor::Accept(ValueFormatVisitor& v) const {
