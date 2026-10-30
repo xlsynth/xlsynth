@@ -383,6 +383,18 @@ void xls_dslx_typechecked_module_free(struct xls_dslx_typechecked_module* tm) {
   delete reinterpret_cast<xls::dslx::TypecheckedModule*>(tm);
 }
 
+bool xls_dslx_typechecked_module_convert_to_ir(
+    struct xls_dslx_typechecked_module* tm,
+    struct xls_dslx_import_data* import_data, char** error_out, char** ir_out) {
+  auto* checked = reinterpret_cast<xls::dslx::TypecheckedModule*>(tm);
+  auto* imports = reinterpret_cast<xls::dslx::ImportData*>(import_data);
+  auto ir = xls::dslx::ConvertModule(
+      checked->module, imports,
+      xls::dslx::ConvertOptions{.warnings_as_errors = false,
+                                .lower_to_proc_scoped_channels = false});
+  return xls::ReturnStringHelper(ir, error_out, ir_out);
+}
+
 struct xls_dslx_module* xls_dslx_typechecked_module_get_module(
     struct xls_dslx_typechecked_module* tm) {
   auto* cpp_tm = reinterpret_cast<xls::dslx::TypecheckedModule*>(tm);
@@ -1442,6 +1454,27 @@ xls_dslx_type_annotation_get_array_type_annotation(
   auto* cpp = reinterpret_cast<xls::dslx::TypeAnnotation*>(n);
   auto* cpp_array = dynamic_cast<xls::dslx::ArrayTypeAnnotation*>(cpp);
   return reinterpret_cast<xls_dslx_array_type_annotation*>(cpp_array);
+}
+
+bool xls_dslx_type_annotation_get_tuple_member_count(
+    const struct xls_dslx_type_annotation* annotation, int64_t* count_out) {
+  const auto* tuple = dynamic_cast<const xls::dslx::TupleTypeAnnotation*>(
+      reinterpret_cast<const xls::dslx::TypeAnnotation*>(annotation));
+  if (tuple == nullptr) {
+    return false;
+  }
+  *count_out = tuple->size();
+  return true;
+}
+
+struct xls_dslx_type_annotation* xls_dslx_type_annotation_get_tuple_member(
+    const struct xls_dslx_type_annotation* annotation, int64_t index) {
+  const auto* tuple = dynamic_cast<const xls::dslx::TupleTypeAnnotation*>(
+      reinterpret_cast<const xls::dslx::TypeAnnotation*>(annotation));
+  if (tuple == nullptr || index < 0 || index >= tuple->size()) {
+    return nullptr;
+  }
+  return reinterpret_cast<xls_dslx_type_annotation*>(tuple->members()[index]);
 }
 
 // -- array_type_annotation
