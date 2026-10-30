@@ -228,6 +228,47 @@ fn twice<N: u32>(x: bits[N]) -> bits[N] {
   }
 }
 
+TEST(FunctionSpecializerTest, SumPayloadPatternsReceiveSyntheticSpans) {
+  constexpr std::string_view kProgram = R"(
+enum Choice { Tuple(u8), Named { value: u8 } }
+
+fn read<N: u32>(choice: Choice) -> uN[N] {
+  match choice {
+    Choice::Tuple(value) => value as uN[N],
+    Choice::Named { value } => value as uN[N],
+  }
+}
+)";
+  auto import_data = CreateImportDataPtrForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule typechecked,
+      ParseAndTypecheck(kProgram, "sum_span_test.x", "sum_span_test",
+                        import_data.get()));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      Function * source,
+      typechecked.module->GetMemberOrError<Function>("read"));
+  ParametricEnv env(absl::flat_hash_map<std::string, InterpValue>{
+      {"N", InterpValue::MakeU32(8)}});
+  XLS_ASSERT_OK_AND_ASSIGN(Function * specialized,
+                           InsertFunctionSpecialization(source, env, "read_8"));
+
+  const FileTable& files = import_data->file_table();
+  std::string_view synthetic_file = specialized->span().GetFilename(files);
+  EXPECT_NE(synthetic_file, source->span().GetFilename(files));
+  auto* match = dynamic_cast<Match*>(
+      std::get<Expr*>(specialized->body()->statements().at(0)->wrapped()));
+  ASSERT_NE(match, nullptr);
+  ASSERT_EQ(match->arms().size(), 2);
+  for (MatchArm* arm : match->arms()) {
+    auto* pattern = std::get<SumVariantPayloadPattern*>(arm->patterns().at(0));
+    const Span& payload_span = GetPatternSpan(pattern->payload());
+    EXPECT_EQ(pattern->span().GetFilename(files), synthetic_file);
+    EXPECT_EQ(payload_span.GetFilename(files), synthetic_file);
+    EXPECT_TRUE(arm->span().Contains(pattern->span()));
+    EXPECT_TRUE(pattern->span().Contains(payload_span));
+  }
+}
+
 TEST(FunctionSpecializerTest, SpecializedInvocationParametricsAreConcrete) {
   constexpr std::string_view kProgram =
       R"(fn repeat<COUNT: u32, N: u32>(x: uN[N]) -> uN[N][COUNT] {
