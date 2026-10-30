@@ -321,6 +321,129 @@ TEST(InterpValueTest, OrdinaryFormatDescriptorsPreserveBitMetadata) {
                    .has_value());
 }
 
+TEST(InterpValueTest, DecodePackedSumFormatUsesSparseTagsAndIgnoresPadding) {
+  const auto signed_leaf = ValueFormatDescriptor::MakeLeafValue(
+      FormatPreference::kDefault, /*bit_count=*/4, /*is_signed=*/true);
+  const auto signed_enum = ValueFormatDescriptor::MakeEnum(
+      "E", {{UBits(6, 3), "Negative"}}, /*bit_count=*/3, /*is_signed=*/true);
+  const auto descriptor = internal::MakePackedSumValueFormatDescriptor(
+      "Sparse",
+      {ValueFormatSumVariantDescriptor::MakeUnit("Empty"),
+       ValueFormatSumVariantDescriptor::MakeTuple("Signed", {signed_leaf}),
+       ValueFormatSumVariantDescriptor::MakeTuple("Enum", {signed_enum})},
+      /*tag_bit_count=*/3, /*payload_slot_bit_count=*/7,
+      {UBits(6, 3), UBits(2, 3), UBits(5, 3)});
+  const auto raw = [](const InterpValue& tag, const InterpValue& slot) {
+    return InterpValue::MakeTuple({tag, InterpValue::MakeTuple({slot})});
+  };
+  EXPECT_THAT(descriptor.flat_bit_count(), testing::Optional(10));
+  EXPECT_EQ(descriptor.sum_tag_bit_count(), 3);
+  EXPECT_EQ(descriptor.sum_payload_slot_bit_count(), 7);
+  EXPECT_THAT(descriptor.sum_variant_tag_bits(1), IsOkAndHolds(UBits(2, 3)));
+  EXPECT_FALSE(descriptor.sum_variant_index_for_tag_bits(UBits(4, 3)));
+
+  XLS_ASSERT_OK_AND_ASSIGN(auto empty, internal::DecodeFormattedSumPayload(
+                                           raw(InterpValue::MakeUBits(3, 6),
+                                               InterpValue::MakeUBits(7, 0x7f)),
+                                           descriptor));
+  EXPECT_EQ(empty.first, 0);
+  EXPECT_THAT(empty.second, testing::IsEmpty());
+  XLS_ASSERT_OK_AND_ASSIGN(auto leaf,
+                           internal::DecodeFormattedSumPayload(
+                               raw(InterpValue::MakeUBits(3, 2),
+                                   InterpValue::MakeUBits(7, 0b111'1101)),
+                               descriptor));
+  EXPECT_EQ(leaf.first, 1);
+  EXPECT_THAT(leaf.second, testing::ElementsAre(InterpValue::MakeSBits(4, -3)));
+  XLS_ASSERT_OK_AND_ASSIGN(auto enumeration,
+                           internal::DecodeFormattedSumPayload(
+                               raw(InterpValue::MakeUBits(3, 5),
+                                   InterpValue::MakeUBits(7, 0b111'1110)),
+                               descriptor));
+  EXPECT_EQ(enumeration.first, 2);
+  EXPECT_THAT(enumeration.second,
+              testing::ElementsAre(InterpValue::MakeSBits(3, -2)));
+
+  EXPECT_THAT(
+      internal::DecodeFormattedSumPayload(
+          raw(InterpValue::MakeUBits(3, 4), InterpValue::MakeUBits(7, 0x7f)),
+          descriptor),
+      absl_testing::StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          testing::HasSubstr("is not declared for `Sparse`")));
+  EXPECT_THAT(
+      internal::DecodeFormattedSumPayload(
+          raw(InterpValue::MakeUBits(3, 2), InterpValue::MakeUBits(6, 0)),
+          descriptor),
+      absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                             testing::HasSubstr("expected a 7-bit payload")));
+}
+
+TEST(InterpValueTest, DecodePackedSumFormatPreservesAggregateAndNestedOrder) {
+  const auto leaf = ValueFormatDescriptor::MakeLeafValue(
+      FormatPreference::kDefault, /*bit_count=*/2, /*is_signed=*/false);
+  const auto tuple = ValueFormatDescriptor::MakeTuple({leaf, leaf});
+  const auto array = ValueFormatDescriptor::MakeArray(leaf, 2);
+  const auto nested = internal::MakePackedSumValueFormatDescriptor(
+      "Nested",
+      {ValueFormatSumVariantDescriptor::MakeUnit("Empty"),
+       ValueFormatSumVariantDescriptor::MakeTuple("Value", {leaf})},
+      /*tag_bit_count=*/2, /*payload_slot_bit_count=*/3,
+      {UBits(2, 2), UBits(1, 2)});
+  const auto outer = internal::MakePackedSumValueFormatDescriptor(
+      "Outer",
+      {ValueFormatSumVariantDescriptor::MakeStruct(
+          "Members", {"tuple", "array", "nested"}, {tuple, array, nested})},
+      /*tag_bit_count=*/2, /*payload_slot_bit_count=*/15, {UBits(3, 2)});
+  // Padding, tuple (MSB first), array (LSB first), nested tag and dirty slot.
+  const auto raw =
+      InterpValue::MakeTuple({InterpValue::MakeUBits(2, 3),
+                              InterpValue::MakeTuple({InterpValue::MakeUBits(
+                                  15, 0b11'0110'1001'01101)})});
+  XLS_ASSERT_OK_AND_ASSIGN(auto decoded,
+                           internal::DecodeFormattedSumPayload(raw, outer));
+  EXPECT_EQ(decoded.first, 0);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto expected_array,
+      InterpValue::MakeArray(
+          {InterpValue::MakeUBits(2, 1), InterpValue::MakeUBits(2, 2)}));
+  const auto expected_nested = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(2, 1),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(3, 0b101)})});
+  EXPECT_THAT(decoded.second,
+              testing::ElementsAre(
+                  InterpValue::MakeTuple({InterpValue::MakeUBits(2, 1),
+                                          InterpValue::MakeUBits(2, 2)}),
+                  expected_array, expected_nested));
+  ASSERT_EQ(decoded.second.size(), 3);
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto decoded_nested,
+      internal::DecodeFormattedSumPayload(decoded.second[2], nested));
+  EXPECT_EQ(decoded_nested.first, 1);
+  EXPECT_THAT(decoded_nested.second,
+              testing::ElementsAre(InterpValue::MakeUBits(2, 1)));
+}
+
+TEST(InterpValueTest, DecodePackedSumFormatDistinguishesZeroAndMissingLayout) {
+  const auto zero_width = internal::MakePackedSumValueFormatDescriptor(
+      "Zero", {ValueFormatSumVariantDescriptor::MakeUnit("Only")},
+      /*tag_bit_count=*/0, /*payload_slot_bit_count=*/0, {Bits()});
+  const auto raw = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(0, 0),
+       InterpValue::MakeTuple({InterpValue::MakeUBits(0, 0)})});
+  EXPECT_THAT(zero_width.flat_bit_count(), testing::Optional(0));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto decoded, internal::DecodeFormattedSumPayload(raw, zero_width));
+  EXPECT_EQ(decoded.first, 0);
+  EXPECT_THAT(decoded.second, testing::IsEmpty());
+  const auto no_layout =
+      ValueFormatDescriptor::MakeLeafValue(FormatPreference::kDefault);
+  EXPECT_THAT(
+      internal::DecodeFormattedSumPayload(raw, no_layout),
+      absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                             testing::HasSubstr("without packed layout")));
+}
+
 TEST(InterpValueTest, RawSumCarrierPreservesBitsAndRejectsWrongSlotCount) {
   const auto tag = InterpValue::MakeSBits(/*bit_count=*/4, -3);
   const auto payload = InterpValue::MakeUBits(/*bit_count=*/16, 0xabcd);
