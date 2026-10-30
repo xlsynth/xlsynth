@@ -81,6 +81,7 @@ class BytecodeEmitter : public ExprVisitor {
  private:
   BytecodeEmitter(
       ImportData* import_data, const TypeInfo* type_info,
+      const Module* current_module,
       const std::optional<ParametricEnv>& caller_bindings,
       std::optional<absl::FunctionRef<int64_t()>> channel_instance_allocator,
       const BytecodeEmitterOptions& options);
@@ -205,6 +206,7 @@ class BytecodeEmitter : public ExprVisitor {
 
   ImportData* import_data_;
   const TypeInfo* type_info_;
+  const Module* current_module_;
   const std::optional<ParametricEnv>& caller_bindings_;
   std::optional<absl::FunctionRef<int64_t()>> channel_instance_allocator_;
   BytecodeEmitterOptions options_;
