@@ -22,6 +22,7 @@
 
 #include "xls/dslx/bytecode/bytecode.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/interp_value_utils.h"
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type_info.h"
 
@@ -54,6 +55,10 @@ class Frame {
   const TypeInfo* type_info() const { return type_info_; }
   const std::optional<ParametricEnv>& bindings() const { return bindings_; }
   const std::vector<InterpValue>& initial_args() { return initial_args_; }
+  // Present only between BeginMatch and EndMatch, before the chosen arm runs.
+  std::optional<internal::MatchValueObservation>& match_observation() {
+    return match_observation_;
+  }
 
   void StoreSlot(Bytecode::SlotIndex slot_index, InterpValue value);
 
@@ -64,6 +69,7 @@ class Frame {
   const TypeInfo* type_info_;
   std::optional<ParametricEnv> bindings_;
   std::vector<InterpValue> initial_args_;
+  std::optional<internal::MatchValueObservation> match_observation_;
 
   std::unique_ptr<BytecodeFunction> bf_holder_;
 };
