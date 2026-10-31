@@ -244,6 +244,7 @@ cc_library(
         ":c_api_impl_helpers",
         "//xls/common:attribute_data",
         "//xls/common:visitor",
+        "//xls/common/status:status_macros",
         "//xls/dslx:create_import_data",
         "//xls/dslx:import_data",
         "//xls/dslx:interp_value",
