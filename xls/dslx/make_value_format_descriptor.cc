@@ -117,6 +117,9 @@ absl::StatusOr<ValueFormatDescriptor> MakeEnumFormatDescriptor(
 
 absl::StatusOr<ValueFormatDescriptor> ValueFormatDescriptorBuilder::BuildSum(
     const SumType& type) {
+  // Check the complete width, including the tag, before payload descriptor
+  // arithmetic can overflow.
+  XLS_RETURN_IF_ERROR(type.GetTotalBitCount().status());
   const SumTypeEncoding encoding(type);
   std::vector<ValueFormatSumVariantDescriptor> variants;
   std::vector<Bits> variant_tag_bits;
