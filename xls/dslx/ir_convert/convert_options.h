@@ -84,8 +84,8 @@ struct ConvertOptions {
   // Observes the IR node for a source loop binding during conversion. The
   // source and its specialization's checked type belong to the caller's
   // ImportData. The function name is borrowed only during the callback.
-  using LoopBindingCallback =
-      std::function<void(std::string_view, int64_t, const AstNode*, const Type*)>;
+  using LoopBindingCallback = std::function<void(std::string_view, int64_t,
+                                                 const AstNode*, const Type*)>;
   // The caller owns the callback for the duration of conversion.
   const LoopBindingCallback* loop_binding = nullptr;
 };

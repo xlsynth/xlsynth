@@ -1819,7 +1819,7 @@ void FunctionConverter::NoteLoopBinding(const AstNode* source, BValue value) {
   if (options_.loop_binding) {
     if (auto type = current_type_info_->GetItem(source)) {
       (*options_.loop_binding)(function_builder_->name(), value.node()->id(),
-                            source, *type);
+                               source, *type);
     }
   }
 }
@@ -1957,7 +1957,7 @@ FunctionConverter::HandleForLexicalScope(const For* node,
           xls::Type * name_def_type,
           TypeToIr(package(), **type, ParametricEnv(parametric_env_map_)));
       BValue param = body_converter.AddParam(freevar_name_def->identifier(),
-                                            name_def_type);
+                                             name_def_type);
       body_converter.SetNodeToIr(freevar_name_def, param);
       body_converter.NoteLoopBinding(freevar_name_def, param);
     }

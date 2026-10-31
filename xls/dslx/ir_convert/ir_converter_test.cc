@@ -123,8 +123,8 @@ fn accumulate(extra: u32) -> (u32, u32) {
   absl::flat_hash_map<std::string, int64_t> bindings;
   ConvertOptions::LoopBindingCallback observe;
   options.loop_binding = &observe;
-  observe = [&](std::string_view body, int64_t id,
-                             const AstNode* source, const Type* type) {
+  observe = [&](std::string_view body, int64_t id, const AstNode* source,
+                const Type* type) {
     body_name = body;
     if (auto* name = dynamic_cast<const NameDef*>(source)) {
       bindings[name->identifier()] = id;

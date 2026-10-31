@@ -372,10 +372,9 @@ bool xls_dslx_typechecked_module_convert_to_ir_with_loop_bindings(
   xls::dslx::ConvertOptions::LoopBindingCallback observe;
   if (callback != nullptr) {
     options.loop_binding = &observe;
-    observe = [callback, user_data](
-                               std::string_view body, int64_t node_id,
-                               const xls::dslx::AstNode* source,
-                               const xls::dslx::Type* type) {
+    observe = [callback, user_data](std::string_view body, int64_t node_id,
+                                    const xls::dslx::AstNode* source,
+                                    const xls::dslx::Type* type) {
       const auto* binder = dynamic_cast<const xls::dslx::NameDef*>(source);
       callback(user_data, std::string(body).c_str(), node_id,
                binder == nullptr ? nullptr : binder->identifier().c_str(),
