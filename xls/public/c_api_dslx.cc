@@ -356,12 +356,32 @@ void xls_dslx_typechecked_module_free(struct xls_dslx_typechecked_module* tm) {
 bool xls_dslx_typechecked_module_convert_to_ir(
     struct xls_dslx_typechecked_module* tm,
     struct xls_dslx_import_data* import_data, char** error_out, char** ir_out) {
+  return xls_dslx_typechecked_module_convert_to_ir_with_loop_bindings(
+      tm, import_data, nullptr, nullptr, error_out, ir_out);
+}
+
+bool xls_dslx_typechecked_module_convert_to_ir_with_loop_bindings(
+    struct xls_dslx_typechecked_module* tm,
+    struct xls_dslx_import_data* import_data,
+    xls_dslx_loop_binding_callback callback, void* user_data, char** error_out,
+    char** ir_out) {
   auto* checked = reinterpret_cast<xls::dslx::TypecheckedModule*>(tm);
   auto* imports = reinterpret_cast<xls::dslx::ImportData*>(import_data);
-  auto ir = xls::dslx::ConvertModule(
-      checked->module, imports,
-      xls::dslx::ConvertOptions{.warnings_as_errors = false,
-                                .lower_to_proc_scoped_channels = false});
+  xls::dslx::ConvertOptions options{.warnings_as_errors = false,
+                                    .lower_to_proc_scoped_channels = false};
+  xls::dslx::ConvertOptions::LoopBindingCallback observe;
+  if (callback != nullptr) {
+    options.loop_binding = &observe;
+    observe = [callback, user_data](std::string_view body, int64_t node_id,
+                                    const xls::dslx::AstNode* source,
+                                    const xls::dslx::Type* type) {
+      const auto* binder = dynamic_cast<const xls::dslx::NameDef*>(source);
+      callback(user_data, std::string(body).c_str(), node_id,
+               binder == nullptr ? nullptr : binder->identifier().c_str(),
+               reinterpret_cast<const xls_dslx_type*>(type));
+    };
+  }
+  auto ir = xls::dslx::ConvertModule(checked->module, imports, options);
   return xls::ReturnStringHelper(ir, error_out, ir_out);
 }
 
@@ -1309,6 +1329,12 @@ struct xls_dslx_type_alias* xls_dslx_module_get_type_definition_as_type_alias(
   return reinterpret_cast<xls_dslx_type_alias*>(cpp_type_alias);
 }
 
+struct xls_dslx_module* xls_dslx_struct_def_get_module(
+    struct xls_dslx_struct_def* n) {
+  auto* decl = reinterpret_cast<xls::dslx::StructDef*>(n);
+  return reinterpret_cast<xls_dslx_module*>(decl->owner());
+}
+
 char* xls_dslx_struct_def_get_identifier(struct xls_dslx_struct_def* n) {
   auto* cpp_struct_def = reinterpret_cast<xls::dslx::StructDef*>(n);
   const std::string& result = cpp_struct_def->identifier();
@@ -1919,6 +1945,20 @@ bool xls_dslx_type_is_signed_bits(const struct xls_dslx_type* type,
 bool xls_dslx_type_is_enum(const struct xls_dslx_type* type) {
   const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
   return cpp_type->IsEnum();
+}
+
+bool xls_dslx_type_is_tuple(const struct xls_dslx_type* type) {
+  return reinterpret_cast<const xls::dslx::Type*>(type)->IsTuple();
+}
+
+int64_t xls_dslx_type_tuple_get_member_count(const struct xls_dslx_type* type) {
+  return reinterpret_cast<const xls::dslx::Type*>(type)->AsTuple().size();
+}
+
+const struct xls_dslx_type* xls_dslx_type_tuple_get_member_type(
+    const struct xls_dslx_type* type, int64_t index) {
+  const auto& tuple = reinterpret_cast<const xls::dslx::Type*>(type)->AsTuple();
+  return reinterpret_cast<const xls_dslx_type*>(&tuple.GetMemberType(index));
 }
 
 bool xls_dslx_type_is_struct(const struct xls_dslx_type* type) {
