@@ -560,12 +560,26 @@ absl::Status NoteBuiltinInvocationConstExpr(std::string_view fn_name,
                        " is not fully known yet."),
           import_data->file_table());
     }
-    XLS_ASSIGN_OR_RETURN(
-        InterpValue value,
+    absl::StatusOr<InterpValue> value =
         fn_name == "element_count"
             ? GetElementCountAsInterpValue(*explicit_parametric_type)
-            : GetBitCountAsInterpValue(*explicit_parametric_type));
-    ti->NoteConstExpr(invocation, value);
+            : GetBitCountAsInterpValue(*explicit_parametric_type);
+    if (fn_name == "bit_count" && absl::IsInvalidArgument(value.status())) {
+      // The concrete type has no source location, but a failed width belongs
+      // to the type argument that requested it.
+      if (const auto* annotation =
+              dynamic_cast<const TypeAnnotation*>(parametric_node)) {
+        return TypeInferenceErrorStatusForAnnotation(
+            annotation->span(), annotation, value.status().message(),
+            import_data->file_table());
+      } else {
+        return TypeInferenceErrorStatus(
+            parametric_node->GetSpan().value_or(invocation->span()), nullptr,
+            value.status().message(), import_data->file_table());
+      }
+    }
+    XLS_RETURN_IF_ERROR(value.status());
+    ti->NoteConstExpr(invocation, *value);
   }
 
   if (fn_name == "configured_value_or") {

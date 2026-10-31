@@ -1051,6 +1051,8 @@ absl::StatusOr<InterpValue> CreateValueFromType(const Type& type,
                          array_type->size().GetAsInt64());
 
     if (array_size == 0) {
+      XLS_RETURN_IF_ERROR(
+          internal::ValidateEmptyArrayElementSumWidths(*array_type));
       return InterpValue::MakeArray({});
     }
 
