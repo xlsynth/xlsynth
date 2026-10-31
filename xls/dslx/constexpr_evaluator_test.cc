@@ -112,24 +112,19 @@ const TUPLE = E::Tuple(u8:3, u16:5);
 const NAMED = E::Named { second: u16:11, first: u8:7 };
 )"));
   auto expect_value = [&](std::string_view name, AstNodeKind kind, int64_t tag,
-                          std::vector<InterpValue> payload) {
+                          uint64_t payload_bits) {
     XLS_ASSERT_OK_AND_ASSIGN(ConstantDef * constant,
                              test_data.module->GetConstantDef(name));
     EXPECT_EQ(constant->value()->kind(), kind);
     EXPECT_THAT(test_data.type_info->GetConstExpr(constant->value()),
                 IsOkAndHolds(InterpValue::MakeTuple(
                     {InterpValue::MakeUBits(2, tag),
-                     InterpValue::MakeTuple(std::move(payload))})));
+                     InterpValue::MakeTuple(
+                         {InterpValue::MakeUBits(24, payload_bits)})})));
   };
-  expect_value("UNIT", AstNodeKind::kColonRef, 0,
-               {InterpValue::MakeU8(0), InterpValue::MakeUBits(16, 0),
-                InterpValue::MakeU8(0), InterpValue::MakeUBits(16, 0)});
-  expect_value("TUPLE", AstNodeKind::kInvocation, 1,
-               {InterpValue::MakeU8(3), InterpValue::MakeUBits(16, 5),
-                InterpValue::MakeU8(0), InterpValue::MakeUBits(16, 0)});
-  expect_value("NAMED", AstNodeKind::kStructInstance, 2,
-               {InterpValue::MakeU8(0), InterpValue::MakeUBits(16, 0),
-                InterpValue::MakeU8(7), InterpValue::MakeUBits(16, 11)});
+  expect_value("UNIT", AstNodeKind::kColonRef, 0, 0);
+  expect_value("TUPLE", AstNodeKind::kInvocation, 1, 0x030005);
+  expect_value("NAMED", AstNodeKind::kStructInstance, 2, 0x07000b);
 }
 
 TEST(ConstexprEvaluatorTest, HandleAttrSimple) {
