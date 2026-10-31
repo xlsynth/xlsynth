@@ -54,6 +54,21 @@ fn for_loop_inside_test() {
 }
 """
 
+DSLX_SEMANTIC_SUM_PROGRAM = r"""
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn id(x: Option) -> Option { x }
+
+#[test]
+fn semantic_sum_trace_test() {
+  let _ = id(Option::Some(u32:42));
+  ()
+}
+"""
+
 
 def _write_textproto(path: str, text: str) -> None:
   with open(path, 'w', encoding='utf-8') as f:
@@ -177,6 +192,20 @@ class DumpCallTraceTest(absltest.TestCase):
       )
       __prog__baz(...) => bits[32]:3
     __itok__prog__call_trace_test(...) => (token, ())
+    """).lstrip()
+    self.assertEqual(_normalize_locations(out), expected)
+
+  def test_semantic_sum_arguments_and_returns(self):
+    path = self._run_and_write_results_proto(
+        DSLX_SEMANTIC_SUM_PROGRAM, 'semantic_sum_results.textproto'
+    )
+    out = _run_dump(path)
+    expected = textwrap.dedent("""
+    <file>:<loc>: semantic_sum_trace_test(
+    )
+      <file>:<loc>: id(Option::Some(42))
+      id(...) => Option::Some(42)
+    semantic_sum_trace_test(...) => ()
     """).lstrip()
     self.assertEqual(_normalize_locations(out), expected)
 
