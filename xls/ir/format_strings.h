@@ -21,22 +21,38 @@
 #include <variant>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xls/ir/format_preference.h"
 
 namespace xls {
 
-// When building output based on a format string, there are two kinds of
-// steps involved: printing string fragments and printing arguments according
-// to their requested format.
-using FormatStep = std::variant<std::string, FormatPreference>;
+// IR-only control steps conditionally include a balanced sequence of formatting
+// steps. A begin step consumes one bits[1] data operand; an end step consumes
+// none. DSLX source format strings never accept these internal directives.
+enum class FormatControl {
+  kBeginConditional,
+  kEndConditional,
+};
+
+// Formatting prints literal fragments and operands, optionally guarded by
+// balanced IR-only conditional sections.
+using FormatStep = std::variant<std::string, FormatPreference, FormatControl>;
 
 // Parse a format string into the steps required to build output using it.
 // Example: "x is {} in the default format." would parse into the steps
 // {"x is ", FormatPreference::kDefault, " in the default format."}
 absl::StatusOr<std::vector<FormatStep>> ParseFormatString(
     std::string_view format_string);
+
+// Parses persisted IR format strings, additionally recognizing `{?}` and
+// `{/}` as balanced conditional-begin and conditional-end directives.
+absl::StatusOr<std::vector<FormatStep>> ParseIrFormatString(
+    std::string_view format_string);
+
+// Rejects unmatched conditional directives in a programmatically built format.
+absl::Status ValidateFormatSteps(absl::Span<const FormatStep> format);
 
 // Count the number of data operands expected by parsed format.
 // Example: As above, "x is {} in the default format." parses into
@@ -49,13 +65,18 @@ int64_t OperandsExpectedByFormat(absl::Span<const FormatStep> format);
 std::vector<FormatPreference> OperandPreferencesFromFormat(
     absl::Span<const FormatStep> format);
 
-// Convert a sequence of format steps into a format string that can be used
-// in DSLX source or printed XLS IR.
-// This is the inverse of the ParseFormatString function above.
+// Converts format steps into their printed XLS IR representation. Ordinary
+// steps can also be parsed as DSLX source; conditional directives are IR-only
+// and require ParseIrFormatString instead of ParseFormatString.
 std::string StepsToXlsFormatString(absl::Span<const FormatStep> format);
 
+// Renders one IR literal fragment, replacing doubled braces exactly once.
+// FormatStep literals retain escapes so their persisted IR can be reparsed.
+std::string UnescapeFormatStringLiteral(std::string_view literal);
+
 // Convert a sequence of format steps into a format string that can be used
-// in generated Verilog.
+// in generated Verilog. IR-only conditional control steps must have already
+// been removed or split into separate format strings.
 std::string StepsToVerilogFormatString(absl::Span<const FormatStep> format);
 
 }  // namespace xls

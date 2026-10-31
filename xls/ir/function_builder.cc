@@ -1958,6 +1958,11 @@ BValue BuilderBase::Trace(BValue token, BValue condition,
         loc);
   }
 
+  if (absl::Status format_status = ValidateFormatSteps(format);
+      !format_status.ok()) {
+    return SetError(format_status.message(), loc);
+  }
+
   int64_t expected_operands = OperandsExpectedByFormat(format);
   if (args.size() != expected_operands) {
     return SetError(
@@ -1965,6 +1970,25 @@ BValue BuilderBase::Trace(BValue token, BValue condition,
             "Trace node expects %d data operands, but %d were supplied",
             expected_operands, args.size()),
         loc);
+  }
+
+  int64_t operand_index = 0;
+  for (const FormatStep& step : format) {
+    if (std::holds_alternative<FormatPreference>(step)) {
+      ++operand_index;
+    } else if (auto* control = std::get_if<FormatControl>(&step);
+               control != nullptr &&
+               *control == FormatControl::kBeginConditional) {
+      Type* guard_type = args[operand_index].GetType();
+      if (!guard_type->IsBits() ||
+          guard_type->AsBitsOrDie()->bit_count() != 1) {
+        return SetError(
+            absl::StrFormat("Conditional trace guard must be bits[1]; is: %s",
+                            guard_type->ToString()),
+            loc);
+      }
+      ++operand_index;
+    }
   }
 
   std::vector<Node*> arg_nodes;
@@ -1986,7 +2010,7 @@ BValue BuilderBase::Trace(BValue token, BValue condition,
                           absl::Span<const BValue> args,
                           std::string_view format_string, int64_t verbosity,
                           const SourceInfo& loc, std::string_view name) {
-  auto parse_status = ParseFormatString(format_string);
+  auto parse_status = ParseIrFormatString(format_string);
 
   if (!parse_status.ok()) {
     return SetError(parse_status.status().message(), loc);
