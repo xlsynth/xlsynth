@@ -319,6 +319,8 @@ std::string_view AstNodeKindToString(AstNodeKind kind) {
       return "width slice";
     case AstNodeKind::kWildcardPattern:
       return "wildcard pattern";
+    case AstNodeKind::kInvalidPattern:
+      return "invalid pattern";
     case AstNodeKind::kMatchArm:
       return "match arm";
     case AstNodeKind::kMatch:
@@ -3026,6 +3028,24 @@ std::optional<Span> Statement::GetSpan() const {
 
 WildcardPattern::~WildcardPattern() = default;
 
+// -- class InvalidPattern
+
+InvalidPattern::~InvalidPattern() = default;
+
+std::string InvalidPattern::ToString() const {
+  if (raw_name_def_ == nullptr) {
+    return "invalid!";
+  }
+  return absl::StrFormat("invalid!(%s)", raw_name_def_->ToString());
+}
+
+std::vector<AstNode*> InvalidPattern::GetChildren(bool want_types) const {
+  if (raw_name_def_ == nullptr) {
+    return {};
+  }
+  return {raw_name_def_};
+}
+
 // -- class RestOfTuple
 
 RestOfTuple::~RestOfTuple() = default;
@@ -3199,6 +3219,7 @@ PatternLeaf PatternTreeToLeaf(const PatternTree& pattern) {
       Visitor{[](NameDef* node) -> PatternLeaf { return node; },
               [](NameRef* node) -> PatternLeaf { return node; },
               [](WildcardPattern* node) -> PatternLeaf { return node; },
+              [](InvalidPattern* node) -> PatternLeaf { return node; },
               [](Number* node) -> PatternLeaf { return node; },
               [](ColonRef* node) -> PatternLeaf { return node; },
               [](Range* node) -> PatternLeaf { return node; },
@@ -3224,6 +3245,7 @@ ConstPatternLeaf PatternTreeToLeaf(const ConstPatternTree& pattern) {
           [](const NameDef* node) -> ConstPatternLeaf { return node; },
           [](const NameRef* node) -> ConstPatternLeaf { return node; },
           [](const WildcardPattern* node) -> ConstPatternLeaf { return node; },
+          [](const InvalidPattern* node) -> ConstPatternLeaf { return node; },
           [](const Number* node) -> ConstPatternLeaf { return node; },
           [](const ColonRef* node) -> ConstPatternLeaf { return node; },
           [](const Range* node) -> ConstPatternLeaf { return node; },
@@ -3371,7 +3393,8 @@ bool IsIrrefutablePattern(const PatternTree& pattern) {
   std::vector<PatternLeaf> leaves = FlattenPattern(pattern);
   return std::all_of(leaves.begin(), leaves.end(), [](PatternLeaf leaf) {
     return std::holds_alternative<NameDef*>(leaf) ||
-           std::holds_alternative<WildcardPattern*>(leaf);
+           std::holds_alternative<WildcardPattern*>(leaf) ||
+           std::holds_alternative<RestOfTuple*>(leaf);
   });
 }
 
@@ -3379,7 +3402,8 @@ bool IsIrrefutablePattern(const ConstPatternTree& pattern) {
   std::vector<ConstPatternLeaf> leaves = FlattenPattern(pattern);
   return std::all_of(leaves.begin(), leaves.end(), [](ConstPatternLeaf leaf) {
     return std::holds_alternative<const NameDef*>(leaf) ||
-           std::holds_alternative<const WildcardPattern*>(leaf);
+           std::holds_alternative<const WildcardPattern*>(leaf) ||
+           std::holds_alternative<const RestOfTuple*>(leaf);
   });
 }
 
