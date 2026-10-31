@@ -22,7 +22,6 @@
 #include <utility>
 
 #include "absl/container/flat_hash_map.h"
-#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xls/dslx/frontend/aggregate_construction.h"
@@ -46,12 +45,6 @@ absl::StatusOr<NamedFieldCorrespondence> ValidateAndBindNamedMembers(
     const NamedFields& formal_members, std::string_view aggregate_name,
     bool is_struct, bool requires_all_members, const FileTable& file_table,
     bool allow_default_io_members = false);
-
-// Rejects payload member types not supported by phase-one semantic sums.
-absl::Status ValidatePhase1SumPayloadMemberType(
-    const SumDef& sum_def, const SumVariant& variant,
-    const TypeAnnotation* member_annotation, const Type& member_type,
-    const FileTable& file_table);
 
 // Validates the formal type/value kind and returns a type annotation for a
 // type argument, including a ColonRef to an imported type. Expression arguments
