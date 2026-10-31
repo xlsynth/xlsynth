@@ -577,6 +577,20 @@ static absl::StatusOr<QuickcheckIrFn> FindQuickcheckIrFn(Function* dslx_fn,
                       absl::StrJoin(ir_package->GetFunctionNames(), ", ")));
 }
 
+static absl::StatusOr<bool> QuickCheckHasInhabitedInputs(QuickCheck* quickcheck,
+                                                         TypeInfo* type_info) {
+  XLS_ASSIGN_OR_RETURN(
+      dslx::FunctionType * dslx_fn_type,
+      type_info->GetItemAs<dslx::FunctionType>(quickcheck->fn()));
+  for (const std::unique_ptr<Type>& param_type : dslx_fn_type->params()) {
+    XLS_ASSIGN_OR_RETURN(bool param_is_inhabited, TypeIsInhabited(*param_type));
+    if (!param_is_inhabited) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static absl::Status RunQuickCheck(AbstractRunComparator* quickcheck_runner,
                                   Package* ir_package, QuickCheck* quickcheck,
                                   TypeInfo* type_info, int64_t seed) {
@@ -596,6 +610,16 @@ static absl::Status RunQuickCheck(AbstractRunComparator* quickcheck_runner,
   XLS_RET_CHECK(IsKnownU1(bits_like_properties.value()))
       << "quickcheck properties must return `bool`, should be validated by "
          "type checking";
+
+  XLS_ASSIGN_OR_RETURN(bool has_inhabited_inputs,
+                       QuickCheckHasInhabitedInputs(quickcheck, type_info));
+  if (!has_inhabited_inputs) {
+    return FailureErrorStatus(
+        dslx_fn->span(),
+        absl::StrFormat("quickcheck of `%s` rejected all input samples",
+                        dslx_fn->identifier()),
+        *dslx_fn->owner()->file_table());
+  }
 
   XLS_ASSIGN_OR_RETURN(QuickcheckIrFn qc_fn,
                        FindQuickcheckIrFn(dslx_fn, ir_package));

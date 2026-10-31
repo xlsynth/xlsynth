@@ -680,6 +680,8 @@ class InferenceTable {
   // If a `target_module` is specified, then nodes are cloned into that module;
   // otherwise, each node is cloned into the module that owns the original
   // counterpart.
+  // Annotation flags follow ordinary clones; annotations supplied by the
+  // replacer retain their own flags.
   virtual absl::StatusOr<AstNode*> Clone(
       const AstNode* input, CloneReplacer replacer,
       std::optional<Module*> target_module = std::nullopt) = 0;
