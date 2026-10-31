@@ -163,6 +163,7 @@ cc_library(
         "//xls/dslx/frontend:ast",
         "//xls/dslx/frontend:pos",
         "//xls/ir:bits",
+        "@abseil-cpp//absl/container:flat_hash_set",
         "@abseil-cpp//absl/log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",

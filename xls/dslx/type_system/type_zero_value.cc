@@ -23,6 +23,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -345,30 +346,41 @@ absl::StatusOr<InterpValue> MakeZeroValue(const Type& type,
   return v.ResultOrError();
 }
 
-absl::Status ValidateZeroValue(const Type& type, const ImportData& import_data,
-                               const Span& span) {
+namespace {
+
+absl::Status ValidateZeroValueInternal(
+    const Type& type, const ImportData& import_data, const Span& span,
+    absl::flat_hash_set<const std::vector<SumTypeVariant>*>& validated_sums) {
   auto validate_members = [&](const auto& members) -> absl::Status {
     for (const auto& member : members) {
-      XLS_RETURN_IF_ERROR(ValidateZeroValue(*member, import_data, span));
+      XLS_RETURN_IF_ERROR(ValidateZeroValueInternal(*member, import_data, span,
+                                                    validated_sums));
     }
     return absl::OkStatus();
   };
   if (const auto* sum = dynamic_cast<const SumType*>(&type)) {
-    XLS_ASSIGN_OR_RETURN(const SumTypeVariant* variant,
-                         GetZeroDiscriminantVariant(*sum, span,
-                                                    import_data.file_table()));
-    for (int64_t i = 0; i < variant->size(); ++i) {
-      XLS_RETURN_IF_ERROR(
-          ValidateZeroValue(variant->GetMemberType(i), import_data, span));
+    // Clones of the same concrete sum share their variant table.
+    if (validated_sums.contains(&sum->variants())) {
+      return absl::OkStatus();
     }
+    XLS_ASSIGN_OR_RETURN(
+        const SumTypeVariant* variant,
+        GetZeroDiscriminantVariant(*sum, span, import_data.file_table()));
+    for (int64_t i = 0; i < variant->size(); ++i) {
+      XLS_RETURN_IF_ERROR(ValidateZeroValueInternal(
+          variant->GetMemberType(i), import_data, span, validated_sums));
+    }
+    validated_sums.insert(&sum->variants());
     return absl::OkStatus();
   } else if (auto bits = GetBitsLike(type); bits.has_value()) {
     XLS_RETURN_IF_ERROR(bits->is_signed.GetAsBool().status());
     return bits->size.GetAsInt64().status();
   } else if (const auto* array = dynamic_cast<const ArrayType*>(&type)) {
     XLS_ASSIGN_OR_RETURN(int64_t size, array->size().GetAsInt64());
-    return size == 0 ? absl::OkStatus()
-                     : ValidateZeroValue(array->element_type(), import_data, span);
+    return size == 0
+               ? absl::OkStatus()
+               : ValidateZeroValueInternal(array->element_type(), import_data,
+                                           span, validated_sums);
   } else if (const auto* tuple = dynamic_cast<const TupleType*>(&type)) {
     return validate_members(tuple->members());
   } else if (const auto* structure = dynamic_cast<const StructType*>(&type)) {
@@ -379,6 +391,14 @@ absl::Status ValidateZeroValue(const Type& type, const ImportData& import_data,
     // The remaining type kinds cannot be zeroed. Keep their usual diagnostic.
     return MakeZeroValue(type, import_data, span).status();
   }
+}
+
+}  // namespace
+
+absl::Status ValidateZeroValue(const Type& type, const ImportData& import_data,
+                               const Span& span) {
+  absl::flat_hash_set<const std::vector<SumTypeVariant>*> validated_sums;
+  return ValidateZeroValueInternal(type, import_data, span, validated_sums);
 }
 
 absl::StatusOr<InterpValue> MakeAllOnesValue(const Type& type,
