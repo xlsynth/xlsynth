@@ -424,6 +424,7 @@ class FunctionConverter {
   absl::Status HandleConstantDef(const ConstantDef* node);
 
   absl::Status HandleFor(const For* node);
+  void NoteLoopBinding(const AstNode* source, BValue value);
   absl::Status HandleFormatMacro(const FormatMacro* node);
 
   // Helper that adds a parameter for the induction variable node for a ranged

@@ -1815,6 +1815,15 @@ absl::StatusOr<BValue> FunctionConverter::HandleRangedForInductionVariable(
       ivar_node);
 }
 
+void FunctionConverter::NoteLoopBinding(const AstNode* source, BValue value) {
+  if (options_.loop_binding) {
+    if (auto type = current_type_info_->GetItem(source)) {
+      (*options_.loop_binding)(function_builder_->name(), value.node()->id(),
+                            source, *type);
+    }
+  }
+}
+
 absl::Status FunctionConverter::HandleForLoopCarry(
     const For* node, FunctionConverter& body_converter,
     const std::optional<RangeData>& range_data, BValue loop_index,
@@ -1832,6 +1841,7 @@ absl::Status FunctionConverter::HandleForLoopCarry(
         body_converter.function_builder_->Add(loop_index, offset_literal);
 
     body_converter.SetNodeToIr(ToAstNode(ivar), offset_sum);
+    body_converter.NoteLoopBinding(ToAstNode(ivar), offset_sum);
   } else {
     body_converter.SetNodeToIr(ToAstNode(ivar), loop_index);
   }
@@ -1847,10 +1857,12 @@ absl::Status FunctionConverter::HandleForLoopCarry(
       // their enclosing functions.
       BValue unwrapped = body_converter.AddTokenWrappedParam(type);
       body_converter.SetNodeToIr(carry_name_def, unwrapped);
+      body_converter.NoteLoopBinding(carry_name_def, unwrapped);
     } else {
       BValue param =
           body_converter.AddParam(carry_name_def->identifier(), type);
       body_converter.SetNodeToIr(carry_name_def, param);
+      body_converter.NoteLoopBinding(carry_name_def, param);
     }
   } else {
     // Preserve the full loop-carry pattern on entry. Tuple members may bind
@@ -1868,6 +1880,7 @@ absl::Status FunctionConverter::HandleForLoopCarry(
       carry = body_converter.AddParam("__loop_carry", carry_ir_type);
     }
     body_converter.SetNodeToIr(accum, carry);
+    body_converter.NoteLoopBinding(accum, carry);
     // Destructure the tuple-pattern members in the anonymous function body.
     if (auto* tuple_pattern = dynamic_cast<TuplePattern*>(accum)) {
       PatternTree matcher = tuple_pattern;
@@ -1876,6 +1889,12 @@ absl::Status FunctionConverter::HandleForLoopCarry(
                                              /*matched_value=*/carry,
                                              /*matched_type=*/*carry_type)
                               .status());
+      if (options_.loop_binding) {
+        for (NameDef* name : GetPatternNameDefs(matcher)) {
+          XLS_ASSIGN_OR_RETURN(BValue value, body_converter.Use(name));
+          body_converter.NoteLoopBinding(name, value);
+        }
+      }
     } else {
       XLS_RET_CHECK_NE(dynamic_cast<WildcardPattern*>(accum), nullptr)
           << "Expect post-typechecking loop binding to be TuplePattern or "
@@ -1937,9 +1956,10 @@ FunctionConverter::HandleForLexicalScope(const For* node,
       XLS_ASSIGN_OR_RETURN(
           xls::Type * name_def_type,
           TypeToIr(package(), **type, ParametricEnv(parametric_env_map_)));
-      body_converter.SetNodeToIr(
-          freevar_name_def, body_converter.AddParam(
-                                freevar_name_def->identifier(), name_def_type));
+      BValue param = body_converter.AddParam(freevar_name_def->identifier(),
+                                            name_def_type);
+      body_converter.SetNodeToIr(freevar_name_def, param);
+      body_converter.NoteLoopBinding(freevar_name_def, param);
     }
   }
 
@@ -2088,9 +2108,11 @@ absl::Status FunctionConverter::HandleFor(const For* node) {
                                            ivar_value, ivar_node, carry_node));
     BValue iterable =
         body_converter.AddParam("__indexable", indexable->GetType());
+    body_converter.NoteLoopBinding(node->iterable(), iterable);
     ivar_value =
         body_converter.function_builder_->ArrayIndex(iterable, {index});
     body_converter.SetNodeToIr(ToAstNode(ivar_node), ivar_value);
+    body_converter.NoteLoopBinding(ToAstNode(ivar_node), ivar_value);
     invariant_args.push_back(indexable.value());
   }
 
