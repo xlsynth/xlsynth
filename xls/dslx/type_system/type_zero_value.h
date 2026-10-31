@@ -15,6 +15,7 @@
 #ifndef XLS_DSLX_TYPE_SYSTEM_TYPE_ZERO_VALUE_H_
 #define XLS_DSLX_TYPE_SYSTEM_TYPE_ZERO_VALUE_H_
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
@@ -35,6 +36,10 @@ namespace xls::dslx {
 absl::StatusOr<InterpValue> MakeZeroValue(const Type& type,
                                           const ImportData& import_data,
                                           const Span& span);
+
+// Checks whether MakeZeroValue can construct a zero without allocating it.
+absl::Status ValidateZeroValue(const Type& type, const ImportData& import_data,
+                               const Span& span);
 
 // Make an all-ones-value of this concrete type.
 //

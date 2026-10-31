@@ -800,6 +800,10 @@ synthesis tool doing boolean optimization, and will turn `gated_value` to `0`
 when the predicate `pass_value` is `false`. This can be used in attempts to
 manually avoid toggles based on the gating predicate.
 
+For a sum or an aggregate containing a sum, the operand type must have a legal
+`zero!` value. For each sum, only the payload of its zero-tag constructor must
+admit zero.
+
 It is expected that XLS will grow facilities to inserting gating ops
 automatically, but manual user insertion is a practical step in this direction.
 Additionally, it is expected that if, in the resulting Verilog, gating occurs on
