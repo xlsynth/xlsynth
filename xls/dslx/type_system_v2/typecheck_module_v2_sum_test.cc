@@ -1557,6 +1557,17 @@ fn f(p: bool, x: Sparse) -> Sparse { gate!(p, x) }
 )"));
 }
 
+TEST(TypecheckV2Test, GateRequiresZeroForEnumBesideSumInTuple) {
+  EXPECT_THAT(
+      R"(
+enum Ready { Idle() }
+enum Sparse : u3 { First = 1, Last = 7 }
+fn f(p: bool, x: (Ready, Sparse)) -> (Ready, Sparse) { gate!(p, x) }
+)",
+      TypecheckFails(
+          HasSubstr("Enum type 'Sparse' does not have a known zero value.")));
+}
+
 TEST(TypecheckV2Test, ZeroMacroImplicitSemanticSumUsesFirstVariant) {
   EXPECT_THAT(
       R"(
