@@ -103,6 +103,12 @@ seeds {
   relative_path: "source/sample_runner_semantic_sum_argument.x"
   outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
 }
+seeds {
+  seed_id: "source_phase2_signed_sparse_if_let_and_invalid_fallback"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_SOURCE
+  relative_path: "source/phase2_signed_sparse_if_let_and_invalid_fallback.x"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+}
 # Raw-boundary fixtures pair one valid source module with concrete raw IR
 # values. They do not ask the fuzzer to generate arbitrary raw sum layouts.
 seeds {
@@ -121,6 +127,13 @@ seeds {
   outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_FAIL
   expected_diagnostic_substr: "declared member"
   raw_ir_value_text: "(bits[2]:0x1, (bits[16]:0x2))"
+}
+seeds {
+  seed_id: "raw_boundary_invalid_sum_tag"
+  surfaces: SEMANTIC_SUM_SEED_SURFACE_RAW_BOUNDARY
+  relative_path: "raw_boundary/enum_payload_sum_module.x"
+  outcome: SEMANTIC_SUM_SEED_OUTCOME_SHOULD_PASS
+  raw_ir_value_text: "(bits[2]:0x3, (bits[16]:0x0))"
 }
 # Type-info fixtures pin reviewed declarations. Generated type-info programs are
 # produced separately by the FUZZ_TEST domain in the type-info test.
