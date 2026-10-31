@@ -45,6 +45,7 @@
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
+#include "xls/dslx/type_system/type_zero_value.h"
 #include "xls/dslx/type_system/unwrap_meta_type.h"
 #include "xls/dslx/type_system_v2/import_utils.h"
 #include "xls/dslx/type_system_v2/inference_table.h"
@@ -231,6 +232,7 @@ class TypeValidator : public AstNodeVisitorWithDefault {
         new absl::flat_hash_map<std::string_view, BuiltinValidator>{
             {"cover!", &TypeValidator::ValidateCoverInvocation},
             {"decode", &TypeValidator::ValidateDecodeInvocation},
+            {"gate!", &TypeValidator::ValidateGateInvocation},
             {"update", &TypeValidator::ValidateUpdateInvocation},
             {"widening_cast", &TypeValidator::ValidateWideningCastInvocation}};
 
@@ -670,6 +672,17 @@ class TypeValidator : public AstNodeVisitorWithDefault {
     // TODO(williamjhuang) - After TIv2 is enabled the validation logic should
     // move here.
     return ValidateCoverBuiltinInvocation(file_table_, &invocation);
+  }
+
+  absl::Status ValidateGateInvocation(const Invocation& invocation,
+                                      const FunctionType& signature) {
+    const Type& operand = *signature.params()[1];
+    if (TypeContainsSemanticSum(operand)) {
+      // A disabled gate drives every bit to zero, including the sum tag.
+      return ValidateZeroValue(operand, import_data_, invocation.span());
+    } else {
+      return absl::OkStatus();
+    }
   }
 
   absl::Status ValidateDecodeInvocation(const Invocation& invocation,

@@ -80,18 +80,21 @@ absl::StatusOr<bool> HasKnownAllOnesValue(const EnumType& t,
   return false;
 }
 
-const SumTypeVariant* GetZeroDiscriminantVariant(const SumType& type) {
-  if (type.variant_count() == 0) {
-    return nullptr;
-  }
+absl::StatusOr<const SumTypeVariant*> GetZeroDiscriminantVariant(
+    const SumType& type, const Span& span, const FileTable& file_table) {
 
   for (int64_t variant_index = 0; variant_index < type.variant_count();
        ++variant_index) {
     if (type.GetDiscriminant(variant_index).GetBitsOrDie().IsZero()) {
+      XLS_RETURN_IF_ERROR(type.GetTotalBitCount().status());
       return &type.variants().at(variant_index);
     }
   }
-  return nullptr;
+  return TypeInferenceErrorStatus(
+      span, &type,
+      absl::StrFormat("Sum type '%s' does not have a known zero value.",
+                      type.nominal_type().identifier()),
+      file_table);
 }
 
 absl::StatusOr<InterpValue> ZeroOfBitsLike(const BitsLikeProperties& bits_like,
@@ -102,21 +105,26 @@ absl::StatusOr<InterpValue> ZeroOfBitsLike(const BitsLikeProperties& bits_like,
   return InterpValue::MakeBits(is_signed, Bits(size));
 }
 
+absl::StatusOr<int64_t> GetZeroEnumWidth(const EnumType& type,
+                                         const ImportData& import_data,
+                                         const Span& span) {
+  XLS_ASSIGN_OR_RETURN(bool has_zero, HasKnownZeroValue(type, import_data));
+  if (!has_zero) {
+    return TypeInferenceErrorStatus(
+        span, &type,
+        absl::StrFormat("Enum type '%s' does not have a known zero value.",
+                        type.nominal_type().identifier()),
+        import_data.file_table());
+  }
+  return type.size().GetAsInt64();
+}
+
 absl::StatusOr<InterpValue> ZeroOfLeafType(const Type& type,
                                            const ImportData& import_data,
                                            const Span& span) {
   if (const auto* enum_type = dynamic_cast<const EnumType*>(&type)) {
-    XLS_ASSIGN_OR_RETURN(bool has_known_zero,
-                         HasKnownZeroValue(*enum_type, import_data));
-    if (!has_known_zero) {
-      return TypeInferenceErrorStatus(
-          span, enum_type,
-          absl::StrFormat("Enum type '%s' does not have a known zero value.",
-                          enum_type->nominal_type().identifier()),
-          import_data.file_table());
-    }
-
-    XLS_ASSIGN_OR_RETURN(int64_t size, enum_type->size().GetAsInt64());
+    XLS_ASSIGN_OR_RETURN(int64_t size,
+                         GetZeroEnumWidth(*enum_type, import_data, span));
     return InterpValue::MakeEnum(Bits(size), enum_type->is_signed(),
                                  &enum_type->nominal_type());
   }
@@ -233,15 +241,8 @@ class MakeValueVisitor : public TypeVisitor {
           absl::StrFormat("Cannot make a %s of sum type.", value_name_),
           file_table());
     }
-    const SumTypeVariant* zero_variant = GetZeroDiscriminantVariant(t);
-    if (zero_variant == nullptr) {
-      return TypeInferenceErrorStatus(
-          span_, &t,
-          absl::StrFormat("Sum type '%s' does not have a known zero value.",
-                          t.nominal_type().identifier()),
-          file_table());
-    }
-    XLS_RETURN_IF_ERROR(t.GetTotalBitCount().status());
+    XLS_ASSIGN_OR_RETURN(const SumTypeVariant* zero_variant,
+                         GetZeroDiscriminantVariant(t, span_, file_table()));
     std::vector<InterpValue> payload_values;
     payload_values.reserve(zero_variant->size());
     for (int64_t i = 0; i < zero_variant->size(); ++i) {
@@ -342,6 +343,42 @@ absl::StatusOr<InterpValue> MakeZeroValue(const Type& type,
                      kZeroValueName);
   XLS_RETURN_IF_ERROR(type.Accept(v));
   return v.ResultOrError();
+}
+
+absl::Status ValidateZeroValue(const Type& type, const ImportData& import_data,
+                               const Span& span) {
+  auto validate_members = [&](const auto& members) -> absl::Status {
+    for (const auto& member : members) {
+      XLS_RETURN_IF_ERROR(ValidateZeroValue(*member, import_data, span));
+    }
+    return absl::OkStatus();
+  };
+  if (const auto* sum = dynamic_cast<const SumType*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(const SumTypeVariant* variant,
+                         GetZeroDiscriminantVariant(*sum, span,
+                                                    import_data.file_table()));
+    for (int64_t i = 0; i < variant->size(); ++i) {
+      XLS_RETURN_IF_ERROR(
+          ValidateZeroValue(variant->GetMemberType(i), import_data, span));
+    }
+    return absl::OkStatus();
+  } else if (auto bits = GetBitsLike(type); bits.has_value()) {
+    XLS_RETURN_IF_ERROR(bits->is_signed.GetAsBool().status());
+    return bits->size.GetAsInt64().status();
+  } else if (const auto* array = dynamic_cast<const ArrayType*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(int64_t size, array->size().GetAsInt64());
+    return size == 0 ? absl::OkStatus()
+                     : ValidateZeroValue(array->element_type(), import_data, span);
+  } else if (const auto* tuple = dynamic_cast<const TupleType*>(&type)) {
+    return validate_members(tuple->members());
+  } else if (const auto* structure = dynamic_cast<const StructType*>(&type)) {
+    return validate_members(structure->members());
+  } else if (const auto* enumeration = dynamic_cast<const EnumType*>(&type)) {
+    return GetZeroEnumWidth(*enumeration, import_data, span).status();
+  } else {
+    // The remaining type kinds cannot be zeroed. Keep their usual diagnostic.
+    return MakeZeroValue(type, import_data, span).status();
+  }
 }
 
 absl::StatusOr<InterpValue> MakeAllOnesValue(const Type& type,

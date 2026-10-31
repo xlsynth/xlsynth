@@ -985,6 +985,7 @@ cc_library(
         "//xls/dslx/type_system:parametric_env",
         "//xls/dslx/type_system:type",
         "//xls/dslx/type_system:type_info",
+        "//xls/dslx/type_system:type_zero_value",
         "//xls/dslx/type_system:unwrap_meta_type",
         "//xls/ir:bits",
         "//xls/ir:bits_ops",

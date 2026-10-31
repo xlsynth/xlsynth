@@ -1508,6 +1508,38 @@ fn unwrap_or_zero(x: Option) -> u32 {
             "Match is already exhaustive before this pattern");
 }
 
+TEST(TypecheckV2Test, GateRejectsSumWithoutZeroTag) {
+  for (std::string_view predicate : {"enabled", "true"}) {
+    SCOPED_TRACE(predicate);
+    EXPECT_THAT(absl::Substitute(R"(
+enum Message : u3 { First() = 1, Last() = 7 }
+fn f(enabled: bool, x: Message) -> Message { gate!($0, x) }
+)",
+                                 predicate),
+                TypecheckFails(HasSubstr(
+                    "Sum type 'Message' does not have a known zero value.")));
+  }
+}
+
+TEST(TypecheckV2Test, GateRequiresZeroForTheSelectedPayload) {
+  EXPECT_THAT(
+      R"(
+enum Inner : u3 { Only() = 1 }
+enum Outer : u1 { With(Inner) = 0, Empty() = 1 }
+fn f(enabled: bool, x: Outer) -> Outer { gate!(enabled, x) }
+)",
+      TypecheckFails(
+          HasSubstr("Sum type 'Inner' does not have a known zero value.")));
+}
+
+TEST(TypecheckV2Test, GateAllowsInactivePayloadWithoutZero) {
+  XLS_ASSERT_OK(TypecheckV2(R"(
+enum Inner : u3 { Only() = 1 }
+enum Outer : u1 { With(Inner) = 1, Empty() = 0 }
+fn f(enabled: bool, x: Outer) -> Outer { gate!(enabled, x) }
+)"));
+}
+
 TEST(TypecheckV2Test, ZeroMacroImplicitSemanticSumUsesFirstVariant) {
   EXPECT_THAT(
       R"(
