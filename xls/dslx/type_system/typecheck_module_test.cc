@@ -4653,9 +4653,8 @@ fn main() -> u32 {
 })"));
 }
 
-TEST_F(TypecheckV2Test, BitCountWithSemanticSumFailsInPhase1) {
-  EXPECT_THAT(
-      Typecheck(R"(
+TEST_F(TypecheckV2Test, BitCountWithSemanticSumUsesSharedRepresentation) {
+  XLS_ASSERT_OK(Typecheck(R"(
 enum Option {
   None,
   Some(u32),
@@ -4664,10 +4663,7 @@ enum Option {
 fn main() -> u32 {
   bit_count<Option>()
 }
-)"),
-      StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("Querying bit_count for types containing semantic "
-                         "sums is not supported")));
+)"));
 }
 
 TEST_F(TypecheckV2Test, ElementCount) {
@@ -4699,8 +4695,8 @@ fn main() -> u32 {
 })"));
 }
 
-TEST_F(TypecheckV2Test, ElementCountWithSemanticSumFailsInPhase1) {
-  EXPECT_THAT(Typecheck(R"(
+TEST_F(TypecheckV2Test, ElementCountWithSemanticSumUsesSharedRepresentation) {
+  XLS_ASSERT_OK(Typecheck(R"(
 enum Option {
   None,
   Some(u32),
@@ -4713,10 +4709,7 @@ struct Wrapper {
 fn main() -> u32 {
   element_count<Wrapper>()
 }
-)"),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("Querying element_count for types containing "
-                                 "semantic sums is not supported")));
+)"));
 }
 
 TEST_F(TypecheckV2Test, ConfiguredValueOr) {

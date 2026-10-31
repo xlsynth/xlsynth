@@ -27,9 +27,9 @@
 
 namespace xls::dslx {
 
-// View of the current semantic-sum storage encoding.
+// View of the legacy Phase One semantic-sum storage encoding.
 //
-// Interpreter value construction and validation share the `(tag,
+// Interpreter value construction and validation used the `(tag,
 // payload_slots)` layout exposed here. The storage tag is a dense
 // declaration-order index, not a source-level discriminant. Payload slots for
 // every variant remain present, with inactive slots holding canonical

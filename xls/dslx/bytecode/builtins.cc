@@ -327,6 +327,23 @@ absl::Status RunBuiltinAndReduce(const Bytecode& bytecode,
   return absl::OkStatus();
 }
 
+static absl::StatusOr<const Type*> GetAssertArgumentType(
+    const Bytecode& bytecode, const Frame& frame) {
+  const TypeInfo* type_info = frame.type_info();
+  XLS_ASSIGN_OR_RETURN(Bytecode::InvocationData invocation_data,
+                       bytecode.invocation_data());
+  XLS_ASSIGN_OR_RETURN(
+      Type * lhs_type,
+      type_info->GetItemOrError(invocation_data.invocation()->args()[0]));
+  XLS_ASSIGN_OR_RETURN(
+      Type * rhs_type,
+      type_info->GetItemOrError(invocation_data.invocation()->args()[1]));
+  XLS_RET_CHECK_EQ(*lhs_type, *rhs_type) << absl::StreamFormat(
+      "Assert arguments are not the same type: `%s` vs `%s`",
+      lhs_type->ToString(), rhs_type->ToString());
+  return lhs_type;
+}
+
 // Returns appropriately formatted lhs and rhs values for use within an
 // assert_eq (lt, etc) message. Assert failure messages preserve the value
 // formatting (hex, binary) of literal numbers which appear in the assert
@@ -355,18 +372,8 @@ GetAssertFormattedStrings(const InterpreterStack::FormattedInterpValue& lhs,
                               ? *lhs.format_descriptor
                               : *rhs.format_descriptor);
   }
-  const TypeInfo* type_info = frame.type_info();
-  XLS_ASSIGN_OR_RETURN(Bytecode::InvocationData invocation_data,
-                       bytecode.invocation_data());
-  XLS_ASSIGN_OR_RETURN(
-      Type * lhs_type,
-      type_info->GetItemOrError(invocation_data.invocation()->args()[0]));
-  XLS_ASSIGN_OR_RETURN(
-      Type * rhs_type,
-      type_info->GetItemOrError(invocation_data.invocation()->args()[1]));
-  XLS_RET_CHECK_EQ(*lhs_type, *rhs_type) << absl::StreamFormat(
-      "Assert arguments are not the same type: `%s` vs `%s`",
-      lhs_type->ToString(), rhs_type->ToString());
+  XLS_ASSIGN_OR_RETURN(const Type* lhs_type,
+                       GetAssertArgumentType(bytecode, frame));
   XLS_ASSIGN_OR_RETURN(
       ValueFormatDescriptor fmt,
       MakeValueFormatDescriptor(*lhs_type, options.format_preference()));
@@ -378,7 +385,7 @@ struct AssertOperands {
   InterpreterStack::FormattedInterpValue rhs;
 };
 
-// Pops assertion operands and pushes the unit result.
+// Pops the right and then the left operand, retaining their formatting.
 static absl::StatusOr<AssertOperands> PopAssertOperands(
     InterpreterStack& stack) {
   XLS_RET_CHECK_GE(stack.size(), 2);
@@ -386,7 +393,6 @@ static absl::StatusOr<AssertOperands> PopAssertOperands(
                        stack.PopFormattedValue());
   XLS_ASSIGN_OR_RETURN(InterpreterStack::FormattedInterpValue formatted_lhs,
                        stack.PopFormattedValue());
-  stack.Push(InterpValue::MakeUnit());
   return AssertOperands{.lhs = std::move(formatted_lhs),
                         .rhs = std::move(formatted_rhs)};
 }
@@ -400,6 +406,7 @@ static absl::Status RunBuiltinRelationalAssert(
         const,
     std::string_view relation_description) {
   XLS_ASSIGN_OR_RETURN((auto [lhs, rhs]), PopAssertOperands(stack));
+  stack.Push(InterpValue::MakeUnit());
   XLS_ASSIGN_OR_RETURN(InterpValue cmp_value, (lhs.value.*compare)(rhs.value));
   if (cmp_value.IsTrue()) {
     return absl::OkStatus();
@@ -419,21 +426,22 @@ static absl::Status RunBuiltinRelationalAssert(
                             stack.file_table());
 }
 
-static absl::StatusOr<const Type*> GetAssertOperandType(
-    const Bytecode& bytecode, const Frame& frame) {
-  const TypeInfo* type_info = frame.type_info();
-  XLS_ASSIGN_OR_RETURN(Bytecode::InvocationData invocation_data,
-                       bytecode.invocation_data());
-  XLS_ASSIGN_OR_RETURN(
-      Type * lhs_type,
-      type_info->GetItemOrError(invocation_data.invocation()->args()[0]));
-  XLS_ASSIGN_OR_RETURN(
-      Type * rhs_type,
-      type_info->GetItemOrError(invocation_data.invocation()->args()[1]));
-  XLS_RET_CHECK_EQ(*lhs_type, *rhs_type) << absl::StreamFormat(
-      "Assert arguments are not the same type: `%s` vs `%s`",
-      lhs_type->ToString(), rhs_type->ToString());
-  return lhs_type;
+static absl::StatusOr<bool> AssertValuesEqual(
+    const InterpValue& lhs, const InterpValue& rhs, const Type& type,
+    std::string_view builtin_name, const Span& span,
+    const FileTable& file_table) {
+  if (!TypeContainsSemanticSum(type)) {
+    return lhs.Eq(rhs);
+  }
+  absl::StatusOr<bool> equal = SemanticValuesEqual(lhs, rhs, type);
+  if (!equal.ok()) {
+    return FailureErrorStatus(
+        span,
+        absl::StrCat("Semantic sum ", builtin_name,
+                     " received a malformed value: ", equal.status().message()),
+        file_table);
+  }
+  return *equal;
 }
 
 absl::Status RunBuiltinAssertEq(const Bytecode& bytecode,
@@ -442,12 +450,16 @@ absl::Status RunBuiltinAssertEq(const Bytecode& bytecode,
                                 const std::optional<ProcId>& caller_proc_id) {
   VLOG(3) << "Executing builtin AssertEq.";
   XLS_ASSIGN_OR_RETURN((auto [lhs, rhs]), PopAssertOperands(stack));
-  bool eq = lhs.value.Eq(rhs.value);
+  XLS_ASSIGN_OR_RETURN(const Type* argument_type,
+                       GetAssertArgumentType(bytecode, frame));
+  XLS_ASSIGN_OR_RETURN(bool eq,
+                       AssertValuesEqual(lhs.value, rhs.value, *argument_type,
+                                         "assert_eq", bytecode.source_span(),
+                                         stack.file_table()));
+  stack.Push(InterpValue::MakeUnit());
   if (!eq) {
-    XLS_ASSIGN_OR_RETURN(const Type* operand_type,
-                         GetAssertOperandType(bytecode, frame));
     std::string message;
-    if (TypeContainsSemanticSum(*operand_type)) {
+    if (TypeContainsSemanticSum(*argument_type)) {
       message =
           "\n  lhs and rhs were not equal; formatting values containing "
           "semantic sums is not supported.";
@@ -491,9 +503,14 @@ absl::Status RunBuiltinAssertNe(const Bytecode& bytecode,
                                 const std::optional<ProcId>& caller_proc_id) {
   VLOG(3) << "Executing builtin AssertNe.";
   XLS_ASSIGN_OR_RETURN((auto [lhs, rhs]), PopAssertOperands(stack));
-  if (!lhs.value.Ne(rhs.value)) {
-    XLS_ASSIGN_OR_RETURN(const Type* operand_type,
-                         GetAssertOperandType(bytecode, frame));
+  XLS_ASSIGN_OR_RETURN(const Type* operand_type,
+                       GetAssertArgumentType(bytecode, frame));
+  XLS_ASSIGN_OR_RETURN(bool eq,
+                       AssertValuesEqual(lhs.value, rhs.value, *operand_type,
+                                         "assert_ne", bytecode.source_span(),
+                                         stack.file_table()));
+  stack.Push(InterpValue::MakeUnit());
+  if (eq) {
     std::string message;
     if (TypeContainsSemanticSum(*operand_type)) {
       message =
