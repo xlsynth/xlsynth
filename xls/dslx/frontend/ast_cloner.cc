@@ -45,6 +45,11 @@
 namespace xls::dslx {
 namespace {
 
+enum class ConditionalCloneMode {
+  kPreserve,
+  kLowerIfLets,
+};
+
 // Only annotations allocated by the cloner are eligible for reference fixup.
 // Replacer results may be borrowed from another inference use.
 using ClonedAnnotations =
@@ -84,8 +89,12 @@ void RemapAnnotationReferences(
 
 class AstCloner : public AstNodeVisitor {
  public:
-  explicit AstCloner(std::optional<Module*> module, CloneReplacer replacer)
-      : module_(module), replacer_(std::move(replacer)) {}
+  explicit AstCloner(
+      std::optional<Module*> module, CloneReplacer replacer,
+      ConditionalCloneMode conditional_mode = ConditionalCloneMode::kPreserve)
+      : module_(module),
+        replacer_(std::move(replacer)),
+        conditional_mode_(conditional_mode) {}
 
   Module* module(const AstNode* n) const {
     return module_.has_value() ? *module_ : n->owner();
@@ -720,7 +729,7 @@ class AstCloner : public AstNodeVisitor {
 
     old_to_new_[n] = module(n)->Make<Match>(
         n->span(), absl::down_cast<Expr*>(old_to_new_.at(n->matched())),
-        new_arms, n->in_parens(), n->IsConst());
+        new_arms, n->in_parens(), n->IsConst(), n->origin());
     return absl::OkStatus();
   }
 
@@ -1216,24 +1225,69 @@ class AstCloner : public AstNodeVisitor {
   absl::Status HandleConditional(const Conditional* n) override {
     XLS_RETURN_IF_ERROR(VisitChildren(n));
 
-    std::variant<StatementBlock*, Conditional*> new_alternate;
-    AstNode* new_alternate_node = old_to_new_.at(ToAstNode(n->alternate()));
-    if (new_alternate_node->kind() == AstNodeKind::kStatementBlock) {
-      new_alternate = absl::down_cast<StatementBlock*>(new_alternate_node);
-    } else if (new_alternate_node->kind() == AstNodeKind::kConditional) {
-      new_alternate = absl::down_cast<Conditional*>(new_alternate_node);
-    } else {
-      return absl::InternalError("Unexpected Conditional alternate node type.");
-    }
+    if (conditional_mode_ == ConditionalCloneMode::kLowerIfLets &&
+        n->IsIfLet()) {
+      XLS_RET_CHECK(!n->IsConst());
+      XLS_RET_CHECK(n->HasElse());
+      XLS_RET_CHECK(n->if_let_pattern() != nullptr);
 
-    auto* new_conditional = module(n)->Make<Conditional>(
-        n->span(), absl::down_cast<Expr*>(old_to_new_.at(n->test())),
-        absl::down_cast<StatementBlock*>(old_to_new_.at(n->consequent())),
-        new_alternate, n->in_parens(), n->HasElse(), n->IsConst());
-    for (StatementBlock* block : new_conditional->GatherBlocks()) {
-      block->SetEnclosing(new_conditional);
+      PatternTree pattern = ClonePattern(*n->if_let_pattern());
+      auto* consequent =
+          absl::down_cast<StatementBlock*>(old_to_new_.at(n->consequent()));
+      auto* alternate =
+          absl::down_cast<Expr*>(old_to_new_.at(ToAstNode(n->alternate())));
+
+      Span first_arm_span(GetPatternSpan(pattern).start(),
+                          consequent->span().limit());
+      MatchArm* first_arm = module(n)->Make<MatchArm>(
+          first_arm_span, std::vector<PatternTree>{pattern}, consequent);
+      for (NameDef* name_def : GetPatternNameDefs(pattern)) {
+        name_def->set_definer(first_arm);
+      }
+
+      Span wildcard_span(alternate->span().start(), alternate->span().start());
+      WildcardPattern* wildcard =
+          module(n)->Make<WildcardPattern>(wildcard_span);
+      Span fallback_arm_span(wildcard_span.start(), alternate->span().limit());
+      MatchArm* fallback_arm = module(n)->Make<MatchArm>(
+          fallback_arm_span, std::vector<PatternTree>{wildcard}, alternate);
+
+      old_to_new_[n] = module(n)->Make<Match>(
+          n->span(), absl::down_cast<Expr*>(old_to_new_.at(n->test())),
+          std::vector<MatchArm*>{first_arm, fallback_arm}, n->in_parens(),
+          /*is_const=*/false, Match::Origin::kIfLet);
+    } else {
+      std::variant<StatementBlock*, Conditional*> new_alternate;
+      AstNode* new_alternate_node = old_to_new_.at(ToAstNode(n->alternate()));
+      if (new_alternate_node->kind() == AstNodeKind::kStatementBlock) {
+        new_alternate = absl::down_cast<StatementBlock*>(new_alternate_node);
+      } else if (new_alternate_node->kind() == AstNodeKind::kConditional) {
+        new_alternate = absl::down_cast<Conditional*>(new_alternate_node);
+      } else if (conditional_mode_ == ConditionalCloneMode::kLowerIfLets &&
+                 new_alternate_node->kind() == AstNodeKind::kMatch) {
+        auto* alternate_expr = absl::down_cast<Expr*>(new_alternate_node);
+        new_alternate = module(n)->Make<StatementBlock>(
+            alternate_expr->span(),
+            std::vector<Statement*>{module(n)->Make<Statement>(alternate_expr)},
+            /*trailing_semi=*/false, /*has_braces=*/true);
+      } else {
+        return absl::InternalError(
+            "Unexpected Conditional alternate node type.");
+      }
+
+      auto* new_conditional = module(n)->Make<Conditional>(
+          n->span(), absl::down_cast<Expr*>(old_to_new_.at(n->test())),
+          absl::down_cast<StatementBlock*>(old_to_new_.at(n->consequent())),
+          new_alternate,
+          n->if_let_pattern() == nullptr
+              ? std::nullopt
+              : std::optional<PatternTree>{ClonePattern(*n->if_let_pattern())},
+          n->in_parens(), n->HasElse(), n->IsConst());
+      for (StatementBlock* block : new_conditional->GatherBlocks()) {
+        block->SetEnclosing(new_conditional);
+      }
+      old_to_new_[n] = new_conditional;
     }
-    old_to_new_[n] = new_conditional;
     return absl::OkStatus();
   }
 
@@ -1644,6 +1698,7 @@ class AstCloner : public AstNodeVisitor {
   // Set only for whole-module clones; narrow clones can borrow captured names.
   const Module* source_module_ = nullptr;
   CloneReplacer replacer_;
+  ConditionalCloneMode conditional_mode_;
   absl::flat_hash_map<const AstNode*, AstNode*> old_to_new_;
   ClonedAnnotations cloned_annotations_;
 };
@@ -1822,6 +1877,20 @@ absl::StatusOr<std::unique_ptr<Module>> CloneModule(const Module& module,
   AstCloner cloner(new_module.get(), std::move(replacer));
   XLS_RETURN_IF_ERROR(module.Accept(&cloner));
   RemapAnnotationReferences(cloner.cloned_annotations(), cloner.old_to_new());
+  return new_module;
+}
+
+absl::StatusOr<std::unique_ptr<Module>> CloneModuleWithIfLetsLowered(
+    const Module& module) {
+  XLS_ASSIGN_OR_RETURN(std::unique_ptr<Module> new_module,
+                       CloneModuleMetadata(module));
+  AstCloner cloner(new_module.get(), &NoopCloneReplacer,
+                   ConditionalCloneMode::kLowerIfLets);
+  XLS_RETURN_IF_ERROR(module.Accept(&cloner));
+  RemapAnnotationReferences(cloner.cloned_annotations(), cloner.old_to_new());
+  XLS_RETURN_IF_ERROR(
+      VerifyClone(&module, new_module.get(), *module.file_table()));
+  XLS_RETURN_IF_ERROR(VerifyParentage(new_module.get()));
   return new_module;
 }
 
