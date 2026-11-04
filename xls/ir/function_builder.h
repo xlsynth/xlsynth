@@ -989,6 +989,11 @@ class FunctionBuilder : public BuilderBase {
   BValue Param(std::string_view name, Type* type,
                const SourceInfo& loc = SourceInfo()) override;
 
+  // Uses the function's node name allocator when source names map to the
+  // same IR identifier. Param() rejects explicitly duplicated IR parameters.
+  BValue ParamWithUniqueName(std::string_view name, Type* type,
+                             const SourceInfo& loc = SourceInfo());
+
   // Forces the parameters to appear in the given order.
   void SetParamOrder(absl::Span<BValue const> new_order);
 

@@ -47,6 +47,7 @@
 #include "xls/dslx/run_routines/run_comparator.h"
 #include "xls/dslx/run_routines/run_routines.h"
 #include "xls/dslx/type_system/typecheck_test_utils.h"
+#include "xls/interpreter/function_interpreter.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/channel.h"
 #include "xls/ir/function.h"
@@ -104,6 +105,63 @@ fn named(x: u32, y: u32) -> E { E::Named { rhs: y, lhs: x } }
   EXPECT_THAT(named->return_value(),
               m::Tuple(m::Literal("bits[2]:2"),
                        m::Tuple(m::Concat(m::Param("x"), m::Param("y")))));
+}
+
+TEST_F(IrConverterTest, ExternTemplateUsesTheSelectedParameterAfterRename) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(R"(
+#[extern_verilog("pass {fn} (.in({i_}), .out({return}));")]
+pub fn f(i': u8, i_: u8) -> u8 { i_ }
+)",
+                        "test_module.x", "test_module", &import_data));
+
+  for (bool force_implicit_token : {false, true}) {
+    ConvertOptions options;
+    options.force_implicit_token_calling_convention = force_implicit_token;
+    XLS_ASSERT_OK_AND_ASSIGN(
+        PackageConversionData conversion,
+        ConvertModuleToPackage(tm.module, &import_data, options));
+    auto functions = conversion.package->functions();
+    ASSERT_EQ(functions.size(), force_implicit_token ? 2 : 1);
+    for (const auto& function : functions) {
+      // Both the implicit-token function and its public wrapper put the two
+      // source parameters last. The template selects the second of these.
+      ASSERT_GE(function->params().size(), 2);
+      ASSERT_TRUE(function->ForeignFunctionData().has_value());
+      EXPECT_EQ(function->ForeignFunctionData()->code_template(),
+                "pass {fn} (.in({" + function->params().back()->GetName() +
+                    "}), .out({return}));");
+    }
+  }
+}
+
+TEST_F(IrConverterTest, PreservesParametersWithCollidingIrSpellings) {
+  constexpr std::string_view program = R"(
+fn ordinary(i': u8, i_: u8) -> u8 { i_ - i' }
+fn fold() -> u8 { for (i', i_) in u8:0..u8:2 { i_ + i' }(u8:7) }
+fn reverse() -> u8 { for (i_, i') in u8:0..u8:2 { i' + i_ }(u8:7) }
+fn capture(x': u8) -> u8 {
+  for (_, x_) in u8:0..u8:2 { x_ + x' }(u8:7)
+}
+fn run() -> (u8, u8, u8, u8) {
+  (ordinary(u8:2, u8:5), fold(), reverse(), capture(u8:3))
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(PackageConversionData converted,
+                           ConvertModuleToPackage(tm.module, &import_data,
+                                                  kProcScopedChannelOptions));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * run, converted.package->GetFunction(
+                                                    "__test_module__run"));
+  XLS_ASSERT_OK_AND_ASSIGN(auto result, InterpretFunction(run, {}));
+  EXPECT_EQ(result.value,
+            Value::Tuple({Value(UBits(3, 8)), Value(UBits(8, 8)),
+                          Value(UBits(8, 8)), Value(UBits(13, 8))}));
 }
 
 TEST_F(IrConverterTest, NamedConstant) {
