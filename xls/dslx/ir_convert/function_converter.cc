@@ -154,7 +154,7 @@ absl::StatusOr<xls::Function*> EmitImplicitTokenEntryWrapper(
       interface_proto->add_functions();
   wrapper_proto->mutable_base()->set_name(mangled_name);
   FunctionBuilder fb(mangled_name, implicit_token_f->package(), true);
-  fb.SetForeignFunctionData(dslx_function->extern_verilog_module());
+  fb.SetForeignFunctionData(implicit_token_f->ForeignFunctionData());
   // Entry is a top entity.
   if (is_top) {
     XLS_RETURN_IF_ERROR(fb.SetAsTop());
@@ -907,22 +907,45 @@ absl::Status FunctionConverter::HandleAllOnesMacro(const AllOnesMacro* node) {
   return absl::OkStatus();
 }
 
+absl::StatusOr<BValue> FunctionConverter::AddParam(
+    std::string_view name, xls::Type* type,
+    std::optional<std::string> sv_type) {
+  XLS_RET_CHECK(function_proto_);
+  auto* builder = absl::down_cast<FunctionBuilder*>(function_builder_.get());
+  BValue value = builder->ParamWithUniqueName(name, type);
+  XLS_RETURN_IF_ERROR(builder->GetError());
+  auto* param = function_proto_.value()->add_parameters();
+  param->set_name(value.GetName());
+  *param->mutable_type() = type->ToProto();
+  if (sv_type) {
+    param->set_sv_type(*sv_type);
+  }
+  return value;
+}
+
+absl::StatusOr<BValue> FunctionConverter::AddTokenWrappedParam(
+    xls::Type* type) {
+  XLS_ASSIGN_OR_RETURN(
+      BValue param,
+      AddParam("__token_wrapped", WrapIrForImplicitTokenType(type, package())));
+  BValue entry_token = function_builder_->TupleIndex(param, 0);
+  BValue activated = function_builder_->TupleIndex(param, 1);
+  implicit_token_data_ = ImplicitTokenData{entry_token, activated,
+                                           [activated] { return activated; }};
+  BValue unwrapped = function_builder_->TupleIndex(param, 2);
+  XLS_RETURN_IF_ERROR(function_builder_->GetError());
+  return unwrapped;
+}
+
 absl::Status FunctionConverter::HandleParam(const Param* node) {
   VLOG(5) << "FunctionConverter::HandleParam: " << node->ToString();
   XLS_ASSIGN_OR_RETURN(xls::Type * type,
                        ResolveTypeToIr(node->type_annotation()));
-  BValue value = function_builder_->Param(node->identifier(), type);
-  Def(node->name_def(), [&](const SourceInfo& loc) { return value; });
-  XLS_RET_CHECK(function_proto_);
-  PackageInterfaceProto::NamedValue* param =
-      function_proto_.value()->add_parameters();
-  param->set_name(node->identifier());
-  *param->mutable_type() = type->ToProto();
   XLS_ASSIGN_OR_RETURN(std::optional<std::string> sv_value,
                        current_type_info_->FindSvType(node->type_annotation()));
-  if (sv_value) {
-    param->set_sv_type(*sv_value);
-  }
+  XLS_ASSIGN_OR_RETURN(BValue value,
+                       AddParam(node->identifier(), type, sv_value));
+  Def(node->name_def(), [&](const SourceInfo& loc) { return value; });
   return absl::OkStatus();
 }
 
@@ -1666,11 +1689,13 @@ absl::Status FunctionConverter::HandleForLoopCarry(
       // Note: this is somewhat conservative, even if the for-body does not
       // require an implicit token, for bodies are not marked independently from
       // their enclosing functions.
-      BValue unwrapped = body_converter.AddTokenWrappedParam(type);
+      XLS_ASSIGN_OR_RETURN(BValue unwrapped,
+                           body_converter.AddTokenWrappedParam(type));
       body_converter.SetNodeToIr(carry_name_def, unwrapped);
     } else {
-      BValue param =
-          body_converter.AddParam(carry_name_def->identifier(), type);
+      XLS_ASSIGN_OR_RETURN(
+          BValue param,
+          body_converter.AddParam(carry_name_def->identifier(), type));
       body_converter.SetNodeToIr(carry_name_def, param);
     }
   } else {
@@ -1684,9 +1709,11 @@ absl::Status FunctionConverter::HandleForLoopCarry(
         TypeToIr(package(), *carry_type, ParametricEnv(parametric_env_map_)));
     BValue carry;
     if (implicit_token_data_.has_value()) {
-      carry = body_converter.AddTokenWrappedParam(carry_ir_type);
+      XLS_ASSIGN_OR_RETURN(carry,
+                           body_converter.AddTokenWrappedParam(carry_ir_type));
     } else {
-      carry = body_converter.AddParam("__loop_carry", carry_ir_type);
+      XLS_ASSIGN_OR_RETURN(
+          carry, body_converter.AddParam("__loop_carry", carry_ir_type));
     }
     body_converter.SetNodeToIr(accum, carry);
     // Destructure the tuple-pattern members in the anonymous function body.
@@ -1758,9 +1785,10 @@ FunctionConverter::HandleForLexicalScope(const For* node,
       XLS_ASSIGN_OR_RETURN(
           xls::Type * name_def_type,
           TypeToIr(package(), **type, ParametricEnv(parametric_env_map_)));
-      body_converter.SetNodeToIr(
-          freevar_name_def, body_converter.AddParam(
-                                freevar_name_def->identifier(), name_def_type));
+      XLS_ASSIGN_OR_RETURN(
+          BValue param, body_converter.AddParam(freevar_name_def->identifier(),
+                                                name_def_type));
+      body_converter.SetNodeToIr(freevar_name_def, param);
     }
   }
 
@@ -1903,12 +1931,14 @@ absl::Status FunctionConverter::HandleFor(const For* node) {
     XLS_RETURN_IF_ERROR(HandleForLoopCarry(node, body_converter, range_data,
                                            ivar_value, ivar_node, carry_node));
   } else {
-    BValue index =
-        body_converter.AddParam("__index", package()->GetBitsType(32));
+    XLS_ASSIGN_OR_RETURN(
+        BValue index,
+        body_converter.AddParam("__index", package()->GetBitsType(32)));
     XLS_RETURN_IF_ERROR(HandleForLoopCarry(node, body_converter, range_data,
                                            ivar_value, ivar_node, carry_node));
-    BValue iterable =
-        body_converter.AddParam("__indexable", indexable->GetType());
+    XLS_ASSIGN_OR_RETURN(
+        BValue iterable,
+        body_converter.AddParam("__indexable", indexable->GetType()));
     ivar_value =
         body_converter.function_builder_->ArrayIndex(iterable, {index});
     if (const auto* tuple_pattern = std::get_if<TuplePattern*>(&ivar_node)) {
@@ -3810,13 +3840,15 @@ absl::Status FunctionConverter::HandleFunction(
     XLS_RET_CHECK(implicit_token_data_.has_value());
   }
 
+  FfiPartialValueSubstituteHelper ffi_template(f.extern_verilog_module());
   for (Param* param : f.params()) {
     XLS_RETURN_IF_ERROR(Visit(param));
+    if (f.extern_verilog_module().has_value()) {
+      XLS_ASSIGN_OR_RETURN(BValue value, Use(param->name_def()));
+      ffi_template.SetParameterName(param->identifier(),
+                                    value.node()->GetNameView());
+    }
   }
-
-  // Replace const values known here with their values in FFI template to
-  // pass down templates with less variables.
-  FfiPartialValueSubstituteHelper const_prefill(f.extern_verilog_module());
 
   // Populate IR values for the parametric bindings. If the function is in an
   // impl, this includes both the function's own parametric bindings and those
@@ -3841,15 +3873,14 @@ absl::Status FunctionConverter::HandleFunction(
 
       XLS_ASSIGN_OR_RETURN(Value param_value, parametric_value->ConvertToIr());
       const CValue evaluated = DefConst(parametric_binding, param_value);
-      const_prefill.SetNamedValue(parametric_binding->name_def()->identifier(),
-                                  evaluated.ir_value);
+      ffi_template.SetNamedValue(parametric_binding->name_def()->identifier(),
+                                 evaluated.ir_value);
       XLS_RETURN_IF_ERROR(
           DefAlias(parametric_binding, /*to=*/parametric_binding->name_def()));
     }
   }
 
-  // If there is foreign function data, all constant values are replaced now.
-  ir_builder_ptr->SetForeignFunctionData(const_prefill.GetUpdatedFfiData());
+  ir_builder_ptr->SetForeignFunctionData(ffi_template.GetUpdatedFfiData());
 
   VLOG(5) << absl::StreamFormat(
       "FunctionBuilder %p function `%s` has %d constant deps", ir_builder_ptr,

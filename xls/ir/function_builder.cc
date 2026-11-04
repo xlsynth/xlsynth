@@ -1346,6 +1346,14 @@ BValue FunctionBuilder::Param(std::string_view name, Type* type,
           absl::StrFormat("Parameter named \"%s\" already exists", name), loc);
     }
   }
+  return ParamWithUniqueName(name, type, loc);
+}
+
+BValue FunctionBuilder::ParamWithUniqueName(std::string_view name, Type* type,
+                                            const SourceInfo& loc) {
+  if (ErrorPending()) {
+    return BValue();
+  }
   return AddNode<xls::Param>(loc, type, name);
 }
 

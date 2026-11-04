@@ -332,6 +332,7 @@ cc_test(
         "//xls/estimators/delay_model/models",
         "//xls/interpreter:channel_queue",
         "//xls/interpreter:interpreter_proc_runtime",
+        "//xls/interpreter:ir_interpreter",
         "//xls/interpreter:serial_proc_runtime",
         "//xls/ir",
         "//xls/ir:bits",
