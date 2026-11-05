@@ -1353,6 +1353,12 @@ struct xls_dslx_type_alias* xls_dslx_module_get_type_definition_as_type_alias(
   return reinterpret_cast<xls_dslx_type_alias*>(cpp_type_alias);
 }
 
+struct xls_dslx_module* xls_dslx_struct_def_get_module(
+    struct xls_dslx_struct_def* n) {
+  auto* decl = reinterpret_cast<xls::dslx::StructDef*>(n);
+  return reinterpret_cast<xls_dslx_module*>(decl->owner());
+}
+
 char* xls_dslx_struct_def_get_identifier(struct xls_dslx_struct_def* n) {
   auto* cpp_struct_def = reinterpret_cast<xls::dslx::StructDef*>(n);
   const std::string& result = cpp_struct_def->identifier();
@@ -1956,6 +1962,20 @@ bool xls_dslx_type_is_enum(const struct xls_dslx_type* type) {
   return cpp_type->IsEnum();
 }
 
+bool xls_dslx_type_is_tuple(const struct xls_dslx_type* type) {
+  return reinterpret_cast<const xls::dslx::Type*>(type)->IsTuple();
+}
+
+int64_t xls_dslx_type_tuple_get_member_count(const struct xls_dslx_type* type) {
+  return reinterpret_cast<const xls::dslx::Type*>(type)->AsTuple().size();
+}
+
+const struct xls_dslx_type* xls_dslx_type_tuple_get_member_type(
+    const struct xls_dslx_type* type, int64_t index) {
+  const auto& tuple = reinterpret_cast<const xls::dslx::Type*>(type)->AsTuple();
+  return reinterpret_cast<const xls_dslx_type*>(&tuple.GetMemberType(index));
+}
+
 bool xls_dslx_type_is_struct(const struct xls_dslx_type* type) {
   const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
   return cpp_type->IsStruct();
@@ -1983,7 +2003,7 @@ const struct xls_dslx_type* xls_dslx_type_struct_get_member_type(
 }
 
 struct xls_dslx_type* xls_dslx_type_array_get_element_type(
-    struct xls_dslx_type* type) {
+    const struct xls_dslx_type* type) {
   const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
   CHECK(cpp_type->IsArray());
   const xls::dslx::Type& cpp_element_type = cpp_type->AsArray().element_type();
@@ -1995,7 +2015,7 @@ struct xls_dslx_type* xls_dslx_type_array_get_element_type(
 }
 
 struct xls_dslx_type_dim* xls_dslx_type_array_get_size(
-    struct xls_dslx_type* type) {
+    const struct xls_dslx_type* type) {
   const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
   CHECK(cpp_type->IsArray());
   const xls::dslx::TypeDim& cpp_size = cpp_type->AsArray().size();
@@ -2004,8 +2024,8 @@ struct xls_dslx_type_dim* xls_dslx_type_array_get_size(
 }
 
 struct xls_dslx_enum_def* xls_dslx_type_get_enum_def(
-    struct xls_dslx_type* type) {
-  auto* cpp_type = reinterpret_cast<xls::dslx::Type*>(type);
+    const struct xls_dslx_type* type) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
   CHECK(cpp_type->IsEnum());
   const xls::dslx::EnumType& enum_type = cpp_type->AsEnum();
   const xls::dslx::EnumDef& cpp_enum_def = enum_type.nominal_type();
@@ -2017,8 +2037,8 @@ struct xls_dslx_enum_def* xls_dslx_type_get_enum_def(
 }
 
 struct xls_dslx_struct_def* xls_dslx_type_get_struct_def(
-    struct xls_dslx_type* type) {
-  auto* cpp_type = reinterpret_cast<xls::dslx::Type*>(type);
+    const struct xls_dslx_type* type) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
   CHECK(cpp_type->IsStruct());
   const xls::dslx::StructType& struct_type = cpp_type->AsStruct();
   const xls::dslx::StructDef& cpp_struct_def = struct_type.nominal_type();
@@ -2037,7 +2057,7 @@ bool xls_dslx_type_to_string(const struct xls_dslx_type* type, char** error_out,
   return true;
 }
 
-bool xls_dslx_type_is_bits_like(struct xls_dslx_type* type,
+bool xls_dslx_type_is_bits_like(const struct xls_dslx_type* type,
                                 struct xls_dslx_type_dim** is_signed,
                                 struct xls_dslx_type_dim** size) {
   const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
