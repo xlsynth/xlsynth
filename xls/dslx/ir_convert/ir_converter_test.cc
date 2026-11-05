@@ -21,6 +21,7 @@
 #include "xls/dslx/ir_convert/ir_converter.h"
 
 #include <cctype>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -29,6 +30,7 @@
 #include <vector>
 
 #include "absl/base/casts.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
@@ -39,6 +41,7 @@
 #include "xls/common/file/temp_file.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/create_import_data.h"
+#include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/ir_convert/conversion_info.h"
 #include "xls/dslx/ir_convert/convert_options.h"
@@ -46,6 +49,7 @@
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/run_routines/run_comparator.h"
 #include "xls/dslx/run_routines/run_routines.h"
+#include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/typecheck_test_utils.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/channel.h"
@@ -104,6 +108,122 @@ fn named(x: u32, y: u32) -> E { E::Named { rhs: y, lhs: x } }
   EXPECT_THAT(named->return_value(),
               m::Tuple(m::Literal("bits[2]:2"),
                        m::Tuple(m::Concat(m::Param("x"), m::Param("y")))));
+}
+
+TEST_F(IrConverterTest, ReportsCheckedForBindings) {
+  constexpr std::string_view program = R"(
+fn accumulate(extra: u32) -> (u32, u32) {
+  for (address, (sum, count)) in u32:1..u32:4 {
+    (sum + address + extra, count + u32:1)
+  }((u32:0, u32:0))
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data));
+  ConvertOptions options = kProcScopedChannelOptions;
+  std::string body_name;
+  absl::flat_hash_map<std::string, int64_t> bindings;
+  ConvertOptions::LoopBindingCallback observe;
+  options.loop_binding = &observe;
+  observe = [&](std::string_view body, int64_t id, const AstNode* source,
+                const Type* type) {
+    body_name = body;
+    if (auto* name = dynamic_cast<const NameDef*>(source)) {
+      bindings[name->identifier()] = id;
+      XLS_ASSERT_OK_AND_ASSIGN(TypeDim width, type->GetTotalBitCount());
+      EXPECT_THAT(width.GetAsInt64(), IsOkAndHolds(32));
+    }
+  };
+  XLS_ASSERT_OK_AND_ASSIGN(
+      PackageConversionData converted,
+      ConvertModuleToPackage(tm.module, &import_data, options));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * loop,
+                           converted.package->GetFunction(body_name));
+  ASSERT_THAT(bindings, ::testing::UnorderedElementsAre(
+                            ::testing::Key("address"), ::testing::Key("sum"),
+                            ::testing::Key("count"), ::testing::Key("extra")));
+  EXPECT_THAT(loop->GetNodeById(bindings.at("address")),
+              IsOkAndHolds(m::Add(m::Param(), m::Literal(1))));
+  EXPECT_THAT(loop->GetNodeById(bindings.at("sum")),
+              IsOkAndHolds(m::TupleIndex(m::Param(), 0)));
+  EXPECT_THAT(loop->GetNodeById(bindings.at("count")),
+              IsOkAndHolds(m::TupleIndex(m::Param(), 1)));
+  EXPECT_THAT(loop->GetNodeById(bindings.at("extra")),
+              IsOkAndHolds(m::Param("extra")));
+}
+
+TEST_F(IrConverterTest, ReturnsBuilderErrorForCollidingLoopParameters) {
+  constexpr std::string_view program = R"(
+fn fold() -> u8 {
+  for (i', i_) in u8:0..u8:2 { i_ + i' }(u8:7)
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data));
+  ConvertOptions::LoopBindingCallback observe =
+      [](std::string_view, int64_t, const AstNode*, const Type*) {};
+  ConvertOptions options = kProcScopedChannelOptions;
+  options.loop_binding = &observe;
+  auto result = ConvertModuleToPackage(tm.module, &import_data, options);
+  EXPECT_FALSE(result.ok());
+  EXPECT_THAT(result.status().message(), ::testing::HasSubstr("already exists"));
+}
+
+TEST_F(IrConverterTest, ReportsDestructuredArrayElementBindings) {
+  constexpr std::string_view program = R"(
+fn sum_pairs(pairs: (u8, u16)[2]) -> u16 {
+  for ((a, b), acc) in pairs {
+    acc + (a as u16) + b
+  }(u16:0)
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data));
+  std::string body_name;
+  std::optional<int64_t> element_id;
+  absl::flat_hash_map<std::string, int64_t> named_ids;
+  ConvertOptions::LoopBindingCallback observe =
+      [&](std::string_view body, int64_t id, const AstNode* source,
+          const Type* type) {
+        if (body_name.empty()) {
+          body_name = body;
+        }
+        EXPECT_EQ(body, body_name);
+        if (dynamic_cast<const TuplePattern*>(source) != nullptr) {
+          EXPECT_FALSE(element_id.has_value());
+          element_id = id;
+        } else if (auto* name = dynamic_cast<const NameDef*>(source)) {
+          EXPECT_TRUE(named_ids.emplace(name->identifier(), id).second);
+          if (name->identifier() == "a") {
+            EXPECT_EQ(type->ToString(), "uN[8]");
+          } else if (name->identifier() == "b") {
+            EXPECT_EQ(type->ToString(), "uN[16]");
+          }
+        }
+      };
+  ConvertOptions options = kProcScopedChannelOptions;
+  options.loop_binding = &observe;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      PackageConversionData converted,
+      ConvertModuleToPackage(tm.module, &import_data, options));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * loop,
+                           converted.package->GetFunction(body_name));
+  ASSERT_TRUE(element_id.has_value());
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Node * element, loop->GetNodeById(*element_id));
+  EXPECT_THAT(element, m::ArrayIndex());
+  ASSERT_THAT(named_ids, ::testing::UnorderedElementsAre(
+                             ::testing::Key("a"), ::testing::Key("b"),
+                             ::testing::Key("acc")));
+  EXPECT_THAT(loop->GetNodeById(named_ids.at("a")),
+              IsOkAndHolds(m::TupleIndex(element, 0)));
+  EXPECT_THAT(loop->GetNodeById(named_ids.at("b")),
+              IsOkAndHolds(m::TupleIndex(element, 1)));
 }
 
 TEST_F(IrConverterTest, NamedConstant) {
