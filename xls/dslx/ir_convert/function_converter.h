@@ -201,6 +201,7 @@ class FunctionConverter {
   absl::StatusOr<BValue> AddParam(
       std::string_view name, xls::Type* type,
       std::optional<std::string> sv_type = std::nullopt);
+  void AssignParamNames();
 
   // Helper function used for adding a parameter type wrapped up in a
   // token/activation boolean.
