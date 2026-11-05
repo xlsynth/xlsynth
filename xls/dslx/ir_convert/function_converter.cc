@@ -970,16 +970,45 @@ absl::StatusOr<BValue> FunctionConverter::AddParam(
     std::string_view name, xls::Type* type,
     std::optional<std::string> sv_type) {
   XLS_RET_CHECK(function_proto_);
-  auto* builder = absl::down_cast<FunctionBuilder*>(function_builder_.get());
-  BValue value = builder->ParamWithUniqueName(name, type);
-  XLS_RETURN_IF_ERROR(builder->GetError());
+  // Keep the argument position now. AssignParamNames chooses the IR spelling
+  // once all requested names (including loop captures) are known.
+  BValue value = function_builder_->Param(/*name=*/"", type);
+  XLS_RETURN_IF_ERROR(function_builder_->GetError());
   auto* param = function_proto_.value()->add_parameters();
-  param->set_name(value.GetName());
+  param->set_name(name);
   *param->mutable_type() = type->ToProto();
   if (sv_type) {
     param->set_sv_type(*sv_type);
   }
   return value;
+}
+
+void FunctionConverter::AssignParamNames() {
+  xls::Function* function = function_builder_->function()->AsFunctionOrDie();
+  auto params = function->params();
+  auto& interface = **function_proto_;
+  CHECK_EQ(params.size(), interface.parameters_size());
+  absl::flat_hash_map<std::string, xls::Param*> requested;
+  for (int64_t i = 0; i < params.size(); ++i) {
+    requested.try_emplace(interface.parameters(i).name(), params[i]);
+  }
+  for (int64_t i = 0; i < params.size(); ++i) {
+    // If the allocator offers another parameter's literal spelling, give it to
+    // that parameter first. This also protects explicit suffixes like i___1.
+    while (!params[i]->HasAssignedName()) {
+      std::string name =
+          function->UniquifyNodeName(interface.parameters(i).name());
+      auto owner = requested.find(name);
+      xls::Param* recipient =
+          owner != requested.end() && !owner->second->HasAssignedName()
+              ? owner->second
+              : params[i];
+      recipient->SetNameDirectly(name);
+    }
+  }
+  for (int64_t i = 0; i < params.size(); ++i) {
+    interface.mutable_parameters(i)->set_name(params[i]->GetNameView());
+  }
 }
 
 absl::StatusOr<BValue> FunctionConverter::AddTokenWrappedParam(
@@ -2003,6 +2032,7 @@ absl::Status FunctionConverter::HandleFor(const For* node) {
   // `HandleForBody`.
   XLS_ASSIGN_OR_RETURN(std::vector<const NameDef*> relevant_name_defs,
                        HandleForLexicalScope(node, body_converter));
+  body_converter.AssignParamNames();
 
   // Convert the for-loop body block into its IR (function) form.
   XLS_ASSIGN_OR_RETURN(BValue body_result, body_converter.HandleForBody(node));
@@ -3923,10 +3953,13 @@ absl::Status FunctionConverter::HandleFunction(
     XLS_RET_CHECK(implicit_token_data_.has_value());
   }
 
-  FfiPartialValueSubstituteHelper ffi_template(f.extern_verilog_module());
   for (Param* param : f.params()) {
     XLS_RETURN_IF_ERROR(Visit(param));
-    if (f.extern_verilog_module().has_value()) {
+  }
+  AssignParamNames();
+  FfiPartialValueSubstituteHelper ffi_template(f.extern_verilog_module());
+  if (f.extern_verilog_module().has_value()) {
+    for (Param* param : f.params()) {
       XLS_ASSIGN_OR_RETURN(BValue value, Use(param->name_def()));
       ffi_template.SetParameterName(param->identifier(),
                                     value.node()->GetNameView());
