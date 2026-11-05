@@ -17,14 +17,20 @@
 
 #include <bitset>
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "xls/dslx/warning_kind.h"
 #include "xls/ir/channel.h"
 
 namespace xls::dslx {
+
+class AstNode;
+class Type;
 
 // Kinds of automatically generated cover ops that can be synthesized during
 // IR conversion (as opposed to explicit `cover!()` ops, which are governed by
@@ -117,6 +123,14 @@ struct ConvertOptions {
 
   // Configured values to override for use in IR conversion.
   std::vector<std::string> configured_values;
+
+  // Observes the IR node for a source loop binding during conversion. The
+  // source and its specialization's checked type belong to the caller's
+  // ImportData. The function name is borrowed only during the callback.
+  using LoopBindingCallback = std::function<void(std::string_view, int64_t,
+                                                 const AstNode*, const Type*)>;
+  // The caller owns the callback for the duration of conversion.
+  const LoopBindingCallback* loop_binding = nullptr;
 };
 
 }  // namespace xls::dslx
