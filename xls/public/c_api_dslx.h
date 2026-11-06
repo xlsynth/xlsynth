@@ -256,6 +256,22 @@ bool xls_dslx_typechecked_module_convert_to_ir(
     struct xls_dslx_typechecked_module* tm,
     struct xls_dslx_import_data* import_data, char** error_out, char** ir_out);
 
+// Called during conversion for values bound by a DSLX for-loop. The function
+// and node id identify a value in the returned IR. A binder or named iterable
+// has a source_name. A computed iterable has its printed DSLX in source_expr.
+// An unnamed aggregate has neither. Strings last for the call, the checked
+// type for the lifetime of import_data. Discard the entries if conversion fails.
+typedef void (*xls_dslx_loop_binding_callback)(
+    void* user_data, const char* ir_function, int64_t ir_node_id,
+    const char* source_name, const struct xls_dslx_type* concrete_type,
+    const char* source_expr);
+
+bool xls_dslx_typechecked_module_convert_to_ir_with_loop_bindings(
+    struct xls_dslx_typechecked_module* tm,
+    struct xls_dslx_import_data* import_data,
+    xls_dslx_loop_binding_callback callback, void* user_data, char** error_out,
+    char** ir_out);
+
 struct xls_dslx_module* xls_dslx_typechecked_module_get_module(
     struct xls_dslx_typechecked_module*);
 struct xls_dslx_type_info* xls_dslx_typechecked_module_get_type_info(

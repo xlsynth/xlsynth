@@ -907,22 +907,45 @@ absl::Status FunctionConverter::HandleAllOnesMacro(const AllOnesMacro* node) {
   return absl::OkStatus();
 }
 
+absl::StatusOr<BValue> FunctionConverter::AddParam(
+    std::string_view name, xls::Type* type,
+    std::optional<std::string> sv_type) {
+  XLS_RET_CHECK(function_proto_);
+  auto* builder = absl::down_cast<FunctionBuilder*>(function_builder_.get());
+  BValue value = builder->Param(name, type);
+  XLS_RETURN_IF_ERROR(builder->GetError());
+  auto* param = function_proto_.value()->add_parameters();
+  param->set_name(std::string(name));
+  *param->mutable_type() = type->ToProto();
+  if (sv_type) {
+    param->set_sv_type(*sv_type);
+  }
+  return value;
+}
+
+absl::StatusOr<BValue> FunctionConverter::AddTokenWrappedParam(
+    xls::Type* type) {
+  XLS_ASSIGN_OR_RETURN(
+      BValue param,
+      AddParam("__token_wrapped", WrapIrForImplicitTokenType(type, package())));
+  BValue entry_token = function_builder_->TupleIndex(param, 0);
+  BValue activated = function_builder_->TupleIndex(param, 1);
+  implicit_token_data_ = ImplicitTokenData{entry_token, activated,
+                                           [activated] { return activated; }};
+  BValue unwrapped = function_builder_->TupleIndex(param, 2);
+  XLS_RETURN_IF_ERROR(function_builder_->GetError());
+  return unwrapped;
+}
+
 absl::Status FunctionConverter::HandleParam(const Param* node) {
   VLOG(5) << "FunctionConverter::HandleParam: " << node->ToString();
   XLS_ASSIGN_OR_RETURN(xls::Type * type,
                        ResolveTypeToIr(node->type_annotation()));
-  BValue value = function_builder_->Param(node->identifier(), type);
-  Def(node->name_def(), [&](const SourceInfo& loc) { return value; });
-  XLS_RET_CHECK(function_proto_);
-  PackageInterfaceProto::NamedValue* param =
-      function_proto_.value()->add_parameters();
-  param->set_name(node->identifier());
-  *param->mutable_type() = type->ToProto();
   XLS_ASSIGN_OR_RETURN(std::optional<std::string> sv_value,
                        current_type_info_->FindSvType(node->type_annotation()));
-  if (sv_value) {
-    param->set_sv_type(*sv_value);
-  }
+  XLS_ASSIGN_OR_RETURN(BValue value,
+                       AddParam(node->identifier(), type, sv_value));
+  Def(node->name_def(), [&](const SourceInfo& loc) { return value; });
   return absl::OkStatus();
 }
 
@@ -1639,6 +1662,29 @@ absl::StatusOr<BValue> FunctionConverter::HandleRangedForInductionVariable(
       ivar_node);
 }
 
+absl::Status FunctionConverter::NoteLoopBinding(const AstNode* source,
+                                                BValue value) {
+  XLS_RETURN_IF_ERROR(function_builder_->GetError());
+  if (options_.loop_binding) {
+    if (auto type = current_type_info_->GetItem(source)) {
+      (*options_.loop_binding)(function_builder_->name(), value.node()->id(),
+                               source, *type);
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status FunctionConverter::NoteLoopPatternBindings(
+    const PatternTree& pattern) {
+  if (options_.loop_binding) {
+    for (NameDef* name : GetPatternNameDefs(pattern)) {
+      XLS_ASSIGN_OR_RETURN(BValue value, Use(name));
+      XLS_RETURN_IF_ERROR(NoteLoopBinding(name, value));
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::Status FunctionConverter::HandleForLoopCarry(
     const For* node, FunctionConverter& body_converter,
     const std::optional<RangeData>& range_data, BValue loop_index,
@@ -1656,6 +1702,8 @@ absl::Status FunctionConverter::HandleForLoopCarry(
         body_converter.function_builder_->Add(loop_index, offset_literal);
 
     body_converter.SetNodeToIr(ToAstNode(ivar), offset_sum);
+    XLS_RETURN_IF_ERROR(
+        body_converter.NoteLoopBinding(ToAstNode(ivar), offset_sum));
   } else {
     body_converter.SetNodeToIr(ToAstNode(ivar), loop_index);
   }
@@ -1669,12 +1717,18 @@ absl::Status FunctionConverter::HandleForLoopCarry(
       // Note: this is somewhat conservative, even if the for-body does not
       // require an implicit token, for bodies are not marked independently from
       // their enclosing functions.
-      BValue unwrapped = body_converter.AddTokenWrappedParam(type);
+      XLS_ASSIGN_OR_RETURN(BValue unwrapped,
+                           body_converter.AddTokenWrappedParam(type));
       body_converter.SetNodeToIr(carry_name_def, unwrapped);
+      XLS_RETURN_IF_ERROR(
+          body_converter.NoteLoopBinding(carry_name_def, unwrapped));
     } else {
-      BValue param =
-          body_converter.AddParam(carry_name_def->identifier(), type);
+      XLS_ASSIGN_OR_RETURN(
+          BValue param,
+          body_converter.AddParam(carry_name_def->identifier(), type));
       body_converter.SetNodeToIr(carry_name_def, param);
+      XLS_RETURN_IF_ERROR(
+          body_converter.NoteLoopBinding(carry_name_def, param));
     }
   } else {
     // Preserve the full loop-carry pattern on entry. Tuple members may bind
@@ -1687,11 +1741,14 @@ absl::Status FunctionConverter::HandleForLoopCarry(
         TypeToIr(package(), *carry_type, ParametricEnv(parametric_env_map_)));
     BValue carry;
     if (implicit_token_data_.has_value()) {
-      carry = body_converter.AddTokenWrappedParam(carry_ir_type);
+      XLS_ASSIGN_OR_RETURN(carry,
+                           body_converter.AddTokenWrappedParam(carry_ir_type));
     } else {
-      carry = body_converter.AddParam("__loop_carry", carry_ir_type);
+      XLS_ASSIGN_OR_RETURN(
+          carry, body_converter.AddParam("__loop_carry", carry_ir_type));
     }
     body_converter.SetNodeToIr(accum, carry);
+    XLS_RETURN_IF_ERROR(body_converter.NoteLoopBinding(accum, carry));
     // Destructure the tuple-pattern members in the anonymous function body.
     if (auto* tuple_pattern = dynamic_cast<TuplePattern*>(accum)) {
       PatternTree matcher = tuple_pattern;
@@ -1700,6 +1757,7 @@ absl::Status FunctionConverter::HandleForLoopCarry(
                                              /*matched_value=*/carry,
                                              /*matched_type=*/*carry_type)
                               .status());
+      XLS_RETURN_IF_ERROR(body_converter.NoteLoopPatternBindings(matcher));
     } else {
       XLS_RET_CHECK_NE(dynamic_cast<WildcardPattern*>(accum), nullptr)
           << "Expect post-typechecking loop binding to be TuplePattern or "
@@ -1761,9 +1819,12 @@ FunctionConverter::HandleForLexicalScope(const For* node,
       XLS_ASSIGN_OR_RETURN(
           xls::Type * name_def_type,
           TypeToIr(package(), **type, ParametricEnv(parametric_env_map_)));
-      body_converter.SetNodeToIr(
-          freevar_name_def, body_converter.AddParam(
-                                freevar_name_def->identifier(), name_def_type));
+      XLS_ASSIGN_OR_RETURN(
+          BValue param, body_converter.AddParam(freevar_name_def->identifier(),
+                                                name_def_type));
+      body_converter.SetNodeToIr(freevar_name_def, param);
+      XLS_RETURN_IF_ERROR(
+          body_converter.NoteLoopBinding(freevar_name_def, param));
     }
   }
 
@@ -1907,20 +1968,27 @@ absl::Status FunctionConverter::HandleFor(const For* node) {
     XLS_RETURN_IF_ERROR(HandleForLoopCarry(node, body_converter, range_data,
                                            ivar_value, ivar_node, carry_node));
   } else {
-    BValue index =
-        body_converter.AddParam("__index", package()->GetBitsType(32));
+    XLS_ASSIGN_OR_RETURN(
+        BValue index,
+        body_converter.AddParam("__index", package()->GetBitsType(32)));
     XLS_RETURN_IF_ERROR(HandleForLoopCarry(node, body_converter, range_data,
                                            ivar_value, ivar_node, carry_node));
-    BValue iterable =
-        body_converter.AddParam("__indexable", indexable->GetType());
+    XLS_ASSIGN_OR_RETURN(
+        BValue iterable,
+        body_converter.AddParam("__indexable", indexable->GetType()));
+    XLS_RETURN_IF_ERROR(
+        body_converter.NoteLoopBinding(node->iterable(), iterable));
     ivar_value =
         body_converter.function_builder_->ArrayIndex(iterable, {index});
     if (const auto* tuple_pattern = std::get_if<TuplePattern*>(&ivar_node)) {
       XLS_RETURN_IF_ERROR(
           body_converter.DestructureTuplePattern(*tuple_pattern, ivar_value));
+      XLS_RETURN_IF_ERROR(body_converter.NoteLoopPatternBindings(ivar_node));
     } else {
       body_converter.SetNodeToIr(ToAstNode(ivar_node), ivar_value);
     }
+    XLS_RETURN_IF_ERROR(
+        body_converter.NoteLoopBinding(ToAstNode(ivar_node), ivar_value));
     invariant_args.push_back(indexable.value());
   }
 
@@ -3764,24 +3832,15 @@ absl::Status FunctionConverter::HandleBuiltinToken(const Invocation* node) {
 absl::Status FunctionConverter::AddImplicitTokenParams() {
   XLS_RET_CHECK(!implicit_token_data_.has_value());
   implicit_token_data_.emplace();
-  implicit_token_data_->entry_token =
-      function_builder_->Param("__token", package()->GetTokenType());
-  implicit_token_data_->activated =
-      function_builder_->Param("__activated", package()->GetBitsType(1));
+  XLS_ASSIGN_OR_RETURN(implicit_token_data_->entry_token,
+                       AddParam("__token", package()->GetTokenType()));
+  XLS_ASSIGN_OR_RETURN(implicit_token_data_->activated,
+                       AddParam("__activated", package()->GetBitsType(1)));
   implicit_token_data_->create_control_predicate = [&]() -> BValue {
     // At the start we're unconditionally executing, so the control predicate
     // is whether this function has been activated at all.
     return implicit_token_data_->activated;
   };
-  XLS_RET_CHECK(function_proto_);
-
-  auto* tok_param = function_proto_.value()->add_parameters();
-  tok_param->set_name("__token");
-  *tok_param->mutable_type() = package()->GetTokenType()->ToProto();
-  auto* act_param = function_proto_.value()->add_parameters();
-  act_param->set_name("__activated");
-  *act_param->mutable_type() = package()->GetBitsType(1)->ToProto();
-
   return absl::OkStatus();
 }
 
