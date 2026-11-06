@@ -54,6 +54,7 @@
 
 namespace xls::dslx {
 
+class ParametricEnv;
 class BitsType;
 class TupleType;
 class StructType;
@@ -558,9 +559,11 @@ class StructType : public StructTypeBase {
   StructType(std::vector<std::unique_ptr<Type>> members,
              const StructDef& struct_def,
              absl::flat_hash_map<std::string, TypeDim>
-                 nominal_type_dims_by_identifier = {})
+                 nominal_type_dims_by_identifier = {},
+             std::shared_ptr<const ParametricEnv> value_parametrics = nullptr)
       : StructTypeBase(std::move(members), struct_def,
-                       std::move(nominal_type_dims_by_identifier)) {}
+                       std::move(nominal_type_dims_by_identifier)),
+        value_parametrics_(std::move(value_parametrics)) {}
 
   absl::Status Accept(TypeVisitor& v) const override {
     return v.HandleStruct(*this);
@@ -568,7 +571,15 @@ class StructType : public StructTypeBase {
 
   std::unique_ptr<Type> CloneToUnique() const override {
     return std::make_unique<StructType>(CloneSpan(members()), nominal_type(),
-                                        nominal_type_dims_by_identifier());
+                                        nominal_type_dims_by_identifier(),
+                                        value_parametrics_);
+  }
+
+  // Checked value arguments, including defaults. Available for concrete
+  // parametric instances with only value bindings. This reflection metadata
+  // is independent of the dimensions used in DSLX type comparison.
+  const ParametricEnv* value_parametrics() const {
+    return value_parametrics_.get();
   }
 
   const StructDef& nominal_type() const {
@@ -578,6 +589,9 @@ class StructType : public StructTypeBase {
   std::string ToInlayHintString() const override {
     return nominal_type().identifier();
   }
+
+ private:
+  std::shared_ptr<const ParametricEnv> value_parametrics_;
 };
 
 // Represents a proc that is formatted like a struct and may contain members

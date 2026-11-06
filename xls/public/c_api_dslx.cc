@@ -2049,6 +2049,30 @@ struct xls_dslx_struct_def* xls_dslx_type_get_struct_def(
   return const_cast<xls_dslx_struct_def*>(struct_def);
 }
 
+bool xls_dslx_type_get_struct_parametric_env(
+    const struct xls_dslx_type* type, char** error_out,
+    struct xls_dslx_parametric_env** env_out) {
+  const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
+  *error_out = nullptr;
+  *env_out = nullptr;
+  if (!cpp_type->IsStruct()) {
+    *error_out = xls::ToOwnedCString("Expected a DSLX struct type");
+    return false;
+  }
+  const auto& record = cpp_type->AsStruct();
+  const xls::dslx::ParametricEnv* env = record.value_parametrics();
+  if (env == nullptr && record.nominal_type().IsParametric()) {
+    *error_out =
+        xls::ToOwnedCString("No complete checked value bindings for struct " +
+                            record.nominal_type().identifier());
+    return false;
+  }
+  *env_out = reinterpret_cast<xls_dslx_parametric_env*>(
+      env ? new xls::dslx::ParametricEnv(*env)
+          : new xls::dslx::ParametricEnv());
+  return true;
+}
+
 bool xls_dslx_type_to_string(const struct xls_dslx_type* type, char** error_out,
                              char** result_out) {
   const auto* cpp_type = reinterpret_cast<const xls::dslx::Type*>(type);
