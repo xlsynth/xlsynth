@@ -2175,6 +2175,7 @@ struct Box<N: u32> {
 }
 
 type Box8 = Box<u32:8>;
+type Pair = (Box8, u8);
 )";
   const char* additional_search_paths[] = {};
 
@@ -2198,7 +2199,7 @@ type Box8 = Box<u32:8>;
 
   xls_dslx_module* module = xls_dslx_typechecked_module_get_module(tm);
   xls_dslx_type_info* type_info = xls_dslx_typechecked_module_get_type_info(tm);
-  ASSERT_EQ(xls_dslx_module_get_type_definition_count(module), 2);
+  ASSERT_EQ(xls_dslx_module_get_type_definition_count(module), 3);
 
   xls_dslx_struct_def* box_struct =
       xls_dslx_module_get_type_definition_as_struct_def(module, 0);
@@ -2251,8 +2252,7 @@ type Box8 = Box<u32:8>;
   ASSERT_NE(value_type, nullptr);
   xls_dslx_type_dim* is_signed = nullptr;
   xls_dslx_type_dim* size = nullptr;
-  ASSERT_TRUE(xls_dslx_type_is_bits_like(
-      const_cast<xls_dslx_type*>(value_type), &is_signed, &size));
+  ASSERT_TRUE(xls_dslx_type_is_bits_like(value_type, &is_signed, &size));
   absl::Cleanup free_type_dims([&] {
     xls_dslx_type_dim_free(is_signed);
     xls_dslx_type_dim_free(size);
@@ -2264,6 +2264,59 @@ type Box8 = Box<u32:8>;
   int64_t value_bit_count = 0;
   ASSERT_TRUE(xls_dslx_type_dim_get_as_int64(size, &error, &value_bit_count));
   EXPECT_EQ(value_bit_count, 8);
+
+  auto* pair_alias =
+      xls_dslx_module_get_type_definition_as_type_alias(module, 2);
+  const auto* pair = xls_dslx_type_info_get_type_type_annotation(
+      type_info, xls_dslx_type_alias_get_type_annotation(pair_alias));
+  ASSERT_TRUE(xls_dslx_type_is_tuple(pair));
+  ASSERT_EQ(xls_dslx_type_tuple_get_member_count(pair), 2);
+  const auto* first = xls_dslx_type_tuple_get_member_type(pair, 0);
+  ASSERT_TRUE(xls_dslx_type_is_struct(first));
+  auto* definition = xls_dslx_type_get_struct_def(first);
+  EXPECT_EQ(definition, box_struct);
+  EXPECT_EQ(xls_dslx_struct_def_get_module(definition), module);
+  EXPECT_FALSE(
+      xls_dslx_type_is_struct(xls_dslx_type_tuple_get_member_type(pair, 1)));
+}
+
+TEST(XlsCApiTest, ConcreteStructParametricBindingsIncludeDefaults) {
+  constexpr char kProgram[] = R"(
+struct Tag<Z: u32, A: u32 = {Z * u32:2}, B: u32 = {A + u32:1}> { value: u8 }
+type Defaulted = Tag<3>;
+type Explicit = Tag<3, 6, 7>;
+type Overridden = Tag<3, 9>;
+)";
+  auto* imports = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  absl::Cleanup free_imports([&] { xls_dslx_import_data_free(imports); });
+  xls_dslx_typechecked_module* checked = nullptr;
+  char* error = nullptr;
+  absl::Cleanup free_error([&] { xls_c_str_free(error); });
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kProgram, "tags.x", "tags", imports,
+                                           &error, &checked))
+      << error;
+  absl::Cleanup free_checked(
+      [&] { xls_dslx_typechecked_module_free(checked); });
+  auto* module = xls_dslx_typechecked_module_get_module(checked);
+  auto* info = xls_dslx_typechecked_module_get_type_info(checked);
+  const char* expected[] = {"{A: u32:6, B: u32:7, Z: u32:3}",
+                            "{A: u32:6, B: u32:7, Z: u32:3}",
+                            "{A: u32:9, B: u32:10, Z: u32:3}"};
+  for (int i = 0; i < 3; ++i) {
+    auto* alias =
+        xls_dslx_module_get_type_definition_as_type_alias(module, i + 1);
+    const auto* type = xls_dslx_type_info_get_type_type_annotation(
+        info, xls_dslx_type_alias_get_type_annotation(alias));
+    ASSERT_NE(type, nullptr);
+    xls_dslx_parametric_env* env = nullptr;
+    ASSERT_TRUE(xls_dslx_type_get_struct_parametric_env(type, &error, &env))
+        << error;
+    absl::Cleanup free_env([&] { xls_dslx_parametric_env_free(env); });
+    char* actual = xls_dslx_parametric_env_to_string(env);
+    absl::Cleanup free_actual([&] { xls_c_str_free(actual); });
+    EXPECT_STREQ(actual, expected[i]);
+  }
 }
 
 TEST(XlsCApiTest, DslxInspectImportModuleMember) {
