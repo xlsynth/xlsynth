@@ -827,6 +827,14 @@ struct xls_dslx_enum_def* xls_dslx_type_get_enum_def(
 struct xls_dslx_struct_def* xls_dslx_type_get_struct_def(
     const struct xls_dslx_type*);
 
+// Gets every checked value argument of a concrete struct, including defaults.
+// The caller owns the result and must free it with xls_dslx_parametric_env_free.
+// Returns false for a non-struct or unavailable bindings (including type-valued
+// parameters), with an error owned by the caller. Free it with xls_c_str_free.
+bool xls_dslx_type_get_struct_parametric_env(
+    const struct xls_dslx_type* type, char** error_out,
+    struct xls_dslx_parametric_env** env_out);
+
 // Precondition: xls_dslx_type_is_array
 struct xls_dslx_type* xls_dslx_type_array_get_element_type(
     const struct xls_dslx_type*);

@@ -2317,9 +2317,29 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
         member_types.push_back(std::move(concrete_member_type));
       }
       if (struct_def_base->kind() == AstNodeKind::kStructDef) {
+        std::shared_ptr<const ParametricEnv> value_parametrics;
+        if (struct_context.has_value()) {
+          std::vector<std::pair<std::string, InterpValue>> bindings;
+          for (const ParametricBinding* binding :
+               struct_def_base->parametric_bindings()) {
+            auto value = (*struct_context)
+                             ->type_info()
+                             ->GetConstExprOption(binding->name_def());
+            if (!value.has_value() || value->IsTypeReference()) {
+              break;
+            }
+            bindings.emplace_back(binding->identifier(), std::move(*value));
+          }
+          if (bindings.size() ==
+              struct_def_base->parametric_bindings().size()) {
+            value_parametrics = std::make_shared<const ParametricEnv>(bindings);
+          }
+        }
         std::unique_ptr<Type> type = std::make_unique<StructType>(
             std::move(member_types),
-            *absl::down_cast<const StructDef*>(struct_def_base));
+            *absl::down_cast<const StructDef*>(struct_def_base),
+            absl::flat_hash_map<std::string, TypeDim>{},
+            std::move(value_parametrics));
         XLS_RETURN_IF_ERROR(
             AddCachedType(struct_def_base, struct_context, *type));
         return type;
