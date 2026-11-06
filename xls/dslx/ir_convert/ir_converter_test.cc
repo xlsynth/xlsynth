@@ -36,6 +36,10 @@
 #include "absl/strings/str_format.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "xls/codegen/codegen_options.h"
+#include "xls/codegen/codegen_result.h"
+#include "xls/codegen/combinational_generator.h"
+#include "xls/codegen/vast/vast.h"
 #include "xls/common/file/temp_file.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/create_import_data.h"
@@ -47,13 +51,18 @@
 #include "xls/dslx/run_routines/run_comparator.h"
 #include "xls/dslx/run_routines/run_routines.h"
 #include "xls/dslx/type_system/typecheck_test_utils.h"
+#include "xls/interpreter/function_interpreter.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/channel.h"
 #include "xls/ir/function.h"
 #include "xls/ir/ir_matcher.h"
+#include "xls/ir/ir_parser.h"
+#include "xls/ir/nodes.h"
 #include "xls/ir/package.h"
 #include "xls/ir/proc.h"
 #include "xls/ir/value.h"
+#include "xls/simulation/default_verilog_simulator.h"
+#include "xls/simulation/module_simulator.h"
 
 namespace xls::dslx {
 namespace {
@@ -104,6 +113,100 @@ fn named(x: u32, y: u32) -> E { E::Named { rhs: y, lhs: x } }
   EXPECT_THAT(named->return_value(),
               m::Tuple(m::Literal("bits[2]:2"),
                        m::Tuple(m::Concat(m::Param("x"), m::Param("y")))));
+}
+
+TEST_F(IrConverterTest, ExternTemplateUsesTheSelectedParameterAfterRename) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(R"(
+#[extern_verilog("diff {fn} (.lhs({i_}), .rhs({i'}), .out({return}));")]
+pub fn f(i': u8, i_: u8) -> u8 { i_ - i' }
+)",
+                        "test_module.x", "test_module", &import_data));
+
+  for (bool force_implicit_token : {false, true}) {
+    ConvertOptions options;
+    options.force_implicit_token_calling_convention = force_implicit_token;
+    XLS_ASSERT_OK_AND_ASSIGN(
+        PackageConversionData conversion,
+        ConvertModuleToPackage(tm.module, &import_data, options));
+    auto functions = conversion.package->functions();
+    ASSERT_EQ(functions.size(), force_implicit_token ? 2 : 1);
+    for (const auto& function : functions) {
+      ASSERT_TRUE(function->ForeignFunctionData().has_value());
+      EXPECT_EQ(function->ForeignFunctionData()->code_template(),
+                "diff {fn} (.lhs({i_}), .rhs({i___1}), .out({return}));");
+    }
+  }
+}
+
+TEST_F(IrConverterTest, GeneratedVerilogPreservesLiteralParameterNames) {
+  auto verilog_simulator = verilog::GetDefaultVerilogSimulator();
+  auto check_ports = [&](std::string_view program,
+                         const verilog::ModuleSimulator::BitsMap& inputs,
+                         const Bits& expected) {
+    SCOPED_TRACE(program);
+    XLS_ASSERT_OK_AND_ASSIGN(std::string ir,
+                             ConvertOneFunctionForTest(program, "f"));
+    XLS_ASSERT_OK_AND_ASSIGN(auto package, xls::Parser::ParsePackage(ir));
+    XLS_ASSERT_OK_AND_ASSIGN(auto* top, package->GetTopAsFunction());
+    XLS_ASSERT_OK_AND_ASSIGN(
+        verilog::CodegenResult result,
+        verilog::GenerateCombinationalModule(
+            top, verilog::CodegenOptions().use_system_verilog(false)));
+    verilog::ModuleSimulator simulator(result.signature, result.verilog_text,
+                                       verilog::FileType::kVerilog,
+                                       verilog_simulator.get());
+    EXPECT_THAT(simulator.RunAndReturnSingleOutput(inputs),
+                IsOkAndHolds(expected));
+  };
+
+  const verilog::ModuleSimulator::BitsMap inputs = {{"i_", UBits(0x1, 4)},
+                                                    {"i___1", UBits(0x2, 4)}};
+  check_ports("fn f(i': u4, i_: u4) -> u8 { i_ ++ i' }", inputs,
+              UBits(0x12, 8));
+  check_ports("fn f(i_: u4, i': u4) -> u8 { i_ ++ i' }", inputs,
+              UBits(0x12, 8));
+  check_ports("fn f(i': u4, i_: u4, i___1: u4) -> u12 { i_ ++ i___1 ++ i' }",
+              {{"i_", UBits(0x1, 4)},
+               {"i___1", UBits(0x2, 4)},
+               {"i___2", UBits(0x3, 4)}},
+              UBits(0x123, 12));
+}
+
+TEST_F(IrConverterTest, PreservesParametersWithCollidingIrSpellings) {
+  constexpr std::string_view program = R"(
+fn ordinary(i': u8, i_: u8) -> u8 { i_ - i' }
+fn fold() -> u8 { for (i', i_) in u8:0..u8:2 { i_ + i' }(u8:7) }
+fn reverse() -> u8 { for (i_, i') in u8:0..u8:2 { i' + i_ }(u8:7) }
+fn capture(x': u8) -> u8 {
+  for (_, x_) in u8:0..u8:2 { x_ + x' }(u8:7)
+}
+fn run() -> (u8, u8, u8, u8) {
+  (ordinary(u8:2, u8:5), fold(), reverse(), capture(u8:3))
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(PackageConversionData converted,
+                           ConvertModuleToPackage(tm.module, &import_data,
+                                                  kProcScopedChannelOptions));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * run, converted.package->GetFunction(
+                                                    "__test_module__run"));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * fold, converted.package->GetFunction(
+                                                     "__test_module__fold"));
+  ASSERT_TRUE(fold->return_value()->Is<CountedFor>());
+  auto loop_params = fold->return_value()->As<CountedFor>()->body()->params();
+  ASSERT_EQ(loop_params.size(), 2);
+  EXPECT_EQ(loop_params[0]->GetName(), "i___1");
+  EXPECT_EQ(loop_params[1]->GetName(), "i_");
+  XLS_ASSERT_OK_AND_ASSIGN(auto result, InterpretFunction(run, {}));
+  EXPECT_EQ(result.value,
+            Value::Tuple({Value(UBits(3, 8)), Value(UBits(8, 8)),
+                          Value(UBits(8, 8)), Value(UBits(13, 8))}));
 }
 
 TEST_F(IrConverterTest, NamedConstant) {
