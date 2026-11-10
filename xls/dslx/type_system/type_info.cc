@@ -676,32 +676,39 @@ absl::Status TypeInfo::AddInvocation(const Invocation& invocation,
                                      const Function* caller,
                                      TypeInfo* derived_type_info,
                                      const AstNode* caller_parametric_owner) {
-  const TypeInfo* caller_type_info = this;
+  TypeInfo* root = GetRoot();
   // We keep most instantiation info on the top-level type info. The "context
   // stack" doesn't matter so it creates a more understandable tree to flatten
   // it all against the top level. The exception is impl functions, because if
   // the identity of the target struct is generified, or the callee is derived
   // from a trait, then the context affects the identity of the callee. Note
   // that only TIv1 uses nullptr callees.
-  TypeInfo* ti =
-      callee != nullptr && callee->impl().has_value() ? this : GetRoot();
+  TypeInfo* ti = callee != nullptr && callee->impl().has_value() ? this : root;
+  auto& records = root->callee_data_by_invocation_[&invocation];
   auto it = ti->invocations_.find(&invocation);
   if (it != ti->invocations_.end()) {
     XLS_RET_CHECK(it->second->callee() == callee);
-    return absl::OkStatus();
+    // The lexical call can already exist when a new caller context visits it.
+    for (const InvocationCalleeData& record : records) {
+      if (record.callee == callee && record.caller_type_info == this &&
+          record.caller_parametric_owner == caller_parametric_owner) {
+        return absl::OkStatus();
+      }
+    }
+  } else {
+    ti->InsertInvocationData(
+        invocation,
+        std::make_unique<InvocationData>(
+            &invocation, callee, caller,
+            absl::flat_hash_map<ParametricEnv, InvocationCalleeData>{}));
   }
-  ti->InsertInvocationData(
-      invocation,
-      std::make_unique<InvocationData>(
-          &invocation, callee, caller,
-          absl::flat_hash_map<ParametricEnv, InvocationCalleeData>{}));
-  GetRoot()->callee_data_by_invocation_[&invocation].push_back(
+  records.push_back(
       InvocationCalleeData{.callee = callee,
                            .callee_bindings = {},
                            .caller_bindings = {},
                            .derived_type_info = derived_type_info,
                            .invocation = &invocation,
-                           .caller_type_info = caller_type_info,
+                           .caller_type_info = this,
                            .caller_parametric_owner = caller_parametric_owner});
   return absl::OkStatus();
 }
