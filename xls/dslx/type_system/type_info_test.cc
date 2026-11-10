@@ -277,6 +277,43 @@ pub fn main() -> u32 {
   EXPECT_EQ((*lexical_data)->caller(), caller);
 }
 
+TEST(TypeInfoTest, NonParametricInvocationRetainsEachCallerContext) {
+  constexpr std::string_view kProgram = R"(
+fn leaf() -> u32 { u32:42 }
+fn caller<N: u32>() -> u32 { leaf() }
+fn main() -> u32 { caller<u32:1>() + caller<u32:2>() }
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(kProgram));
+  TypeInfo* root = result.tm.type_info;
+  Function* caller = result.tm.module->GetFunctionByName().at("caller");
+  Function* leaf = result.tm.module->GetFunctionByName().at("leaf");
+  const auto* invocation = absl::down_cast<const Invocation*>(
+      ToAstNode(caller->body()->statements().at(0)->wrapped()));
+  auto callers = root->GetUniqueInvocationCalleeData(caller);
+  ASSERT_EQ(callers.size(), 2);
+  TypeInfo* first = callers[0].derived_type_info;
+  TypeInfo* second = callers[1].derived_type_info;
+  ASSERT_NE(first, second);
+
+  auto contexts = root->GetAllInvocationCalleeData(invocation);
+  ASSERT_EQ(contexts.size(), 2);
+  EXPECT_THAT(
+      contexts,
+      UnorderedElementsAre(
+          testing::Field(&InvocationCalleeData::caller_type_info, first),
+          testing::Field(&InvocationCalleeData::caller_type_info, second)));
+  for (const InvocationCalleeData& context : contexts) {
+    EXPECT_EQ(context.caller_parametric_owner, caller);
+    EXPECT_EQ(context.callee, leaf);
+  }
+  EXPECT_THAT(root->GetUniqueInvocationCalleeData(invocation),
+              ElementsAre(testing::Field(&InvocationCalleeData::callee, leaf)));
+
+  // Revisiting the call in one context does not add another record.
+  XLS_ASSERT_OK(first->AddInvocation(*invocation, leaf, caller, first, caller));
+  EXPECT_THAT(root->GetAllInvocationCalleeData(invocation), testing::SizeIs(2));
+}
+
 TEST(TypeInfoTest, FunctionCallGraphBasic) {
   ImportData import_data = CreateImportDataForTest();
   const std::string kProgram = R"(
