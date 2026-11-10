@@ -41,6 +41,7 @@ absl::StatusOr<const TypeAnnotation*> GetParametricFreeType(
   if (!clone_if_no_parametrics && result == type) {
     return type;
   }
+  table.SetAnnotationFlag(result, table.GetAnnotationFlag(type));
   std::unique_ptr<PopulateTableVisitor> visitor =
       CreatePopulateTableVisitor(type->owner(), &table, &import_data,
                                  /*typecheck_imported_module=*/nullptr);
