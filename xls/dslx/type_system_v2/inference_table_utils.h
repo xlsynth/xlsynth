@@ -38,8 +38,8 @@ namespace xls::dslx {
 
 // Binds named operands once, preserving construction diagnostics: unknown and
 // duplicate names are reported in source order, and required missing members
-// are listed alphabetically. Splat/domain callers may allow missing slots;
-// procs may omit I/O members that are default-initialized.
+// are listed alphabetically. Splat/domain callers may allow missing slots,
+// and procs may omit I/O members that are default-initialized.
 absl::StatusOr<NamedFieldCorrespondence> ValidateAndBindNamedMembers(
     const Span& span,
     absl::Span<const std::pair<std::string, Expr*>> actual_members,
@@ -71,6 +71,13 @@ absl::StatusOr<const TypeAnnotation*> SubstituteTypeParametrics(
     InferenceTable& table,
     std::optional<const TypeAnnotation*> real_self_type = std::nullopt,
     bool clone_if_no_parametrics = true);
+
+// Selects the first candidate accepted by MakeTypeCheckedNumber's module-span
+// policy, falling back to the module span or a no-file span. Use this for
+// generated nodes without changing the coordinates of their source expressions or
+// annotations.
+Span SelectSpanForGeneratedNode(const Module& module,
+                                absl::Span<const Span> candidates);
 
 // Fabricates a `Number` node and sets the given type annotation for it in the
 // inference table.

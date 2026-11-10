@@ -42,6 +42,7 @@
 #include "xls/dslx/frontend/ast_node.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/parametric_env.h"
+#include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/type_system_v2/type_annotation_utils.h"
 
@@ -422,6 +423,15 @@ class InferenceTable {
   virtual absl::StatusOr<const NameRef*> DefineParametricVariable(
       const ParametricBinding& binding) = 0;
 
+  // Creates a context-free reference to an already validated, resolved
+  // parametric value for substitution into type/constexpr expressions. The
+  // annotation must have all prior parametric bindings substituted. Each call
+  // creates a distinct definition, visible from every descendant of type_info's
+  // root, with a name that cannot collide with source identifiers.
+  virtual absl::StatusOr<NameRef*> MakeParametricValueReference(
+      Module& module, const TypeAnnotation* annotation, const Type& type,
+      const InterpValue& value, TypeInfo& type_info) = 0;
+
   // Defines an invocation context for a parametric function, giving its
   // associated parametric variables distinct value expression storage for that
   // context. Note that the `caller` must only be `nullopt` if the invocation is
@@ -504,12 +514,24 @@ class InferenceTable {
   virtual absl::Status SetTypeVariable(const AstNode* node,
                                        const NameRef* type) = 0;
 
-  // Owns one binding per original constructor expression.
-  virtual const BoundConstruction* RegisterBoundConstruction(
-      BoundConstruction construction) = 0;
+  // Registers a classified ordinary function call as a type-inference
+  // prerequisite. Safe before or after SetTypeVariable, and idempotent.
+  // Constructor invocations must not be registered here.
+  virtual void RegisterInvocation(const Invocation* invocation) = 0;
 
+  // Owns one immutable binding per source use and resolving context, with
+  // stable addresses for borrowers. A context-independent binding is for a
+  // statically known target; generic targets register only after resolution.
+  // Repeated registration returns the existing record.
+  virtual const BoundConstruction* RegisterBoundConstruction(
+      BoundConstruction construction,
+      std::optional<const ParametricContext*> context = std::nullopt) = 0;
+
+  // Consults this exact caller context, then a context-independent binding.
+  // An unsuccessful lookup does not cache an unresolved generic target.
   virtual std::optional<const BoundConstruction*> GetBoundConstruction(
-      const Expr* expression) const = 0;
+      const Expr* expression,
+      std::optional<const ParametricContext*> context = std::nullopt) const = 0;
 
   // Sets the explicit type annotation associated with `node`. Not all nodes
   // have one. For example, a `Let` node like `let x:u32 = something;` has a

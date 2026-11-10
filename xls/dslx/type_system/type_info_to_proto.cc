@@ -905,9 +905,9 @@ absl::StatusOr<std::string> ToHumanString(const TypeProto& ctp,
         return absl::InvalidArgumentError(
             "Channel payload cannot be a meta-type.");
       }
-      XLS_ASSIGN_OR_RETURN(std::string payload,
-                           ToHumanString(channel.payload(), import_data,
-                                         file_table));
+      XLS_ASSIGN_OR_RETURN(
+          std::string payload,
+          ToHumanString(channel.payload(), import_data, file_table));
       XLS_ASSIGN_OR_RETURN(ChannelDirection direction,
                            FromProto(channel.direction()));
       return absl::StrFormat("chan(%s, dir=%s)", payload,
