@@ -54,18 +54,31 @@ void RemapAnnotationReferences(
     const ClonedAnnotations& annotations,
     const absl::flat_hash_map<const AstNode*, AstNode*>& old_to_new) {
   for (const auto& [original, clone] : annotations) {
-    const auto* member = original->AsAnnotation<DeclaredMemberTypeAnnotation>();
-    AggregateDeclaration declaration = std::visit(
-        [&](const auto* old) -> AggregateDeclaration {
-          if (auto it = old_to_new.find(old); it != old_to_new.end()) {
-            return absl::down_cast<decltype(old)>(it->second);
-          } else {
-            return old;
-          }
-        },
-        member->declaration());
-    clone->AsAnnotation<DeclaredMemberTypeAnnotation>()->set_declaration(
-        declaration);
+    if (original->IsAnnotation<TypeRefTypeAnnotation>()) {
+      const auto* type_ref = original->AsAnnotation<TypeRefTypeAnnotation>();
+      std::optional<const Expr*> origin = type_ref->construction_origin();
+      if (origin.has_value()) {
+        if (auto it = old_to_new.find(*origin); it != old_to_new.end()) {
+          origin = absl::down_cast<const Expr*>(it->second);
+        }
+      }
+      clone->AsAnnotation<TypeRefTypeAnnotation>()->set_construction_origin(
+          origin);
+    } else {
+      const auto* member =
+          original->AsAnnotation<DeclaredMemberTypeAnnotation>();
+      AggregateDeclaration declaration = std::visit(
+          [&](const auto* old) -> AggregateDeclaration {
+            if (auto it = old_to_new.find(old); it != old_to_new.end()) {
+              return absl::down_cast<decltype(old)>(it->second);
+            } else {
+              return old;
+            }
+          },
+          member->declaration());
+      clone->AsAnnotation<DeclaredMemberTypeAnnotation>()->set_declaration(
+          declaration);
+    }
   }
 }
 
@@ -1343,18 +1356,19 @@ class AstCloner : public AstNodeVisitor {
   absl::Status HandleTypeRef(const TypeRef* n) override {
     TypeDefinition new_type_definition = n->type_definition();
 
-    // A TypeRef doesn't own its referenced type definition, so explicitly visit
-    // local definitions. Imported definitions retain their nominal identity.
-    XLS_RETURN_IF_ERROR(
-        absl::visit(Visitor{[&](auto* ref) -> absl::Status {
-                      if (ref->owner() == n->owner()) {
-                        XLS_RETURN_IF_ERROR(ReplaceOrVisit(ref));
-                        new_type_definition =
-                            absl::down_cast<decltype(ref)>(old_to_new_.at(ref));
-                      }
-                      return absl::OkStatus();
-                    }},
-                    n->type_definition()));
+    // A TypeRef doesn't own its referenced type definition, so we have to
+    // explicitly visit it.
+    XLS_RETURN_IF_ERROR(absl::visit(Visitor{[&](auto* ref) -> absl::Status {
+                                      if (ref->owner() != n->owner()) {
+                                        return absl::OkStatus();
+                                      }
+                                      XLS_RETURN_IF_ERROR(ReplaceOrVisit(ref));
+                                      new_type_definition =
+                                          absl::down_cast<decltype(ref)>(
+                                              old_to_new_.at(ref));
+                                      return absl::OkStatus();
+                                    }},
+                                    n->type_definition()));
 
     old_to_new_[n] = module(n)->Make<TypeRef>(n->span(), new_type_definition);
     return absl::OkStatus();
@@ -1363,14 +1377,11 @@ class AstCloner : public AstNodeVisitor {
   absl::Status HandleTypeRefTypeAnnotation(
       const TypeRefTypeAnnotation* n) override {
     XLS_RETURN_IF_ERROR(VisitChildren(n));
-    // Don't clone the instantiator here because it may not be in the hierarchy
-    // currently being cloned and, if it is,  we can't guarantee that it has
-    // already been visited by the cloner.
-    // TODO: Reliably handle the instantiator, updating the cloned version if
-    // the instantiator is cloned.
-    old_to_new_[n] = module(n)->Make<TypeRefTypeAnnotation>(
+    auto* clone = module(n)->Make<TypeRefTypeAnnotation>(
         n->span(), absl::down_cast<TypeRef*>(old_to_new_.at(n->type_ref())),
-        CloneParametrics(n->parametrics()), n->instantiator());
+        CloneParametrics(n->parametrics()), n->construction_origin());
+    old_to_new_[n] = clone;
+    cloned_annotations_.emplace_back(n, clone);
     return absl::OkStatus();
   }
 

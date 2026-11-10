@@ -401,6 +401,17 @@ absl::StatusOr<const TypeAnnotation*> SubstituteTypeParametrics(
   return absl::down_cast<const TypeAnnotation*>(result);
 }
 
+Span SelectSpanForGeneratedNode(const Module& module,
+                                absl::Span<const Span> candidates) {
+  for (const Span& span : candidates) {
+    if (ValidateSpanModule(span, module)) {
+      return span;
+    }
+  }
+  const Span fallback = module.GetSpan().value_or(Span::None());
+  return ValidateSpanModule(fallback, module) ? fallback : Span::None();
+}
+
 absl::StatusOr<Number*> MakeTypeCheckedNumber(
     Module& module, InferenceTable& table, const Span& span,
     const InterpValue& value, const TypeAnnotation* type_annotation) {
@@ -653,6 +664,19 @@ absl::StatusOr<std::optional<ColonRef*>> ConvertGenericColonRefToDirect(
                 const_cast<StructDef*>(absl::down_cast<const StructDef*>(
                     struct_or_proc_ref->def))),
             struct_or_proc_ref->parametrics),
+        colon_ref->attr());
+  }
+
+  XLS_ASSIGN_OR_RETURN(std::optional<SumRef> sum_ref,
+                       GetSumRef(actual_type, import_data));
+  if (sum_ref.has_value()) {
+    return name_def->owner()->Make<ColonRef>(
+        Span::None(),
+        name_def->owner()->Make<TypeRefTypeAnnotation>(
+            Span::None(),
+            name_def->owner()->Make<TypeRef>(Span::None(),
+                                             const_cast<SumDef*>(sum_ref->def)),
+            sum_ref->parametrics),
         colon_ref->attr());
   }
 
