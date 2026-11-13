@@ -586,9 +586,11 @@ payload shape; different tags remain unequal.
 
 Matching and equality do not rewrite the observed value.
 An outer constructor can wrap an existing malformed inner sum without inspecting
-its tag. Matching `Wrapped(_)`, or binding and returning the inner sum, likewise
-does not inspect the inner constructor; explicitly observing that constructor
-retains the existing malformed-value failure or hardware fallback. Typed
+its tag. Matching `Wrapped(_)`, or binding and returning the inner sum, leaves
+the inner tag unchecked. A nested constructor pattern compares the inner tag
+with the named constructor's tag. An undeclared tag fails that comparison and
+the next ordinary pattern can still match. A separate `match` on the inner sum
+checks that tag for validity when it enters the match. Typed
 source-domain validation remains strict about malformed active nested tags,
 while nonzero inactive padding under a declared tag is valid. Ordinary numeric
 enum validation and raw-value equality and hashing are unchanged.
@@ -1594,10 +1596,10 @@ Here we use a "catch all" wildcard pattern in the last `match` arm to ensure the
 `match` expression always matches the input somehow.
 
 A wildcard is required only when the preceding patterns do not cover every
-possible value. A match over a semantic sum may omit `_` once every declared
-constructor is covered, as in the `Message` example above. Numeric enums may
-likewise omit `_` when their declared values are covered; aliases for the same
-numeric value count as one case.
+possible value. A match over a semantic sum may omit `_` once the ordinary
+patterns cover every valid value, as in the `Message` example above. Numeric
+enums may likewise omit `_` when their declared values are covered. Aliases
+for the same numeric value count as one case.
 
 In a semantic-sum match, an arm containing a top-level `_` must be the last
 ordinary arm. Only a final `invalid!` or `invalid!(raw)` arm may follow it.
@@ -1606,17 +1608,37 @@ or not the match has an `invalid!` arm. For example,
 `match message { _ => u8:0, Message::Idle => u8:1 }` is a type error, not a
 redundant-pattern warning.
 
-Sum matches may additionally end with `invalid!` or `invalid!(raw)` to describe
-an undeclared tag received from an external hardware boundary. The latter binds
-the complete raw tag/payload image as unsigned
-`bits[TAG_W + MAX_PAYLOAD_W]`. This pattern must appear only once, as the
-final top-level arm, and only when matching a sum. DSLX source interpretation
-fails immediately on a malformed scrutinee even when an `invalid!` arm exists;
-generated hardware and RTL simulation select that arm for malformed inputs.
-Without an `invalid!` arm, generated hardware selects the final ordinary arm.
-That final ordinary arm must be either `_` or exactly one constructor pattern
-whose payload subpatterns are all irrefutable; a refutable payload or `|`
-alternatives cannot serve as the malformed-input fallback.
+A sum match may end with one `invalid!` or `invalid!(raw)` arm.
+`raw` binds the entire wire image as unsigned `bits[TAG_W + MAX_PAYLOAD_W]`.
+When the outer tag is valid, the first matching ordinary arm wins. This
+includes a top-level `_` after a nested constructor comparison fails, even
+when an `invalid!` arm follows.
+
+If the outer tag is undeclared or no ordinary pattern matches, DSLX source
+interpretation reports an error, even when the match has an `invalid!` arm.
+In RTL simulation and synthesis, the same input selects the `invalid!` arm if
+present. Otherwise hardware evaluates the final ordinary arm. That arm must
+contain exactly one pattern, either `_` or a constructor pattern. Each bound
+name reads the payload bits specified by the constructors written in the
+pattern, even when the input tags differ.
+
+```dslx
+enum Inner: u2 { A(u4) = 0, B = 1 }
+enum Outer: u2 { Wrap(Inner) = 0, Unit = 1 }
+
+fn read_a(x: Outer) -> u4 {
+    match x {
+        Outer::Unit => u4:0,
+        Outer::Wrap(Inner::B) => u4:1,
+        Outer::Wrap(Inner::A(n)) => n,
+    }
+}
+```
+
+For an external `Wrap` with undeclared inner tag `0b10`, none of the three
+patterns match. Hardware selects the final arm and reads `n` from the low
+four bits of the payload. Payload bits `0b1011` give 11 and `0b0010` give 2.
+Source interpretation reports an error for either input.
 
 We can also `match` on ranges of values using the "range" syntax:
 
