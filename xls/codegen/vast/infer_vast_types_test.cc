@@ -24,6 +24,7 @@
 #include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/numbers.h"
@@ -157,6 +158,17 @@ class InferVastTypesTest : public ::testing::Test {
   SourceInfo NextLoc() {
     return SourceInfo(
         SourceLocation(Fileno(0), Lineno(++next_loc_lineno_), Colno(0)));
+  }
+
+  void ExpectUnsignedWidth(
+      const absl::flat_hash_map<Expression*, DataType*>& types,
+      Expression* expression, int64_t expected_width) {
+    SCOPED_TRACE(expression->Emit(nullptr));
+    ASSERT_TRUE(types.contains(expression));
+    DataType* type = types.at(expression);
+    XLS_ASSERT_OK_AND_ASSIGN(int64_t width, type->FlatBitCountAsInt64());
+    EXPECT_EQ(width, expected_width);
+    EXPECT_FALSE(type->is_signed());
   }
 
   VerilogFile file_;
@@ -697,6 +709,197 @@ TEST_F(InferVastTypesTest, ReturnTypeCoercion) {
 a : unsigned
 a + 1 : [15:0]
 )");
+}
+
+// Verifies package operand widths and return coercion alongside module
+// traversal. Catches omitted packages and missing declaration-derived parameter
+// types.
+TEST_F(InferVastTypesTest, PackageFunctionReturnTypeCoercion) {
+  // parameter P = 4'h0;
+  // function automatic logic [5:0] f(); return {P, 4'h0}; endfunction
+  VerilogPackage* package = file_.AddVerilogPackage("p", NextLoc());
+  Literal* initializer = UnsignedZero(4);
+  ParameterRef* p = package->top()->AddParameter("P", initializer, NextLoc());
+  VerilogFunction* function = package->Add<VerilogFunction>(
+      NextLoc(), "f", file_.BitVectorType(6, NextLoc()));
+  ParameterRef* operand = p->Duplicate();
+  Literal* zero = UnsignedZero(4);
+  Concat* result = file_.Concat({operand, zero}, NextLoc());
+  function->AddStatement<ReturnStatement>(NextLoc(), result);
+
+  // A module in the same file must still be traversed.
+  VerilogFunction* module_function = module_->Add<VerilogFunction>(
+      NextLoc(), "module_f", file_.BitVectorType(5, NextLoc()));
+  Literal* module_result = UnsignedZero(3);
+  module_function->AddStatement<ReturnStatement>(NextLoc(), module_result);
+
+  XLS_ASSERT_OK_AND_ASSIGN(auto types, InferVastTypes(&file_));
+  ExpectUnsignedWidth(types, initializer, 4);
+  ExpectUnsignedWidth(types, operand, 4);
+  ExpectUnsignedWidth(types, zero, 4);
+  ExpectUnsignedWidth(types, result, 6);
+  ExpectUnsignedWidth(types, module_result, 5);
+}
+
+// Verifies nested function bodies can use a later sibling's inferred parameter.
+// Catches function traversal before all package declarations are available.
+TEST_F(InferVastTypesTest, PackageFunctionUsesLaterSiblingDeclaration) {
+  VerilogPackage* package = file_.AddVerilogPackage("p", NextLoc());
+  Literal* p_initializer = UnsignedZero(4);
+  ParameterRef* p = package->top()->AddParameter("P", p_initializer, NextLoc());
+  VerilogPackageSection* early = package->Add<VerilogPackageSection>(NextLoc());
+  VerilogPackageSection* nested = early->Add<VerilogPackageSection>(NextLoc());
+  VerilogFunction* function = nested->Add<VerilogFunction>(
+      NextLoc(), "f", file_.BitVectorType(6, NextLoc()));
+  VerilogPackageSection* later = package->Add<VerilogPackageSection>(NextLoc());
+  ParameterRef* p_operand = p->Duplicate();
+  Literal* q_zero = UnsignedZero(2);
+  BinaryInfix* q_initializer = file_.Add(p_operand, q_zero, NextLoc());
+  ParameterRef* q = later->AddParameter("Q", q_initializer, NextLoc());
+
+  // Fill the earlier function after constructing Q in the later section.
+  // Its body needs Q's inferred type before sizing the concatenation operands.
+  ParameterRef* q_operand = q->Duplicate();
+  Literal* return_zero = UnsignedZero(4);
+  Concat* result = file_.Concat({q_operand, return_zero}, NextLoc());
+  function->AddStatement<ReturnStatement>(NextLoc(), result);
+
+  XLS_ASSERT_OK_AND_ASSIGN(auto types, InferVastTypes(&file_));
+  ExpectUnsignedWidth(types, p_initializer, 4);
+  ExpectUnsignedWidth(types, p_operand, 4);
+  ExpectUnsignedWidth(types, q_zero, 4);
+  ExpectUnsignedWidth(types, q_initializer, 4);
+  ExpectUnsignedWidth(types, q_operand, 4);
+  ExpectUnsignedWidth(types, return_zero, 4);
+  ExpectUnsignedWidth(types, result, 6);
+}
+
+// Verifies package typedef dimensions, coercion, and named type identity.
+// Catches skipped declarations and loss of alias metadata during constant
+// folding.
+TEST_F(InferVastTypesTest, PackageFunctionTypedefAcrossSections) {
+  // parameter WIDTH = 4'd4;
+  // typedef logic [WIDTH - 4'd1:0] word_t;
+  // parameter word_t Q = 8'h0;
+  // function automatic word_t g(input word_t a);
+  //   return Q + a + 3'h0;
+  // endfunction
+  VerilogPackage* package = file_.AddVerilogPackage("p", NextLoc());
+  Literal* width_initializer =
+      file_.Make<Literal>(NextLoc(), UBits(4, 4), FormatPreference::kDefault,
+                          /*declared_bit_count=*/4, /*emit_bit_count=*/true,
+                          /*declared_as_signed=*/false);
+  ParameterRef* width =
+      package->top()->AddParameter("WIDTH", width_initializer, NextLoc());
+  VerilogPackageSection* declarations =
+      package->Add<VerilogPackageSection>(NextLoc());
+  ParameterRef* dimension_width = width->Duplicate();
+  Literal* one =
+      file_.Make<Literal>(NextLoc(), UBits(1, 4), FormatPreference::kDefault,
+                          /*declared_bit_count=*/4, /*emit_bit_count=*/true,
+                          /*declared_as_signed=*/false);
+  BinaryInfix* dimension = file_.Sub(dimension_width, one, NextLoc());
+  Typedef* word_t = declarations->Add<Typedef>(
+      NextLoc(),
+      file_.Make<Def>(NextLoc(), "word_t", DataKind::kLogic,
+                      file_.Make<BitVectorType>(NextLoc(), dimension,
+                                                /*is_signed=*/false,
+                                                /*size_expr_is_max=*/true)));
+  TypedefType* word_t_type = file_.Make<TypedefType>(NextLoc(), word_t);
+  Literal* q_initializer = UnsignedZero(8);
+  ParameterRef* q = declarations->AddParameter(
+      file_.Make<Def>(NextLoc(), "Q", DataKind::kUser, word_t_type),
+      q_initializer, NextLoc());
+  VerilogPackageSection* functions =
+      package->Add<VerilogPackageSection>(NextLoc());
+  VerilogFunction* function =
+      functions->Add<VerilogFunction>(NextLoc(), "g", word_t_type);
+  LogicRef* a = function->AddArgument(
+      file_.Make<Def>(NextLoc(), "a", DataKind::kUser, word_t_type), NextLoc());
+  ParameterRef* q_operand = q->Duplicate();
+  BinaryInfix* sum = file_.Add(q_operand, a, NextLoc());
+  Literal* zero = UnsignedZero(3);
+  BinaryInfix* result = file_.Add(sum, zero, NextLoc());
+  function->AddStatement<ReturnStatement>(NextLoc(), result);
+
+  XLS_ASSERT_OK_AND_ASSIGN(auto types, InferVastTypes(&file_));
+  ExpectUnsignedWidth(types, width_initializer, 4);
+  ExpectUnsignedWidth(types, dimension_width, 4);
+  ExpectUnsignedWidth(types, one, 4);
+  ExpectUnsignedWidth(types, dimension, 4);
+  for (Expression* expression : std::vector<Expression*>{
+           q_initializer, q_operand, a, sum, zero, result}) {
+    SCOPED_TRACE(expression->Emit(nullptr));
+    ExpectUnsignedWidth(types, expression, 4);
+    ASSERT_TRUE(types.contains(expression));
+    auto* type = dynamic_cast<TypedefType*>(types.at(expression));
+    ASSERT_NE(type, nullptr);
+    EXPECT_EQ(type->type_def()->GetName(), "word_t");
+    // Constant folding may rebuild the typedef, preserving its source location.
+    EXPECT_EQ(type->type_def()->loc().locations, word_t->loc().locations);
+  }
+}
+
+// Verifies package function operands use parameter types across corpus file
+// order. Catches finishing package function inference before visiting the whole
+// corpus.
+TEST_F(InferVastTypesTest, PackageFunctionCrossFileParameterInEitherOrder) {
+  VerilogPackage* provider = file_.AddVerilogPackage("provider", NextLoc());
+  Literal* initializer = UnsignedZero(4);
+  ParameterRef* p = provider->top()->AddParameter("P", initializer, NextLoc());
+  VerilogFile consumer_file(FileType::kSystemVerilog);
+  VerilogPackage* consumer =
+      consumer_file.AddVerilogPackage("consumer", NextLoc());
+  VerilogFunction* function = consumer->Add<VerilogFunction>(
+      NextLoc(), "f", consumer_file.BitVectorType(6, NextLoc()));
+  ParameterRef* operand =
+      consumer_file.Make<ParameterRef>(NextLoc(), p->parameter());
+  Literal* zero = consumer_file.Make<Literal>(
+      NextLoc(), Bits(4), FormatPreference::kDefault,
+      /*declared_bit_count=*/4, /*emit_bit_count=*/true,
+      /*declared_as_signed=*/false);
+  Concat* result = consumer_file.Concat({operand, zero}, NextLoc());
+  function->AddStatement<ReturnStatement>(NextLoc(), result);
+
+  std::vector<VerilogFile*> files = {&file_, &consumer_file};
+  for (int order = 0; order < 2; ++order) {
+    SCOPED_TRACE(order == 0 ? "provider first" : "consumer first");
+    XLS_ASSERT_OK_AND_ASSIGN(auto types, InferVastTypes(files));
+    ExpectUnsignedWidth(types, initializer, 4);
+    ExpectUnsignedWidth(types, operand, 4);
+    ExpectUnsignedWidth(types, zero, 4);
+    ExpectUnsignedWidth(types, result, 6);
+    std::reverse(files.begin(), files.end());
+  }
+}
+
+// Negative test validates error handling for unknown system calls in packages.
+TEST_F(InferVastTypesTest, PackageFunctionErrorThroughFileAndCorpus) {
+  VerilogPackage* package = file_.AddVerilogPackage("p", NextLoc());
+  VerilogPackageSection* section =
+      package->Add<VerilogPackageSection>(NextLoc());
+  VerilogFunction* function = section->Add<VerilogFunction>(
+      NextLoc(), "f", file_.BitVectorType(6, NextLoc()));
+  function->AddStatement<ReturnStatement>(
+      NextLoc(), file_.Make<SystemFunctionCall>(NextLoc(), "unknown_function"));
+
+  auto file_types = InferVastTypes(&file_);
+  EXPECT_EQ(file_types.status().code(), absl::StatusCode::kNotFound);
+  EXPECT_EQ(file_types.status().message(),
+            "No return type specified for system function: unknown_function");
+  std::vector<VerilogFile*> files = {&file_};
+  auto corpus_types = InferVastTypes(files);
+  EXPECT_EQ(corpus_types.status().code(), absl::StatusCode::kNotFound);
+  EXPECT_EQ(corpus_types.status().message(),
+            "No return type specified for system function: unknown_function");
+}
+
+// Verifies successful empty inference for a corpus containing no files.
+// Catches dereferencing an uninitialized visitor in deferred traversal.
+TEST_F(InferVastTypesTest, EmptyCorpus) {
+  std::vector<VerilogFile*> files;
+  XLS_ASSERT_OK_AND_ASSIGN(auto types, InferVastTypes(files));
+  EXPECT_TRUE(types.empty());
 }
 
 TEST_F(InferVastTypesTest, TypedefReturnType) {
