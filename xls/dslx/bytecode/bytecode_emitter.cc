@@ -140,6 +140,50 @@ std::optional<ValueFormatDescriptor> GetFormatDescriptorFromNumber(
           : FormatPreference::kUnsignedDecimal);
 }
 
+// Lower the value of a named sum constant to the same tag and payload tests
+// as a written constructor pattern. Descend through aggregates in its payload
+// when they themselves contain sums, whose inactive padding must be ignored.
+absl::StatusOr<Bytecode::MatchArmItem> MakeClosedPattern(
+    const InterpValue& value, const Type& type) {
+  if (type.IsSum()) {
+    const SumType& sum = type.AsSum();
+    XLS_ASSIGN_OR_RETURN(auto encoded, internal::GetEncodedSumView(value));
+    XLS_ASSIGN_OR_RETURN(auto variant, SumTypeEncoding(sum).GetVariantByTagBits(
+                                           encoded.tag.GetBitsOrDie()));
+    XLS_ASSIGN_OR_RETURN(std::vector<InterpValue> payload,
+                         GetSumPayloadValues(sum, value));
+    std::vector<Bytecode::SumPayloadPatternItem> members;
+    for (int64_t i = 0; i < payload.size(); ++i) {
+      XLS_ASSIGN_OR_RETURN(
+          auto member,
+          MakeClosedPattern(payload[i], variant.variant->GetMemberType(i)));
+      members.push_back({i, std::move(member)});
+    }
+    return Bytecode::MatchArmItem::MakeSum(&sum, variant.variant_index,
+                                           std::move(members));
+  }
+  if (!TypeContainsSemanticSum(type)) {
+    return Bytecode::MatchArmItem::MakeInterpValue(value);
+  }
+  XLS_ASSIGN_OR_RETURN(const std::vector<InterpValue>* values,
+                       value.GetValues());
+  std::vector<Bytecode::MatchArmItem> members;
+  for (int64_t i = 0; i < values->size(); ++i) {
+    const Type* member_type;
+    if (type.IsArray()) {
+      member_type = &type.AsArray().element_type();
+    } else if (type.IsTuple()) {
+      member_type = &type.AsTuple().GetMemberType(i);
+    } else {
+      member_type = &type.AsStruct().GetMemberType(i);
+    }
+    XLS_ASSIGN_OR_RETURN(auto member,
+                         MakeClosedPattern(values->at(i), *member_type));
+    members.push_back(std::move(member));
+  }
+  return Bytecode::MatchArmItem::MakeTuple(std::move(members));
+}
+
 }  // namespace
 
 BytecodeEmitter::BytecodeEmitter(
@@ -1424,15 +1468,32 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
     const PatternTree& pattern, const Type* type) {
   const Type* value_type =
       type != nullptr && TypeContainsSemanticSum(*type) ? type : nullptr;
+  auto constant_pattern =
+      [&](const InterpValue& value) -> absl::StatusOr<Bytecode::MatchArmItem> {
+    if (type != nullptr && type->IsSum()) {
+      return MakeClosedPattern(value, *type);
+    }
+    return Bytecode::MatchArmItem::MakeInterpValue(value, value_type);
+  };
   if (!std::holds_alternative<TuplePattern*>(pattern)) {
     return absl::visit(
         Visitor{
             [&](NameRef* n) -> absl::StatusOr<Bytecode::MatchArmItem> {
+              // Function-local const declarations normally load from a slot.
+              // A pattern needs their compile-time value to emit tag tests.
+              if (type != nullptr && type->IsSum()) {
+                const auto* binding = dynamic_cast<const Let*>(n->GetDefiner());
+                if (binding != nullptr && binding->is_const()) {
+                  XLS_ASSIGN_OR_RETURN(
+                      InterpValue value,
+                      type_info_->GetConstExpr(binding->rhs()));
+                  return constant_pattern(value);
+                }
+              }
               using ValueT = std::variant<InterpValue, Bytecode::SlotIndex>;
               XLS_ASSIGN_OR_RETURN(ValueT item_value, HandleNameRefInternal(n));
               if (std::holds_alternative<InterpValue>(item_value)) {
-                return Bytecode::MatchArmItem::MakeInterpValue(
-                    std::get<InterpValue>(item_value), value_type);
+                return constant_pattern(std::get<InterpValue>(item_value));
               }
 
               return Bytecode::MatchArmItem::MakeLoad(
@@ -1471,8 +1532,7 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
               } else {
                 XLS_ASSIGN_OR_RETURN(InterpValue value,
                                      HandleColonRefInternal(n));
-                return Bytecode::MatchArmItem::MakeInterpValue(value,
-                                                               value_type);
+                return constant_pattern(value);
               }
             },
             [&](NameDef* n) -> absl::StatusOr<Bytecode::MatchArmItem> {

@@ -19,6 +19,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -3857,6 +3858,72 @@ TEST_F(BytecodeInterpreterTest,
       Interpret(kTransparentSumProgram, "tuple_equal", {lhs, rhs}),
       StatusIs(absl::StatusCode::kInternal,
                HasSubstr("Semantic sum equality received a malformed value")));
+}
+
+TEST_F(BytecodeInterpreterTest, NamedSumConstantMatchesClosedConstructor) {
+  constexpr std::string_view kProgram = R"(
+enum Inner: u2 { Small(u4) = 0, Big(u8) = 1 }
+enum Outer: u2 { Empty = 0, Wrapped(Inner) = 1 }
+const EMPTY = Outer::Empty;
+const SMALL = Outer::Wrapped(Inner::Small(u4:5));
+fn named(x: Outer) -> u2 {
+  const LOCAL = SMALL;
+  match x { EMPTY => u2:1, LOCAL => u2:2, _ => u2:0 }
+}
+fn spelled(x: Outer) -> u2 {
+  match x {
+    Outer::Empty => u2:1,
+    Outer::Wrapped(Inner::Small(u4:5)) => u2:2,
+    _ => u2:0,
+  }
+}
+fn folded() -> u2 {
+  const match SMALL { EMPTY => u2:1, SMALL => u2:2, _ => u2:0 }
+}
+)";
+  auto outer = [](int64_t tag, int64_t payload) {
+    return internal::CreateEncodedSumTuple(InterpValue::MakeUBits(2, tag),
+                                           InterpValue::MakeUBits(10, payload));
+  };
+  for (std::string_view function : {"named", "spelled"}) {
+    SCOPED_TRACE(function);
+    for (auto [input, expected] :
+         {std::pair{outer(0, 0x3ff), 1},     // Empty with inactive payload.
+          std::pair{outer(1, 0x0e5), 2},     // Small(5) with inactive padding.
+          std::pair{outer(1, 0x0e4), 0},     // Small(4).
+          std::pair{outer(1, 0x105), 0},     // Big(5).
+          std::pair{outer(1, 0x3e5), 0}}) {  // Undeclared inner tag.
+      EXPECT_THAT(Interpret(kProgram, function, {input}),
+                  IsOkAndHolds(InterpValue::MakeUBits(2, expected)));
+    }
+    EXPECT_THAT(
+        Interpret(kProgram, function, {outer(3, 0)}),
+        StatusIs(absl::StatusCode::kInternal, HasSubstr("malformed value")));
+  }
+  EXPECT_THAT(Interpret(kProgram, "folded", {}),
+              IsOkAndHolds(InterpValue::MakeUBits(2, 2)));
+}
+
+TEST_F(BytecodeInterpreterTest, ClosedSumPatternWithAggregatePayload) {
+  constexpr std::string_view kProgram = R"(
+enum Inner: u2 { Small(u4) = 0, Big(u8) = 1 }
+struct Fields { items: Inner[2] }
+enum Outer { Wrap((Fields, bool)), Empty }
+const FIVE = Inner::Small(u4:5);
+const EXPECTED = Outer::Wrap((Fields { items: [FIVE, FIVE] }, true));
+fn main(x: Inner) -> bool {
+  let value = Outer::Wrap((Fields { items: [FIVE, x] }, true));
+  match value { EXPECTED => true, _ => false }
+}
+)";
+  for (auto [tag, payload, expected] :
+       {std::tuple{0, 0xe5, true}, std::tuple{0, 0xe4, false},
+        std::tuple{3, 0xe5, false}}) {
+    InterpValue inner = internal::CreateEncodedSumTuple(
+        InterpValue::MakeUBits(2, tag), InterpValue::MakeU8(payload));
+    EXPECT_THAT(Interpret(kProgram, "main", {inner}),
+                IsOkAndHolds(InterpValue::MakeBool(expected)));
+  }
 }
 
 TEST_F(BytecodeInterpreterTest, SemanticSumEqualityRejectsMalformedInput) {
