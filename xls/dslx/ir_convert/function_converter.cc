@@ -1422,6 +1422,12 @@ absl::Status FunctionConverter::HandleConstMatch(const Match* node) {
   XLS_ASSIGN_OR_RETURN(uint32_t arm_id,
                        current_type_info_->GetArmSelectionResult(node));
   const MatchArm* arm = node->arms()[arm_id];
+  for (const NameDef* name : GetPatternNameDefs(arm->patterns().front())) {
+    XLS_ASSIGN_OR_RETURN(InterpValue binding,
+                         current_type_info_->GetConstExpr(name));
+    XLS_ASSIGN_OR_RETURN(Value value, binding.ConvertToIr());
+    DefConst(name, value);
+  }
   XLS_RETURN_IF_ERROR(VisitAndPropagateIrValue(arm->expr(), node));
   return absl::OkStatus();
 }

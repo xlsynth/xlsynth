@@ -114,6 +114,36 @@ proc main {
   XLS_EXPECT_OK(ParseAndAcceptWithConverter(kModule, conv, proc_id, proc_data));
 }
 
+TEST(ProcConfigIrConverterTest, ConstMatchPayloadBindingInSpawnArgument) {
+  constexpr std::string_view kModule = R"(
+enum Pair { Fields { left: u4, right: u4 } }
+const X = Pair::Fields { left: u4:3, right: u4:11 };
+proc Child {
+  x: u4;
+  config(x: u4) { (x,) }
+  init { () }
+  next(_: ()) {}
+}
+proc test_proc {
+  config() {
+    const match X {
+      Pair::Fields { right: n, left: _ } => { spawn Child(n); },
+    };
+    ()
+  }
+  init { () }
+  next(_: ()) {}
+}
+)";
+  PackageConversionData conv = MakeConversionData("the_package");
+  ProcConversionData proc_data;
+  XLS_ASSERT_OK(
+      ParseAndAcceptWithConverter(kModule, conv, ProcId(), proc_data));
+  ASSERT_EQ(proc_data.id_to_config_args.size(), 1);
+  EXPECT_THAT(proc_data.id_to_config_args.begin()->second,
+              ::testing::ElementsAre(ProcConfigValue(Value(UBits(11, 4)))));
+}
+
 TEST(ProcConfigIrConverterTest, CatchesMissingArgMap) {
   constexpr std::string_view kModule = R"(
 proc test_proc {

@@ -12,6 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+enum Inner: u2 { Pair { left: u4, right: u4 } = 0 }
+
+enum Outer: u2 { Wrap(Inner) = 0, Unit = 1 }
+
+fn const_match_pair<R: u4>(x: u4) -> u4 {
+    const X = Outer::Wrap(Inner::Pair { left: u4:11, right: R });
+    const match X {
+        Outer::Wrap(Inner::Pair { right: n, left: n }) => n + x,
+        _ => u4:0,
+    }
+}
+
+#[test]
+fn test_const_match_pair_binding() {
+    assert_eq(const_match_pair<u4:11>(u4:2), u4:13);
+    assert_eq(const_match_pair<u4:3>(u4:2), u4:0);
+}
+
 fn const_match_literal_bool(a: u32, b: u32) -> u32 {
     const match false {
         true => a,

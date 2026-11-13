@@ -229,7 +229,7 @@ absl::Status BytecodeEmitter::Init(const Function& f) {
       std::optional<InterpValue> value =
           type_info_->GetConstExprOption(binding->name_def());
       if (value.has_value()) {
-        parametrics_.emplace(binding->name_def(), std::move(*value));
+        constexpr_bindings_.emplace(binding->name_def(), std::move(*value));
       }
     }
   }
@@ -1836,15 +1836,14 @@ BytecodeEmitter::HandleNameDefInternal(const NameDef* node) {
     return type_info_->GetConstExpr(cd->value());
   }
 
-  // The value is either a local name or a parametric name.
   if (namedef_to_slot_.contains(node)) {
     int64_t slotno = namedef_to_slot_.at(node);
     return Bytecode::SlotIndex(slotno);
   }
 
-  const auto parametric_it = parametrics_.find(node);
-  if (parametric_it != parametrics_.end()) {
-    return parametric_it->second;
+  if (auto it = constexpr_bindings_.find(node);
+      it != constexpr_bindings_.end()) {
+    return it->second;
   }
 
   if (caller_bindings_.has_value()) {
@@ -2108,13 +2107,14 @@ absl::Status BytecodeEmitter::HandleConstFor(const ConstFor* node) {
 }
 
 absl::Status BytecodeEmitter::HandleMatch(const Match* node) {
-  // Const match only needs to produce bytecode for selected
-  // branch value, which should be already known and stored
-  // after the type evaluation stage.
   if (node->IsConst()) {
     XLS_ASSIGN_OR_RETURN(uint32_t arm_id,
                          type_info_->GetArmSelectionResult(node));
     MatchArm* arm = node->arms()[arm_id];
+    for (const NameDef* name : GetPatternNameDefs(arm->patterns().front())) {
+      XLS_ASSIGN_OR_RETURN(InterpValue binding, type_info_->GetConstExpr(name));
+      constexpr_bindings_.insert_or_assign(name, std::move(binding));
+    }
     return arm->expr()->AcceptExpr(this);
   }
 
