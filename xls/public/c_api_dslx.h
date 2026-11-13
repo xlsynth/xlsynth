@@ -551,6 +551,8 @@ char* xls_dslx_constant_def_to_string(struct xls_dslx_constant_def*);
 // Note: the return value is owned by the caller and must be freed via
 // `xls_c_str_free`.
 char* xls_dslx_struct_def_get_identifier(struct xls_dslx_struct_def*);
+struct xls_dslx_module* xls_dslx_struct_def_get_module(
+    struct xls_dslx_struct_def*);
 
 bool xls_dslx_struct_def_is_parametric(struct xls_dslx_struct_def*);
 int64_t xls_dslx_struct_def_get_parametric_binding_count(
@@ -794,37 +796,53 @@ bool xls_dslx_type_to_string(const struct xls_dslx_type*, char** error_out,
 
 // Note: on success the caller owns `is_signed` and `size` and must free them
 // via `xls_dslx_type_dim_free`.
-bool xls_dslx_type_is_bits_like(struct xls_dslx_type*,
+bool xls_dslx_type_is_bits_like(const struct xls_dslx_type*,
                                 struct xls_dslx_type_dim** is_signed,
                                 struct xls_dslx_type_dim** size);
 
 bool xls_dslx_type_is_enum(const struct xls_dslx_type*);
 
 bool xls_dslx_type_is_struct(const struct xls_dslx_type*);
+bool xls_dslx_type_is_tuple(const struct xls_dslx_type*);
+
+// Precondition: xls_dslx_type_is_tuple, with index in [0, member_count).
+int64_t xls_dslx_type_tuple_get_member_count(const struct xls_dslx_type*);
+const struct xls_dslx_type* xls_dslx_type_tuple_get_member_type(
+    const struct xls_dslx_type* type, int64_t index);
 
 bool xls_dslx_type_is_array(const struct xls_dslx_type*);
 
 // Precondition: xls_dslx_type_is_struct
-int64_t xls_dslx_type_struct_get_member_count(
-    const struct xls_dslx_type* type);
+int64_t xls_dslx_type_struct_get_member_count(const struct xls_dslx_type* type);
 
 // Precondition: xls_dslx_type_is_struct
 const struct xls_dslx_type* xls_dslx_type_struct_get_member_type(
     const struct xls_dslx_type* type, int64_t index);
 
 // Precondition: xls_dslx_type_is_enum
-struct xls_dslx_enum_def* xls_dslx_type_get_enum_def(struct xls_dslx_type*);
+struct xls_dslx_enum_def* xls_dslx_type_get_enum_def(
+    const struct xls_dslx_type*);
 
 // Precondition: xls_dslx_type_is_struct
-struct xls_dslx_struct_def* xls_dslx_type_get_struct_def(struct xls_dslx_type*);
+struct xls_dslx_struct_def* xls_dslx_type_get_struct_def(
+    const struct xls_dslx_type*);
+
+// Gets every checked value argument of a concrete struct, including defaults.
+// The caller owns the result and must free it with xls_dslx_parametric_env_free.
+// Returns false for a non-struct or unavailable bindings (including type-valued
+// parameters), with an error owned by the caller. Free it with xls_c_str_free.
+bool xls_dslx_type_get_struct_parametric_env(
+    const struct xls_dslx_type* type, char** error_out,
+    struct xls_dslx_parametric_env** env_out);
 
 // Precondition: xls_dslx_type_is_array
 struct xls_dslx_type* xls_dslx_type_array_get_element_type(
-    struct xls_dslx_type*);
+    const struct xls_dslx_type*);
 
 // Note: returned xls_dslx_type_dim is owned by the caller and must be
 // deallocated.
-struct xls_dslx_type_dim* xls_dslx_type_array_get_size(struct xls_dslx_type*);
+struct xls_dslx_type_dim* xls_dslx_type_array_get_size(
+    const struct xls_dslx_type*);
 
 // -- type_dim (deduced type information)
 
@@ -849,13 +867,6 @@ bool xls_dslx_type_dim_get_as_int64(struct xls_dslx_type_dim*, char** error_out,
                                     int64_t* result_out);
 
 void xls_dslx_type_dim_free(struct xls_dslx_type_dim*);
-
-// Precondition: `type` must be an array type.
-struct xls_dslx_type* xls_dslx_type_array_get_element_type(
-    struct xls_dslx_type* type);
-
-struct xls_dslx_type_dim* xls_dslx_type_array_get_size(
-    struct xls_dslx_type* type);
 
 // Rewrites invocations in the given module according to the rules. Returns a
 // new typechecked module installed in the import graph under `install_subject`.
