@@ -121,12 +121,26 @@ class TypeInferenceVisitor {
         system_function_return_types_(std::move(system_function_return_types)) {
   }
 
-  // Traverses and populates `types_` for all expressions in the given file.
+  // Traverses modules and package declarations, collecting package functions
+  // for traversal after the complete input's declarations are available.
   absl::Status TraverseFile(VerilogFile* file) {
     for (verilog::FileMember member : file->members()) {
       if (std::holds_alternative<verilog::Module*>(member)) {
         XLS_RETURN_IF_ERROR(TraverseModule(std::get<verilog::Module*>(member)));
+      } else if (std::holds_alternative<VerilogPackage*>(member)) {
+        XLS_RETURN_IF_ERROR(
+            TraversePackageSection(std::get<VerilogPackage*>(member)->top()));
       }
+    }
+    return absl::OkStatus();
+  }
+
+  // Call once after all input files have supplied their package declarations.
+  // Concatenation operands need inferred parameter types before return
+  // coercion.
+  absl::Status TraversePackageFunctions() {
+    for (VerilogFunction* function : package_functions_) {
+      XLS_RETURN_IF_ERROR(TraverseFunction(function));
     }
     return absl::OkStatus();
   }
@@ -174,6 +188,25 @@ class TypeInferenceVisitor {
   }
 
  private:
+  // Infer declarations in source order and defer function bodies across
+  // sections.
+  absl::Status TraversePackageSection(VerilogPackageSection* section) {
+    for (VerilogPackageMember member : section->members()) {
+      if (std::holds_alternative<ParameterStatement*>(member)) {
+        XLS_RETURN_IF_ERROR(TraverseParameter(
+            std::get<ParameterStatement*>(member)->parameter()));
+      } else if (std::holds_alternative<Typedef*>(member)) {
+        XLS_RETURN_IF_ERROR(TraverseTypedef(std::get<Typedef*>(member)));
+      } else if (std::holds_alternative<VerilogFunction*>(member)) {
+        package_functions_.push_back(std::get<VerilogFunction*>(member));
+      } else if (std::holds_alternative<VerilogPackageSection*>(member)) {
+        XLS_RETURN_IF_ERROR(
+            TraversePackageSection(std::get<VerilogPackageSection*>(member)));
+      }
+    }
+    return absl::OkStatus();
+  }
+
   absl::Status TraverseFunction(VerilogFunction* function) {
     for (Statement* statement : function->statement_block()->statements()) {
       XLS_RETURN_IF_ERROR(TraverseStatement(function, statement));
@@ -595,6 +628,7 @@ class TypeInferenceVisitor {
 
   absl::flat_hash_map<Expression*, DataType*>* types_;
   absl::flat_hash_map<Parameter*, DataType*> auto_parameter_types_;
+  std::vector<VerilogFunction*> package_functions_;
   const absl::flat_hash_map<std::string, DataType*>
       system_function_return_types_;
 };
@@ -607,6 +641,7 @@ absl::StatusOr<absl::flat_hash_map<Expression*, DataType*>> InferVastTypes(
   auto visitor = std::make_unique<TypeInferenceVisitor>(
       &types, BuildSystemFunctionReturnTypes(file));
   XLS_RETURN_IF_ERROR(visitor->TraverseFile(file));
+  XLS_RETURN_IF_ERROR(visitor->TraversePackageFunctions());
   return types;
 }
 
@@ -620,6 +655,9 @@ absl::StatusOr<absl::flat_hash_map<Expression*, DataType*>> InferVastTypes(
           &types, BuildSystemFunctionReturnTypes(file));
     }
     XLS_RETURN_IF_ERROR(visitor->TraverseFile(file));
+  }
+  if (visitor != nullptr) {
+    XLS_RETURN_IF_ERROR(visitor->TraversePackageFunctions());
   }
   return types;
 }
