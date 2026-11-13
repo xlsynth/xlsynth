@@ -4598,15 +4598,21 @@ fn main() -> (u32, u32, u32) {
                           InterpValue::MakeU32(0)));
 }
 
-TEST_F(BytecodeInterpreterTest, SemanticSumIfLetRejectsMalformedInput) {
+TEST_F(BytecodeInterpreterTest,
+       SemanticSumIfLetChecksOnlyTheRootTagForValidity) {
   constexpr std::string_view kProgram = R"(
 enum Option: u2 {
   None = 0,
   Some(u32) = 1,
 }
 
-fn main(x: Option) -> u32 {
+enum Wrapped: u1 { Empty = 0, Item(Option) = 1 }
+
+fn root(x: Option) -> u32 {
   if let Option::Some(v) = x { v } else { u32:0 }
+}
+fn nested(x: Wrapped) -> u32 {
+  if let Wrapped::Item(Option::Some(v)) = x { v } else { u32:0 }
 }
 )";
   InterpValue malformed = InterpValue::MakeTuple(
@@ -4614,9 +4620,15 @@ fn main(x: Option) -> u32 {
        InterpValue::MakeTuple(
            {InterpValue::MakeUBits(/*bit_count=*/32, /*value=*/7)})});
   EXPECT_THAT(
-      Interpret(kProgram, "main", {malformed}),
+      Interpret(kProgram, "root", {malformed}),
       StatusIs(absl::StatusCode::kInternal,
                HasSubstr("Semantic sum observer received a malformed value")));
+  // Item carries the same Option wire image; only the nested comparison misses.
+  const InterpValue wrapped = internal::CreateEncodedSumTuple(
+      InterpValue::MakeUBits(1, 1),
+      InterpValue::MakeUBits(34, (int64_t{3} << 32) | 7));
+  EXPECT_THAT(Interpret(kProgram, "nested", {wrapped}),
+              IsOkAndHolds(InterpValue::MakeU32(0)));
 }
 
 TEST_F(BytecodeInterpreterTest, ZeroMacroSemanticSumUsesZeroDiscriminant) {
