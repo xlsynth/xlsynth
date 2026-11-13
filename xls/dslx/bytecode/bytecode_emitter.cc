@@ -2103,7 +2103,8 @@ absl::Status BytecodeEmitter::HandleMatch(const Match* node) {
   if (reuse_sum_observations) {
     Add(Bytecode(node->matched()->span(), Bytecode::Op::kBeginMatch));
   }
-  if (dynamic_cast<const SumType*>(*type) != nullptr) {
+  const bool is_sum_match = (*type)->IsSum();
+  if (is_sum_match) {
     Add(Bytecode::MakeAssertWellFormed(node->matched()->span(),
                                        (*type)->CloneToUnique()));
   }
@@ -2123,15 +2124,22 @@ absl::Status BytecodeEmitter::HandleMatch(const Match* node) {
 
     const std::vector<PatternTree>& patterns = arm->patterns();
     // First, prime the stack with all the copies of the matchee we'll need.
-    for (int pattern_idx = 0; pattern_idx < patterns.size(); pattern_idx++) {
+    size_t pattern_count = 0;
+    for (const PatternTree& pattern : patterns) {
       Add(Bytecode::MakeDup(node->matched()->span()));
+      ++pattern_count;
+      // A top-level wildcard accepts any valid sum without observing its
+      // payload. Later alternatives must not observe it either.
+      if (is_sum_match && IsWildcardLeaf(pattern)) {
+        break;
+      }
     }
 
-    for (int pattern_idx = 0; pattern_idx < patterns.size(); pattern_idx++) {
+    for (size_t pattern_idx = 0; pattern_idx < pattern_count; ++pattern_idx) {
       // Then we match each arm. We OR with the prev. result (if there is one)
       // and swap to the next copy of the matchee, unless this is the last
       // pattern.
-      const PatternTree& pattern = arm->patterns()[pattern_idx];
+      const PatternTree& pattern = patterns[pattern_idx];
       XLS_ASSIGN_OR_RETURN(Bytecode::MatchArmItem arm_item,
                            HandlePatternExpr(pattern, type.value()));
       Add(Bytecode::MakeMatchArm(GetPatternSpan(pattern), arm_item));
@@ -2139,7 +2147,7 @@ absl::Status BytecodeEmitter::HandleMatch(const Match* node) {
       if (pattern_idx != 0) {
         Add(Bytecode::MakeLogicalOr(GetPatternSpan(pattern)));
       }
-      if (pattern_idx != patterns.size() - 1) {
+      if (pattern_idx != pattern_count - 1) {
         Add(Bytecode::MakeSwap(GetPatternSpan(pattern)));
       }
     }

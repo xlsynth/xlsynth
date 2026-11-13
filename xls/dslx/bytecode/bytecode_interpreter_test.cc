@@ -3866,6 +3866,48 @@ fn main(first: u32, second: u32) -> u32 {
               ElementsAre("trace of first: 3", "trace of second: 5"));
 }
 
+TEST_F(BytecodeInterpreterTest, SemanticSumWildcardEndsArmAlternatives) {
+  constexpr std::string_view kProgram = R"(
+enum Inner: u2 { Small(u4) = 0, Big(u8) = 1 }
+enum Outer: u2 { Empty = 0, Wrapped(Inner) = 1 }
+const EMPTY = Outer::Empty;
+fn wildcard_first(x: Outer) -> bool {
+  match x { _ | EMPTY => true, invalid! => false }
+}
+fn value_first(x: Outer) -> bool {
+  match x { EMPTY | _ => true, invalid! => false }
+}
+fn bare(x: Outer) -> bool {
+  match x { _ => true, invalid! => false }
+}
+fn tuple_root(x: Outer) -> bool {
+  match (x, true) { _ | (EMPTY, _) => true }
+}
+)";
+  auto outer = [](int64_t tag, int64_t payload) {
+    return internal::CreateEncodedSumTuple(InterpValue::MakeUBits(2, tag),
+                                           InterpValue::MakeUBits(10, payload));
+  };
+  const InterpValue invalid_nested = outer(1, 0x3e5);  // Inner tag 3.
+  const auto malformed =
+      StatusIs(absl::StatusCode::kInternal,
+               HasSubstr("Semantic sum observer received a malformed value"));
+  for (std::string_view function : {"wildcard_first", "value_first", "bare"}) {
+    SCOPED_TRACE(function);
+    EXPECT_THAT(Interpret(kProgram, function, {outer(1, 0x005)}),
+                IsOkAndHolds(InterpValue::MakeBool(true)));
+    EXPECT_THAT(Interpret(kProgram, function, {outer(3, 0)}), malformed);
+  }
+  for (std::string_view function : {"wildcard_first", "bare"}) {
+    SCOPED_TRACE(function);
+    EXPECT_THAT(Interpret(kProgram, function, {invalid_nested}),
+                IsOkAndHolds(InterpValue::MakeBool(true)));
+  }
+  EXPECT_THAT(Interpret(kProgram, "value_first", {invalid_nested}), malformed);
+  // Tuple matches keep their existing eager alternative evaluation.
+  EXPECT_THAT(Interpret(kProgram, "tuple_root", {invalid_nested}), malformed);
+}
+
 // Negative test: Malformed tags report errors before normal or invalid raw arms.
 TEST_F(BytecodeInterpreterTest, SemanticSumMatchRejectsMalformedInput) {
   constexpr std::string_view kProgram = R"(
