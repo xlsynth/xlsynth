@@ -589,8 +589,10 @@ An outer constructor can wrap an existing malformed inner sum without inspecting
 its tag. Matching `Wrapped(_)`, or binding and returning the inner sum, leaves
 the inner tag unchecked. A nested constructor pattern compares the inner tag
 with the named constructor's tag. An undeclared tag fails that comparison and
-the next ordinary pattern can still match. A separate `match` on the inner sum
-checks that tag for validity when it enters the match. Typed
+the next ordinary pattern can still match. To check the inner tag for validity,
+bind the child in the outer pattern, for example `Outer::Wrap(inner)`. Write
+a second `match inner` inside that arm. The inner tag is now the outermost
+tag of the second match, which checks its validity. Typed
 source-domain validation remains strict about malformed active nested tags,
 while nonzero inactive padding under a declared tag is valid. Ordinary numeric
 enum validation and raw-value equality and hashing are unchanged.
@@ -1623,22 +1625,25 @@ name reads the payload bits specified by the constructors written in the
 pattern, even when the input tags differ.
 
 ```dslx
-enum Inner: u2 { A(u4) = 0, B = 1 }
-enum Outer: u2 { Wrap(Inner) = 0, Unit = 1 }
+enum Inner: u2 { A(u4) = 0, B = 1, }
+enum Outer: u2 { Wrap(Inner) = 0, Unit = 1, }
 
-fn read_a(x: Outer) -> u4 {
+fn payload_or_zero(x: Outer) -> u4 {
     match x {
-        Outer::Unit => u4:0,
-        Outer::Wrap(Inner::B) => u4:1,
+        Outer::Unit              => u4:0b0000,
+        Outer::Wrap(Inner::B)    => u4:0b0000,
         Outer::Wrap(Inner::A(n)) => n,
     }
 }
 ```
 
-For an external `Wrap` with undeclared inner tag `0b10`, none of the three
-patterns match. Hardware selects the final arm and reads `n` from the low
-four bits of the payload. Payload bits `0b1011` give 11 and `0b0010` give 2.
-Source interpretation reports an error for either input.
+For `Wrap` (outer tag `0b00`) and `A` (inner tag `0b00`), the final
+pattern matches. With payload bits `0b1011`, source interpretation and
+hardware both return `0b1011`. Change only the inner tag to the undeclared
+`0b10` and all three patterns fail. Hardware selects the final arm and reads
+`n` from the same four payload wires. Payload `0b1011` returns `0b1011`, and
+payload `0b0010` returns `0b0010`. Source interpretation reports an error for
+both inputs with the undeclared tag.
 
 We can also `match` on ranges of values using the "range" syntax:
 
