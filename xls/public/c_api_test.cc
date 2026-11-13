@@ -2319,6 +2319,143 @@ type Overridden = Tag<3, 9>;
   }
 }
 
+TEST(XlsCApiTest, InspectBorrowedLoopCarryType) {
+  constexpr char kProgram[] = R"(
+enum Kind : u8 { A = 0, B = 1 }
+struct State { tags: Kind[2], count: u8 }
+fn fold(initial: State) -> State {
+  for (_, carry) in u32:0..u32:2 { carry }(initial)
+}
+)";
+  auto* imports = xls_dslx_import_data_create(
+      std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+  absl::Cleanup free_imports([&] { xls_dslx_import_data_free(imports); });
+  xls_dslx_typechecked_module* checked = nullptr;
+  char* error = nullptr;
+  absl::Cleanup free_error([&] { xls_c_str_free(error); });
+  ASSERT_TRUE(xls_dslx_parse_and_typecheck(kProgram, "carry.x", "carry",
+                                           imports, &error, &checked))
+      << error;
+  absl::Cleanup free_checked(
+      [&] { xls_dslx_typechecked_module_free(checked); });
+
+  const xls_dslx_type* carry = nullptr;
+  auto observe = [](void* data, const char*, int64_t, const char* name,
+                    const xls_dslx_type* type, const char*) {
+    if (name != nullptr && std::string_view(name) == "carry") {
+      *static_cast<const xls_dslx_type**>(data) = type;
+    }
+  };
+  char* ir = nullptr;
+  absl::Cleanup free_ir([&] { xls_c_str_free(ir); });
+  ASSERT_TRUE(xls_dslx_typechecked_module_convert_to_ir_with_loop_bindings(
+      checked, imports, observe, &carry, &error, &ir))
+      << error;
+  ASSERT_NE(carry, nullptr);
+  ASSERT_TRUE(xls_dslx_type_is_struct(carry));
+  char* struct_name =
+      xls_dslx_struct_def_get_identifier(xls_dslx_type_get_struct_def(carry));
+  absl::Cleanup free_struct_name([&] { xls_c_str_free(struct_name); });
+  EXPECT_STREQ(struct_name, "State");
+  const auto* tags = xls_dslx_type_struct_get_member_type(carry, 0);
+  ASSERT_TRUE(xls_dslx_type_is_array(tags));
+  auto* length = xls_dslx_type_array_get_size(tags);
+  absl::Cleanup free_length([&] { xls_dslx_type_dim_free(length); });
+  int64_t n;
+  ASSERT_TRUE(xls_dslx_type_dim_get_as_int64(length, &error, &n)) << error;
+  EXPECT_EQ(n, 2);
+  const auto* kind = xls_dslx_type_array_get_element_type(tags);
+  ASSERT_TRUE(xls_dslx_type_is_enum(kind));
+  char* enum_name =
+      xls_dslx_enum_def_get_identifier(xls_dslx_type_get_enum_def(kind));
+  absl::Cleanup free_enum_name([&] { xls_c_str_free(enum_name); });
+  EXPECT_STREQ(enum_name, "Kind");
+  const auto* count = xls_dslx_type_struct_get_member_type(carry, 1);
+  xls_dslx_type_dim* sign = nullptr;
+  xls_dslx_type_dim* width = nullptr;
+  ASSERT_TRUE(xls_dslx_type_is_bits_like(count, &sign, &width));
+  absl::Cleanup free_dims([&] {
+    xls_dslx_type_dim_free(sign);
+    xls_dslx_type_dim_free(width);
+  });
+  bool is_signed;
+  ASSERT_TRUE(xls_dslx_type_dim_get_as_bool(sign, &error, &is_signed)) << error;
+  EXPECT_FALSE(is_signed);
+  int64_t bits;
+  ASSERT_TRUE(xls_dslx_type_dim_get_as_int64(width, &error, &bits)) << error;
+  EXPECT_EQ(bits, 8);
+}
+
+TEST(XlsCApiTest, ReportLoopIterableSource) {
+  struct Case {
+    const char* iterable;
+    const char* name;
+    const char* expression;
+  };
+  for (Case example :
+       {Case{"pairs", "pairs", nullptr}, Case{"rows", "rows", nullptr},
+        Case{"array_rev(pairs)", nullptr, "array_rev(pairs)"}}) {
+    SCOPED_TRACE(example.iterable);
+    std::string program = absl::StrFormat(R"(
+fn fold(pairs: (u8, u16)[2]) -> u16 {
+  let rows = pairs;
+  for ((a, b), acc) in %s { acc + (a as u16) + b }(u16:0)
+}
+)",
+                                          example.iterable);
+    auto* imports = xls_dslx_import_data_create(
+        std::string(xls::kDefaultDslxStdlibPath).c_str(), nullptr, 0);
+    absl::Cleanup free_imports([&] { xls_dslx_import_data_free(imports); });
+    char* error = nullptr;
+    absl::Cleanup free_error([&] { xls_c_str_free(error); });
+    xls_dslx_typechecked_module* checked = nullptr;
+    ASSERT_TRUE(xls_dslx_parse_and_typecheck(program.c_str(), "mod.x", "mod",
+                                             imports, &error, &checked))
+        << error;
+    absl::Cleanup free_checked(
+        [&] { xls_dslx_typechecked_module_free(checked); });
+    struct Observations {
+      Case expected;
+      int64_t array_id = -1;
+      bool saw_element = false;
+      std::string body;
+    } seen{example, -1, false, ""};
+    auto observe = [](void* data, const char* body, int64_t id,
+                      const char* name, const xls_dslx_type* type,
+                      const char* expression) {
+      auto& seen = *static_cast<Observations*>(data);
+      if (xls_dslx_type_is_array(type)) {
+        EXPECT_EQ(seen.array_id, -1);
+        seen.array_id = id;
+        seen.body = body;
+        EXPECT_STREQ(name, seen.expected.name);
+        EXPECT_STREQ(expression, seen.expected.expression);
+      } else if (xls_dslx_type_is_tuple(type)) {
+        seen.saw_element = true;
+        EXPECT_EQ(name, nullptr);
+        EXPECT_EQ(expression, nullptr);
+      } else {
+        EXPECT_NE(name, nullptr);
+        EXPECT_EQ(expression, nullptr);
+      }
+    };
+    char* ir = nullptr;
+    absl::Cleanup free_ir([&] { xls_c_str_free(ir); });
+    ASSERT_TRUE(xls_dslx_typechecked_module_convert_to_ir_with_loop_bindings(
+        checked, imports, observe, &seen, &error, &ir))
+        << error;
+    EXPECT_TRUE(seen.saw_element);
+    ASSERT_NE(seen.array_id, -1);
+    const std::string_view text(ir);
+    size_t start = text.find("fn " + seen.body + "(");
+    ASSERT_NE(start, std::string_view::npos);
+    auto signature = text.substr(start, text.find('\n', start) - start);
+    EXPECT_THAT(signature, HasSubstr(absl::StrFormat(
+                               "__indexable: (bits[8], bits[16])[2] id=%d)",
+                               seen.array_id)));
+  }
+}
+
 TEST(XlsCApiTest, DslxInspectImportModuleMember) {
   const char kImported[] = "pub const VALUE = u32:7;";
   XLS_ASSERT_OK_AND_ASSIGN(xls::TempDirectory tempdir,

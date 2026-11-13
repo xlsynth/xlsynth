@@ -386,12 +386,43 @@ void xls_dslx_typechecked_module_free(struct xls_dslx_typechecked_module* tm) {
 bool xls_dslx_typechecked_module_convert_to_ir(
     struct xls_dslx_typechecked_module* tm,
     struct xls_dslx_import_data* import_data, char** error_out, char** ir_out) {
+  return xls_dslx_typechecked_module_convert_to_ir_with_loop_bindings(
+      tm, import_data, nullptr, nullptr, error_out, ir_out);
+}
+
+bool xls_dslx_typechecked_module_convert_to_ir_with_loop_bindings(
+    struct xls_dslx_typechecked_module* tm,
+    struct xls_dslx_import_data* import_data,
+    xls_dslx_loop_binding_callback callback, void* user_data, char** error_out,
+    char** ir_out) {
   auto* checked = reinterpret_cast<xls::dslx::TypecheckedModule*>(tm);
   auto* imports = reinterpret_cast<xls::dslx::ImportData*>(import_data);
-  auto ir = xls::dslx::ConvertModule(
-      checked->module, imports,
-      xls::dslx::ConvertOptions{.warnings_as_errors = false,
-                                .lower_to_proc_scoped_channels = false});
+  xls::dslx::ConvertOptions options{.warnings_as_errors = false,
+                                    .lower_to_proc_scoped_channels = false};
+  xls::dslx::ConvertOptions::LoopBindingCallback observe;
+  if (callback != nullptr) {
+    options.loop_binding = &observe;
+    observe = [callback, user_data](std::string_view body, int64_t node_id,
+                                    const xls::dslx::AstNode* source,
+                                    const xls::dslx::Type* type) {
+      const char* source_name = nullptr;
+      std::string source_expr;
+      if (const auto* binder =
+              dynamic_cast<const xls::dslx::NameDef*>(source)) {
+        source_name = binder->identifier().c_str();
+      } else if (const auto* ref =
+                     dynamic_cast<const xls::dslx::NameRef*>(source)) {
+        source_name = ref->identifier().c_str();
+      } else if (const auto* iterable =
+                     dynamic_cast<const xls::dslx::Expr*>(source)) {
+        source_expr = iterable->ToString();
+      }
+      callback(user_data, std::string(body).c_str(), node_id, source_name,
+               reinterpret_cast<const xls_dslx_type*>(type),
+               source_expr.empty() ? nullptr : source_expr.c_str());
+    };
+  }
+  auto ir = xls::dslx::ConvertModule(checked->module, imports, options);
   return xls::ReturnStringHelper(ir, error_out, ir_out);
 }
 
