@@ -265,7 +265,8 @@ class Bytecode {
     static MatchArmItem MakeStore(SlotIndex slot_index);
     static MatchArmItem MakeRange(InterpValue start, InterpValue limit);
     // The borrowed type must outlive the bytecode. variant_index is declaration
-    // order, not the semantic discriminant.
+    // order, not the semantic discriminant. Supply one item per declared
+    // payload member, including wildcards, in pattern source order.
     static MatchArmItem MakeSum(
         const SumType* sum_type, int64_t variant_index,
         std::vector<SumPayloadPatternItem> payload_items);
@@ -294,8 +295,7 @@ class Bytecode {
     struct SumMatchData {
       const SumType* sum_type;
       int64_t variant_index;
-      std::vector<SumPayloadPatternItem>
-          payload_items;  // Pattern source order.
+      std::vector<SumPayloadPatternItem> payload_items;
     };
 
     absl::StatusOr<InterpValue> interp_value() const;

@@ -1125,18 +1125,18 @@ fn f(x: Message, y: Message) -> bool {
 
 TEST(FunctionConverterTest, NamedPayloadPatternsProjectDeclaredSlices) {
   constexpr std::string_view kProgram = R"(
-enum Inner: u2 { Pair { left: u4, right: u4 } = 0 }
+enum Inner: u2 { Pair { marker: (u2, u1), left: u4, right: u4 } = 0 }
 enum Outer: u2 { Wrap(Inner) = 0, Unit = 1 }
 fn f(x: Outer) -> (u4, u4) {
   let reversed = match x {
     Outer::Unit => u4:0,
-    Outer::Wrap(Inner::Pair { right: n, left: n }) => n,
-    Outer::Wrap(Inner::Pair { right: r, left: _ }) => r + u4:1,
+    Outer::Wrap(Inner::Pair { right: n, left: n, marker: _ }) => n,
+    Outer::Wrap(Inner::Pair { right: r, left: _, marker: (m, _) }) => r + m as u4,
   };
   let declared = match x {
     Outer::Unit => u4:0,
-    Outer::Wrap(Inner::Pair { left: n, right: n }) => n,
-    Outer::Wrap(Inner::Pair { left: l, right: _ }) => l + u4:1,
+    Outer::Wrap(Inner::Pair { marker: _, left: n, right: n }) => n,
+    Outer::Wrap(Inner::Pair { marker: (m, _), left: l, right: _ }) => l + m as u4,
   };
   (reversed, declared)
 }
@@ -1157,12 +1157,14 @@ fn f(x: Outer) -> (u4, u4) {
     int reversed;
     int declared;
   };
-  for (const Case& c : {Case{0, 0x0aa, 10, 10},    // Equal pair.
-                        Case{0, 0x03a, 11, 4},     // Unequal pair.
-                        Case{0, 0x23a, 11, 4},     // Undeclared inner tag.
-                        Case{3, 0x0a3, 4, 11}}) {  // Undeclared outer tag.
+  // Payload bits are inner tag, marker tuple, left, right (2 + 3 + 4 + 4).
+  for (const Case& c :
+       {Case{0, 0b00'010'1010'1010, 10, 10},    // Equal pair.
+        Case{0, 0b00'100'0011'1010, 12, 5},     // Unequal pair.
+        Case{0, 0b10'010'1010'1010, 11, 11},    // Invalid inner.
+        Case{3, 0b00'010'1010'0011, 4, 11}}) {  // Invalid outer.
     const Value x = Value::Tuple({Value(UBits(c.outer_tag, 2)),
-                                  Value::Tuple({Value(UBits(c.payload, 10))})});
+                                  Value::Tuple({Value(UBits(c.payload, 13))})});
     XLS_ASSERT_OK_AND_ASSIGN(auto result, InterpretFunction(f, {x}));
     EXPECT_EQ(result.value, Value::Tuple({Value(UBits(c.reversed, 4)),
                                           Value(UBits(c.declared, 4))}));

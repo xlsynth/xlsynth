@@ -2110,11 +2110,12 @@ absl::StatusOr<BValue> FunctionConverter::HandleSumVariantPayloadPattern(
 
   std::vector<internal::PackedSumMemberLayout::Slice> slices;
   slices.reserve(variant.payload_size());
-  for (int64_t i = 0; i < variant.payload_size(); ++i) {
-    XLS_ASSIGN_OR_RETURN(auto slice,
-                         layout.Next(variant.variant->GetMemberType(i)));
-    slices.push_back(slice);
-  }
+  XLS_RETURN_IF_ERROR(encoding.ForEachPayloadMember(
+      variant, [&](int64_t, const Type& type) -> absl::Status {
+        XLS_ASSIGN_OR_RETURN(auto slice, layout.Next(type));
+        slices.push_back(slice);
+        return absl::OkStatus();
+      }));
   XLS_RETURN_IF_ERROR(ForEachSumPayloadSubpattern(
       *pattern, variant.variant->variant(),
       [&](const PatternTree& subpattern, int64_t member_index) -> absl::Status {
