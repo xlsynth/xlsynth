@@ -330,6 +330,31 @@ proc main {
   ExpectIr(converted);
 }
 
+TEST_F(IrConverterTest, IfLetInAnotherFunctionPreservesStateAccessLabels) {
+  constexpr std::string_view kModule = R"(#![feature(explicit_state_access)]
+enum Option { None, Some(u32) }
+
+fn unwrap_or_zero(x: Option) -> u32 {
+  if let Option::Some(v) = x { v } else { u32:0 }
+}
+
+proc main {
+  init { 0 }
+  config() { }
+  next(state: u32) {
+    let x = 'main_read:read(state);
+    'main_write:write(state, x + u32:1);
+  }
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(std::string converted,
+                           ConvertModuleForTest(kModule));
+  EXPECT_THAT(converted, ::testing::ContainsRegex(
+                             R"(state_read\([^)]*label="main_read")"));
+  EXPECT_THAT(converted, ::testing::ContainsRegex(
+                             R"(next_value\([^)]*label="main_write")"));
+}
+
 TEST_F(IrConverterTest, ExplicitStateAccessReadWithLabeledRead) {
   constexpr std::string_view kModule = R"(#![feature(explicit_state_access)]
 proc main {
