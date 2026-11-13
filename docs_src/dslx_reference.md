@@ -1623,8 +1623,12 @@ Here the first `n` binds the value of `right`. The second `n` compares
 `left` with that value. The function returns true for `left: 7, right: 7`
 and false for `left: 7, right: 9`.
 
-A fully specified sum constructor pattern tests named fields in declaration
-order and stops at the first mismatch or source error.
+After matching a constructor tag, the source interpreter opens its payload
+and checks the ordinary numeric enum values there before testing any field
+patterns. It opens a nested sum's payload only when matching reaches that
+constructor and its tag matches. Once the payload is open, a fully specified
+sum constructor pattern tests named fields in declaration order and stops
+at the first mismatch or source error.
 For example, `Message::Pair { right: u8:9, left: u8:7 }` tests `left`
 first because `Pair` declares it first. If `left` differs from 7, the
 pattern skips `right`.
