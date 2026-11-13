@@ -594,7 +594,6 @@ void NestedRawInputBatchesRespectObservation(
       case RawOperation::kConstantPattern:
         bytecode_args = {outer.bytecode};
         ir_args = {outer.ir};
-        source_observes_malformed = malformed;
         expected = Value(UBits(tag == 2 && (payload & narrow_mask) == 1, 1));
         break;
     }
