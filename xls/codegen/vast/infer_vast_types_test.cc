@@ -609,6 +609,60 @@ foo : foo_t
 )");
 }
 
+TEST_F(InferVastTypesTest, PackedAggregateParameterizedWidth) {
+  for (std::string_view kind : {"struct", "literal_union", "union"}) {
+    SCOPED_TRACE(kind);
+    // Keep each case in its own file so a struct traversal cannot populate
+    // the union's width-expression entries as a side effect.
+    VerilogFile file(FileType::kSystemVerilog);
+    SourceInfo loc;
+    Module* module = file.AddModule("test_module", loc);
+    ParameterRef* p = module->AddParameter("P", file.PlainLiteral(8, loc), loc);
+    Expression* width = file.Sub(p, file.PlainLiteral(1, loc), loc);
+    DataType* member_type = file.Make<BitVectorType>(
+        loc, width, /*is_signed=*/false, /*size_expr_is_max=*/true);
+    if (kind == "literal_union") {
+      member_type = file.BitVectorType(8, loc);
+    }
+    std::vector<Def*> members{
+        file.Make<Def>(loc, "bits", DataKind::kLogic, member_type)};
+    DataType* aggregate;
+    if (kind == "struct") {
+      aggregate = file.Make<Struct>(loc, members);
+    } else {
+      aggregate = file.Make<Union>(loc, members);
+    }
+    Typedef* type_def = file.Make<Typedef>(
+        loc, file.Make<Def>(loc, "aggregate_t", DataKind::kUser, aggregate));
+    module->AddModuleMember(type_def);
+
+    // Check datatype traversal before introducing the concatenation, whose
+    // failure would otherwise prevent inspection of the inferred map.
+    auto declaration_types = InferVastTypes(&file);
+    ASSERT_TRUE(declaration_types.ok()) << declaration_types.status();
+    if (kind != "literal_union") {
+      EXPECT_TRUE(declaration_types->contains(width));
+    }
+
+    ParameterRef* value = module->AddParameter(
+        file.Make<Def>(loc, "value", DataKind::kUser,
+                       file.Make<TypedefType>(loc, type_def)),
+        file.PlainLiteral(0, loc), loc);
+    Literal* one =
+        file.Make<Literal>(loc, UBits(1, 1), FormatPreference::kBinary,
+                           /*declared_bit_count=*/1, /*emit_bit_count=*/true,
+                           /*declared_as_signed=*/false);
+    Concat* concat = file.Concat({value, one}, loc);
+    module->AddParameter("result", concat, loc);
+    auto types = InferVastTypes(&file);
+    ASSERT_TRUE(types.ok()) << types.status();
+    ASSERT_TRUE(types->contains(concat));
+    XLS_ASSERT_OK_AND_ASSIGN(int64_t bit_count,
+                             types->at(concat)->FlatBitCountAsInt64());
+    EXPECT_EQ(bit_count, 9);
+  }
+}
+
 TEST_F(InferVastTypesTest, PackedStruct) {
   // typedef struct packed {
   //   logic foo;

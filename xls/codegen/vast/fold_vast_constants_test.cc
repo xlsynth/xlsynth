@@ -332,6 +332,25 @@ TEST_F(FoldVastConstantsTest, FoldStructDef) {
       IsOkAndHolds(40));
 }
 
+TEST_F(FoldVastConstantsTest, FoldParameterizedPackedAggregate) {
+  SourceInfo loc;
+  auto* p = module_->AddParameter("P", BareLiteral(8), loc);
+  auto* member_type =
+      file_.Make<BitVectorType>(loc, file_.Sub(p, BareLiteral(1), loc),
+                                /*is_signed=*/false, /*size_expr_is_max=*/true);
+  std::vector<Def*> members{
+      file_.Make<Def>(loc, "bits", DataKind::kLogic, member_type)};
+  EXPECT_THAT(FoldConstantsAndGetBitCount(file_.Make<Struct>(loc, members)),
+              IsOkAndHolds(8));
+  EXPECT_THAT(FoldConstantsAndGetBitCount(
+                  file_.Make<Union>(loc, std::vector<Def*>{file_.Make<Def>(
+                                             loc, "bits", DataKind::kLogic,
+                                             file_.BitVectorType(8, loc))})),
+              IsOkAndHolds(8));
+  EXPECT_THAT(FoldConstantsAndGetBitCount(file_.Make<Union>(loc, members)),
+              IsOkAndHolds(8));
+}
+
 TEST_F(FoldVastConstantsTest, FoldToInt64WithZeroExtension) {
   SourceInfo loc;
   auto* ref = module_->AddParameter(
