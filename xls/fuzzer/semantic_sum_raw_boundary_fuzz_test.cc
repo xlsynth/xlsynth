@@ -396,6 +396,7 @@ enum class RawOperation {
   kInspectInvalid,
   kCompare,
   kConstantPattern,
+  kNestedPattern,
 };
 
 // Both boundary inputs are literal tuples. In particular, neither creation of
@@ -449,6 +450,11 @@ std::string NestedRawProgram(int64_t narrow_width, int64_t wide_width,
         absl::StrAppend(&program, "invalid!(raw) => raw as u16,\n");
       }
       absl::StrAppend(&program, "}, Envelope::Wide(value) => value,\n} }\n");
+      break;
+    case RawOperation::kNestedPattern:
+      absl::StrAppend(&program, "fn main(x: Envelope) -> u16 { match x {\n",
+                      "Envelope::Wrapped(Message::Narrow(n)) => n as u16,\n",
+                      "_ => u16:256, invalid! => u16:257,\n} }\n");
       break;
     case RawOperation::kCompare:
       absl::StrAppend(&program,
@@ -563,6 +569,13 @@ void NestedRawInputBatchesRespectObservation(
         expected = Value(UBits(observed, 16));
         break;
       }
+      case RawOperation::kNestedPattern:
+        bytecode_args = {outer.bytecode};
+        ir_args = {outer.ir};
+        // The wrapper tag is valid. A different or undeclared inner tag
+        // misses Narrow, so the wildcard wins before invalid!.
+        expected = Value(UBits(tag == 2 ? payload & narrow_mask : 256, 16));
+        break;
       case RawOperation::kCompare: {
         bytecode_args = {outer.bytecode, other_outer.bytecode};
         ir_args = {outer.ir, other_outer.ir};
@@ -632,7 +645,8 @@ TEST(SemanticSumRawBoundaryFuzzTest, NestedRawOperationWitnesses) {
   for (RawOperation operation :
        {RawOperation::kForward, RawOperation::kWrap, RawOperation::kBind,
         RawOperation::kInspect, RawOperation::kInspectInvalid,
-        RawOperation::kCompare, RawOperation::kConstantPattern}) {
+        RawOperation::kCompare, RawOperation::kConstantPattern,
+        RawOperation::kNestedPattern}) {
     for (uint8_t tag : {uint8_t{0}, uint8_t{2}, uint8_t{3}}) {
       NestedRawOperationsRespectObservation(4, 8, operation, tag, 0xf1, tag,
                                             0x01, 0x3f);
@@ -651,7 +665,8 @@ FUZZ_TEST(SemanticSumRawBoundaryFuzzTest, NestedRawOperationsRespectObservation)
         fuzztest::ElementOf<RawOperation>(
             {RawOperation::kForward, RawOperation::kWrap, RawOperation::kBind,
              RawOperation::kInspect, RawOperation::kInspectInvalid,
-             RawOperation::kCompare, RawOperation::kConstantPattern}),
+             RawOperation::kCompare, RawOperation::kConstantPattern,
+             RawOperation::kNestedPattern}),
         fuzztest::InRange<uint8_t>(0, 3), fuzztest::Arbitrary<uint8_t>(),
         fuzztest::InRange<uint8_t>(0, 3), fuzztest::Arbitrary<uint8_t>(),
         fuzztest::Arbitrary<uint16_t>());
@@ -666,7 +681,8 @@ TEST(SemanticSumRawBoundaryFuzzTest, NestedRawBatchInputIsolation) {
   for (RawOperation operation :
        {RawOperation::kForward, RawOperation::kWrap, RawOperation::kBind,
         RawOperation::kInspect, RawOperation::kInspectInvalid,
-        RawOperation::kCompare, RawOperation::kConstantPattern}) {
+        RawOperation::kCompare, RawOperation::kConstantPattern,
+        RawOperation::kNestedPattern}) {
     NestedRawInputBatchesRespectObservation(4, 8, operation, inputs);
     std::reverse(inputs.begin(), inputs.end());
     NestedRawInputBatchesRespectObservation(4, 8, operation, inputs);
@@ -684,7 +700,8 @@ FUZZ_TEST(SemanticSumRawBoundaryFuzzTest,
                      {RawOperation::kForward, RawOperation::kWrap,
                       RawOperation::kBind, RawOperation::kInspect,
                       RawOperation::kInspectInvalid, RawOperation::kCompare,
-                      RawOperation::kConstantPattern}),
+                      RawOperation::kConstantPattern,
+                      RawOperation::kNestedPattern}),
                  fuzztest::VectorOf(fuzztest::StructOf<RawInput>(
                                         fuzztest::InRange<uint8_t>(0, 3),
                                         fuzztest::Arbitrary<uint8_t>(),
