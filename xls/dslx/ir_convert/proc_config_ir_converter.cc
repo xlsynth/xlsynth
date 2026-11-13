@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -243,12 +244,21 @@ absl::Status ProcConfigIrConverter::HandleMatch(const Match* node) {
   if (node->IsConst()) {
     XLS_ASSIGN_OR_RETURN(uint32_t arm_id,
                          type_info_->GetArmSelectionResult(node));
-    MatchArm* arm = node->arms()[arm_id];
-    for (const NameDef* name : GetPatternNameDefs(arm->patterns().front())) {
-      XLS_ASSIGN_OR_RETURN(InterpValue binding, type_info_->GetConstExpr(name));
-      XLS_ASSIGN_OR_RETURN(node_to_ir_[name], binding.ConvertToIr());
+    const Expr* result = node->arms()[arm_id]->expr();
+    // Visit the arm once so channel declarations and spawns take effect.
+    XLS_RETURN_IF_ERROR(result->Accept(this));
+    while (const auto* block = dynamic_cast<const StatementBlock*>(result)) {
+      if (block->trailing_semi()) {
+        node_to_ir_[node] = Value::Tuple({});
+        return absl::OkStatus();
+      }
+      result = std::get<Expr*>(block->statements().back()->wrapped());
     }
-    XLS_RETURN_IF_ERROR(arm->expr()->Accept(this));
+    if (auto it = node_to_ir_.find(result); it != node_to_ir_.end()) {
+      node_to_ir_[node] = ProcConfigValue(it->second);
+    } else if (auto value = type_info_->GetConstExprOption(result)) {
+      XLS_ASSIGN_OR_RETURN(node_to_ir_[node], value->ConvertToIr());
+    }
   }
 
   return absl::OkStatus();
@@ -259,6 +269,12 @@ absl::Status ProcConfigIrConverter::HandleNameRef(const NameRef* node) {
   const NameDef* name_def = std::get<const NameDef*>(node->name_def());
   auto iter = node_to_ir_.find(name_def);
   if (iter == node_to_ir_.end()) {
+    if (dynamic_cast<const MatchArm*>(name_def->definer()) != nullptr) {
+      XLS_ASSIGN_OR_RETURN(InterpValue binding,
+                           type_info_->GetConstExpr(name_def));
+      XLS_ASSIGN_OR_RETURN(node_to_ir_[node], binding.ConvertToIr());
+      return absl::OkStatus();
+    }
     return absl::InvalidArgumentError(absl::StrCat(
         "Could not find converted value for node \"", node->ToString(), "\"."));
   }
@@ -311,7 +327,15 @@ absl::Status ProcConfigIrConverter::HandleSpawn(const Spawn* node) {
   ProcId new_id = proc_id_factory_.CreateProcId(proc_id_, p);
   for (const auto& arg : node->config()->args()) {
     XLS_RETURN_IF_ERROR(arg->Accept(this));
-    config_args.push_back(node_to_ir_.at(arg));
+    if (auto it = node_to_ir_.find(arg); it != node_to_ir_.end()) {
+      config_args.push_back(it->second);
+    } else {
+      std::optional<InterpValue> value = type_info_->GetConstExprOption(arg);
+      XLS_RET_CHECK(value.has_value())
+          << "No config value for spawn argument: " << arg->ToString();
+      XLS_ASSIGN_OR_RETURN(Value ir_value, value->ConvertToIr());
+      config_args.push_back(std::move(ir_value));
+    }
   }
   proc_data_->id_to_config_args[new_id] = config_args;
 
