@@ -1739,7 +1739,7 @@ TEST(TypecheckV2Test, MatchTrailingDuplicateKeepsItsExactEarlierPattern) {
   EXPECT_THAT(R"(
 fn f(value: u8) -> u32 {
   match value {
-    _ => u32:0,
+    _all => u32:0,
     u8:1 => u32:1,
     u8:2 => u32:2,
     u8:0x1 => u32:3,
@@ -1773,7 +1773,7 @@ TEST(TypecheckV2Test, MatchTrailingTupleDuplicateKeepsExactEarlierPattern) {
       R"(
 fn f(value: (u8, u8)) -> u32 {
   match value {
-    _ => u32:0,
+    _all => u32:0,
     (u8:1, u8:2) => u32:1,
     (u8:3, u8:4) => u32:2,
     (u8:0x1, u8:0x2) => u32:3,
@@ -1790,7 +1790,7 @@ TEST(TypecheckV2Test, MatchTrailingRangeDuplicateKeepsExactEarlierPattern) {
       R"(
 fn f(value: u8) -> u32 {
   match value {
-    _ => u32:0,
+    _all => u32:0,
     u8:1..u8:4 => u32:1,
     u8:5..u8:8 => u32:2,
     u8:0x1..u8:0x4 => u32:3,
@@ -2466,18 +2466,19 @@ fn f(x: u4) -> u32 {
             "Match is already exhaustive before this pattern");
 }
 
-TEST(TypecheckV2Test, DifferentCatchAllPatternsRemainWarningOnly) {
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
-fn f(value: bool) -> u32 {
-  match value {
-    _ => u32:0,
-    otherwise => otherwise as u32,
+TEST(TypecheckV2Test, WholeSubjectWildcardEndsOrdinaryPatterns) {
+  for (const std::string arms :
+       {"_ => false, otherwise => otherwise", "_ | false => true"}) {
+    EXPECT_THAT("fn f(x: bool) -> bool { match x { " + arms + " } }",
+                TypecheckFails(HasSubstr(
+                    "A whole-subject wildcard must be the last ordinary "
+                    "pattern.")));
   }
+  XLS_EXPECT_OK(TypecheckV2(R"(
+fn f(x: (bool, bool)) -> bool {
+  match x { (_, false) => false, (false, true) | _ => true }
 }
 )"));
-  ASSERT_EQ(result.tm.warnings.warnings().size(), 1);
-  EXPECT_EQ(result.tm.warnings.warnings()[0].message,
-            "Match is already exhaustive before this pattern");
 }
 
 TEST(TypecheckV2Test, PatternMatch) {
