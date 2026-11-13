@@ -3989,10 +3989,7 @@ fn nested_pattern(x: Outer) -> bool {
   }
 }
 
-// Verifies: Actual constants retain complete typed value comparison.
-// Catches: Treating a unit-valued constant as shallow constructor syntax.
-TEST_F(BytecodeInterpreterTest,
-       SemanticSumConstantPatternsRemainValueComparisons) {
+TEST_F(BytecodeInterpreterTest, SemanticSumConstantAndRuntimePatterns) {
   constexpr std::string_view kImported = R"(
 pub enum Inner: u2 { Small(u4) = 0, Big(u8) = 1 }
 pub enum Outer: u1 { Empty = 0, Wrapped(Inner) = 1 }
@@ -4022,12 +4019,14 @@ fn module_constant(x: Outer) -> bool {
            InterpValue::MakeTuple({InterpValue::MakeUBits(10, 0x3e5)})});
       const auto result = Interpret(kProgram, function, {incoming},
                                     BytecodeInterpreterOptions(), &import_data);
-      if (tag == 0) {
-        EXPECT_THAT(result,
-                    IsOkAndHolds(InterpValue::MakeBool(function != "loaded")));
-      } else {
+      // EMPTY needs only the outer tag. Comparing the let binding also
+      // observes the malformed Inner when Wrapped is active.
+      if (tag == 1 && function == "loaded") {
         EXPECT_THAT(result, StatusIs(absl::StatusCode::kInternal,
                                      HasSubstr("malformed value")));
+      } else {
+        EXPECT_THAT(result, IsOkAndHolds(InterpValue::MakeBool(
+                                tag == 0 && function != "loaded")));
       }
     }
   }
@@ -4079,7 +4078,6 @@ fn main(x: Outer) -> (u32, Outer) {
       IsOkAndHolds(InterpValue::MakeTuple({InterpValue::MakeU32(12), dirty})));
 }
 
-// Negative test: Full observation reports errors despite earlier differences.
 TEST_F(BytecodeInterpreterTest, SemanticSumConstantObservationErrorOrder) {
   constexpr std::string_view kProgram = R"(
 enum Code: u2 { Valid = 0 }
@@ -4094,9 +4092,11 @@ fn ordered(x: Outer) -> bool {
 fn first_constructor(x: Outer) -> bool {
   match x { Outer::Wrap(_, _) => true, OTHER => false, _ => false }
 }
-fn alternatives(x: Outer) -> bool {
-  match (x, false) {
-    (Outer::Wrap(_, _), false) | (OTHER, true) => true,
+fn alternatives(x: Outer, take_first: bool) -> bool {
+  // Comparing this let binding would observe the malformed Inner.
+  let other = OTHER;
+  match (x, take_first) {
+    (Outer::Wrap(_, _), true) | (other, _) => true,
     _ => false,
   }
 }
@@ -4114,8 +4114,12 @@ fn alternatives(x: Outer) -> bool {
       StatusIs(absl::StatusCode::kInternal, HasSubstr("in sum `Inner`")));
   EXPECT_THAT(Interpret(kProgram, "first_constructor", {invalid_scrutinee}),
               IsOkAndHolds(InterpValue::MakeBool(true)));
+  EXPECT_THAT(Interpret(kProgram, "alternatives",
+                        {invalid_scrutinee, InterpValue::MakeBool(true)}),
+              IsOkAndHolds(InterpValue::MakeBool(true)));
   EXPECT_THAT(
-      Interpret(kProgram, "alternatives", {invalid_scrutinee}),
+      Interpret(kProgram, "alternatives",
+                {invalid_scrutinee, InterpValue::MakeBool(false)}),
       StatusIs(absl::StatusCode::kInternal, HasSubstr("in sum `Inner`")));
   EXPECT_THAT(
       Interpret(kProgram, "ordered", {invalid_scrutinee}),
