@@ -597,12 +597,14 @@ source-domain validation remains strict about malformed active nested tags,
 while nonzero inactive padding under a declared tag is valid. Ordinary numeric
 enum validation and raw-value equality and hashing are unchanged.
 
-This shallow rule applies to **constructor patterns**, not to patterns that
-compare against a value. A named constant, module-qualified value constant, or
-previously bound value uses full semantic equality, even if it holds a unit
-constructor. Source/bytecode equality validates both complete active values before
-returning true or false, including when their outer tags differ. See the
-constructor-versus-constant example under [`match`](#match-expression).
+In an ordinary `match`, a named compile-time constant denoting a fully
+specified sum value matches exactly like its constructors and payload values
+written out as a pattern. The rule depends on the constant's value, including
+when the value is computed or the constant's name is module-qualified.
+A pattern that refers to a previously bound runtime value uses equality
+instead. Source interpretation of equality checks both complete active values
+for malformed tags, even when their outer tags differ. See the example under
+[`match`](#match-expression).
 
 `zero!<Message>()` selects the constructor whose discriminant is zero, whether
 or not that constructor appears first, and recursively initializes its payload
@@ -1535,8 +1537,8 @@ fn f(t: (u8, u32)) -> u32 {
 }
 ```
 
-For sums, a constructor pattern and a constant holding that constructor have
-different observation depths:
+For sums, a named constant and its fully written constructor pattern match
+the same wire inputs, including inputs with malformed nested tags:
 
 ```dslx
 enum Inner : u2 {
@@ -1550,52 +1552,52 @@ enum Outer : u1 {
 }
 
 const EMPTY = Outer::Empty;
+const SMALL_FIVE = Outer::Wrapped(Inner::Small(u4:5));
 
-fn constructor_pattern(x: Outer) -> bool {
+fn matches_small_five(x: Outer) -> bool {
     match x {
-        Outer::Empty => false,
+        SMALL_FIVE => true,
+        _ => false,
+    }
+}
+
+fn is_wrapped(x: Outer) -> bool {
+    match x {
         Outer::Wrapped(_) => true,
-    }
-}
-
-fn constant_pattern(x: Outer) -> bool {
-    match x {
         EMPTY => false,
-        _ => true,
+    }
+}
+
+fn accepts(flag: bool, x: Outer, expected: Outer) -> bool {
+    match (flag, x) {
+        (true, _) | (_, expected) => true,
+        _ => false,
     }
 }
 ```
 
-`Outer::Empty` is constructor syntax: it checks the outer constructor, and
-`Outer::Wrapped(_)` does not inspect the inner constructor. `EMPTY` is a value
-constant: its comparison validates the complete active value of `x`, even
-when `x` has a different outer tag.
+`SMALL_FIVE` matches `Wrapped` containing `Small(5)`. For example, the raw
+`Outer` value `(bits[1]:1, (bits[10]:0x3e5,))` has the declared outer tag
+for `Wrapped` and the undeclared inner tag 3. Both source interpretation and
+hardware return false from `matches_small_five` because tag 3 differs from
+the tag for `Small`. They return true from `is_wrapped` because
+`Outer::Wrapped(_)` accepts any inner payload. The final `EMPTY` pattern
+covers `Outer::Empty`, so `is_wrapped` covers both constructors without a
+wildcard. A named constant counts toward coverage and may serve as the final
+pattern wherever its written-out pattern could.
 
-For example, the externally supplied raw `Outer` value
-`(bits[1]:1, (bits[10]:0x3e5,))` has the declared outer tag for `Wrapped` and
-the undeclared inner tag 3. In the source interpreter, `constructor_pattern`
-returns true, while `constant_pattern` reports an error when equality checks
-that inner tag. Both functions return true for well-formed `Wrapped` inputs.
-Nonzero inactive padding alone is valid and is preserved.
+For every subject type, an ordinary match tries arms from top to bottom and
+`|` alternatives within an arm from left to right. The first successful
+pattern selects its arm. If testing a pattern reports a source interpretation
+error, evaluation stops at that error.
 
-When a sum match has a declared outer tag, a top-level `_` selects its ordinary
-arm as soon as it is reached. The interpreter skips any later alternatives in
-that arm. Other uses of `|` have no general short-circuit guarantee. For
-example, let `x` be the same raw `Outer` value:
-
-```dslx-snippet
-match x {
-    _ | EMPTY => true,
-    invalid! => false,
-}
-```
-
-The source interpreter returns true because it reaches `_` before comparing
-`x` with `EMPTY`. Reverse the alternatives to `EMPTY | _` and the comparison
-reports the malformed inner tag before the interpreter reaches `_`. Generated
-hardware returns true in both orders. In hardware, comparing `Wrapped` with
-`Empty` gives false because their outer tags differ, so the reversed order
-also selects the wildcard's arm.
+In `accepts`, the subject is a tuple. When `flag` is true, `(true, _)` matches
+and the function returns true without testing `(_, expected)`. When `flag`
+is false, the second alternative compares `x` with the runtime argument
+`expected`. With the malformed `x` above, that comparison reports a source
+interpretation error. Evaluation stops before the final wildcard. Writing
+the two alternatives as separate arms with the same body gives the same
+result in each case.
 
 A sum constructor pattern selects fields by name and matches them in the
 order written in the pattern. The constructor declaration determines where
@@ -1641,14 +1643,12 @@ patterns cover every valid value, as in the `Message` example above. Numeric
 enums may likewise omit `_` when their declared values are covered. Aliases
 for the same numeric value count as one case.
 
-In a semantic-sum match, an arm containing a top-level `_` must be the last
-ordinary arm. Only a final `invalid!` or `invalid!(raw)` arm may follow it.
-For example,
-`match message { _ => u8:0, Message::Idle => u8:1 }` is a type error, not a
-redundant-pattern warning. If the wildcard shares its arm with another `|`
-alternative, a runtime match needs a final `invalid!` arm for the hardware
-fallback. A `const match` selects its arm during typechecking and needs no
-hardware fallback.
+A wildcard that matches the whole subject must be the last ordinary pattern
+for every subject type, including within its own `|` arm. For example,
+`u8:0 | _ => true` is legal in a match on a `u8`. Both `_ | u8:0 => true`
+and a separate ordinary arm after `_ => true` are type errors. A wildcard
+inside a pattern, such as `(_, false)`, only matches part of the subject and
+has no such restriction.
 
 A sum match may end with one `invalid!` or `invalid!(raw)` arm.
 `raw` binds the entire wire image as unsigned `bits[TAG_W + MAX_PAYLOAD_W]`.
@@ -1660,9 +1660,13 @@ If the outer tag is undeclared or no ordinary pattern matches, DSLX source
 interpretation reports an error, even when the match has an `invalid!` arm.
 In RTL simulation and synthesis, the same input selects the `invalid!` arm if
 present. Otherwise hardware evaluates the final ordinary arm. That arm must
-contain exactly one pattern, either `_` or a constructor pattern. Each bound
-name reads the payload bits specified by the constructors written in the
-pattern, even when the input tags differ.
+contain exactly one pattern: `_`, a constructor pattern, or a named
+compile-time constant denoting a fully specified sum value. A runtime sum
+match ending its ordinary arms with `P | _` therefore needs a separate
+`invalid!` arm. A `const match` selects its arm during typechecking and
+needs no hardware fallback. Each name bound by a final constructor pattern
+reads the payload bits specified by the constructors written in that pattern,
+even when the input tags differ.
 
 ```dslx
 enum Inner: u2 { A(u4) = 0, B = 1, }
@@ -1709,7 +1713,9 @@ fn test_f() {
 }
 ```
 
-Or on multiple patterns per arm using the `|` operator:
+An arm may use `|` to list several alternatives. For arm selection,
+`1 | 3 => 0` below is equivalent to two successive arms, `1 => 0` and
+`3 => 0`.
 
 ```dslx
 fn f(x: u32) -> u32 {
@@ -1731,8 +1737,8 @@ fn test_f() {
 
 `match` rejects exact duplicate patterns, including duplicates appearing after
 the match has already become exhaustive. It also rejects other fully covered
-patterns encountered before exhaustiveness. Except for the stricter wildcard-order
-rule for semantic sums above, a nonduplicate pattern appearing after earlier
+patterns encountered before exhaustiveness. Subject to the wildcard ordering
+rule above, a nonduplicate pattern appearing after earlier
 arms have already made the match exhaustive produces an
 `already_exhaustive_match` warning when enabled. This warning is disabled by
 default. `const match` performs the same overlap checks but does not emit
