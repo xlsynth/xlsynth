@@ -70,7 +70,8 @@ absl::Status ParseAndAcceptWithConverter(std::string_view module_text,
   channel_scope.EnterFunctionContext(tm.type_info, bindings);
   ProcConfigIrConverter converter(f, tm.type_info, &import_data, &proc_data,
                                   &channel_scope, bindings, proc_id);
-  return f->Accept(&converter);
+  XLS_RETURN_IF_ERROR(f->Accept(&converter));
+  return converter.Finalize();
 }
 
 TEST(ProcConfigIrConverterTest, BasicConversion) {
@@ -80,7 +81,10 @@ proc test_proc {
   x: u32;
   init { u32: 0 }
   config(c: chan<u32> in, ham_sandwich: u32) {
-    (c, ham_sandwich)
+    const match true {
+      true => (c, ham_sandwich),
+      false => (c, u32:0),
+    }
   }
   next(y: u32) {
     let y = y + x;
@@ -111,7 +115,11 @@ proc main {
   ProcId proc_id;
   proc_data.id_to_config_args[proc_id].push_back(&channel);
   proc_data.id_to_config_args[proc_id].push_back(Value(UBits(8, 32)));
-  XLS_EXPECT_OK(ParseAndAcceptWithConverter(kModule, conv, proc_id, proc_data));
+  XLS_ASSERT_OK(ParseAndAcceptWithConverter(kModule, conv, proc_id, proc_data));
+  EXPECT_EQ(proc_data.id_to_members.at(proc_id).at("c"),
+            ProcConfigValue(&channel));
+  EXPECT_EQ(proc_data.id_to_members.at(proc_id).at("x"),
+            ProcConfigValue(Value(UBits(8, 32))));
 }
 
 TEST(ProcConfigIrConverterTest, ConstMatchPayloadBindingInSpawnArgument) {
