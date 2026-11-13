@@ -130,6 +130,8 @@ proc test_proc {
       Pair::Fields { right: n, left: m, empty: _unused } => {
         spawn Child(n);
         spawn Child(m + u4:1);
+        let incremented = n + u4:2;
+        spawn Child(incremented);
         m
       },
     };
@@ -147,12 +149,12 @@ proc test_proc {
   ProcConversionData proc_data;
   XLS_ASSERT_OK(
       ParseAndAcceptWithConverter(kModule, conv, ProcId(), proc_data));
-  ASSERT_EQ(proc_data.id_to_config_args.size(), 4);
-  constexpr int kExpected[] = {11, 4, 3, 12};
+  ASSERT_EQ(proc_data.id_to_config_args.size(), 5);
+  constexpr int kExpected[] = {11, 4, 13, 3, 12};
   for (const auto& [id, args] : proc_data.id_to_config_args) {
     const int index = id.proc_instance_stack.back().second;
     ASSERT_GE(index, 0);
-    ASSERT_LT(index, 4);
+    ASSERT_LT(index, 5);
     EXPECT_THAT(args, ::testing::ElementsAre(
                           ProcConfigValue(Value(UBits(kExpected[index], 4)))));
   }
