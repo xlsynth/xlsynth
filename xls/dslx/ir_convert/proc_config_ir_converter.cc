@@ -88,7 +88,9 @@ absl::Status ProcConfigIrConverter::Finalize() {
   XLS_RET_CHECK_EQ(p->members().size(), final_tuple_->members().size());
   for (int i = 0; i < p->members().size(); i++) {
     ProcMember* member = p->members()[i];
-    ProcConfigValue value = node_to_ir_.at(final_tuple_->members()[i]);
+    const Expr* expr = final_tuple_->members()[i];
+    XLS_RETURN_IF_ERROR(MaterializeConfigValue(expr));
+    ProcConfigValue value = node_to_ir_.at(expr);
     proc_data_->id_to_members.at(proc_id_)[member->identifier()] = value;
     std::optional<ChannelOrArray> channel_or_array =
         ProcConfigValueToChannelOrArray(value);
@@ -192,12 +194,31 @@ absl::Status ProcConfigIrConverter::HandleInvocation(const Invocation* node) {
 }
 
 absl::Status ProcConfigIrConverter::MaterializeConfigValue(const Expr* expr) {
-  if (!node_to_ir_.contains(expr)) {
-    XLS_ASSIGN_OR_RETURN(InterpValue value, ConstexprEvaluator::EvaluateToValue(
-                                                import_data_, type_info_,
-                                                nullptr, bindings_, expr));
-    XLS_ASSIGN_OR_RETURN(node_to_ir_[expr], value.ConvertToIr());
+  if (node_to_ir_.contains(expr)) {
+    return absl::OkStatus();
   }
+  const Expr* result = expr;
+  if (const auto* match = dynamic_cast<const Match*>(expr);
+      match != nullptr && match->IsConst()) {
+    XLS_ASSIGN_OR_RETURN(uint32_t arm_id,
+                         type_info_->GetArmSelectionResult(match));
+    result = match->arms()[arm_id]->expr();
+  } else if (const auto* block = dynamic_cast<const StatementBlock*>(expr)) {
+    if (block->trailing_semi()) {
+      node_to_ir_[expr] = Value::Tuple({});
+      return absl::OkStatus();
+    }
+    result = std::get<Expr*>(block->statements().back()->wrapped());
+  }
+  if (result != expr) {
+    XLS_RETURN_IF_ERROR(MaterializeConfigValue(result));
+    node_to_ir_[expr] = ProcConfigValue(node_to_ir_.at(result));
+    return absl::OkStatus();
+  }
+  XLS_ASSIGN_OR_RETURN(InterpValue value,
+                       ConstexprEvaluator::EvaluateToValue(
+                           import_data_, type_info_, nullptr, bindings_, expr));
+  XLS_ASSIGN_OR_RETURN(node_to_ir_[expr], value.ConvertToIr());
   return absl::OkStatus();
 }
 
@@ -249,24 +270,7 @@ absl::Status ProcConfigIrConverter::HandleMatch(const Match* node) {
   if (node->IsConst()) {
     XLS_ASSIGN_OR_RETURN(uint32_t arm_id,
                          type_info_->GetArmSelectionResult(node));
-    const Expr* result = node->arms()[arm_id]->expr();
-    // Visit the arm once so channel declarations and spawns take effect.
-    XLS_RETURN_IF_ERROR(result->Accept(this));
-    while (const auto* block = dynamic_cast<const StatementBlock*>(result)) {
-      if (block->trailing_semi()) {
-        node_to_ir_[node] = Value::Tuple({});
-        return absl::OkStatus();
-      }
-      result = std::get<Expr*>(block->statements().back()->wrapped());
-    }
-    if (!node_to_ir_.contains(result)) {
-      XLS_RETURN_IF_ERROR(ConstexprEvaluator::Evaluate(
-          import_data_, type_info_, nullptr, bindings_, result));
-    }
-    if (node_to_ir_.contains(result) || type_info_->IsKnownConstExpr(result)) {
-      XLS_RETURN_IF_ERROR(MaterializeConfigValue(result));
-      node_to_ir_[node] = ProcConfigValue(node_to_ir_.at(result));
-    }
+    XLS_RETURN_IF_ERROR(node->arms()[arm_id]->expr()->Accept(this));
   }
 
   return absl::OkStatus();
