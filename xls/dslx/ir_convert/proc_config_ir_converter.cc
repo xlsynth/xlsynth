@@ -15,7 +15,6 @@
 
 #include <cstdint>
 #include <optional>
-#include <utility>
 #include <variant>
 #include <vector>
 
@@ -192,6 +191,16 @@ absl::Status ProcConfigIrConverter::HandleInvocation(const Invocation* node) {
   return absl::OkStatus();
 }
 
+absl::Status ProcConfigIrConverter::MaterializeConfigValue(const Expr* expr) {
+  if (!node_to_ir_.contains(expr)) {
+    XLS_ASSIGN_OR_RETURN(InterpValue value, ConstexprEvaluator::EvaluateToValue(
+                                                import_data_, type_info_,
+                                                nullptr, bindings_, expr));
+    XLS_ASSIGN_OR_RETURN(node_to_ir_[expr], value.ConvertToIr());
+  }
+  return absl::OkStatus();
+}
+
 absl::Status ProcConfigIrConverter::HandleLet(const Let* node) {
   VLOG(4) << "ProcConfigIrConverter::HandleLet : " << node->ToString();
   XLS_RETURN_IF_ERROR(node->rhs()->Accept(this));
@@ -221,11 +230,7 @@ absl::Status ProcConfigIrConverter::HandleLet(const Let* node) {
 
     // A leaf on the LHS of a Let will always be a NameDef.
     NameDef* def = std::get<NameDef*>(node->pattern());
-    if (!node_to_ir_.contains(node->rhs())) {
-      return absl::InternalError(
-          absl::StrCat("Let RHS not evaluated as constexpr: ", def->ToString(),
-                       " : ", node->rhs()->ToString()));
-    }
+    XLS_RETURN_IF_ERROR(MaterializeConfigValue(node->rhs()));
     ProcConfigValue value = node_to_ir_.at(node->rhs());
     std::optional<ChannelOrArray> channel_or_array =
         ProcConfigValueToChannelOrArray(value);
@@ -254,10 +259,13 @@ absl::Status ProcConfigIrConverter::HandleMatch(const Match* node) {
       }
       result = std::get<Expr*>(block->statements().back()->wrapped());
     }
-    if (auto it = node_to_ir_.find(result); it != node_to_ir_.end()) {
-      node_to_ir_[node] = ProcConfigValue(it->second);
-    } else if (auto value = type_info_->GetConstExprOption(result)) {
-      XLS_ASSIGN_OR_RETURN(node_to_ir_[node], value->ConvertToIr());
+    if (!node_to_ir_.contains(result)) {
+      XLS_RETURN_IF_ERROR(ConstexprEvaluator::Evaluate(
+          import_data_, type_info_, nullptr, bindings_, result));
+    }
+    if (node_to_ir_.contains(result) || type_info_->IsKnownConstExpr(result)) {
+      XLS_RETURN_IF_ERROR(MaterializeConfigValue(result));
+      node_to_ir_[node] = ProcConfigValue(node_to_ir_.at(result));
     }
   }
 
@@ -327,15 +335,8 @@ absl::Status ProcConfigIrConverter::HandleSpawn(const Spawn* node) {
   ProcId new_id = proc_id_factory_.CreateProcId(proc_id_, p);
   for (const auto& arg : node->config()->args()) {
     XLS_RETURN_IF_ERROR(arg->Accept(this));
-    if (auto it = node_to_ir_.find(arg); it != node_to_ir_.end()) {
-      config_args.push_back(it->second);
-    } else {
-      std::optional<InterpValue> value = type_info_->GetConstExprOption(arg);
-      XLS_RET_CHECK(value.has_value())
-          << "No config value for spawn argument: " << arg->ToString();
-      XLS_ASSIGN_OR_RETURN(Value ir_value, value->ConvertToIr());
-      config_args.push_back(std::move(ir_value));
-    }
+    XLS_RETURN_IF_ERROR(MaterializeConfigValue(arg));
+    config_args.push_back(node_to_ir_.at(arg));
   }
   proc_data_->id_to_config_args[new_id] = config_args;
 

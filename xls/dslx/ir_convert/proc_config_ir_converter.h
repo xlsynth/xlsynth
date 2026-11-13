@@ -104,6 +104,10 @@ class ProcConfigIrConverter : public AstNodeVisitorWithDefault {
   const FileTable& file_table() const { return import_data_->file_table(); }
 
  private:
+  // Evaluates a constexpr when visiting the expression did not supply a
+  // config value (for example, a channel).
+  absl::Status MaterializeConfigValue(const Expr* expr);
+
   Function* f_;
   TypeInfo* type_info_;
   ImportData* import_data_;
