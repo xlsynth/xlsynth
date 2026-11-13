@@ -3961,7 +3961,11 @@ fn nested(x: Root) -> bool {
   }
 }
 fn open_pattern(x: Root) -> bool {
-  match x { Root::Pair { second: Leaf::Some(Code::Ok), first: _ } => true, _ => false }
+  let expected = Leaf::Other;
+  match x {
+    Root::Pair { second: Leaf::Some(Code::Ok), first: expected } => true,
+    _ => false,
+  }
 }
 )";
   auto pair = [](int64_t payload) {
@@ -3978,7 +3982,8 @@ fn open_pattern(x: Root) -> bool {
     EXPECT_THAT(Interpret(kProgram, fn, {pair(0b0011)}),
                 StatusIs(absl::StatusCode::kInternal, HasSubstr("Code")));
   }
-  // Open patterns still observe named fields in written order.
+  // With a runtime reference, the malformed second field is reached before
+  // the first field has a chance to miss.
   EXPECT_THAT(Interpret(kProgram, "open_pattern", {pair(0b1011)}),
               StatusIs(absl::StatusCode::kInternal, HasSubstr("Code")));
 }
