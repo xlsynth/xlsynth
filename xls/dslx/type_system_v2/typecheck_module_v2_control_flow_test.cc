@@ -1167,13 +1167,14 @@ pub const FIRST = Option::Some(u1:1);
 pub const SECOND = Option::Some(u1:0);
 )";
   constexpr std::string_view kProgram = R"(#![feature(use_syntax)]
+import imported;
 use imported::{FIRST, SECOND};
 
 fn f() -> u32 {
   match FIRST {
+    imported::Option::None => u32:2,
     FIRST => u32:0,
     SECOND => u32:1,
-    _ => u32:2,
   }
 }
 )";
@@ -2487,6 +2488,17 @@ fn unused<N: u32>(x: uN[N]) -> bool {
 )",
       TypecheckFails(HasSubstr(
           "A whole-subject wildcard must be the last ordinary pattern.")));
+}
+
+TEST(TypecheckV2Test, WildcardAfterWholeSubjectBindingRemainsWarningOnly) {
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckResult result, TypecheckV2(R"(
+fn f(value: bool) -> bool {
+  match value { otherwise => otherwise, _ => false }
+}
+)"));
+  ASSERT_EQ(result.tm.warnings.warnings().size(), 1);
+  EXPECT_EQ(result.tm.warnings.warnings()[0].message,
+            "Match is already exhaustive before this pattern");
 }
 
 TEST(TypecheckV2Test, PatternMatch) {
