@@ -697,8 +697,12 @@ pub const LAST = make(false);
 use values::E;
 use values::LAST;
 
-fn probe(x: E) -> u4 {
-  match x { LAST => u4:7, _ => u4:3, invalid! => u4:9 }
+fn probe(x: E) -> (u4, u4) {
+  let selected = match x { LAST => u4:7, _ => u4:3, invalid! => u4:9 };
+  let fallback = match x {
+    E::Empty => u4:2, E::Bit(true) => u4:3, LAST => u4:7,
+  };
+  (selected, fallback)
 }
 )";
   ImportData import_data = CreateImportDataForTest();
@@ -715,15 +719,18 @@ fn probe(x: E) -> u4 {
   struct Case {
     uint64_t tag;
     bool payload;
-    uint64_t expected;
+    uint64_t selected;
+    uint64_t fallback;
   };
   constexpr Case kCases[] = {
-      {1, false, 7}, {1, true, 3}, {0, false, 3}, {3, false, 9}};
+      {1, false, 7, 7}, {1, true, 3, 3}, {0, false, 3, 2}, {3, false, 9, 7}};
   for (const Case& c : kCases) {
     const Value x = Value::Tuple(
         {Value(UBits(c.tag, 2)), Value::Tuple({Value::Bool(c.payload)})});
     XLS_ASSERT_OK_AND_ASSIGN(auto result, InterpretFunction(probe, {x}));
-    EXPECT_EQ(result.value, Value(UBits(c.expected, 4))) << x;
+    EXPECT_EQ(result.value, Value::Tuple({Value(UBits(c.selected, 4)),
+                                          Value(UBits(c.fallback, 4))}))
+        << x;
   }
 }
 
