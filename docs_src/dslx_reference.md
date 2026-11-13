@@ -1599,10 +1599,12 @@ interpretation error. Evaluation stops before the final wildcard. Writing
 the two alternatives as separate arms with the same body gives the same
 result in each case.
 
-A sum constructor pattern selects fields by name. If the pattern binds a
-name or otherwise leaves some of the value unspecified, it matches fields
-in the order written in the pattern. The constructor declaration determines
-where each field is stored in the packed value.
+A sum constructor pattern is fully specified when its constructors, literals,
+and compile-time constants determine the entire value. A pattern that binds
+a name, uses a wildcard, or compares a field with a runtime value is open,
+even if it lists every field. An open pattern matches named fields in the
+order written in the pattern. The constructor declaration determines where
+each field is stored in the packed value.
 
 ```dslx
 enum Message {
@@ -1621,19 +1623,30 @@ Here the first `n` binds the value of `right`. The second `n` compares
 `left` with that value. The function returns true for `left: 7, right: 7`
 and false for `left: 7, right: 9`.
 
-When a sum constructor pattern specifies the complete value, it tests named
-fields in declaration order and stops at the first mismatch or source error.
+A fully specified sum constructor pattern tests named fields in declaration
+order and stops at the first mismatch or source error.
 For example, `Message::Pair { right: u8:9, left: u8:7 }` tests `left`
 first because `Pair` declares it first. If `left` differs from 7, the
 pattern skips `right`.
 
-A fully specified constructor can name its tuple payload with a constant.
-Suppose `Packet` has a `Data((Inner, bool))` variant and `PAIR` is a
-constant with value `(Inner::Small(u4:5), true)`. Then `Packet::Data(PAIR)`
-matches exactly like `Packet::Data((Inner::Small(u4:5), true))`. An
-undeclared inner tag fails the test for `Small`. Used on its own as a
-pattern on a tuple, `PAIR` compares the tuples using ordinary equality,
-which reports a source error for that malformed inner value.
+The distinction also matters when a constant names a tuple inside a sum
+constructor. Using `Inner` from the example above, declare:
+
+```dslx-snippet
+enum Packet {
+    Both((Inner, bool), bool),
+}
+const PAIR = (Inner::Small(u4:5), true);
+```
+
+Consider a `Both` input whose `Inner` tag is undeclared and whose two
+booleans are true. The fully specified pattern `Packet::Both(PAIR, true)`
+matches like `Packet::Both((Inner::Small(u4:5), true), true)`: the inner
+tag differs from `Small`, so the pattern fails to match. In the open
+pattern `Packet::Both(PAIR, _)`, `PAIR` compares the input tuple with the
+constant using ordinary equality. That comparison reports a source error
+for the undeclared inner tag, just as a standalone `PAIR` tuple pattern
+would.
 
 Named constant matching also works with nested tuples; for example:
 
