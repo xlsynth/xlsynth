@@ -4122,16 +4122,22 @@ fn alternatives(x: Outer) -> bool {
       StatusIs(absl::StatusCode::kInternal, HasSubstr("in sum `Inner`")));
 }
 
-// Verifies: First observation validates nested values before tag rejection.
-// Catches: Skipped validation after a successful earlier OR alternative.
-TEST_F(BytecodeInterpreterTest,
-       SemanticSumMatchKeepsNestedObservationFailures) {
+TEST_F(BytecodeInterpreterTest, SemanticSumNestedPatternAndMatchEntry) {
   constexpr std::string_view kProgram = R"(
 enum Code: u2 { Valid = 0 }
 enum Inner: u2 { Empty = 0, Carry(Code) = 1, Big(u8) = 2 }
 enum Outer: u1 { Wrap(Inner) = 0, Wide(u16) = 1 }
-fn observe(x: Outer) -> bool {
+fn nested_pattern(x: Outer) -> bool {
   match x { Outer::Wrap(Inner::Empty) => false, _ => true }
+}
+fn nested_match(x: Outer) -> bool {
+  match x {
+    Outer::Wrap(inner) => match inner { Inner::Empty => false, _ => true },
+    _ => false,
+  }
+}
+fn matching_payload(x: Outer) -> bool {
+  match x { Outer::Wrap(Inner::Carry(code)) => code == Code::Valid, _ => false }
 }
 fn alternatives(x: Outer) -> bool {
   match (x, false) {
@@ -4143,6 +4149,7 @@ fn ignore(x: Outer) -> bool {
   match x { Outer::Wrap(_) => true, _ => false }
 }
 )";
+  // Carry(Valid), Carry(undeclared Code), and an undeclared Inner tag.
   for (int64_t inner : {0x100, 0x103, 0x300}) {
     SCOPED_TRACE(inner);
     const InterpValue incoming = InterpValue::MakeTuple(
@@ -4150,15 +4157,26 @@ fn ignore(x: Outer) -> bool {
          InterpValue::MakeTuple({InterpValue::MakeUBits(16, inner)})});
     EXPECT_THAT(Interpret(kProgram, "ignore", {incoming}),
                 IsOkAndHolds(InterpValue::MakeBool(true)));
-    for (std::string_view function : {"observe", "alternatives"}) {
+    for (std::string_view function : {"nested_pattern", "alternatives"}) {
       SCOPED_TRACE(function);
-      const auto result = Interpret(kProgram, function, {incoming});
-      if (inner == 0x100) {
-        EXPECT_THAT(result, IsOkAndHolds(InterpValue::MakeBool(true)));
-      } else {
-        EXPECT_THAT(result, StatusIs(absl::StatusCode::kInternal,
-                                     HasSubstr("malformed value")));
-      }
+      EXPECT_THAT(Interpret(kProgram, function, {incoming}),
+                  IsOkAndHolds(InterpValue::MakeBool(true)));
+    }
+    const auto nested_match = Interpret(kProgram, "nested_match", {incoming});
+    if (inner == 0x100) {
+      EXPECT_THAT(nested_match, IsOkAndHolds(InterpValue::MakeBool(true)));
+    } else {
+      EXPECT_THAT(nested_match, StatusIs(absl::StatusCode::kInternal,
+                                         HasSubstr("malformed value")));
+    }
+    const auto matching_payload =
+        Interpret(kProgram, "matching_payload", {incoming});
+    if (inner == 0x103) {
+      EXPECT_THAT(matching_payload, StatusIs(absl::StatusCode::kInternal,
+                                             HasSubstr("malformed value")));
+    } else {
+      EXPECT_THAT(matching_payload,
+                  IsOkAndHolds(InterpValue::MakeBool(inner == 0x100)));
     }
   }
 }
