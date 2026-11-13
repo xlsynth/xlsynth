@@ -163,6 +163,14 @@ class ConstantFoldingContext {
       return struct_def->file()->Make<Struct>(struct_def->loc(),
                                               folded_member_defs);
     }
+    if (auto* union_def = dynamic_cast<Union*>(data_type); union_def) {
+      XLS_ASSIGN_OR_RETURN(std::vector<Def*> folded_member_defs,
+                           FoldTypesOfDefs(union_def->members()));
+      auto* folded_union =
+          union_def->file()->Make<Union>(union_def->loc(), folded_member_defs);
+      XLS_RETURN_IF_ERROR(folded_union->FlatBitCountAsInt64().status());
+      return folded_union;
+    }
     if (auto* type_def_type = dynamic_cast<TypedefType*>(data_type);
         type_def_type) {
       VerilogFile* file = type_def_type->file();

@@ -243,13 +243,16 @@ class TypeInferenceVisitor {
       return TraverseEnum(enum_def);
     }
     if (auto* struct_def = dynamic_cast<Struct*>(data_type); struct_def) {
-      return TraverseStruct(struct_def);
+      return TraverseMemberTypes(struct_def->members());
+    }
+    if (auto* union_def = dynamic_cast<Union*>(data_type); union_def) {
+      return TraverseMemberTypes(union_def->members());
     }
     return absl::OkStatus();
   }
 
-  absl::Status TraverseStruct(Struct* struct_def) {
-    for (Def* def : struct_def->members()) {
+  absl::Status TraverseMemberTypes(absl::Span<Def* const> members) {
+    for (Def* def : members) {
       XLS_RETURN_IF_ERROR(TraverseDataType(def->data_type()));
     }
     return absl::OkStatus();
