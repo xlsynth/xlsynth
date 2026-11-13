@@ -198,17 +198,17 @@ class TypeAnnotationDependencyChecker : public AstNodeRecursiveVisitor {
 
 bool IsConstantPatternReference(const NameRef& ref) {
   const AstNode* definer = ref.GetDefiner();
-  if (IsOneOf<const ConstantDef, const ParametricBinding, const UseTreeEntry>(
-          definer)) {
-    return true;
-  }
   if (definer == nullptr && !ref.IsBuiltin()) {
-    // A local const name in a singleton tuple pattern, or a cloned local
-    // declaration, can have only its lexical link back to the binding.
+    // Parametrics, destructured local consts, and cloned declarations can
+    // have only a lexical link from the name back to its binding.
     definer = ToAstNode(ref.name_def())->parent();
     while (dynamic_cast<const TuplePattern*>(definer) != nullptr) {
       definer = definer->parent();
     }
+  }
+  if (IsOneOf<const ConstantDef, const ParametricBinding, const UseTreeEntry>(
+          definer)) {
+    return true;
   }
   const auto* binding = dynamic_cast<const Let*>(definer);
   return binding != nullptr && binding->is_const();
