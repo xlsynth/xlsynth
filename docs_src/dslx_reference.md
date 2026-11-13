@@ -1571,14 +1571,31 @@ fn constant_pattern(x: Outer) -> bool {
 constant: its comparison validates the complete active value of `x`, even
 when `x` has a different outer tag.
 
-For example, an externally supplied raw `Outer` with tag 1 and ten-bit payload
-slot `0x3e5` contains an undeclared inner tag 3. In source/bytecode
-interpretation, `constructor_pattern` returns true, while `constant_pattern`
-fails when equality observes that inner tag. Both functions return true for
-well-formed `Wrapped` inputs. Nonzero inactive padding alone is valid and is
-not rewritten. This example concerns interpreter observation, not a DSLX
-source constructor for malformed data or a change to generated-hardware
-malformed-value fallback.
+For example, the externally supplied raw `Outer` value
+`(bits[1]:1, (bits[10]:0x3e5,))` has the declared outer tag for `Wrapped` and
+the undeclared inner tag 3. In the source interpreter, `constructor_pattern`
+returns true, while `constant_pattern` reports an error when equality checks
+that inner tag. Both functions return true for well-formed `Wrapped` inputs.
+Nonzero inactive padding alone is valid and is preserved.
+
+When a sum match has a declared outer tag, a top-level `_` selects its ordinary
+arm as soon as it is reached. The interpreter skips any later alternatives in
+that arm. Other uses of `|` have no general short-circuit guarantee. For
+example, let `x` be the same raw `Outer` value:
+
+```dslx-snippet
+match x {
+    _ | EMPTY => true,
+    invalid! => false,
+}
+```
+
+The source interpreter returns true because it reaches `_` before comparing
+`x` with `EMPTY`. Reverse the alternatives to `EMPTY | _` and the comparison
+reports the malformed inner tag before the interpreter reaches `_`. Generated
+hardware returns true in both orders. In hardware, comparing `Wrapped` with
+`Empty` gives false because their outer tags differ, so the reversed order
+also selects the wildcard's arm.
 
 Named constant matching also works with nested tuples; for example:
 
@@ -1605,10 +1622,11 @@ for the same numeric value count as one case.
 
 In a semantic-sum match, an arm containing a top-level `_` must be the last
 ordinary arm. Only a final `invalid!` or `invalid!(raw)` arm may follow it.
-This rule also applies when `_` is one of the arm's `|` alternatives, whether
-or not the match has an `invalid!` arm. For example,
+For example,
 `match message { _ => u8:0, Message::Idle => u8:1 }` is a type error, not a
-redundant-pattern warning.
+redundant-pattern warning. If the wildcard shares its arm with another `|`
+alternative, a final `invalid!` arm is required because the grouped arm cannot
+serve as the hardware fallback.
 
 A sum match may end with one `invalid!` or `invalid!(raw)` arm.
 `raw` binds the entire wire image as unsigned `bits[TAG_W + MAX_PAYLOAD_W]`.
