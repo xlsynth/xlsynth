@@ -687,6 +687,46 @@ fn f() -> imported::Option {
   EXPECT_EQ(package_data.ir_to_dslx.size(), 1);
 }
 
+TEST(FunctionConverterTest, MatchesUseImportedComputedSumConstant) {
+  constexpr std::string_view kValues = R"(
+pub enum E: u2 { Empty = 0, Bit(bool) = 1, }
+fn make(value: bool) -> E { E::Bit(value) }
+pub const LAST = make(false);
+)";
+  constexpr std::string_view kProgram = R"(#![feature(use_syntax)]
+use values::E;
+use values::LAST;
+
+fn probe(x: E) -> u4 {
+  match x { LAST => u4:7, _ => u4:3, invalid! => u4:9 }
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK(ParseAndTypecheck(kValues, "values.x", "values", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+  PackageConversionData package = MakeConversionData("test_module_package");
+  XLS_ASSERT_OK(ConvertOneFunctionIntoPackage(tm.module, "probe", &import_data,
+                                              /*parametric_env=*/nullptr,
+                                              ConvertOptions(), &package));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * probe, package.package->GetFunction(
+                                                      "__test_module__probe"));
+  struct Case {
+    uint64_t tag;
+    bool payload;
+    uint64_t expected;
+  };
+  constexpr Case kCases[] = {
+      {1, false, 7}, {1, true, 3}, {0, false, 3}, {3, false, 9}};
+  for (const Case& c : kCases) {
+    const Value x = Value::Tuple(
+        {Value(UBits(c.tag, 2)), Value::Tuple({Value::Bool(c.payload)})});
+    XLS_ASSERT_OK_AND_ASSIGN(auto result, InterpretFunction(probe, {x}));
+    EXPECT_EQ(result.value, Value(UBits(c.expected, 4))) << x;
+  }
+}
+
 TEST(FunctionConverterTest, LowersSemanticSumAsSharedPayloadSlot) {
   constexpr std::string_view kProgram = R"(
 enum Message: u3 {
