@@ -1597,6 +1597,27 @@ hardware returns true in both orders. In hardware, comparing `Wrapped` with
 `Empty` gives false because their outer tags differ, so the reversed order
 also selects the wildcard's arm.
 
+A sum constructor pattern selects fields by name and matches them in the
+order written in the pattern. The constructor declaration determines where
+each field is stored in the packed value.
+
+```dslx
+enum Message {
+    Pair { left: u8, right: u8 },
+}
+
+fn fields_equal(x: Message) -> bool {
+    match x {
+        Message::Pair { right: n, left: n } => true,
+        _ => false,
+    }
+}
+```
+
+Here the first `n` binds the value of `right`. The second `n` compares
+`left` with that value. The function returns true for `left: 7, right: 7`
+and false for `left: 7, right: 9`.
+
 Named constant matching also works with nested tuples; for example:
 
 ```dslx
