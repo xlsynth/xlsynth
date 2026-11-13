@@ -39,11 +39,14 @@
 #include "xls/dslx/errors.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/ast_node.h"
+#include "xls/dslx/frontend/ast_utils.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/frontend/token_utils.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/interp_value_utils.h"
+#include "xls/dslx/sum_type_encoding.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/type_system/unwrap_meta_type.h"
@@ -458,6 +461,25 @@ absl::Status MatchPatternToType(
         process_pattern_node,
     const PatternTree& pattern, const TypeOrAnnotation type,
     const FileTable& file_table, std::optional<InterpValue> constexpr_value) {
+  if (const auto* constructor =
+          std::get_if<SumVariantPayloadPattern*>(&pattern);
+      constructor != nullptr && constexpr_value.has_value()) {
+    const auto* concrete = std::get_if<const Type*>(&type);
+    XLS_RET_CHECK(concrete != nullptr && (*concrete)->IsSum());
+    const SumType& sum_type = (*concrete)->AsSum();
+    XLS_ASSIGN_OR_RETURN(SumTypeEncoding::VariantInfo variant,
+                         SumTypeEncoding(sum_type).GetVariant(
+                             (*constructor)->constructor_ref()->attr()));
+    XLS_ASSIGN_OR_RETURN(std::vector<InterpValue> members,
+                         GetSumPayloadValues(sum_type, *constexpr_value));
+    return ForEachSumPayloadSubpattern(
+        **constructor, variant.variant->variant(),
+        [&](const PatternTree& member, int64_t index) {
+          return MatchPatternToType(process_pattern_node, member,
+                                    &variant.variant->GetMemberType(index),
+                                    file_table, members.at(index));
+        });
+  }
   if (!std::holds_alternative<TuplePattern*>(pattern)) {
     XLS_RETURN_IF_ERROR(
         process_pattern_node(ToAstNode(pattern), type, constexpr_value));
