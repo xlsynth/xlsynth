@@ -689,6 +689,7 @@ class AstCloner : public AstNodeVisitor {
         n->span(), absl::down_cast<Expr*>(old_to_new_.at(n->callee())),
         new_args, CloneParametrics(n->explicit_parametrics()), n->in_parens(),
         new_originator);
+    cloned->set_label(n->label());
     old_to_new_[n] = cloned;
     return absl::OkStatus();
   }
