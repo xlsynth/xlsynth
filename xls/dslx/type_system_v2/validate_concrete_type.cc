@@ -126,13 +126,18 @@ bool IsValidMalformedSumFallbackPattern(const PatternTree& pattern,
       std::holds_alternative<SumVariantPayloadPattern*>(pattern)) {
     return true;
   } else if (const auto* ref = std::get_if<NameRef*>(&pattern)) {
-    return type_info.IsKnownConstExpr(*ref);
-  } else if (std::holds_alternative<ColonRef*>(pattern)) {
-    if (type_info.IsKnownConstExpr(std::get<ColonRef*>(pattern))) {
+    const AstNode* definer = (*ref)->GetDefiner();
+    if (const auto* binding = dynamic_cast<const Let*>(definer)) {
+      // A folded `let` still uses ordinary value comparison at run time.
+      return binding->is_const();
+    }
+    return IsOneOf<const ConstantDef, const ParametricBinding,
+                   const UseTreeEntry>(definer);
+  } else if (const auto* ref = std::get_if<ColonRef*>(&pattern)) {
+    if (type_info.IsKnownConstExpr(*ref)) {
       return true;
     }
-    std::optional<const AstNode*> target =
-        table.GetColonRefTarget(std::get<ColonRef*>(pattern));
+    std::optional<const AstNode*> target = table.GetColonRefTarget(*ref);
     return target.has_value() &&
            (*target)->kind() == AstNodeKind::kSumVariant &&
            absl::down_cast<const SumVariant*>(*target)->is_unit();

@@ -1594,6 +1594,20 @@ fn f(x: E, value: E) -> bool {
               TypecheckFails(HasSubstr("must end with a single pattern")));
 }
 
+TEST(TypecheckV2Test, SumMatchDistinguishesLocalConstantFromFoldedLet) {
+  const std::string program = R"(
+enum E { A, B(u1) }
+fn f(x: E) -> bool {
+  $0 last = E::B(u1:1);
+  match x { E::A => false, E::B(u1:0) => false, last => true }
+}
+)";
+  EXPECT_THAT(absl::Substitute(program, "const"),
+              TypecheckSucceeds(::testing::_));
+  EXPECT_THAT(absl::Substitute(program, "let"),
+              TypecheckFails(HasSubstr("must end with a single pattern")));
+}
+
 TEST(TypecheckV2Test, SumMatchQualifiedValueConstantWithInvalidArm) {
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK(TypecheckV2(R"(
