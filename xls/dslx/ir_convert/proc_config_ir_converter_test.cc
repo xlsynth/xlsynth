@@ -116,8 +116,8 @@ proc main {
 
 TEST(ProcConfigIrConverterTest, ConstMatchPayloadBindingInSpawnArgument) {
   constexpr std::string_view kModule = R"(
-enum Pair { Fields { left: u4, right: u4 } }
-const X = Pair::Fields { left: u4:3, right: u4:11 };
+enum Pair { Fields { left: u4, right: u4, empty: u8[0] } }
+const X = Pair::Fields { left: u4:3, right: u4:11, empty: u8[0]:[] };
 proc Child {
   x: u4;
   config(x: u4) { (x,) }
@@ -126,9 +126,17 @@ proc Child {
 }
 proc test_proc {
   config() {
-    const match X {
-      Pair::Fields { right: n, left: _ } => { spawn Child(n); },
+    let a = const match X {
+      Pair::Fields { right: n, left: m, empty: _unused } => {
+        spawn Child(n);
+        spawn Child(m + u4:1);
+        m
+      },
     };
+    spawn Child(a);
+    spawn Child(const match X {
+      Pair::Fields { right: n, left: _, empty: _ } => n + u4:1,
+    });
     ()
   }
   init { () }
@@ -139,9 +147,15 @@ proc test_proc {
   ProcConversionData proc_data;
   XLS_ASSERT_OK(
       ParseAndAcceptWithConverter(kModule, conv, ProcId(), proc_data));
-  ASSERT_EQ(proc_data.id_to_config_args.size(), 1);
-  EXPECT_THAT(proc_data.id_to_config_args.begin()->second,
-              ::testing::ElementsAre(ProcConfigValue(Value(UBits(11, 4)))));
+  ASSERT_EQ(proc_data.id_to_config_args.size(), 4);
+  constexpr int kExpected[] = {11, 4, 3, 12};
+  for (const auto& [id, args] : proc_data.id_to_config_args) {
+    const int index = id.proc_instance_stack.back().second;
+    ASSERT_GE(index, 0);
+    ASSERT_LT(index, 4);
+    EXPECT_THAT(args, ::testing::ElementsAre(
+                          ProcConfigValue(Value(UBits(kExpected[index], 4)))));
+  }
 }
 
 TEST(ProcConfigIrConverterTest, CatchesMissingArgMap) {

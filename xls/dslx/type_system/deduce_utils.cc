@@ -479,8 +479,7 @@ absl::Status MatchPatternToType(
                                     &variant.variant->GetMemberType(index),
                                     file_table, members.at(index));
         });
-  }
-  if (!std::holds_alternative<TuplePattern*>(pattern)) {
+  } else if (!std::holds_alternative<TuplePattern*>(pattern)) {
     XLS_RETURN_IF_ERROR(
         process_pattern_node(ToAstNode(pattern), type, constexpr_value));
     return absl::OkStatus();

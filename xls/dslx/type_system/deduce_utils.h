@@ -109,6 +109,9 @@ absl::StatusOr<std::pair<int64_t, int64_t>> GetTupleSizes(
 // the node/type pairs according to the `process_pattern_node` function.
 // If `constexpr_value` is provided for the pattern, the appropriate
 // subvalue will also be passed into `process_pattern_node`.
+// For a selected constructor pattern, pass its concrete sum type and matching
+// value to visit the active payload members. Without a value a constructor
+// is treated as a leaf.
 //
 // For example:
 //
