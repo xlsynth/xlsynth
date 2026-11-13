@@ -490,18 +490,6 @@ class TypeValidator : public AstNodeVisitorWithDefault {
     XLS_RET_CHECK(matched_type.has_value());
 
     Type* matched = const_cast<Type*>(*matched_type);
-    bool saw_wildcard = false;
-    for (const MatchArm* arm : node->arms()) {
-      for (const PatternTree& pattern : arm->patterns()) {
-        if (saw_wildcard && !IsInvalidPattern(pattern)) {
-          return TypeInferenceErrorStatus(
-              GetPatternSpan(pattern), *matched_type,
-              "A whole-subject wildcard must be the last ordinary pattern.",
-              file_table_);
-        }
-        saw_wildcard = IsWildcardLeaf(pattern);
-      }
-    }
     MatchArm* malformed_fallback_arm = nullptr;
     if (const auto* matched_sum = dynamic_cast<const SumType*>(*matched_type)) {
       if (!HasInvalidPattern(*node)) {

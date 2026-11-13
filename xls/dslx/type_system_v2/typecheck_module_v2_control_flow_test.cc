@@ -2479,6 +2479,14 @@ fn f(x: (bool, bool)) -> bool {
   match x { (_, false) => false, (false, true) | _ => true }
 }
 )"));
+  EXPECT_THAT(
+      R"(
+fn unused<N: u32>(x: uN[N]) -> bool {
+  match x { _ => true, uN[N]:0 => false }
+}
+)",
+      TypecheckFails(HasSubstr(
+          "A whole-subject wildcard must be the last ordinary pattern.")));
 }
 
 TEST(TypecheckV2Test, PatternMatch) {
