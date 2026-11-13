@@ -82,8 +82,8 @@ proc test_proc {
   init { u32: 0 }
   config(c: chan<u32> in, ham_sandwich: u32) {
     const match true {
-      true => (c, ham_sandwich),
-      false => (c, u32:0),
+      true => (c, u32:8),
+      false => (c, ham_sandwich),
     }
   }
   next(y: u32) {
