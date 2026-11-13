@@ -2075,8 +2075,7 @@ absl::Status BytecodeEmitter::HandleMatch(const Match* node) {
   if (reuse_sum_observations) {
     Add(Bytecode(node->matched()->span(), Bytecode::Op::kBeginMatch));
   }
-  const bool is_sum_match = (*type)->IsSum();
-  if (is_sum_match) {
+  if ((*type)->IsSum()) {
     Add(Bytecode::MakeAssertWellFormed(node->matched()->span(),
                                        (*type)->CloneToUnique()));
   }
@@ -2095,37 +2094,30 @@ absl::Status BytecodeEmitter::HandleMatch(const Match* node) {
     }
 
     const std::vector<PatternTree>& patterns = arm->patterns();
-    // First, prime the stack with all the copies of the matchee we'll need.
-    size_t pattern_count = 0;
-    for (const PatternTree& pattern : patterns) {
+    std::vector<size_t> jumps_to_body;
+    for (size_t i = 0; i < patterns.size(); ++i) {
+      const PatternTree& pattern = patterns[i];
       Add(Bytecode::MakeDup(node->matched()->span()));
-      ++pattern_count;
-      // A top-level wildcard accepts any valid sum without observing its
-      // payload. Later alternatives must not observe it either.
-      if (is_sum_match && IsWildcardLeaf(pattern)) {
-        break;
-      }
-    }
-
-    for (size_t pattern_idx = 0; pattern_idx < pattern_count; ++pattern_idx) {
-      // Then we match each arm. We OR with the prev. result (if there is one)
-      // and swap to the next copy of the matchee, unless this is the last
-      // pattern.
-      const PatternTree& pattern = patterns[pattern_idx];
       XLS_ASSIGN_OR_RETURN(Bytecode::MatchArmItem arm_item,
                            HandlePatternExpr(pattern, type.value()));
       Add(Bytecode::MakeMatchArm(GetPatternSpan(pattern), arm_item));
-
-      if (pattern_idx != 0) {
-        Add(Bytecode::MakeLogicalOr(GetPatternSpan(pattern)));
-      }
-      if (pattern_idx != pattern_count - 1) {
-        Add(Bytecode::MakeSwap(GetPatternSpan(pattern)));
+      // A successful alternative skips every remaining test in the arm.
+      if (i + 1 < patterns.size()) {
+        jumps_to_body.push_back(bytecode_.size());
+        Add(Bytecode::MakeJumpRelIf(GetPatternSpan(pattern),
+                                    Bytecode::kPlaceholderJumpAmount));
       }
     }
     Add(Bytecode::MakeInvert(arm->span()));
     jumps_to_next.push_back(bytecode_.size());
     Add(Bytecode::MakeJumpRelIf(arm->span(), Bytecode::kPlaceholderJumpAmount));
+    if (!jumps_to_body.empty()) {
+      size_t body_offset = bytecode_.size();
+      Add(Bytecode::MakeJumpDest(arm->span()));
+      for (size_t offset : jumps_to_body) {
+        bytecode_.at(offset).PatchJumpTarget(body_offset - offset);
+      }
+    }
     // Pop the value being matched since now we're going to produce the final
     // result.
     Add(Bytecode::MakePop(arm->span()));
