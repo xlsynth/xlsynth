@@ -14,6 +14,7 @@
 
 #include "xls/codegen/vast/fold_vast_constants.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -349,6 +350,60 @@ TEST_F(FoldVastConstantsTest, FoldParameterizedPackedAggregate) {
               IsOkAndHolds(8));
   EXPECT_THAT(FoldConstantsAndGetBitCount(file_.Make<Union>(loc, members)),
               IsOkAndHolds(8));
+}
+
+TEST_F(FoldVastConstantsTest, FoldUnionPreservesMembersAndNestedTypes) {
+  SourceInfo loc(SourceLocation(Fileno(0), Lineno(1), Colno(1)));
+  SourceInfo member_loc(SourceLocation(Fileno(0), Lineno(2), Colno(3)));
+  auto* width = module_->AddParameter("WIDTH", BareLiteral(8), loc);
+  auto* array_type = file_.Make<PackedArrayType>(
+      loc, file_.ScalarType(loc), std::vector<Expression*>{width},
+      /*dims_are_max=*/false);
+  auto* struct_type =
+      file_.Make<Struct>(loc, std::vector<Def*>{file_.Make<Def>(
+                                  loc, "array", DataKind::kLogic, array_type)});
+  auto* initializer = BareLiteral(0);
+  std::vector<Def*> members{
+      file_.Make<Def>(member_loc, "nested", DataKind::kUser, struct_type,
+                      initializer),
+      file_.Make<Def>(
+          loc, "bits", DataKind::kLogic,
+          file_.Make<BitVectorType>(loc, width, /*is_signed=*/false))};
+  auto* original = file_.Make<Union>(loc, members);
+
+  XLS_ASSERT_OK_AND_ASSIGN(DataType * folded, FoldVastConstants(original));
+  auto* folded_union = dynamic_cast<Union*>(folded);
+  ASSERT_NE(folded_union, nullptr);
+  EXPECT_THAT(folded_union->FlatBitCountAsInt64(), IsOkAndHolds(8));
+  EXPECT_EQ(folded_union->loc().locations, loc.locations);
+  ASSERT_EQ(folded_union->members().size(), members.size());
+  for (size_t i = 0; i < members.size(); ++i) {
+    EXPECT_EQ(folded_union->members()[i]->GetName(), members[i]->GetName());
+    EXPECT_EQ(folded_union->members()[i]->data_kind(), members[i]->data_kind());
+    EXPECT_EQ(folded_union->members()[i]->loc().locations,
+              members[i]->loc().locations);
+    EXPECT_EQ(folded_union->members()[i]->init(), members[i]->init());
+  }
+  auto* folded_struct =
+      dynamic_cast<Struct*>(folded_union->members()[0]->data_type());
+  ASSERT_NE(folded_struct, nullptr);
+  EXPECT_NE(
+      dynamic_cast<PackedArrayType*>(folded_struct->members()[0]->data_type()),
+      nullptr);
+}
+
+TEST_F(FoldVastConstantsTest, FoldUnionRejectsUnequalFoldedWidths) {
+  SourceInfo loc;
+  auto* width = module_->AddParameter("WIDTH", BareLiteral(8), loc);
+  auto* union_type = file_.Make<Union>(
+      loc, std::vector<Def*>{
+               file_.Make<Def>(loc, "eight", DataKind::kLogic,
+                               file_.Make<BitVectorType>(loc, width,
+                                                         /*is_signed=*/false)),
+               file_.Make<Def>(loc, "nine", DataKind::kLogic,
+                               file_.BitVectorType(9, loc))});
+  // Check the folding result itself. A successful fold must have a valid width.
+  EXPECT_FALSE(FoldVastConstants(union_type).ok());
 }
 
 TEST_F(FoldVastConstantsTest, FoldToInt64WithZeroExtension) {
