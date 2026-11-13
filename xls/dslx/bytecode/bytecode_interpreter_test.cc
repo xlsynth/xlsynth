@@ -4631,6 +4631,32 @@ fn nested(x: Wrapped) -> u32 {
               IsOkAndHolds(InterpValue::MakeU32(0)));
 }
 
+TEST_F(BytecodeInterpreterTest, IfLetLoweringPreservesLocalConstMatchPattern) {
+  constexpr std::string_view kProgram = R"(
+enum Inner: u2 { Small(u4) = 0, Big(u8) = 1 }
+enum E: u2 { A = 0, B(Inner) = 1 }
+
+fn contains_if_let(x: E) -> bool {
+  if let E::B(_) = x { true } else { false }
+}
+
+fn main(x: E) -> bool {
+  const LAST = E::A;
+  match x { LAST => true, _ => false }
+}
+)";
+  // Lowering the unrelated if let clones the module. LAST still denotes the
+  // constructor A, so an input tagged B misses without observing its child.
+  const InterpValue malformed_child = internal::CreateEncodedSumTuple(
+      InterpValue::MakeUBits(2, 1), InterpValue::MakeUBits(10, 0x3e5));
+  EXPECT_THAT(Interpret(kProgram, "main", {malformed_child}),
+              IsOkAndHolds(InterpValue::MakeBool(false)));
+  const InterpValue a = internal::CreateEncodedSumTuple(
+      InterpValue::MakeUBits(2, 0), InterpValue::MakeUBits(10, 0x3ff));
+  EXPECT_THAT(Interpret(kProgram, "main", {a}),
+              IsOkAndHolds(InterpValue::MakeBool(true)));
+}
+
 TEST_F(BytecodeInterpreterTest, ZeroMacroSemanticSumUsesZeroDiscriminant) {
   constexpr std::string_view kProgram = R"(
 enum Message : u3 {
