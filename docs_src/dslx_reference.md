@@ -1599,9 +1599,10 @@ interpretation error. Evaluation stops before the final wildcard. Writing
 the two alternatives as separate arms with the same body gives the same
 result in each case.
 
-A sum constructor pattern selects fields by name and matches them in the
-order written in the pattern. The constructor declaration determines where
-each field is stored in the packed value.
+A sum constructor pattern selects fields by name. If the pattern binds a
+name or otherwise leaves some of the value unspecified, it matches fields
+in the order written in the pattern. The constructor declaration determines
+where each field is stored in the packed value.
 
 ```dslx
 enum Message {
@@ -1619,6 +1620,20 @@ fn fields_equal(x: Message) -> bool {
 Here the first `n` binds the value of `right`. The second `n` compares
 `left` with that value. The function returns true for `left: 7, right: 7`
 and false for `left: 7, right: 9`.
+
+When a sum constructor pattern specifies the complete value, it tests named
+fields in declaration order and stops at the first mismatch or source error.
+For example, `Message::Pair { right: u8:9, left: u8:7 }` tests `left`
+first because `Pair` declares it first. If `left` differs from 7, the
+pattern skips `right`.
+
+A fully specified constructor can name its tuple payload with a constant.
+Suppose `Packet` has a `Data((Inner, bool))` variant and `PAIR` is a
+constant with value `(Inner::Small(u4:5), true)`. Then `Packet::Data(PAIR)`
+matches exactly like `Packet::Data((Inner::Small(u4:5), true))`. An
+undeclared inner tag fails the test for `Small`. Used on its own as a
+pattern on a tuple, `PAIR` compares the tuples using ordinary equality,
+which reports a source error for that malformed inner value.
 
 Named constant matching also works with nested tuples; for example:
 
