@@ -104,6 +104,14 @@ namespace {
 
 constexpr WarningCollector* kNoWarningCollector = nullptr;
 
+absl::StatusOr<BValue> MatchSumTag(BuilderBase& builder, BValue subject,
+                                   const SumType& sum, int64_t variant_index,
+                                   const SourceInfo& loc) {
+  XLS_ASSIGN_OR_RETURN(BValue tag, internal::BuildPackedSumDiscriminant(
+                                       builder, sum, variant_index, loc));
+  return builder.Eq(internal::GetPackedSumTag(builder, subject, loc), tag, loc);
+}
+
 // Generates a unique, human-readable label identifying the given conditional
 // branch (or match arm) for use as a synthesized coverpoint name. The label
 // contains the enclosing function name, the branch kind, and a line/col; it
@@ -473,6 +481,7 @@ class FunctionConverterVisitor : public AstNodeVisitor {
   INVALID(Attribute)
   INVALID(FunctionRef)
   INVALID(FuzzTestFunction)
+  INVALID(InvalidPattern)
   INVALID(MatchArm)
   INVALID(NameDef)
   INVALID(ParametricBinding)
@@ -1520,14 +1529,21 @@ absl::Status FunctionConverter::HandleMatch(const Match* node) {
             {orig_control_predicate(), not_any_prev_selected});
       });
 
-  // Exhaustiveness checking proves that the final arm handles all remaining
-  // declared-constructor cases. In Phase 2 lowering it is also the malformed
-  // fallback arm when the match has no explicit `invalid!` arm; type checking
-  // restricts that fallback to `_` or an irrefutable constructor payload shape.
+  // The final arm is the hardware fallback, including when the outer tag is
+  // valid but no ordinary pattern matches. Bind its names from the positions
+  // specified by the pattern regardless of the actual tags.
   MatchArm* default_arm = node->arms().back();
-  XLS_RETURN_IF_ERROR(
-      HandleMatcher(default_arm->patterns()[0], matched, *matched_type)
-          .status());
+  const PatternTree& default_pattern = default_arm->patterns().front();
+  if (auto* const* invalid = std::get_if<InvalidPattern*>(&default_pattern)) {
+    if (NameDef* raw = (*invalid)->raw_name_def()) {
+      SetNodeToIr(
+          raw, internal::GetPackedSumRawBits(*function_builder_, matched,
+                                             ToSourceInfo((*invalid)->span())));
+    }
+  } else {
+    XLS_RETURN_IF_ERROR(
+        HandleMatcher(default_pattern, matched, *matched_type).status());
+  }
   if (options_.ShouldEmitAutoCover(AutoCoverKind::kBranch)) {
     if (implicit_token_data_.has_value()) {
       function_builder_->Cover(
@@ -1672,6 +1688,10 @@ absl::StatusOr<BValue> FunctionConverter::HandleRangedForInductionVariable(
           [&](WildcardPattern* ivar) -> absl::StatusOr<BValue> {
             XLS_ASSIGN_OR_RETURN(xls::Type * ivar_type, ResolveTypeToIr(ivar));
             return body_converter.AddParam("__", ivar_type);
+          },
+          [&](InvalidPattern*) -> absl::StatusOr<BValue> {
+            return absl::InternalError(
+                "Induction variable cannot be an invalid pattern");
           },
           [&](Range*) -> absl::StatusOr<BValue> {
             return absl::InternalError("Induction variable cannot be a range");
@@ -2080,65 +2100,35 @@ absl::StatusOr<BValue> FunctionConverter::HandleSumVariantPayloadPattern(
                        encoding.GetVariant(pattern->constructor_ref()->attr()));
 
   SourceInfo loc = ToSourceInfo(pattern->span());
-  BValue tag =
-      internal::GetPackedSumTag(*function_builder_, matched_value, loc);
+  XLS_ASSIGN_OR_RETURN(BValue result,
+                       MatchSumTag(*function_builder_, matched_value,
+                                   matched_type, variant.variant_index, loc));
   BValue payload =
       internal::GetPackedSumPayload(*function_builder_, matched_value, loc);
-  XLS_ASSIGN_OR_RETURN(
-      BValue discriminant,
-      internal::BuildPackedSumDiscriminant(*function_builder_, matched_type,
-                                           variant.variant_index, loc));
-  BValue result = function_builder_->Eq(tag, discriminant, loc);
   XLS_ASSIGN_OR_RETURN(int64_t bit_count, variant.payload_bit_count());
   internal::PackedSumMemberLayout layout(bit_count);
 
-  auto append_condition = [&](const PatternTree& subpattern,
-                              const Type& payload_member_type) -> absl::Status {
-    XLS_ASSIGN_OR_RETURN(internal::PackedSumMemberLayout::Slice slice,
-                         layout.Next(payload_member_type));
-    XLS_ASSIGN_OR_RETURN(BValue condition,
-                         HandlePackedSumPayloadMatcher(
-                             subpattern,
-                             function_builder_->BitSlice(payload, slice.offset,
-                                                         slice.width, loc),
-                             payload_member_type));
-    result = function_builder_->And(result, condition, loc);
-    return absl::OkStatus();
-  };
-
-  if (const auto* tuple = std::get_if<TuplePattern*>(&pattern->payload())) {
-    const std::vector<PatternTree>& members = (*tuple)->members();
-    XLS_RET_CHECK_EQ(members.size(), variant.payload_size());
-    XLS_RETURN_IF_ERROR(encoding.ForEachPayloadMember(
-        variant,
-        [&](int64_t active_index,
-            const Type& payload_member_type) -> absl::Status {
-          return append_condition(members.at(active_index),
-                                  payload_member_type);
-        }));
-  } else if (const auto* fields =
-                 std::get_if<StructPattern*>(&pattern->payload())) {
-    const SumTypeVariant& sum_variant = *variant.variant;
-    std::vector<std::string_view> names;
-    names.reserve((*fields)->fields().size());
-    for (const auto& [name, subpattern] : (*fields)->fields()) {
-      names.push_back(name);
-    }
-    NamedFieldBindingResult binding =
-        BindNamedFields(sum_variant.variant().named_fields(), names);
-    XLS_RET_CHECK(std::holds_alternative<NamedFieldCorrespondence>(binding));
-    const auto& correspondence = std::get<NamedFieldCorrespondence>(binding);
-    XLS_RETURN_IF_ERROR(encoding.ForEachPayloadMember(
-        variant,
-        [&](int64_t active_index,
-            const Type& payload_member_type) -> absl::Status {
-          const std::optional<int64_t>& source_index =
-              correspondence[active_index];
-          XLS_RET_CHECK(source_index.has_value());
-          return append_condition((*fields)->fields()[*source_index].second,
-                                  payload_member_type);
-        }));
-  }
+  std::vector<internal::PackedSumMemberLayout::Slice> slices;
+  slices.reserve(variant.payload_size());
+  XLS_RETURN_IF_ERROR(encoding.ForEachPayloadMember(
+      variant, [&](int64_t, const Type& type) -> absl::Status {
+        XLS_ASSIGN_OR_RETURN(auto slice, layout.Next(type));
+        slices.push_back(slice);
+        return absl::OkStatus();
+      }));
+  XLS_RETURN_IF_ERROR(ForEachSumPayloadSubpattern(
+      *pattern, variant.variant->variant(),
+      [&](const PatternTree& subpattern, int64_t member_index) -> absl::Status {
+        const auto& slice = slices.at(member_index);
+        XLS_ASSIGN_OR_RETURN(BValue condition,
+                             HandlePackedSumPayloadMatcher(
+                                 subpattern,
+                                 function_builder_->BitSlice(
+                                     payload, slice.offset, slice.width, loc),
+                                 variant.variant->GetMemberType(member_index)));
+        result = function_builder_->And(result, condition, loc);
+        return absl::OkStatus();
+      }));
 
   SetNodeToIr(ToAstNode(matcher), result);
   return result;
@@ -2169,7 +2159,7 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
       XLS_ASSIGN_OR_RETURN(BValue to_match, Use(matcher_node));
       return equality(to_match);
     };
-    auto irrefutable_predicate = [&]() -> absl::StatusOr<BValue> {
+    auto root_tag_is_valid = [&]() -> absl::StatusOr<BValue> {
       SourceInfo loc = ToSourceInfo(GetPatternSpan(matcher));
       if (is_match_root && matched_type.IsSum()) {
         return BuildSemanticSumTagIsDeclaredPredicate(matched_type.AsSum(),
@@ -2181,9 +2171,13 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
     return absl::visit(
         Visitor{
             [&](WildcardPattern*) -> absl::StatusOr<BValue> {
-              XLS_ASSIGN_OR_RETURN(BValue result, irrefutable_predicate());
+              XLS_ASSIGN_OR_RETURN(BValue result, root_tag_is_valid());
               SetNodeToIr(matcher_node, result);
               return result;
+            },
+            [&](InvalidPattern*) -> absl::StatusOr<BValue> {
+              return absl::InternalError(
+                  "invalid! must be the final match arm");
             },
             [&](SumVariantPayloadPattern* pattern) -> absl::StatusOr<BValue> {
               auto* sum_type = dynamic_cast<const SumType*>(&matched_type);
@@ -2202,6 +2196,15 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
               return equality_for_leaf();
             },
             [&](ColonRef* n) -> absl::StatusOr<BValue> {
+              if (current_type_info_->IsSumConstructor(n)) {
+                const SumType& sum = matched_type.AsSum();
+                XLS_ASSIGN_OR_RETURN(
+                    auto variant, SumTypeEncoding(sum).GetVariant(n->attr()));
+                return DefWithStatus(n, [&](const SourceInfo& loc) {
+                  return MatchSumTag(*function_builder_, matched_value, sum,
+                                     variant.variant_index, loc);
+                });
+              }
               return equality_for_leaf();
             },
             [&](Range* n) -> absl::StatusOr<BValue> {
@@ -2250,10 +2253,17 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
               XLS_ASSIGN_OR_RETURN(BValue to_match, Use(name_def));
               XLS_ASSIGN_OR_RETURN(BValue result, equality(to_match));
               XLS_RETURN_IF_ERROR(DefAlias(name_def, n));
+              if (is_match_root && matched_type.IsSum()) {
+                // Two runtime values can compare equal even when both root
+                // tags are invalid. Such a subject goes to the fallback.
+                XLS_ASSIGN_OR_RETURN(BValue declared, root_tag_is_valid());
+                return function_builder_->And(declared, result,
+                                              ToSourceInfo(n->span()));
+              }
               return result;
             },
             [&](NameDef*) -> absl::StatusOr<BValue> {
-              XLS_ASSIGN_OR_RETURN(BValue ok, irrefutable_predicate());
+              XLS_ASSIGN_OR_RETURN(BValue ok, root_tag_is_valid());
               SetNodeToIr(matcher_node, matched_value);
               return ok;
             },

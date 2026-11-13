@@ -149,6 +149,7 @@ class Formatter {
   virtual DocRef FormatImport(const Import& n);
   virtual DocRef FormatIndex(const Index& n);
   virtual DocRef FormatIndexRhs(const IndexRhs& n);
+  virtual DocRef FormatInvalidPattern(const InvalidPattern& n);
   virtual DocRef FormatInvocation(const Invocation& n);
   virtual DocRef FormatLambda(const Lambda& n);
   virtual DocRef FormatMakeArrayLeader(const Array& n);

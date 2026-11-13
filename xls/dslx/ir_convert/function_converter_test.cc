@@ -921,6 +921,156 @@ fn f(x: Message) -> Message {
   EXPECT_EQ(malformed_result.value, malformed);
 }
 
+TEST(FunctionConverterTest, PreservesMalformedExplicitSingleVariantSumImage) {
+  constexpr std::string_view kProgram = R"(
+enum Inner {
+  Small(u1),
+  Big(u2),
+}
+
+enum Outer: u1 {
+  Wrap(Inner) = 0,
+}
+
+fn f(x: Outer) -> u4 {
+  match x {
+    Outer::Wrap(_) => u4:0,
+    invalid!(raw) => raw,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr, /*is_top=*/true);
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
+                           package.package->GetFunction("__test_module__f"));
+
+  const Value malformed = Value::Tuple(
+      {Value(UBits(/*value=*/1, /*bit_count=*/1)),
+       Value::Tuple({Value(UBits(/*value=*/0b011, /*bit_count=*/3))})});
+  XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> result,
+                           InterpretFunction(ir_function, {malformed}));
+  EXPECT_EQ(result.value, Value(UBits(/*value=*/0b1011, /*bit_count=*/4)));
+}
+
+TEST(FunctionConverterTest, NestedSumMatchSelectsOneArmForValueAndTrace) {
+  constexpr std::string_view kProgram = R"(
+enum Leaf: u2 { Yes() = 0, No() = 1, }
+enum Inner: u2 { B(Leaf) = 0, A = 1, }
+enum Outer: u2 { Wrap(Inner) = 0, Unit = 1, }
+
+fn f(x: Outer, y: Outer) -> u6 {
+  match x {
+    y => { trace_fmt!("equal"); u6:4 },
+    Outer::Wrap(Inner::A) => { trace_fmt!("A"); u6:1 },
+    Outer::Wrap(Inner::B(_)) => { trace_fmt!("B"); u6:2 },
+    _ => { trace_fmt!("wildcard"); u6:3 },
+    invalid!(raw) => { trace_fmt!("invalid"); raw },
+  }
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+  PackageConversionData package = MakeConversionData("test_module_package");
+  XLS_ASSERT_OK(ConvertOneFunctionIntoPackage(tm.module, "f", &import_data,
+                                              /*parametric_env=*/nullptr,
+                                              ConvertOptions(), &package));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      xls::Function * ir_function,
+      package.package->GetFunction("__itok__test_module__f"));
+  struct Case {
+    uint64_t outer_tag;
+    uint64_t payload;
+    bool same_input;
+    uint64_t expected;
+    std::string_view trace;
+  };
+  for (const Case& c : std::vector<Case>{
+           {0, 0b0111, true, 4, "equal"},           // First ordinary arm wins.
+           {0, 0b0111, false, 1, "A"},              // A with dirty padding.
+           {0, 0b0010, false, 2, "B"},              // B with an invalid leaf.
+           {0, 0b1011, false, 3, "wildcard"},       // Invalid inner tag.
+           {2, 0b0111, true, 0b100111, "invalid"},  // Equal invalid roots.
+       }) {
+    SCOPED_TRACE(testing::Message() << c.outer_tag << "/" << c.payload);
+    const Value x = Value::Tuple({Value(UBits(c.outer_tag, 2)),
+                                  Value::Tuple({Value(UBits(c.payload, 4))})});
+    const Value y = c.same_input
+                        ? x
+                        : Value::Tuple({Value(UBits(1, 2)),
+                                        Value::Tuple({Value(UBits(0, 4))})});
+    XLS_ASSERT_OK_AND_ASSIGN(
+        auto result, InterpretFunction(ir_function, {Value::Token(),
+                                                     Value::Bool(true), x, y}));
+    EXPECT_EQ(result.value.element(1), Value(UBits(c.expected, 6)));
+    EXPECT_THAT(result.events.GetTraceMessageStrings(),
+                testing::ElementsAre(c.trace));
+  }
+}
+
+TEST(FunctionConverterTest, InvalidRawPatternBindsTagThenPayloadBits) {
+  constexpr std::string_view kProgram = R"(
+enum Option: u2 {
+  None = 0,
+  Some(u32) = 1,
+}
+
+enum Outer: u2 { Wrap(Option) = 0, Empty = 1, }
+
+fn f(x: Outer) -> u36 {
+  match x {
+    Outer::Wrap(Option::None) => u36:0,
+    Outer::Wrap(Option::Some(_)) => u36:0,
+    Outer::Empty => u36:0,
+    invalid!(raw) => raw,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
+                           package.package->GetFunction("__test_module__f"));
+  // An invalid outer tag and a valid outer tag with no matching ordinary arm
+  // both expose the whole outer value through invalid!(raw).
+  for (uint64_t raw : {0xf12345678ull, 0x212345678ull}) {
+    const Value x =
+        Value::Tuple({Value(UBits(raw >> 34, 2)),
+                      Value::Tuple({Value(UBits(raw & 0x3ffffffff, 34))})});
+    XLS_ASSERT_OK_AND_ASSIGN(auto result, InterpretFunction(ir_function, {x}));
+    EXPECT_EQ(result.value, Value(UBits(raw, 36)));
+  }
+}
+
 TEST(FunctionConverterTest,
      MalformedSumEqualityUsesLastConstructorPayloadAndTag) {
   constexpr std::string_view kProgram = R"(
@@ -971,6 +1121,105 @@ fn f(x: Message, y: Message) -> bool {
       InterpreterResult<Value> unequal,
       InterpretFunction(ir_function, {malformed, other_invalid_tag}));
   EXPECT_EQ(unequal.value, Value(UBits(/*value=*/0, /*bit_count=*/1)));
+}
+
+TEST(FunctionConverterTest, NamedPayloadPatternsProjectDeclaredSlices) {
+  constexpr std::string_view kProgram = R"(
+enum Inner: u2 { Pair { marker: (u2, u1), left: u4, right: u4 } = 0 }
+enum Outer: u2 { Wrap(Inner) = 0, Unit = 1 }
+fn f(x: Outer) -> (u4, u4) {
+  let reversed = match x {
+    Outer::Unit => u4:0,
+    Outer::Wrap(Inner::Pair { right: n, left: n, marker: _ }) => n,
+    Outer::Wrap(Inner::Pair { right: r, left: _, marker: (m, _) }) => r + m as u4,
+  };
+  let declared = match x {
+    Outer::Unit => u4:0,
+    Outer::Wrap(Inner::Pair { marker: _, left: n, right: n }) => n,
+    Outer::Wrap(Inner::Pair { marker: (m, _), left: l, right: _ }) => l + m as u4,
+  };
+  (reversed, declared)
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+  PackageConversionData package = MakeConversionData("test_module_package");
+  XLS_ASSERT_OK(ConvertOneFunctionIntoPackage(tm.module, "f", &import_data,
+                                              /*parametric_env=*/nullptr,
+                                              ConvertOptions(), &package));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * f,
+                           package.package->GetFunction("__test_module__f"));
+  struct Case {
+    int outer_tag;
+    int payload;
+    int reversed;
+    int declared;
+  };
+  // Payload bits are inner tag, marker tuple, left, right (2 + 3 + 4 + 4).
+  for (const Case& c :
+       {Case{0, 0b00'010'1010'1010, 10, 10},    // Equal pair.
+        Case{0, 0b00'100'0011'1010, 12, 5},     // Unequal pair.
+        Case{0, 0b10'010'1010'1010, 11, 11},    // Invalid inner.
+        Case{3, 0b00'010'1010'0011, 4, 11}}) {  // Invalid outer.
+    const Value x = Value::Tuple({Value(UBits(c.outer_tag, 2)),
+                                  Value::Tuple({Value(UBits(c.payload, 13))})});
+    XLS_ASSERT_OK_AND_ASSIGN(auto result, InterpretFunction(f, {x}));
+    EXPECT_EQ(result.value, Value::Tuple({Value(UBits(c.reversed, 4)),
+                                          Value(UBits(c.declared, 4))}));
+  }
+}
+
+TEST(FunctionConverterTest, MalformedSumUsesFinalConstructorPayloadFallback) {
+  constexpr std::string_view kProgram = R"(
+enum Inner: u2 { A(u4) = 0, B = 1, }
+enum Outer: u2 { Wrap(Inner) = 0, Unit = 1, }
+
+fn f(x: Outer) -> u4 {
+  match x {
+    Outer::Unit => u4:0,
+    Outer::Wrap(Inner::B) => u4:1,
+    Outer::Wrap(Inner::A(n)) => n,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
+                           package.package->GetFunction("__test_module__f"));
+
+  struct Case {
+    uint64_t outer_tag;
+    uint64_t payload;
+    uint64_t expected;
+  };
+  for (const Case& c : std::vector<Case>{
+           {0, 0b00'1011, 11},  // Ordinary match binds n.
+           {0, 0b10'1011, 11},  // Invalid inner tag, same n wires.
+           {0, 0b10'0010, 2},   // Changing only n changes the fallback.
+           {3, 0b01'1010, 10},  // Invalid outer tag, declared inner B tag.
+           {0, 0b01'1010, 1},   // Ordinary B ignores padding.
+       }) {
+    const Value x = Value::Tuple({Value(UBits(c.outer_tag, 2)),
+                                  Value::Tuple({Value(UBits(c.payload, 6))})});
+    XLS_ASSERT_OK_AND_ASSIGN(auto result, InterpretFunction(ir_function, {x}));
+    EXPECT_EQ(result.value, Value(UBits(c.expected, 4)));
+  }
 }
 
 TEST(FunctionConverterTest, ExpandsSemanticSumEqIntoTagAndPayloadChecks) {
@@ -1037,6 +1286,93 @@ fn f(x: Option, y: Option) -> bool {
   EXPECT_GE(equality_select_count, 2);
   EXPECT_GT(eq_literal_count, 0);
   EXPECT_FALSE(has_direct_param_eq);
+}
+
+TEST(FunctionConverterTest, SemanticSumMatchUsesPhase2FallbackWithoutToken) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn f(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    _ => u32:0,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+  EXPECT_FALSE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+
+  EXPECT_THAT(package.DumpIr(), testing::Not(testing::HasSubstr("assert(")));
+  EXPECT_THAT(package.DumpIr(),
+              testing::Not(testing::HasSubstr("__itok__test_module__f")));
+  std::string interface_text = package.interface.DebugString();
+  EXPECT_THAT(
+      interface_text,
+      testing::Not(testing::HasSubstr("name: \"__itok__test_module__f\"")));
+  EXPECT_THAT(interface_text, testing::HasSubstr("name: \"__test_module__f\""));
+}
+
+TEST(FunctionConverterTest,
+     ExhaustiveSemanticSumMatchWithoutWildcardUsesPhase2FallbackWithoutToken) {
+  constexpr std::string_view kProgram = R"(
+enum Option {
+  None,
+  Some(u32),
+}
+
+fn f(x: Option) -> u32 {
+  match x {
+    Option::Some(v) => v,
+    Option::None => u32:0,
+  }
+}
+)";
+
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+
+  Function* f = tm.module->GetFunction("f").value();
+  ASSERT_NE(f, nullptr);
+  EXPECT_FALSE(tm.type_info->GetRequiresImplicitToken(*f).value_or(false));
+
+  const ConvertOptions convert_options;
+  PackageConversionData package = MakeConversionData("test_module_package");
+  PackageData package_data{.conversion_info = &package};
+  FunctionConverter converter(package_data, tm.module, &import_data,
+                              convert_options, /*proc_data=*/nullptr,
+                              /*channel_scope=*/nullptr,
+                              /*is_top=*/true);
+  XLS_ASSERT_OK(converter.HandleFunction(f, tm.type_info, ParametricEnv{}));
+
+  EXPECT_THAT(package.DumpIr(), testing::Not(testing::HasSubstr("assert(")));
+  EXPECT_THAT(package.DumpIr(),
+              testing::Not(testing::HasSubstr("__itok__test_module__f")));
+  std::string interface_text = package.interface.DebugString();
+  EXPECT_THAT(
+      interface_text,
+      testing::Not(testing::HasSubstr("name: \"__itok__test_module__f\"")));
+  EXPECT_THAT(interface_text, testing::HasSubstr("name: \"__test_module__f\""));
 }
 
 TEST(FunctionConverterTest, BoundEmptySumArrayAgreesWithFallbackType) {

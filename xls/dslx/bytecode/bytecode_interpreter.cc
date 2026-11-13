@@ -1311,25 +1311,24 @@ absl::StatusOr<bool> BytecodeInterpreter::MatchArmEqualsInterpValue(
           item.sum_match_data());
       XLS_ASSIGN_OR_RETURN(internal::EncodedSumView sum_view,
                            internal::GetEncodedSumView(value));
-      // Observe before rejecting a tag: an actually scrutinized nested sum must
-      // retain its malformed-tag and ordinary-payload failures even if a later
-      // arm is a wildcard. Other arms reuse this same successful observation.
-      XLS_ASSIGN_OR_RETURN(
-          const std::vector<InterpValue>* payload_values,
-          GetMatchSumPayloadValues(bytecode, frame, *sum_match->sum_type, value,
-                                   path));
+      // The match entry checks its root. At any depth a constructor whose tag
+      // differs simply misses, even when the nested tag is undeclared.
       const InterpValue& discriminant =
           sum_match->sum_type->GetDiscriminant(sum_match->variant_index);
       if (discriminant.Ne(sum_view.tag)) {
         return false;
       }
+      XLS_ASSIGN_OR_RETURN(
+          const std::vector<InterpValue>* payload_values,
+          GetMatchSumPayloadValues(bytecode, frame, *sum_match->sum_type, value,
+                                   path));
       XLS_RET_CHECK_EQ(sum_match->payload_items.size(), payload_values->size());
-      for (int64_t i = 0; i < sum_match->payload_items.size(); ++i) {
-        path.push_back(i);
+      for (const auto& [member_index, pattern] : sum_match->payload_items) {
+        path.push_back(member_index);
         XLS_ASSIGN_OR_RETURN(
-            bool equal, MatchArmEqualsInterpValue(
-                            bytecode, frame, sum_match->payload_items.at(i),
-                            payload_values->at(i), path));
+            bool equal,
+            MatchArmEqualsInterpValue(bytecode, frame, pattern,
+                                      payload_values->at(member_index), path));
         path.pop_back();
         if (!equal) {
           return false;

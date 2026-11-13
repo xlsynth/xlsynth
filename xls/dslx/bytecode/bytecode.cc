@@ -404,7 +404,7 @@ std::string BytecodesToString(absl::Span<const Bytecode> bytecodes,
 
 /* static */ Bytecode::MatchArmItem Bytecode::MatchArmItem::MakeSum(
     const SumType* sum_type, int64_t variant_index,
-    std::vector<MatchArmItem> payload_items) {
+    std::vector<SumPayloadPatternItem> payload_items) {
   CHECK(sum_type != nullptr);
   CHECK_GE(variant_index, 0);
   CHECK_LT(variant_index, sum_type->variant_count());
@@ -505,8 +505,12 @@ std::string Bytecode::MatchArmItem::ToString() const {
           sum_data.sum_type->variants().at(sum_data.variant_index);
       std::vector<std::string> pieces;
       pieces.reserve(sum_data.payload_items.size());
-      for (const MatchArmItem& item : sum_data.payload_items) {
-        pieces.push_back(item.ToString());
+      for (const SumPayloadPatternItem& item : sum_data.payload_items) {
+        pieces.push_back(
+            variant.is_struct()
+                ? absl::StrCat(variant.GetMemberName(item.member_index), ": ",
+                               item.pattern.ToString())
+                : item.pattern.ToString());
       }
       return absl::StrCat("sum: ", sum_data.sum_type->ToString(),
                           "::", variant.variant().identifier(), "(",
