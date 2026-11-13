@@ -1625,8 +1625,9 @@ ordinary arm. Only a final `invalid!` or `invalid!(raw)` arm may follow it.
 For example,
 `match message { _ => u8:0, Message::Idle => u8:1 }` is a type error, not a
 redundant-pattern warning. If the wildcard shares its arm with another `|`
-alternative, a final `invalid!` arm is required because the grouped arm cannot
-serve as the hardware fallback.
+alternative, a runtime match needs a final `invalid!` arm for the hardware
+fallback. A `const match` selects its arm during typechecking and needs no
+hardware fallback.
 
 A sum match may end with one `invalid!` or `invalid!(raw)` arm.
 `raw` binds the entire wire image as unsigned `bits[TAG_W + MAX_PAYLOAD_W]`.
