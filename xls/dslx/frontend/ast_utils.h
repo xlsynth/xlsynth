@@ -27,6 +27,7 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/functional/function_ref.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -36,6 +37,13 @@
 #include "xls/dslx/interp_value.h"
 
 namespace xls::dslx {
+
+// Visits the immediate members of a typechecked constructor pattern in written
+// order, so bindings precede their uses. The index identifies the member in
+// the variant declaration, regardless of where its name appears in the pattern.
+absl::Status ForEachSumPayloadSubpattern(
+    const SumVariantPayloadPattern& pattern, const SumVariant& variant,
+    absl::FunctionRef<absl::Status(const PatternTree&, int64_t)> visit);
 
 // Returns a span covering only the attribute identifier of an attribute-access
 // node (e.g. Attr or ColonRef).

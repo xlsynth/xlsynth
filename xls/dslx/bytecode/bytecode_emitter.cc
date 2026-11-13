@@ -1404,52 +1404,24 @@ BytecodeEmitter::HandleSumVariantPayloadPattern(
   XLS_ASSIGN_OR_RETURN(SumTypeEncoding::VariantInfo variant,
                        encoding.GetVariant(pattern->constructor_ref()->attr()));
 
-  std::vector<Bytecode::MatchArmItem> payload_items(
-      variant.payload_size(), Bytecode::MatchArmItem::MakeWildcard());
-  if (const auto* tuple = std::get_if<TuplePattern*>(&pattern->payload())) {
-    const std::vector<PatternTree>& members = (*tuple)->members();
-    XLS_RET_CHECK_EQ(members.size(), variant.payload_size());
-    XLS_RETURN_IF_ERROR(encoding.ForEachPayloadMember(
-        variant,
-        [&](int64_t active_index, const Type& slot_type) -> absl::Status {
-          XLS_ASSIGN_OR_RETURN(
-              payload_items[active_index],
-              HandlePatternExpr(members.at(active_index),
-                                const_cast<Type*>(&slot_type)));
-          return absl::OkStatus();
-        }));
-  } else if (const auto* fields =
-                 std::get_if<StructPattern*>(&pattern->payload())) {
-    const SumTypeVariant& sum_variant = *variant.variant;
-    std::vector<std::string_view> names;
-    names.reserve((*fields)->fields().size());
-    for (const auto& [name, subpattern] : (*fields)->fields()) {
-      names.push_back(name);
-    }
-    NamedFieldBindingResult binding =
-        BindNamedFields(sum_variant.variant().named_fields(), names);
-    XLS_RET_CHECK(std::holds_alternative<NamedFieldCorrespondence>(binding));
-    const auto& correspondence = std::get<NamedFieldCorrespondence>(binding);
-    XLS_RETURN_IF_ERROR(encoding.ForEachPayloadMember(
-        variant,
-        [&](int64_t active_index, const Type& slot_type) -> absl::Status {
-          const std::optional<int64_t>& source_index =
-              correspondence[active_index];
-          XLS_RET_CHECK(source_index.has_value());
-          XLS_ASSIGN_OR_RETURN(
-              payload_items[active_index],
-              HandlePatternExpr((*fields)->fields()[*source_index].second,
-                                const_cast<Type*>(&slot_type)));
-          return absl::OkStatus();
-        }));
-  }
+  std::vector<Bytecode::SumPayloadPatternItem> payload_items;
+  payload_items.reserve(variant.payload_size());
+  XLS_RETURN_IF_ERROR(ForEachSumPayloadSubpattern(
+      *pattern, variant.variant->variant(),
+      [&](const PatternTree& subpattern, int64_t member_index) -> absl::Status {
+        const Type& type = variant.variant->GetMemberType(member_index);
+        XLS_ASSIGN_OR_RETURN(Bytecode::MatchArmItem item,
+                             HandlePatternExpr(subpattern, &type));
+        payload_items.push_back({member_index, std::move(item)});
+        return absl::OkStatus();
+      }));
 
   return Bytecode::MatchArmItem::MakeSum(
       &sum_type, variant.variant_index, std::move(payload_items));
 }
 
 absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
-    const PatternTree& pattern, Type* type) {
+    const PatternTree& pattern, const Type* type) {
   const Type* value_type =
       type != nullptr && TypeContainsSemanticSum(*type) ? type : nullptr;
   if (!std::holds_alternative<TuplePattern*>(pattern)) {
@@ -1488,7 +1460,7 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
               XLS_ASSIGN_OR_RETURN(std::optional<SumConstructorRef> constructor,
                                    ResolveSumConstructor(n, *import_data_));
               if (constructor.has_value()) {
-                auto* sum_type = dynamic_cast<SumType*>(type);
+                auto* sum_type = dynamic_cast<const SumType*>(type);
                 XLS_RET_CHECK(sum_type != nullptr);
                 const SumTypeEncoding encoding(*sum_type);
                 XLS_ASSIGN_OR_RETURN(SumTypeEncoding::VariantInfo variant,
@@ -1514,7 +1486,7 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
             },
             [&](InvalidPattern* invalid_pattern)
                 -> absl::StatusOr<Bytecode::MatchArmItem> {
-              auto* sum_type = dynamic_cast<SumType*>(type);
+              auto* sum_type = dynamic_cast<const SumType*>(type);
               XLS_RET_CHECK(sum_type != nullptr)
                   << "Invalid pattern expected sum type; got: "
                   << (type == nullptr ? "<null>" : type->ToString());
@@ -1528,7 +1500,7 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
             },
             [&](SumVariantPayloadPattern* constructor_pattern)
                 -> absl::StatusOr<Bytecode::MatchArmItem> {
-              auto* sum_type = dynamic_cast<SumType*>(type);
+              auto* sum_type = dynamic_cast<const SumType*>(type);
               XLS_RET_CHECK(sum_type != nullptr)
                   << "Constructor pattern expected sum type; got: "
                   << (type == nullptr ? "<null>" : type->ToString());
@@ -1549,7 +1521,7 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
   }
 
   TuplePattern* tuple_pattern = std::get<TuplePattern*>(pattern);
-  auto* tuple_type = absl::down_cast<TupleType*>(type);
+  auto* tuple_type = absl::down_cast<const TupleType*>(type);
   if (tuple_type == nullptr) {
     return TypeInferenceErrorStatus(
         tuple_pattern->span(), type,
@@ -1581,7 +1553,7 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
       continue;
     }
 
-    Type& subtype = tuple_type->GetMemberType(tuple_index);
+    const Type& subtype = tuple_type->GetMemberType(tuple_index);
     XLS_ASSIGN_OR_RETURN(Bytecode::MatchArmItem element,
                          HandlePatternExpr(subpattern, &subtype));
     elements.push_back(element);

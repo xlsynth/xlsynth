@@ -2108,53 +2108,26 @@ absl::StatusOr<BValue> FunctionConverter::HandleSumVariantPayloadPattern(
   XLS_ASSIGN_OR_RETURN(int64_t bit_count, variant.payload_bit_count());
   internal::PackedSumMemberLayout layout(bit_count);
 
-  auto append_condition = [&](const PatternTree& subpattern,
-                              const Type& payload_member_type) -> absl::Status {
-    XLS_ASSIGN_OR_RETURN(internal::PackedSumMemberLayout::Slice slice,
-                         layout.Next(payload_member_type));
-    XLS_ASSIGN_OR_RETURN(BValue condition,
-                         HandlePackedSumPayloadMatcher(
-                             subpattern,
-                             function_builder_->BitSlice(payload, slice.offset,
-                                                         slice.width, loc),
-                             payload_member_type));
-    result = function_builder_->And(result, condition, loc);
-    return absl::OkStatus();
-  };
-
-  if (const auto* tuple = std::get_if<TuplePattern*>(&pattern->payload())) {
-    const std::vector<PatternTree>& members = (*tuple)->members();
-    XLS_RET_CHECK_EQ(members.size(), variant.payload_size());
-    XLS_RETURN_IF_ERROR(encoding.ForEachPayloadMember(
-        variant,
-        [&](int64_t active_index,
-            const Type& payload_member_type) -> absl::Status {
-          return append_condition(members.at(active_index),
-                                  payload_member_type);
-        }));
-  } else if (const auto* fields =
-                 std::get_if<StructPattern*>(&pattern->payload())) {
-    const SumTypeVariant& sum_variant = *variant.variant;
-    std::vector<std::string_view> names;
-    names.reserve((*fields)->fields().size());
-    for (const auto& [name, subpattern] : (*fields)->fields()) {
-      names.push_back(name);
-    }
-    NamedFieldBindingResult binding =
-        BindNamedFields(sum_variant.variant().named_fields(), names);
-    XLS_RET_CHECK(std::holds_alternative<NamedFieldCorrespondence>(binding));
-    const auto& correspondence = std::get<NamedFieldCorrespondence>(binding);
-    XLS_RETURN_IF_ERROR(encoding.ForEachPayloadMember(
-        variant,
-        [&](int64_t active_index,
-            const Type& payload_member_type) -> absl::Status {
-          const std::optional<int64_t>& source_index =
-              correspondence[active_index];
-          XLS_RET_CHECK(source_index.has_value());
-          return append_condition((*fields)->fields()[*source_index].second,
-                                  payload_member_type);
-        }));
+  std::vector<internal::PackedSumMemberLayout::Slice> slices;
+  slices.reserve(variant.payload_size());
+  for (int64_t i = 0; i < variant.payload_size(); ++i) {
+    XLS_ASSIGN_OR_RETURN(auto slice,
+                         layout.Next(variant.variant->GetMemberType(i)));
+    slices.push_back(slice);
   }
+  XLS_RETURN_IF_ERROR(ForEachSumPayloadSubpattern(
+      *pattern, variant.variant->variant(),
+      [&](const PatternTree& subpattern, int64_t member_index) -> absl::Status {
+        const auto& slice = slices.at(member_index);
+        XLS_ASSIGN_OR_RETURN(BValue condition,
+                             HandlePackedSumPayloadMatcher(
+                                 subpattern,
+                                 function_builder_->BitSlice(
+                                     payload, slice.offset, slice.width, loc),
+                                 variant.variant->GetMemberType(member_index)));
+        result = function_builder_->And(result, condition, loc);
+        return absl::OkStatus();
+      }));
 
   SetNodeToIr(ToAstNode(matcher), result);
   return result;

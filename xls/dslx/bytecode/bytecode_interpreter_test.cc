@@ -393,11 +393,11 @@ TEST_F(BytecodeInterpreterTest,
   auto a = [&](uint64_t payload) {
     return Item::MakeSum(
         &sum_type, /*variant_index=*/0,
-        {Item::MakeInterpValue(InterpValue::MakeUBits(8, payload))});
+        {{0, Item::MakeInterpValue(InterpValue::MakeUBits(8, payload))}});
   };
   auto b = Item::MakeSum(
       &sum_type, /*variant_index=*/1,
-      {Item::MakeInterpValue(InterpValue::MakeUBits(16, 0xcafe))});
+      {{0, Item::MakeInterpValue(InterpValue::MakeUBits(16, 0xcafe))}});
 
   EXPECT_THAT(matches(MakePackedBytecodeSum(2, 0xffa5), a(0xa5)),
               IsOkAndHolds(InterpValue::MakeBool(true)));
@@ -422,7 +422,8 @@ TEST_F(BytecodeInterpreterTest,
   const InterpValue valid = MakePackedBytecodeSum(2, 0xa5);
   const InterpValue invalid = MakePackedBytecodeSum(3, 0);
   auto a = [&] {
-    return Item::MakeSum(&sum_type, /*variant_index=*/0, {Item::MakeWildcard()});
+    return Item::MakeSum(&sum_type, /*variant_index=*/0,
+                         {{0, Item::MakeWildcard()}});
   };
   auto matches = [&](std::vector<Item> items) {
     std::vector<Bytecode> bytecodes;
@@ -3747,6 +3748,53 @@ TEST_F(BytecodeInterpreterTest, SemanticSumTransportPreservesInheritedBits) {
               HasSubstr("Semantic sum observer received a malformed value")));
     }
   }
+}
+
+TEST_F(BytecodeInterpreterTest, NamedPayloadPatternsBindInWrittenOrder) {
+  constexpr std::string_view kProgram = R"(
+enum Inner: u2 { Pair { left: u4, right: u4 } = 0 }
+enum Outer: u2 { Wrap(Inner) = 0, Unit = 1 }
+fn f(x: Outer) -> (u4, u4) {
+  let reversed = match x {
+    Outer::Wrap(Inner::Pair { right: n, left: n }) => n,
+    _ => u4:0,
+  };
+  let declared = match x {
+    Outer::Wrap(Inner::Pair { left: n, right: n }) => n,
+    _ => u4:0,
+  };
+  (reversed, declared)
+}
+)";
+  for (auto [payload, expected] : {std::pair{0xaa, 10}, std::pair{0x3a, 0}}) {
+    const InterpValue x = InterpValue::MakeTuple(
+        {InterpValue::MakeUBits(2, 0),
+         InterpValue::MakeTuple({InterpValue::MakeUBits(10, payload)})});
+    const InterpValue result = InterpValue::MakeUBits(4, expected);
+    EXPECT_THAT(Interpret(kProgram, "f", {x}),
+                IsOkAndHolds(InterpValue::MakeTuple({result, result})));
+  }
+}
+
+TEST_F(BytecodeInterpreterTest, ReorderedFieldsKeepDistinctObservationPaths) {
+  constexpr std::string_view kProgram = R"(
+enum Leaf: u1 { A(u4) = 0, B = 1 }
+enum Pair { Both { left: Leaf, right: Leaf } }
+fn f(x: Pair) -> u4 {
+  match x {
+    Pair::Both { right: Leaf::A(u4:0), left: _ } => u4:0,
+    Pair::Both { left: Leaf::A(n), right: _ } => n,
+    _ => u4:15,
+  }
+}
+pub fn main(a: u4, b: u4) -> u4 {
+  f(Pair::Both { left: Leaf::A(a), right: Leaf::A(b) })
+}
+)";
+  EXPECT_THAT(
+      Interpret(kProgram, "main",
+                {InterpValue::MakeUBits(4, 3), InterpValue::MakeUBits(4, 10)}),
+      IsOkAndHolds(InterpValue::MakeUBits(4, 3)));
 }
 
 TEST_F(BytecodeInterpreterTest, NestedSumTagsInSourceMatch) {

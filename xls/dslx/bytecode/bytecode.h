@@ -246,6 +246,8 @@ class Bytecode {
     std::optional<ParametricEnv> callee_bindings_;
   };
 
+  struct SumPayloadPatternItem;
+
   // Encapsulates an element in a MatchArm's pattern. For literals, a
   // this is an InterpValue. For NameRefs, this is the associated SlotIndex. For
   // NameDefs (i.e., assignments to a name from the value to match), this is the
@@ -264,8 +266,9 @@ class Bytecode {
     static MatchArmItem MakeRange(InterpValue start, InterpValue limit);
     // The borrowed type must outlive the bytecode. variant_index is declaration
     // order, not the semantic discriminant.
-    static MatchArmItem MakeSum(const SumType* sum_type, int64_t variant_index,
-                                std::vector<MatchArmItem> payload_items);
+    static MatchArmItem MakeSum(
+        const SumType* sum_type, int64_t variant_index,
+        std::vector<SumPayloadPatternItem> payload_items);
     static MatchArmItem MakeInvalidSum();
     static MatchArmItem MakeTuple(std::vector<MatchArmItem> elements);
     static MatchArmItem MakeWildcard();
@@ -291,7 +294,8 @@ class Bytecode {
     struct SumMatchData {
       const SumType* sum_type;
       int64_t variant_index;
-      std::vector<MatchArmItem> payload_items;
+      std::vector<SumPayloadPatternItem>
+          payload_items;  // Pattern source order.
     };
 
     absl::StatusOr<InterpValue> interp_value() const;
@@ -318,6 +322,11 @@ class Bytecode {
     std::optional<std::variant<InterpValue, SlotIndex, RangeData, SumMatchData,
                                std::vector<MatchArmItem>>>
         data_;
+  };
+
+  struct SumPayloadPatternItem {
+    int64_t member_index;  // Declaration order in the active variant.
+    MatchArmItem pattern;
   };
 
   // Represents the functions that are provided by a `Spawn` node, to decouple

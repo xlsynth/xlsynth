@@ -28,6 +28,7 @@
 #include "absl/base/casts.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/functional/function_ref.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -194,6 +195,28 @@ class TypeAnnotationDependencyChecker : public AstNodeRecursiveVisitor {
   bool found_ = false;
 };
 }  // namespace
+
+absl::Status ForEachSumPayloadSubpattern(
+    const SumVariantPayloadPattern& pattern, const SumVariant& variant,
+    absl::FunctionRef<absl::Status(const PatternTree&, int64_t)> visit) {
+  if (const auto* tuple = std::get_if<TuplePattern*>(&pattern.payload())) {
+    const auto& members = (*tuple)->members();
+    XLS_RET_CHECK_EQ(members.size(), variant.payload_member_count());
+    for (int64_t i = 0; i < members.size(); ++i) {
+      XLS_RETURN_IF_ERROR(visit(members[i], i));
+    }
+  } else {
+    const auto& fields = std::get<StructPattern*>(pattern.payload())->fields();
+    XLS_RET_CHECK_EQ(fields.size(), variant.payload_member_count());
+    for (const auto& [name, subpattern] : fields) {
+      std::optional<int64_t> index =
+          variant.named_fields().GetMemberIndex(name);
+      XLS_RET_CHECK(index.has_value());
+      XLS_RETURN_IF_ERROR(visit(subpattern, *index));
+    }
+  }
+  return absl::OkStatus();
+}
 
 bool IsParametricFunction(const AstNode* n) {
   // Convenience so we can check things like "definer" when the definer may be

@@ -1123,6 +1123,52 @@ fn f(x: Message, y: Message) -> bool {
   EXPECT_EQ(unequal.value, Value(UBits(/*value=*/0, /*bit_count=*/1)));
 }
 
+TEST(FunctionConverterTest, NamedPayloadPatternsProjectDeclaredSlices) {
+  constexpr std::string_view kProgram = R"(
+enum Inner: u2 { Pair { left: u4, right: u4 } = 0 }
+enum Outer: u2 { Wrap(Inner) = 0, Unit = 1 }
+fn f(x: Outer) -> (u4, u4) {
+  let reversed = match x {
+    Outer::Unit => u4:0,
+    Outer::Wrap(Inner::Pair { right: n, left: n }) => n,
+    Outer::Wrap(Inner::Pair { right: r, left: _ }) => r + u4:1,
+  };
+  let declared = match x {
+    Outer::Unit => u4:0,
+    Outer::Wrap(Inner::Pair { left: n, right: n }) => n,
+    Outer::Wrap(Inner::Pair { left: l, right: _ }) => l + u4:1,
+  };
+  (reversed, declared)
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+  PackageConversionData package = MakeConversionData("test_module_package");
+  XLS_ASSERT_OK(ConvertOneFunctionIntoPackage(tm.module, "f", &import_data,
+                                              /*parametric_env=*/nullptr,
+                                              ConvertOptions(), &package));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * f,
+                           package.package->GetFunction("__test_module__f"));
+  struct Case {
+    int outer_tag;
+    int payload;
+    int reversed;
+    int declared;
+  };
+  for (const Case& c : {Case{0, 0x0aa, 10, 10},    // Equal pair.
+                        Case{0, 0x03a, 11, 4},     // Unequal pair.
+                        Case{0, 0x23a, 11, 4},     // Undeclared inner tag.
+                        Case{3, 0x0a3, 4, 11}}) {  // Undeclared outer tag.
+    const Value x = Value::Tuple({Value(UBits(c.outer_tag, 2)),
+                                  Value::Tuple({Value(UBits(c.payload, 10))})});
+    XLS_ASSERT_OK_AND_ASSIGN(auto result, InterpretFunction(f, {x}));
+    EXPECT_EQ(result.value, Value::Tuple({Value(UBits(c.reversed, 4)),
+                                          Value(UBits(c.declared, 4))}));
+  }
+}
+
 TEST(FunctionConverterTest, MalformedSumUsesFinalConstructorPayloadFallback) {
   constexpr std::string_view kProgram = R"(
 enum Inner: u2 { A(u4) = 0, B = 1, }
