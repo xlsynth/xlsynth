@@ -3870,6 +3870,10 @@ fn named(x: Outer) -> u2 {
   const LOCAL = SMALL;
   match x { EMPTY => u2:1, LOCAL => u2:2, _ => u2:0 }
 }
+fn projected(x: Outer) -> u2 {
+  const (LOCAL,) = (SMALL,);
+  match x { EMPTY => u2:1, LOCAL => u2:2, _ => u2:0 }
+}
 fn spelled(x: Outer) -> u2 {
   match x {
     Outer::Empty => u2:1,
@@ -3885,7 +3889,7 @@ fn folded() -> u2 {
     return internal::CreateEncodedSumTuple(InterpValue::MakeUBits(2, tag),
                                            InterpValue::MakeUBits(10, payload));
   };
-  for (std::string_view function : {"named", "spelled"}) {
+  for (std::string_view function : {"named", "projected", "spelled"}) {
     SCOPED_TRACE(function);
     for (auto [input, expected] :
          {std::pair{outer(0, 0x3ff), 1},     // Empty with inactive payload.
@@ -3910,10 +3914,15 @@ enum Inner: u2 { Small(u4) = 0, Big(u8) = 1 }
 struct Fields { items: Inner[2] }
 enum Outer { Wrap((Fields, bool)), Empty }
 const FIVE = Inner::Small(u4:5);
-const EXPECTED = Outer::Wrap((Fields { items: [FIVE, FIVE] }, true));
+const PAYLOAD = (Fields { items: [FIVE, FIVE] }, true);
+const EXPECTED = Outer::Wrap(PAYLOAD);
 fn main(x: Inner) -> bool {
   let value = Outer::Wrap((Fields { items: [FIVE, x] }, true));
   match value { EXPECTED => true, _ => false }
+}
+fn field(x: Inner) -> bool {
+  let value = Outer::Wrap((Fields { items: [FIVE, x] }, true));
+  match value { Outer::Wrap(PAYLOAD) => true, _ => false }
 }
 )";
   for (auto [tag, payload, expected] :
@@ -3921,9 +3930,57 @@ fn main(x: Inner) -> bool {
         std::tuple{3, 0xe5, false}}) {
     InterpValue inner = internal::CreateEncodedSumTuple(
         InterpValue::MakeUBits(2, tag), InterpValue::MakeU8(payload));
-    EXPECT_THAT(Interpret(kProgram, "main", {inner}),
-                IsOkAndHolds(InterpValue::MakeBool(expected)));
+    for (std::string_view fn : {"main", "field"}) {
+      SCOPED_TRACE(fn);
+      EXPECT_THAT(Interpret(kProgram, fn, {inner}),
+                  IsOkAndHolds(InterpValue::MakeBool(expected)));
+    }
   }
+}
+
+TEST_F(BytecodeInterpreterTest,
+       ClosedSumPatternsObserveFieldsInDeclarationOrder) {
+  constexpr std::string_view kProgram = R"(
+enum Code: u1 { Ok = 0 }
+enum Leaf: u1 { Other = 0, Some(Code) = 1 }
+enum Root: u1 { Pair { first: Leaf, second: Leaf } = 0, None = 1 }
+const WANTED = Root::Pair { first: Leaf::Other, second: Leaf::Some(Code::Ok) };
+fn named(x: Root) -> bool {
+  match x { WANTED => true, _ => false }
+}
+fn declared(x: Root) -> bool {
+  match x { Root::Pair { first: Leaf::Other, second: Leaf::Some(Code::Ok) } => true, _ => false }
+}
+fn reversed(x: Root) -> bool {
+  match x { Root::Pair { second: Leaf::Some(Code::Ok), first: Leaf::Other } => true, _ => false }
+}
+fn nested(x: Root) -> bool {
+  match (x, true) {
+    (Root::Pair { second: Leaf::Some(Code::Ok), first: Leaf::Other }, _) => true,
+    _ => false,
+  }
+}
+fn open_pattern(x: Root) -> bool {
+  match x { Root::Pair { second: Leaf::Some(Code::Ok), first: _ } => true, _ => false }
+}
+)";
+  auto pair = [](int64_t payload) {
+    return internal::CreateEncodedSumTuple(InterpValue::MakeUBits(1, 0),
+                                           InterpValue::MakeUBits(4, payload));
+  };
+  for (std::string_view fn : {"named", "declared", "reversed", "nested"}) {
+    SCOPED_TRACE(fn);
+    EXPECT_THAT(Interpret(kProgram, fn, {pair(0b0010)}),
+                IsOkAndHolds(InterpValue::MakeBool(true)));
+    // The first field misses before the invalid Code in the second is reached.
+    EXPECT_THAT(Interpret(kProgram, fn, {pair(0b1011)}),
+                IsOkAndHolds(InterpValue::MakeBool(false)));
+    EXPECT_THAT(Interpret(kProgram, fn, {pair(0b0011)}),
+                StatusIs(absl::StatusCode::kInternal, HasSubstr("Code")));
+  }
+  // Open patterns still observe named fields in written order.
+  EXPECT_THAT(Interpret(kProgram, "open_pattern", {pair(0b1011)}),
+              StatusIs(absl::StatusCode::kInternal, HasSubstr("Code")));
 }
 
 TEST_F(BytecodeInterpreterTest, SemanticSumEqualityRejectsMalformedInput) {

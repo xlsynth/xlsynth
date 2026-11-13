@@ -14,6 +14,7 @@
 
 #include "xls/dslx/bytecode/bytecode_emitter.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -138,6 +139,20 @@ std::optional<ValueFormatDescriptor> GetFormatDescriptorFromNumber(
       builtin_type->GetSignedness().value()
           ? FormatPreference::kSignedDecimal
           : FormatPreference::kUnsignedDecimal);
+}
+
+bool IsClosedConstructorPattern(const SumVariantPayloadPattern& pattern) {
+  for (const PatternLeaf& leaf : FlattenPattern(pattern.payload())) {
+    if (const auto* ref = std::get_if<NameRef*>(&leaf)) {
+      if (!IsConstantPatternReference(**ref)) {
+        return false;
+      }
+    } else if (!std::holds_alternative<Number*>(leaf) &&
+               !std::holds_alternative<ColonRef*>(leaf)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // Lower the value of a named sum constant to the same tag and payload tests
@@ -1443,57 +1458,68 @@ absl::Status BytecodeEmitter::HandleInvocation(const Invocation* node) {
 
 absl::StatusOr<Bytecode::MatchArmItem>
 BytecodeEmitter::HandleSumVariantPayloadPattern(
-    const SumVariantPayloadPattern* pattern, const SumType& sum_type) {
+    const SumVariantPayloadPattern* pattern, const SumType& sum_type,
+    bool in_closed_constructor) {
   const SumTypeEncoding encoding(sum_type);
   XLS_ASSIGN_OR_RETURN(SumTypeEncoding::VariantInfo variant,
                        encoding.GetVariant(pattern->constructor_ref()->attr()));
 
   std::vector<Bytecode::SumPayloadPatternItem> payload_items;
   payload_items.reserve(variant.payload_size());
+  const bool closed =
+      in_closed_constructor || IsClosedConstructorPattern(*pattern);
   XLS_RETURN_IF_ERROR(ForEachSumPayloadSubpattern(
       *pattern, variant.variant->variant(),
       [&](const PatternTree& subpattern, int64_t member_index) -> absl::Status {
         const Type& type = variant.variant->GetMemberType(member_index);
         XLS_ASSIGN_OR_RETURN(Bytecode::MatchArmItem item,
-                             HandlePatternExpr(subpattern, &type));
+                             HandlePatternExpr(subpattern, &type, closed));
         payload_items.push_back({member_index, std::move(item)});
         return absl::OkStatus();
       }));
 
+  // A fully specified value has one observation order, even when its named
+  // fields are spelled in a different order. Other patterns evaluate in
+  // written order so each binding is available to later references.
+  if (closed && std::holds_alternative<StructPattern*>(pattern->payload())) {
+    std::sort(payload_items.begin(), payload_items.end(),
+              [](const auto& a, const auto& b) {
+                return a.member_index < b.member_index;
+              });
+  }
   return Bytecode::MatchArmItem::MakeSum(
       &sum_type, variant.variant_index, std::move(payload_items));
 }
 
 absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
-    const PatternTree& pattern, const Type* type) {
+    const PatternTree& pattern, const Type* type, bool in_closed_constructor) {
   const Type* value_type =
       type != nullptr && TypeContainsSemanticSum(*type) ? type : nullptr;
-  auto constant_pattern =
-      [&](const InterpValue& value) -> absl::StatusOr<Bytecode::MatchArmItem> {
-    if (type != nullptr && type->IsSum()) {
-      return MakeClosedPattern(value, *type);
-    }
-    return Bytecode::MatchArmItem::MakeInterpValue(value, value_type);
-  };
+  const bool match_closed_value =
+      value_type != nullptr && (in_closed_constructor || type->IsSum());
   if (!std::holds_alternative<TuplePattern*>(pattern)) {
     return absl::visit(
         Visitor{
             [&](NameRef* n) -> absl::StatusOr<Bytecode::MatchArmItem> {
-              // Function-local const declarations normally load from a slot.
-              // A pattern needs their compile-time value to emit tag tests.
-              if (type != nullptr && type->IsSum()) {
-                const auto* binding = dynamic_cast<const Let*>(n->GetDefiner());
-                if (binding != nullptr && binding->is_const()) {
-                  XLS_ASSIGN_OR_RETURN(
-                      InterpValue value,
-                      type_info_->GetConstExpr(binding->rhs()));
-                  return constant_pattern(value);
+              const bool closed =
+                  match_closed_value && IsConstantPatternReference(*n);
+              if (closed) {
+                // Local consts can normally load from a slot. Read the value
+                // of the bound name, which can be one member of its RHS tuple.
+                if (auto value = type_info_->GetConstExprOption(
+                        ToAstNode(n->name_def()))) {
+                  return MakeClosedPattern(*value, *type);
                 }
               }
               using ValueT = std::variant<InterpValue, Bytecode::SlotIndex>;
               XLS_ASSIGN_OR_RETURN(ValueT item_value, HandleNameRefInternal(n));
               if (std::holds_alternative<InterpValue>(item_value)) {
-                return constant_pattern(std::get<InterpValue>(item_value));
+                const InterpValue& value = std::get<InterpValue>(item_value);
+                if (closed) {
+                  return MakeClosedPattern(value, *type);
+                }
+                return Bytecode::MatchArmItem::MakeInterpValue(value,
+                                                               value_type);
               }
 
               return Bytecode::MatchArmItem::MakeLoad(
@@ -1532,7 +1558,11 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
               } else {
                 XLS_ASSIGN_OR_RETURN(InterpValue value,
                                      HandleColonRefInternal(n));
-                return constant_pattern(value);
+                if (match_closed_value) {
+                  return MakeClosedPattern(value, *type);
+                }
+                return Bytecode::MatchArmItem::MakeInterpValue(value,
+                                                               value_type);
               }
             },
             [&](NameDef* n) -> absl::StatusOr<Bytecode::MatchArmItem> {
@@ -1564,8 +1594,8 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
               XLS_RET_CHECK(sum_type != nullptr)
                   << "Constructor pattern expected sum type; got: "
                   << (type == nullptr ? "<null>" : type->ToString());
-              return HandleSumVariantPayloadPattern(constructor_pattern,
-                                                    *sum_type);
+              return HandleSumVariantPayloadPattern(
+                  constructor_pattern, *sum_type, in_closed_constructor);
             },
             [&](RestOfTuple* n) -> absl::StatusOr<Bytecode::MatchArmItem> {
               return Bytecode::MatchArmItem::MakeRestOfTuple();
@@ -1614,8 +1644,9 @@ absl::StatusOr<Bytecode::MatchArmItem> BytecodeEmitter::HandlePatternExpr(
     }
 
     const Type& subtype = tuple_type->GetMemberType(tuple_index);
-    XLS_ASSIGN_OR_RETURN(Bytecode::MatchArmItem element,
-                         HandlePatternExpr(subpattern, &subtype));
+    XLS_ASSIGN_OR_RETURN(
+        Bytecode::MatchArmItem element,
+        HandlePatternExpr(subpattern, &subtype, in_closed_constructor));
     elements.push_back(element);
     tuple_index++;
   }
