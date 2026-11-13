@@ -15,9 +15,11 @@
 #include "xls/dslx/ir_convert/function_converter.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
@@ -40,6 +42,7 @@
 #include "xls/dslx/ir_convert/test_utils.h"
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/type_system/parametric_env.h"
+#include "xls/dslx/virtualizable_file_system.h"
 #include "xls/interpreter/function_interpreter.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/clone_package.h"
@@ -705,8 +708,10 @@ fn probe(x: E) -> (u4, u4) {
   (selected, fallback)
 }
 )";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK(ParseAndTypecheck(kValues, "values.x", "values", &import_data));
+  absl::flat_hash_map<std::filesystem::path, std::string> files = {
+      {"/values.x", std::string(kValues)}};
+  ImportData import_data = CreateImportDataForTest(
+      std::make_unique<FakeFilesystem>(std::move(files), /*cwd=*/"/"));
   XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
                            ParseAndTypecheck(kProgram, "test_module.x",
                                              "test_module", &import_data));
