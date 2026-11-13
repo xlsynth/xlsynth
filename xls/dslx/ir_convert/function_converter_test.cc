@@ -965,6 +965,63 @@ fn f(x: Outer) -> u4 {
   EXPECT_EQ(result.value, Value(UBits(/*value=*/0b1011, /*bit_count=*/4)));
 }
 
+TEST(FunctionConverterTest, NestedSumMatchSelectsOneArmForValueAndTrace) {
+  constexpr std::string_view kProgram = R"(
+enum Leaf: u2 { Yes() = 0, No() = 1, }
+enum Inner: u2 { B(Leaf) = 0, A = 1, }
+enum Outer: u2 { Wrap(Inner) = 0, Unit = 1, }
+
+fn f(x: Outer, y: Outer) -> u6 {
+  match x {
+    y => { trace_fmt!("equal"); u6:4 },
+    Outer::Wrap(Inner::A) => { trace_fmt!("A"); u6:1 },
+    Outer::Wrap(Inner::B(_)) => { trace_fmt!("B"); u6:2 },
+    _ => { trace_fmt!("wildcard"); u6:3 },
+    invalid!(raw) => { trace_fmt!("invalid"); raw },
+  }
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+  PackageConversionData package = MakeConversionData("test_module_package");
+  XLS_ASSERT_OK(ConvertOneFunctionIntoPackage(tm.module, "f", &import_data,
+                                              /*parametric_env=*/nullptr,
+                                              ConvertOptions(), &package));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      xls::Function * ir_function,
+      package.package->GetFunction("__itok__test_module__f"));
+  struct Case {
+    uint64_t outer_tag;
+    uint64_t payload;
+    bool same_input;
+    uint64_t expected;
+    std::string_view trace;
+  };
+  for (const Case& c : std::vector<Case>{
+           {0, 0b0111, true, 4, "equal"},           // First ordinary arm wins.
+           {0, 0b0111, false, 1, "A"},              // A with dirty padding.
+           {0, 0b0010, false, 2, "B"},              // B with an invalid leaf.
+           {0, 0b1011, false, 3, "wildcard"},       // Invalid inner tag.
+           {2, 0b0111, true, 0b100111, "invalid"},  // Equal invalid roots.
+       }) {
+    SCOPED_TRACE(testing::Message() << c.outer_tag << "/" << c.payload);
+    const Value x = Value::Tuple({Value(UBits(c.outer_tag, 2)),
+                                  Value::Tuple({Value(UBits(c.payload, 4))})});
+    const Value y = c.same_input
+                        ? x
+                        : Value::Tuple({Value(UBits(1, 2)),
+                                        Value::Tuple({Value(UBits(0, 4))})});
+    XLS_ASSERT_OK_AND_ASSIGN(
+        auto result, InterpretFunction(ir_function, {Value::Token(),
+                                                     Value::Bool(true), x, y}));
+    EXPECT_EQ(result.value.element(1), Value(UBits(c.expected, 6)));
+    EXPECT_THAT(result.events.GetTraceMessageStrings(),
+                testing::ElementsAre(c.trace));
+  }
+}
+
 TEST(FunctionConverterTest, InvalidRawPatternBindsTagThenPayloadBits) {
   constexpr std::string_view kProgram = R"(
 enum Option: u2 {
@@ -972,10 +1029,13 @@ enum Option: u2 {
   Some(u32) = 1,
 }
 
-fn f(x: Option) -> u34 {
+enum Outer: u2 { Wrap(Option) = 0, Empty = 1, }
+
+fn f(x: Outer) -> u36 {
   match x {
-    Option::None => u34:0,
-    Option::Some(_) => u34:0,
+    Outer::Wrap(Option::None) => u36:0,
+    Outer::Wrap(Option::Some(_)) => u36:0,
+    Outer::Empty => u36:0,
     invalid!(raw) => raw,
   }
 }
@@ -1000,13 +1060,15 @@ fn f(x: Option) -> u34 {
 
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
                            package.package->GetFunction("__test_module__f"));
-  const Value malformed = Value::Tuple(
-      {Value(UBits(/*value=*/3, /*bit_count=*/2)),
-       Value::Tuple({Value(UBits(/*value=*/0x12345678, /*bit_count=*/32))})});
-  XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> result,
-                           InterpretFunction(ir_function, {malformed}));
-  EXPECT_EQ(result.value,
-            Value(UBits(/*value=*/0x312345678, /*bit_count=*/34)));
+  // An invalid outer tag and a valid outer tag with no matching ordinary arm
+  // both expose the whole outer value through invalid!(raw).
+  for (uint64_t raw : {0xf12345678ull, 0x212345678ull}) {
+    const Value x =
+        Value::Tuple({Value(UBits(raw >> 34, 2)),
+                      Value::Tuple({Value(UBits(raw & 0x3ffffffff, 34))})});
+    XLS_ASSERT_OK_AND_ASSIGN(auto result, InterpretFunction(ir_function, {x}));
+    EXPECT_EQ(result.value, Value(UBits(raw, 36)));
+  }
 }
 
 TEST(FunctionConverterTest,
@@ -1063,15 +1125,14 @@ fn f(x: Message, y: Message) -> bool {
 
 TEST(FunctionConverterTest, MalformedSumUsesFinalConstructorPayloadFallback) {
   constexpr std::string_view kProgram = R"(
-enum Option: u2 {
-  None = 0,
-  Some(u8) = 1,
-}
+enum Inner: u2 { A(u4) = 0, B = 1, }
+enum Outer: u2 { Wrap(Inner) = 0, Unit = 1, }
 
-fn f(x: Option) -> u8 {
+fn f(x: Outer) -> u4 {
   match x {
-    Option::None => u8:0,
-    Option::Some(value) => value,
+    Outer::Unit => u4:0,
+    Outer::Wrap(Inner::B) => u4:1,
+    Outer::Wrap(Inner::A(n)) => n,
   }
 }
 )";
@@ -1094,12 +1155,23 @@ fn f(x: Option) -> u8 {
   XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir_function,
                            package.package->GetFunction("__test_module__f"));
 
-  const Value malformed = Value::Tuple(
-      {Value(UBits(/*value=*/3, /*bit_count=*/2)),
-       Value::Tuple({Value(UBits(/*value=*/0xa5, /*bit_count=*/8))})});
-  XLS_ASSERT_OK_AND_ASSIGN(InterpreterResult<Value> result,
-                           InterpretFunction(ir_function, {malformed}));
-  EXPECT_EQ(result.value, Value(UBits(/*value=*/0xa5, /*bit_count=*/8)));
+  struct Case {
+    uint64_t outer_tag;
+    uint64_t payload;
+    uint64_t expected;
+  };
+  for (const Case& c : std::vector<Case>{
+           {0, 0b00'1011, 11},  // Ordinary match binds n.
+           {0, 0b10'1011, 11},  // Invalid inner tag, same n wires.
+           {0, 0b10'0010, 2},   // Changing only n changes the fallback.
+           {3, 0b01'1010, 10},  // Invalid outer tag, declared inner B tag.
+           {0, 0b01'1010, 1},   // Ordinary B ignores padding.
+       }) {
+    const Value x = Value::Tuple({Value(UBits(c.outer_tag, 2)),
+                                  Value::Tuple({Value(UBits(c.payload, 6))})});
+    XLS_ASSERT_OK_AND_ASSIGN(auto result, InterpretFunction(ir_function, {x}));
+    EXPECT_EQ(result.value, Value(UBits(c.expected, 4)));
+  }
 }
 
 TEST(FunctionConverterTest, ExpandsSemanticSumEqIntoTagAndPayloadChecks) {

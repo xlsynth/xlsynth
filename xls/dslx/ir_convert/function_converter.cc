@@ -104,6 +104,14 @@ namespace {
 
 constexpr WarningCollector* kNoWarningCollector = nullptr;
 
+absl::StatusOr<BValue> MatchSumTag(BuilderBase& builder, BValue subject,
+                                   const SumType& sum, int64_t variant_index,
+                                   const SourceInfo& loc) {
+  XLS_ASSIGN_OR_RETURN(BValue tag, internal::BuildPackedSumDiscriminant(
+                                       builder, sum, variant_index, loc));
+  return builder.Eq(internal::GetPackedSumTag(builder, subject, loc), tag, loc);
+}
+
 // Generates a unique, human-readable label identifying the given conditional
 // branch (or match arm) for use as a synthesized coverpoint name. The label
 // contains the enclosing function name, the branch kind, and a line/col; it
@@ -1521,14 +1529,21 @@ absl::Status FunctionConverter::HandleMatch(const Match* node) {
             {orig_control_predicate(), not_any_prev_selected});
       });
 
-  // Exhaustiveness checking proves that the final arm handles all remaining
-  // declared-constructor cases. In Phase 2 lowering it is also the malformed
-  // fallback arm when the match has no explicit `invalid!` arm; type checking
-  // restricts that fallback to `_` or an irrefutable constructor payload shape.
+  // The final arm is the hardware fallback, including when the outer tag is
+  // valid but no ordinary pattern matches. Bind its names from the positions
+  // specified by the pattern regardless of the actual tags.
   MatchArm* default_arm = node->arms().back();
-  XLS_RETURN_IF_ERROR(
-      HandleMatcher(default_arm->patterns()[0], matched, *matched_type)
-          .status());
+  const PatternTree& default_pattern = default_arm->patterns().front();
+  if (auto* const* invalid = std::get_if<InvalidPattern*>(&default_pattern)) {
+    if (NameDef* raw = (*invalid)->raw_name_def()) {
+      SetNodeToIr(
+          raw, internal::GetPackedSumRawBits(*function_builder_, matched,
+                                             ToSourceInfo((*invalid)->span())));
+    }
+  } else {
+    XLS_RETURN_IF_ERROR(
+        HandleMatcher(default_pattern, matched, *matched_type).status());
+  }
   if (options_.ShouldEmitAutoCover(AutoCoverKind::kBranch)) {
     if (implicit_token_data_.has_value()) {
       function_builder_->Cover(
@@ -2085,15 +2100,11 @@ absl::StatusOr<BValue> FunctionConverter::HandleSumVariantPayloadPattern(
                        encoding.GetVariant(pattern->constructor_ref()->attr()));
 
   SourceInfo loc = ToSourceInfo(pattern->span());
-  BValue tag =
-      internal::GetPackedSumTag(*function_builder_, matched_value, loc);
+  XLS_ASSIGN_OR_RETURN(BValue result,
+                       MatchSumTag(*function_builder_, matched_value,
+                                   matched_type, variant.variant_index, loc));
   BValue payload =
       internal::GetPackedSumPayload(*function_builder_, matched_value, loc);
-  XLS_ASSIGN_OR_RETURN(
-      BValue discriminant,
-      internal::BuildPackedSumDiscriminant(*function_builder_, matched_type,
-                                           variant.variant_index, loc));
-  BValue result = function_builder_->Eq(tag, discriminant, loc);
   XLS_ASSIGN_OR_RETURN(int64_t bit_count, variant.payload_bit_count());
   internal::PackedSumMemberLayout layout(bit_count);
 
@@ -2174,7 +2185,7 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
       XLS_ASSIGN_OR_RETURN(BValue to_match, Use(matcher_node));
       return equality(to_match);
     };
-    auto irrefutable_predicate = [&]() -> absl::StatusOr<BValue> {
+    auto root_tag_is_valid = [&]() -> absl::StatusOr<BValue> {
       SourceInfo loc = ToSourceInfo(GetPatternSpan(matcher));
       if (is_match_root && matched_type.IsSum()) {
         return BuildSemanticSumTagIsDeclaredPredicate(matched_type.AsSum(),
@@ -2186,27 +2197,13 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
     return absl::visit(
         Visitor{
             [&](WildcardPattern*) -> absl::StatusOr<BValue> {
-              XLS_ASSIGN_OR_RETURN(BValue result, irrefutable_predicate());
+              XLS_ASSIGN_OR_RETURN(BValue result, root_tag_is_valid());
               SetNodeToIr(matcher_node, result);
               return result;
             },
-            [&](InvalidPattern* invalid_pattern) -> absl::StatusOr<BValue> {
-              auto* sum_type = dynamic_cast<const SumType*>(&matched_type);
-              XLS_RET_CHECK(sum_type != nullptr)
-                  << "Invalid pattern expected sum type; got: "
-                  << matched_type.ToString();
-              SourceInfo loc = ToSourceInfo(GetPatternSpan(matcher));
-              XLS_ASSIGN_OR_RETURN(BValue tag_is_declared,
-                                   BuildSemanticSumTagIsDeclaredPredicate(
-                                       *sum_type, matched_value, loc));
-              if (invalid_pattern->raw_name_def() != nullptr) {
-                SetNodeToIr(invalid_pattern->raw_name_def(),
-                            internal::GetPackedSumRawBits(*function_builder_,
-                                                          matched_value, loc));
-              }
-              BValue result = function_builder_->Not(tag_is_declared, loc);
-              SetNodeToIr(matcher_node, result);
-              return result;
+            [&](InvalidPattern*) -> absl::StatusOr<BValue> {
+              return absl::InternalError(
+                  "invalid! must be the final match arm");
             },
             [&](SumVariantPayloadPattern* pattern) -> absl::StatusOr<BValue> {
               auto* sum_type = dynamic_cast<const SumType*>(&matched_type);
@@ -2225,6 +2222,15 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
               return equality_for_leaf();
             },
             [&](ColonRef* n) -> absl::StatusOr<BValue> {
+              if (current_type_info_->IsSumConstructor(n)) {
+                const SumType& sum = matched_type.AsSum();
+                XLS_ASSIGN_OR_RETURN(
+                    auto variant, SumTypeEncoding(sum).GetVariant(n->attr()));
+                return DefWithStatus(n, [&](const SourceInfo& loc) {
+                  return MatchSumTag(*function_builder_, matched_value, sum,
+                                     variant.variant_index, loc);
+                });
+              }
               return equality_for_leaf();
             },
             [&](Range* n) -> absl::StatusOr<BValue> {
@@ -2273,10 +2279,17 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
               XLS_ASSIGN_OR_RETURN(BValue to_match, Use(name_def));
               XLS_ASSIGN_OR_RETURN(BValue result, equality(to_match));
               XLS_RETURN_IF_ERROR(DefAlias(name_def, n));
+              if (is_match_root && matched_type.IsSum()) {
+                // Two runtime values can compare equal even when both root
+                // tags are invalid. Such a subject goes to the fallback.
+                XLS_ASSIGN_OR_RETURN(BValue declared, root_tag_is_valid());
+                return function_builder_->And(declared, result,
+                                              ToSourceInfo(n->span()));
+              }
               return result;
             },
             [&](NameDef*) -> absl::StatusOr<BValue> {
-              XLS_ASSIGN_OR_RETURN(BValue ok, irrefutable_predicate());
+              XLS_ASSIGN_OR_RETURN(BValue ok, root_tag_is_valid());
               SetNodeToIr(matcher_node, matched_value);
               return ok;
             },

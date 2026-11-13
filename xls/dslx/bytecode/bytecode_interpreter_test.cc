@@ -415,7 +415,7 @@ TEST_F(BytecodeInterpreterTest,
 }
 
 TEST_F(BytecodeInterpreterTest,
-       HandwrittenSumPatternOnlyObservesReachedTupleMembers) {
+       HandwrittenNestedSumPatternComparesReachedTags) {
   using Item = Bytecode::MatchArmItem;
   Module module("test", /*fs_path=*/std::nullopt, import_data_->file_table());
   SumType sum_type = MakeSparseBytecodeSumType(module);
@@ -441,8 +441,7 @@ TEST_F(BytecodeInterpreterTest,
       matches({Item::MakeInterpValue(MakePackedBytecodeSum(9, 0)), a()}),
       IsOkAndHolds(InterpValue::MakeBool(false)));
   EXPECT_THAT(matches({a(), a()}),
-              StatusIs(absl::StatusCode::kInternal,
-                       HasSubstr("No variant with tag bits")));
+              IsOkAndHolds(InterpValue::MakeBool(false)));
 }
 
 TEST_F(BytecodeInterpreterTest,
@@ -3717,6 +3716,12 @@ fn ignore(x: Outer) -> bool {
 fn observe(x: Outer) -> u4 {
   match x { Outer::Wrapped(Message::Small(v)) => v, _ => u4:0 }
 }
+fn explicit_match(x: Outer) -> u4 {
+  match x {
+    Outer::Wrapped(inner) => match inner { Message::Small(v) => v, _ => u4:0 },
+    _ => u4:0,
+  }
+}
 fn outer_equal(x: Outer, y: Outer) -> bool { x == y }
 fn tuple_equal(x: (u1, Message), y: (u1, Message)) -> bool { x == y }
 )";
@@ -3732,17 +3737,48 @@ TEST_F(BytecodeInterpreterTest, SemanticSumTransportPreservesInheritedBits) {
                                     16, (tag << 8) | 0xfa)})});
     EXPECT_THAT(Interpret(kTransparentSumProgram, "ignore", {wrapped}),
                 IsOkAndHolds(InterpValue::MakeBool(true)));
-    if (tag == 0) {
-      EXPECT_THAT(Interpret(kTransparentSumProgram, "observe", {wrapped}),
-                  IsOkAndHolds(InterpValue::MakeUBits(4, 10)));
-    } else {
+    EXPECT_THAT(Interpret(kTransparentSumProgram, "observe", {wrapped}),
+                IsOkAndHolds(InterpValue::MakeUBits(4, tag == 0 ? 10 : 0)));
+    if (tag == 3) {
       EXPECT_THAT(
-          Interpret(kTransparentSumProgram, "observe", {wrapped}),
+          Interpret(kTransparentSumProgram, "explicit_match", {wrapped}),
           StatusIs(
               absl::StatusCode::kInternal,
               HasSubstr("Semantic sum observer received a malformed value")));
     }
   }
+}
+
+TEST_F(BytecodeInterpreterTest, NestedSumTagsInSourceMatch) {
+  constexpr std::string_view kProgram = R"(
+enum Leaf: u2 { Red() = 0, Blue() = 1 }
+enum Inner: u2 { A() = 0, B(Leaf) = 1 }
+enum Outer: u2 { Wrap(Inner) = 0, Unit = 1 }
+fn exact(x: Outer) -> u8 {
+  match x {
+    Outer::Wrap(Inner::A()) => u8:10,
+    Outer::Wrap(Inner::B(_)) => u8:20,
+    Outer::Unit => u8:30,
+    invalid! => u8:99,
+  }
+}
+fn wildcard(x: Outer) -> u8 {
+  match x { Outer::Wrap(Inner::A()) => u8:10, _ => u8:40, invalid! => u8:99 }
+}
+)";
+  auto wrap = [](int64_t inner, int64_t leaf) {
+    return InterpValue::MakeTuple(
+        {InterpValue::MakeUBits(2, 0),
+         InterpValue::MakeTuple(
+             {InterpValue::MakeUBits(4, (inner << 2) | leaf)})});
+  };
+  EXPECT_THAT(Interpret(kProgram, "exact", {wrap(1, 2)}),
+              IsOkAndHolds(InterpValue::MakeU8(20)));
+  EXPECT_THAT(Interpret(kProgram, "wildcard", {wrap(2, 0)}),
+              IsOkAndHolds(InterpValue::MakeU8(40)));
+  EXPECT_THAT(Interpret(kProgram, "exact", {wrap(2, 0)}),
+              StatusIs(absl::StatusCode::kInternal,
+                       HasSubstr("The value was not matched")));
 }
 
 // Negative test: Equality rejects malformed nested tags after unequal members.

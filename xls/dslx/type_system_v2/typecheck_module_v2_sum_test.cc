@@ -1435,7 +1435,7 @@ fn f(x: Choice) -> bool { match x { Choice::Left(_) => true } }
 }
 
 TEST(TypecheckV2Test,
-     SumMatchWithoutInvalidPatternRejectsRefutableFinalConstructorPayload) {
+     SumMatchWithoutInvalidPatternRequiresCoverageOfConstructorPayload) {
   EXPECT_THAT(R"(
 enum Option {
   None,
@@ -1448,10 +1448,60 @@ fn f(x: Option) -> u8 {
   }
 }
 )",
-              TypecheckFails(HasSubstr(
-                  "A sum match without `invalid!` must end with `_` or one "
-                  "constructor pattern whose payload subpatterns are "
-                  "irrefutable.")));
+              TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+}
+
+TEST(TypecheckV2Test, SumMatchAllowsRefutableFinalConstructorPayload) {
+  EXPECT_THAT(R"(
+enum Choice { Bit(bool) }
+enum Outer { Wrap(Choice) }
+fn f(x: Outer) -> u8 {
+  match x {
+    Outer::Wrap(Choice::Bit(false)) => u8:0,
+    Outer::Wrap(Choice::Bit(true)) => u8:1,
+  }
+}
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test, SumMatchChecksNestedPatternsAfterInstantiation) {
+  const std::string declarations = R"(#![feature(generics)]
+enum Inner { A(u4), B }
+enum Outer<T: type> { Unit, Wrap(T) }
+type Message = Outer<Inner>;
+)";
+  EXPECT_THAT(declarations + R"(
+fn f(x: Message) -> u4 {
+  match x {
+    Message::Unit => u4:0,
+    Message::Wrap(Inner::B) => u4:1,
+    Message::Wrap(Inner::A(n)) => n,
+  }
+}
+)",
+              TypecheckSucceeds(HasNodeWithType("n", "uN[4]")));
+  EXPECT_THAT(
+      declarations + R"(
+fn f(x: Message) -> u4 {
+  match x {
+    Message::Unit => u4:0,
+    Message::Wrap(Inner::A(n)) => n,
+  }
+}
+)",
+      TypecheckFails(HasSubstr("`Outer::Wrap(Inner::B)` is not covered")));
+}
+
+TEST(TypecheckV2Test, SumMatchWithoutInvalidPatternRequiresSingleFinalPattern) {
+  EXPECT_THAT(R"(
+enum Choice { Bit(bool) }
+fn f(x: Choice) -> bool {
+  match x { Choice::Bit(false) | Choice::Bit(true) => true }
+}
+)",
+              TypecheckFails(
+                  HasSubstr("must end with `_` or one constructor pattern")));
 }
 
 TEST(TypecheckV2Test,

@@ -119,13 +119,10 @@ bool HasOnlySumCatchAllPatterns(const Match& match) {
   }
 }
 
-bool HasIrrefutablePayloadPatterns(const SumVariantPayloadPattern& pattern) {
-  return IsIrrefutablePattern(pattern.payload());
-}
-
 bool IsValidMalformedSumFallbackPattern(const PatternTree& pattern,
                                         const InferenceTable& table) {
-  if (IsWildcardLeaf(pattern)) {
+  if (IsWildcardLeaf(pattern) ||
+      std::holds_alternative<SumVariantPayloadPattern*>(pattern)) {
     return true;
   } else if (std::holds_alternative<ColonRef*>(pattern)) {
     std::optional<const AstNode*> target =
@@ -133,11 +130,8 @@ bool IsValidMalformedSumFallbackPattern(const PatternTree& pattern,
     return target.has_value() &&
            (*target)->kind() == AstNodeKind::kSumVariant &&
            absl::down_cast<const SumVariant*>(*target)->is_unit();
-  } else if (!std::holds_alternative<SumVariantPayloadPattern*>(pattern)) {
-    return false;
   } else {
-    return HasIrrefutablePayloadPatterns(
-        *std::get<SumVariantPayloadPattern*>(pattern));
+    return false;
   }
 }
 
@@ -561,7 +555,7 @@ class TypeValidator : public AstNodeVisitorWithDefault {
     if (malformed_fallback_arm != nullptr) {
       std::string message =
           "A sum match without `invalid!` must end with `_` or one "
-          "constructor pattern whose payload subpatterns are irrefutable.";
+          "constructor pattern.";
       if (!exhaustiveness_checker.IsExhaustive()) {
         std::optional<std::string> sample =
             exhaustiveness_checker.FormatSimplestUncoveredValue();
