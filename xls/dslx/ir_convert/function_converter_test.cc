@@ -1020,7 +1020,7 @@ enum Outer: u2 { Wrap(Inner) = 0, Unit = 1, }
 
 fn f(x: Outer, y: Outer) -> u6 {
   match x {
-    y => { trace_fmt!("equal"); u6:4 },
+    y | Outer::Wrap(Inner::B(Leaf::Yes())) => { trace_fmt!("group"); u6:4 },
     Outer::Wrap(Inner::A) => { trace_fmt!("A"); u6:1 },
     Outer::Wrap(Inner::B(_)) => { trace_fmt!("B"); u6:2 },
     _ => { trace_fmt!("wildcard"); u6:3 },
@@ -1047,7 +1047,9 @@ fn f(x: Outer, y: Outer) -> u6 {
     std::string_view trace;
   };
   for (const Case& c : std::vector<Case>{
-           {0, 0b0111, true, 4, "equal"},           // First ordinary arm wins.
+           {0, 0b0111, true, 4, "group"},           // First alternative.
+           {0, 0b0000, false, 4, "group"},          // Second alternative.
+           {0, 0b0000, true, 4, "group"},           // Both alternatives match.
            {0, 0b0111, false, 1, "A"},              // A with dirty padding.
            {0, 0b0010, false, 2, "B"},              // B with an invalid leaf.
            {0, 0b1011, false, 3, "wildcard"},       // Invalid inner tag.

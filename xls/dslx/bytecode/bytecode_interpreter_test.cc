@@ -4043,7 +4043,10 @@ TEST_F(BytecodeInterpreterTest, MatchAlternativesStopAtFirstSuccess) {
 enum Inner: u2 { Small(u4) = 0, Big(u8) = 1 }
 enum Outer: u2 { Empty = 0, Wrapped(Inner) = 1 }
 fn constructor_first(x: Outer, other: Outer) -> bool {
-  match x { Outer::Wrapped(_) | other => true, _ => false }
+  match x {
+    Outer::Wrapped(_) | other => { trace_fmt!("group"); true },
+    _ => { trace_fmt!("fallback"); false },
+  }
 }
 fn value_first(x: Outer, other: Outer) -> bool {
   match x { other | Outer::Wrapped(_) => true, _ => false }
@@ -4064,14 +4067,21 @@ fn tuple_root(x: Outer, other: Outer, skip: bool) -> bool {
                HasSubstr("Semantic sum observer received a malformed value"));
   for (std::string_view function : {"constructor_first", "value_first"}) {
     SCOPED_TRACE(function);
-    EXPECT_THAT(Interpret(kProgram, function, {empty, empty}),
-                IsOkAndHolds(InterpValue::MakeBool(true)));
-    EXPECT_THAT(Interpret(kProgram, function, {empty, wrapped}),
-                IsOkAndHolds(InterpValue::MakeBool(false)));
     EXPECT_THAT(Interpret(kProgram, function, {outer(3, 0), empty}), malformed);
   }
-  EXPECT_THAT(Interpret(kProgram, "constructor_first", {invalid_nested, empty}),
-              IsOkAndHolds(InterpValue::MakeBool(true)));
+  auto check_trace = [&](const InterpValue& x, const InterpValue& other,
+                         bool selected) {
+    DslxInterpreterEvents events;
+    EXPECT_THAT(Interpret(kProgram, "constructor_first", {x, other},
+                          BytecodeInterpreterOptions(), nullptr, &events),
+                IsOkAndHolds(InterpValue::MakeBool(selected)));
+    EXPECT_THAT(events.GetTraceMessageStrings(),
+                ElementsAre(selected ? "group" : "fallback"));
+  };
+  check_trace(invalid_nested, empty, true);  // First, skipping equality.
+  check_trace(empty, empty, true);           // Second only.
+  check_trace(wrapped, wrapped, true);       // Both.
+  check_trace(empty, wrapped, false);        // Neither.
   EXPECT_THAT(Interpret(kProgram, "value_first", {invalid_nested, empty}),
               malformed);
   EXPECT_THAT(Interpret(kProgram, "tuple_root",
