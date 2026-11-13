@@ -2455,16 +2455,17 @@ absl::StatusOr<TypedExpr> AstGenerator::GenerateImportedExpr(Context* ctx) {
   }
 }
 
-AstGenerator::RequiredSumType& AstGenerator::GetOrCreateRequiredSumType() {
-  if (required_sum_type_.has_value()) {
-    return *required_sum_type_;
+TypeRefTypeAnnotation* AstGenerator::MakeRequiredSumTypeAnnotation() {
+  if (required_proc_sum_def_ != nullptr) {
+    return MakeTypeRefTypeAnnotation(required_proc_sum_def_);
   }
   NameDef* sum_name_def = MakeNameDef(GenSym());
   NameDef* unit_variant_name_def = MakeNameDef(GenSym());
   NameDef* active_variant_name_def = MakeNameDef(GenSym());
 
   const bool use_sparse_discriminants =
-      options_.max_width_bits_types >= 3 && RandomBool(0.5);
+      options_.max_width_bits_types >= 3 &&
+      options_.max_width_aggregate_types >= 4 && RandomBool(0.5);
   const bool use_signed_discriminants =
       use_sparse_discriminants && options_.emit_signed_types && RandomBool(0.5);
   TypeAnnotation* tag_type =
@@ -2482,55 +2483,38 @@ AstGenerator::RequiredSumType& AstGenerator::GetOrCreateRequiredSumType() {
 
   std::vector<SumVariant*> variants;
   variants.reserve(2);
-  auto* unit_variant = module_->Make<SumVariant>(
-      fake_span_, unit_variant_name_def, std::monostate{}, unit_discriminant);
-  variants.push_back(unit_variant);
-
-  std::optional<TypeAnnotation*> payload_type;
-  SumVariant* active_variant;
-  if (options_.max_width_bits_types > 0) {
+  int64_t sum_width = 0;
+  if (options_.max_width_bits_types > 0 &&
+      options_.max_width_aggregate_types >= 2) {
+    const int64_t tag_width = use_sparse_discriminants ? 3 : 1;
     int64_t payload_width = absl::Uniform<int64_t>(
         absl::IntervalClosed, bit_gen_, 1,
-        std::min<int64_t>(options_.max_width_bits_types, 8));
-    payload_type = MakeTypeAnnotation(
+        std::min<int64_t>({options_.max_width_bits_types, 8,
+                           options_.max_width_aggregate_types - tag_width}));
+    sum_width = tag_width + payload_width;
+    TypeAnnotation* payload_type = MakeTypeAnnotation(
         /*is_signed=*/options_.emit_signed_types && RandomBool(0.5),
         payload_width, /*use_xn=*/RandomBool(0.05));
-    active_variant = module_->Make<SumVariant>(
-        fake_span_, active_variant_name_def, MakeTupleType({*payload_type}),
-        active_discriminant);
-    variants.push_back(active_variant);
+    variants.push_back(
+        module_->Make<SumVariant>(fake_span_, unit_variant_name_def,
+                                  std::monostate{}, unit_discriminant));
+    variants.push_back(module_->Make<SumVariant>(
+        fake_span_, active_variant_name_def, MakeTupleType({payload_type}),
+        active_discriminant));
   } else {
-    active_variant = module_->Make<SumVariant>(
-        fake_span_, active_variant_name_def, MakeTupleType({}),
-        active_discriminant);
-    variants.push_back(active_variant);
+    // An empty-tuple singleton has neither tag nor payload bits.
+    variants.push_back(module_->Make<SumVariant>(
+        fake_span_, active_variant_name_def, MakeTupleType({})));
   }
 
-  auto* sum_def = module_->Make<SumDef>(
+  required_proc_sum_def_ = module_->Make<SumDef>(
       fake_span_, sum_name_def, std::vector<ParametricBinding*>{},
       std::move(variants), /*is_public=*/false, tag_type);
-  sum_name_def->set_definer(sum_def);
-  sum_defs_.push_back(sum_def);
+  sum_name_def->set_definer(required_proc_sum_def_);
+  sum_defs_.push_back(required_proc_sum_def_);
   generated_required_sum_ = true;
-  required_sum_type_ = RequiredSumType{.sum_def = sum_def,
-                                       .unit_variant = unit_variant,
-                                       .active_variant = active_variant,
-                                       .active_payload_type = payload_type};
-  return *required_sum_type_;
-}
-
-TypeRefTypeAnnotation* AstGenerator::MakeRequiredSumTypeAnnotation() {
-  RequiredSumType& sum_type = GetOrCreateRequiredSumType();
-  auto* type_ref_type = MakeTypeRefTypeAnnotation(sum_type.sum_def);
-  int64_t payload_bits = 0;
-  if (sum_type.active_payload_type.has_value()) {
-    payload_bits = GetTypeBitCount(*sum_type.active_payload_type);
-  }
-  const int64_t tag_bits =
-      sum_type.sum_def->tag_type_annotation() == nullptr
-          ? 1
-          : GetTypeBitCount(sum_type.sum_def->tag_type_annotation());
-  type_bit_counts_[type_ref_type->ToString()] = tag_bits + payload_bits;
+  auto* type_ref_type = MakeTypeRefTypeAnnotation(required_proc_sum_def_);
+  type_bit_counts_[type_ref_type->ToString()] = sum_width;
   return type_ref_type;
 }
 

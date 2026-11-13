@@ -357,6 +357,45 @@ TEST(AstGeneratorMultiTest, GeneratesRequiredSumTypesInProcs) {
   }
 }
 
+TEST(AstGeneratorMultiTest, RequiredProcSumFitsAggregateWidth) {
+  AstGeneratorOptions options;
+  options.generate_proc = true;
+  options.require_sum_type = true;
+  options.max_width_bits_types = 8;
+  for (int64_t budget : {1, 2, 3, 4, 11}) {
+    options.max_width_aggregate_types = budget;
+    for (uint64_t seed : {0, 1}) {
+      SCOPED_TRACE(
+          absl::StrFormat("aggregate width %d, seed %d", budget, seed));
+      FileTable file_table;
+      std::mt19937_64 rng{seed};
+      AstGenerator generator(options, rng, file_table);
+      XLS_ASSERT_OK_AND_ASSIGN(AnnotatedModule generated,
+                               generator.Generate("main", "sample"));
+      auto import_data = CreateImportDataForTest();
+      XLS_ASSERT_OK_AND_ASSIGN(
+          TypecheckedModule parsed,
+          ParseAndTypecheck(generated.module->ToString(), "sample.x", "sample",
+                            &import_data));
+      const std::vector<SumDef*> sums = parsed.module->GetSumDefs();
+      ASSERT_EQ(sums.size(), 1);
+      XLS_ASSERT_OK_AND_ASSIGN(Type * type,
+                               parsed.type_info->GetItemOrError(sums.front()));
+      ASSERT_TRUE(type->IsMeta());
+      XLS_ASSERT_OK_AND_ASSIGN(TypeDim width,
+                               type->AsMeta().wrapped()->GetTotalBitCount());
+      XLS_ASSERT_OK_AND_ASSIGN(int64_t bits, width.GetAsInt64());
+      if (budget == 1) {
+        EXPECT_EQ(bits, 0);
+        EXPECT_EQ(sums[0]->variants().size(), 1);
+      } else {
+        EXPECT_GE(bits, 2);
+        EXPECT_LE(bits, budget);
+      }
+    }
+  }
+}
+
 // Helper function that is used in a TEST_P so we can shard the work.
 static void TestRepeatable(uint64_t seed) {
   FileTable file_table;

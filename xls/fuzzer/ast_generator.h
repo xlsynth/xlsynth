@@ -160,13 +160,6 @@ class AstGenerator {
                                            const std::string& module_name);
 
  private:
-  struct RequiredSumType {
-    SumDef* sum_def;
-    SumVariant* unit_variant;
-    SumVariant* active_variant;
-    std::optional<TypeAnnotation*> active_payload_type;
-  };
-
   enum class RequiredProcSumBoundary : uint8_t {
     kState,
     kOutputChannel,
@@ -647,7 +640,6 @@ class AstGenerator {
   // scalar expectations for constructor equality and payload extraction.
   absl::StatusOr<TypedExpr> GenerateRequiredSumResult(
       Context* ctx, std::vector<Statement*>* statements);
-  RequiredSumType& GetOrCreateRequiredSumType();
   TypeRefTypeAnnotation* MakeRequiredSumTypeAnnotation();
   absl::StatusOr<NameRef*> GenerateProcChannel(ChannelDirection direction,
                                                TypeAnnotation* payload_type);
@@ -851,7 +843,7 @@ class AstGenerator {
   absl::flat_hash_map<std::string, int64_t> type_bit_counts_;
 
   bool generated_required_sum_ = false;
-  std::optional<RequiredSumType> required_sum_type_;
+  SumDef* required_proc_sum_def_ = nullptr;
   std::optional<RequiredProcSumBoundary> required_proc_sum_boundary_;
 
   // Set of constants defined during module generation.
