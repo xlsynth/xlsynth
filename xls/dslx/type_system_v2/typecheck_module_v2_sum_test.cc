@@ -1598,14 +1598,27 @@ TEST(TypecheckV2Test, SumMatchDistinguishesLocalConstantFromFoldedLet) {
   const std::string program = R"(
 enum E { A, B(u1) }
 fn f(x: E) -> bool {
-  $0 last = E::B(u1:1);
+  $0
   match x { E::A => false, E::B(u1:0) => false, last => true }
 }
 )";
-  EXPECT_THAT(absl::Substitute(program, "const"),
+  for (const std::string_view binding :
+       {"last = E::B(u1:1);", "(last,) = (E::B(u1:1),);"}) {
+    SCOPED_TRACE(binding);
+    EXPECT_THAT(absl::Substitute(program, absl::StrCat("const ", binding)),
+                TypecheckSucceeds(::testing::_));
+    EXPECT_THAT(absl::Substitute(program, absl::StrCat("let ", binding)),
+                TypecheckFails(HasSubstr("must end with a single pattern")));
+  }
+}
+
+TEST(TypecheckV2Test, SumMatchParametricConstantAsFinalFallback) {
+  EXPECT_THAT(R"(
+enum E { A, B(u1) }
+fn f<C: E>(x: E) -> bool { match x { E::B(_) => false, C => true } }
+fn entry(x: E) -> bool { f<E::A>(x) }
+)",
               TypecheckSucceeds(::testing::_));
-  EXPECT_THAT(absl::Substitute(program, "let"),
-              TypecheckFails(HasSubstr("must end with a single pattern")));
 }
 
 TEST(TypecheckV2Test, SumMatchQualifiedValueConstantWithInvalidArm) {
