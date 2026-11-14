@@ -41,8 +41,9 @@ class TypeAnnotationFilter {
   // Creates a filter that excludes only multi-any type annotations.
   static TypeAnnotationFilter FilterMultiAny();
 
-  // Creates a filter that excludes any `ParamTypeAnnotation`.
-  static TypeAnnotationFilter FilterParamTypes();
+  // Excludes argument annotations while retaining sum pattern payload
+  // bindings, which do not depend on the call's formal types.
+  static TypeAnnotationFilter FilterArgumentParamTypes();
 
   // Creates a filter that excludes any annotation containing a reference (e.g.
   // `NameRef`) to a parametric with no type info in `ti`.
