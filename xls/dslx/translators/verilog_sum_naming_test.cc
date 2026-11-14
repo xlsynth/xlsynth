@@ -167,6 +167,74 @@ fn negative(a: Signed<s8:-1>) -> Signed<s8:-1> { a }
   EXPECT_EQ(negative_name, "__value_3a_5_3a_s8_3a__2d_1");
 }
 
+// Different compiler module spellings remain different semantic identities,
+// while the same public source names stabilize both hashed and readable nested
+// nominal arguments. Stabilizing only the outer sum is insufficient.
+TEST(VerilogSumNamingTest, PublicNominalOwnersDoNotChangeSemanticIdentity) {
+  constexpr std::string_view kProgram = R"(#![feature(generics)]
+struct Argument { value: u8 }
+enum Mode: u2 { Value = 1 }
+enum Hashed<T: type, N: uN[256]> { Item(u8) }
+enum Readable<T: type> { Item(u8) }
+fn fixture(a: Hashed<Argument, uN[256]:1>, b: Hashed<Mode, uN[256]:1>,
+           c: Readable<Argument>, d: Readable<Mode>) { () }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule one,
+      ParseAndTypecheck(kProgram, "one.x", "one", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule two,
+      ParseAndTypecheck(kProgram, "two.x", "two", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(FunctionType * one_types,
+                           one.type_info->GetItemAs<FunctionType>(
+                               *one.module->GetFunction("fixture")));
+  XLS_ASSERT_OK_AND_ASSIGN(FunctionType * two_types,
+                           two.type_info->GetItemAs<FunctionType>(
+                               *two.module->GetFunction("fixture")));
+  IdentityBuilder outer_only;
+  outer_only.SetPublicNominalOwner([](const AstNode& node) -> std::string_view {
+    return dynamic_cast<const SumDef*>(&node) == nullptr
+               ? std::string_view(node.owner()->name())
+               : "source";
+  });
+  IdentityBuilder both;
+  both.SetPublicNominalOwner(
+      [](const AstNode&) -> std::string_view { return "source"; });
+  IdentityBuilder original;
+  std::vector<std::string> public_names;
+  for (size_t i = 0; i < one_types->params().size(); ++i) {
+    const SumType& one_sum = one_types->params()[i]->AsSum();
+    const SumType& two_sum = two_types->params()[i]->AsSum();
+    XLS_ASSERT_OK_AND_ASSIGN(std::string original_one,
+                             original.TypeIdentity(one_sum));
+    XLS_ASSERT_OK_AND_ASSIGN(std::string original_two,
+                             original.TypeIdentity(two_sum));
+    XLS_ASSERT_OK_AND_ASSIGN(std::string mapped_one,
+                             both.TypeIdentity(one_sum));
+    XLS_ASSERT_OK_AND_ASSIGN(std::string mapped_two,
+                             both.TypeIdentity(two_sum));
+    EXPECT_NE(original_one, original_two);
+    EXPECT_EQ(original_one, mapped_one);
+    EXPECT_EQ(original_two, mapped_two);
+    XLS_ASSERT_OK_AND_ASSIGN(std::string outer_one,
+                             outer_only.SpecializationName(one_sum));
+    XLS_ASSERT_OK_AND_ASSIGN(std::string outer_two,
+                             outer_only.SpecializationName(two_sum));
+    EXPECT_NE(outer_one, outer_two);
+    XLS_ASSERT_OK_AND_ASSIGN(std::string public_one,
+                             both.SpecializationName(one_sum));
+    XLS_ASSERT_OK_AND_ASSIGN(std::string public_two,
+                             both.SpecializationName(two_sum));
+    EXPECT_EQ(public_one, public_two);
+    EXPECT_EQ(public_one.starts_with("__h"), i < 2);
+    public_names.push_back(public_one);
+  }
+  ASSERT_EQ(public_names.size(), 4);
+  EXPECT_NE(public_names[0], public_names[1]);
+  EXPECT_NE(public_names[2], public_names[3]);
+}
+
 // Verifies: equivalent DSLX bit spellings keep their familiar numeric suffix.
 // Catches: changing from u8 to uN[8], xN, or a type alias producing a hash.
 TEST(VerilogSumNamingTest, NumericBindingSpellingsKeepReadableSuffixes) {
