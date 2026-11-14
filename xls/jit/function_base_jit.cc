@@ -1017,6 +1017,15 @@ absl::Status UnpackValue(llvm::Value* packed_buffer,
                          llvm::Value* unpacked_buffer, Type* xls_type,
                          int64_t bit_offset, LlvmTypeConverter& type_converter,
                          llvm::IRBuilder<>* builder) {
+  if (xls_type->GetFlatBitCount() == 0) {
+    // Zero-bit leaves still occupy native storage (bits[0] becomes i8). Do not
+    // read packed bits, but initialize that storage before aggregate operations
+    // such as equality can observe it.
+    builder->CreateStore(llvm::Constant::getNullValue(
+                             type_converter.ConvertToLlvmType(xls_type)),
+                         unpacked_buffer);
+    return absl::OkStatus();
+  }
   switch (xls_type->kind()) {
     case TypeKind::kBits: {
       // Compute the byte offset into `packed_buffer` where first bit of data
@@ -1269,6 +1278,13 @@ absl::StatusOr<llvm::Function*> BuildPackedWrapper(
       XLS_RETURN_IF_ERROR(UnpackValue(
           packed_buffer, input_buffer, input.type(), /*bit_offset=*/0,
           jit_context.type_converter(), &wrapper.entry_builder()));
+    } else {
+      // No packed bytes exist, but aggregate operations still observe the
+      // native storage of zero-width leaves.
+      wrapper.entry_builder().CreateStore(
+          llvm::Constant::getNullValue(
+              jit_context.type_converter().ConvertToLlvmType(input.type())),
+          input_buffer);
     }
   }
 
