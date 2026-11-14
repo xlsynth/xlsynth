@@ -76,13 +76,15 @@ absl::Status ParseAndAcceptWithConverter(std::string_view module_text,
 
 TEST(ProcConfigIrConverterTest, BasicConversion) {
   constexpr std::string_view kModule = R"(
+enum E { V(u32) }
+const X = E::V(u32:11);
 proc test_proc {
   c: chan<u32> in;
   x: u32;
   init { u32: 0 }
   config(c: chan<u32> in, ham_sandwich: u32) {
     const match true {
-      true => (c, u32:8),
+      true => (c, const match X { E::V(n) => { n } }),
       false => (c, ham_sandwich),
     }
   }
@@ -119,7 +121,7 @@ proc main {
   EXPECT_EQ(proc_data.id_to_members.at(proc_id).at("c"),
             ProcConfigValue(&channel));
   EXPECT_EQ(proc_data.id_to_members.at(proc_id).at("x"),
-            ProcConfigValue(Value(UBits(8, 32))));
+            ProcConfigValue(Value(UBits(11, 32))));
 }
 
 TEST(ProcConfigIrConverterTest, ConstMatchPayloadBindingInSpawnArgument) {
@@ -137,15 +139,14 @@ proc test_proc {
     let a = const match X {
       Pair::Fields { right: n, left: m, empty: _unused } => {
         spawn Child(n);
-        spawn Child(m + u4:1);
-        let incremented = n + u4:2;
-        spawn Child(incremented);
+        let alias = m;
+        spawn Child(alias);
         m
       },
     };
     spawn Child(a);
     spawn Child(const match X {
-      Pair::Fields { right: n, left: _, empty: _ } => n + u4:1,
+      Pair::Fields { right: n, left: _, empty: _ } => n,
     });
     ()
   }
@@ -157,15 +158,57 @@ proc test_proc {
   ProcConversionData proc_data;
   XLS_ASSERT_OK(
       ParseAndAcceptWithConverter(kModule, conv, ProcId(), proc_data));
-  ASSERT_EQ(proc_data.id_to_config_args.size(), 5);
-  constexpr int kExpected[] = {11, 4, 13, 3, 12};
+  ASSERT_EQ(proc_data.id_to_config_args.size(), 4);
+  constexpr int kExpected[] = {11, 3, 3, 11};
   for (const auto& [id, args] : proc_data.id_to_config_args) {
     const int index = id.proc_instance_stack.back().second;
     ASSERT_GE(index, 0);
-    ASSERT_LT(index, 5);
+    ASSERT_LT(index, 4);
     EXPECT_THAT(args, ::testing::ElementsAre(
                           ProcConfigValue(Value(UBits(kExpected[index], 4)))));
   }
+}
+
+TEST(ProcConfigIrConverterTest, DiscardedTupleCannotSupplyProcMembers) {
+  constexpr std::string_view kModule = R"(
+enum E { V((u4,)) }
+const X = E::V((u4:11,));
+proc test_proc {
+  x: u4;
+  config() {
+    (u4:7,);
+    const match X { E::V(values) => values }
+  }
+  init { u4:0 }
+  next(_: u4) { x }
+}
+)";
+  PackageConversionData conv = MakeConversionData("the_package");
+  ProcConversionData proc_data;
+  EXPECT_THAT(ParseAndAcceptWithConverter(kModule, conv, ProcId(), proc_data),
+              StatusIs(absl::StatusCode::kUnimplemented,
+                       HasSubstr("must return a literal tuple")));
+}
+
+TEST(ProcConfigIrConverterTest, ArrayLiteralIsUnsupportedAsSpawnArgument) {
+  constexpr std::string_view kModule = R"(
+proc Child {
+  config(values: u4[2]) { () }
+  init { () }
+  next(_: ()) { () }
+}
+proc test_proc {
+  config() { spawn Child([u4:3, u4:11]); () }
+  init { () }
+  next(_: ()) { () }
+}
+)";
+  PackageConversionData conv = MakeConversionData("the_package");
+  ProcConversionData proc_data;
+  EXPECT_THAT(
+      ParseAndAcceptWithConverter(kModule, conv, ProcId(), proc_data),
+      StatusIs(absl::StatusCode::kUnimplemented,
+               HasSubstr("Unsupported expression for proc config value")));
 }
 
 TEST(ProcConfigIrConverterTest, CatchesMissingArgMap) {
