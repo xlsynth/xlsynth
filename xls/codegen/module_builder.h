@@ -116,7 +116,8 @@ class ModuleBuilder {
   absl::StatusOr<NodeRepresentation> EmitAssert(xls::Assert* asrt,
                                                 Expression* condition);
 
-  // Emit an IR trace operation as a Verilog $display statement.
+  // Emit one IR trace event as a Verilog output line. Conditional IR formatting
+  // uses guarded $write fragments followed by one final $display newline.
   absl::StatusOr<Display*> EmitTrace(xls::Trace* trace, Expression* condition,
                                      absl::Span<Expression* const> trace_args);
 
