@@ -51,7 +51,7 @@ TEST(SemanticSumSourceSeedReplayTest, ReplaysPassingAndFailingSourceSeeds) {
                                GetManifestPath(), sample_options,
                                /*seed=*/0, temp_dir.path()));
 
-  EXPECT_EQ(stats.passing_seed_count, 9);
+  EXPECT_EQ(stats.passing_seed_count, 10);
   EXPECT_EQ(stats.failing_seed_count, 5);
 
   XLS_ASSERT_OK_AND_ASSIGN(
@@ -68,6 +68,13 @@ TEST(SemanticSumSourceSeedReplayTest, ReplaysPassingAndFailingSourceSeeds) {
   EXPECT_TRUE(std::filesystem::exists(passing_seed_dir / "sample.x"));
   EXPECT_TRUE(std::filesystem::exists(passing_seed_dir / "sample.ir"));
   EXPECT_TRUE(std::filesystem::exists(passing_seed_dir / "sample.opt.ir"));
+
+  std::filesystem::path phase2_seed_dir =
+      temp_dir.path() /
+      "seed-source_phase2_signed_sparse_if_let_and_invalid_fallback";
+  EXPECT_TRUE(std::filesystem::exists(phase2_seed_dir / "sample.x"));
+  EXPECT_TRUE(std::filesystem::exists(phase2_seed_dir / "sample.ir"));
+  EXPECT_TRUE(std::filesystem::exists(phase2_seed_dir / "sample.opt.ir"));
 }
 
 }  // namespace
