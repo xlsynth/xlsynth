@@ -1330,7 +1330,8 @@ fn f(x: Option) -> u8 {
 }
 
 TEST(TypecheckV2Test, WildcardMayOnlyBeFollowedByInvalidPattern) {
-  EXPECT_THAT(R"(
+  EXPECT_THAT(
+      R"(
 enum Option {
   None,
   Some(u8),
@@ -1343,9 +1344,8 @@ fn f(x: Option) -> u8 {
   }
 }
 )",
-              TypecheckFails(HasSubstr(
-                  "A wildcard arm may only be followed by a final `invalid!` "
-                  "arm.")));
+      TypecheckFails(HasSubstr(
+          "A whole-subject wildcard must be the last ordinary pattern.")));
 }
 
 TEST(TypecheckV2Test, WildcardWithoutInvalidPatternCannotPrecedeSumArm) {
@@ -1363,7 +1363,7 @@ fn f(x: Option) -> u8 {
 }
 )",
         TypecheckFails(HasSubstr(
-            "A wildcard arm may only be followed by a final `invalid!` arm.")));
+            "A whole-subject wildcard must be the last ordinary pattern.")));
   }
 }
 
@@ -1372,7 +1372,7 @@ TEST(TypecheckV2Test, WildcardAlternativeMayBeFollowedByFinalInvalidPattern) {
 enum Option { None, Some(u8) }
 fn f(x: Option) -> u8 {
   match x {
-    _ | Option::None => u8:0,
+    Option::None | _ => u8:0,
     invalid! => u8:1,
   }
 }
@@ -1500,8 +1500,7 @@ fn f(x: Choice) -> bool {
   match x { Choice::Bit(false) | Choice::Bit(true) => true }
 }
 )",
-              TypecheckFails(
-                  HasSubstr("must end with `_` or one constructor pattern")));
+              TypecheckFails(HasSubstr("must end with a single pattern")));
 }
 
 TEST(TypecheckV2Test,
@@ -1529,14 +1528,15 @@ fn f(x: Pair) -> u8 {
               TypecheckSucceeds(::testing::_));
 }
 
-TEST(TypecheckV2Test, SumMatchRejectsQualifiedValueConstantAsFinalFallback) {
+TEST(TypecheckV2Test, SumMatchAllowsQualifiedComputedConstantAsFinalFallback) {
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK(TypecheckV2(R"(
 pub enum E: u2 { A = 0, B(bool) = 1 }
-pub const A = E::B(false);
+fn make(value: bool) -> E { E::B(value) }
+pub const A = make(false);
 )",
                             "other", &import_data));
-  EXPECT_THAT(TypecheckV2(R"(
+  XLS_EXPECT_OK(TypecheckV2(R"(
 import other;
 fn f(x: other::E) -> u8 {
   match x {
@@ -1546,10 +1546,79 @@ fn f(x: other::E) -> u8 {
   }
 }
 )",
-                          "main", &import_data),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("A sum match without `invalid!` must end "
-                                 "with `_` or one constructor pattern")));
+                            "main", &import_data));
+}
+
+TEST(TypecheckV2Test, SumMatchConstantHasClosedConstructorCoverage) {
+  const std::string declarations = R"(
+enum Inner { Bit(bool) }
+enum Outer { Wrap(Inner) }
+fn make(value: bool) -> Outer { Outer::Wrap(Inner::Bit(value)) }
+const LAST = make(true);
+)";
+  for (const std::string_view last :
+       {"LAST", "Outer::Wrap(Inner::Bit(true))"}) {
+    SCOPED_TRACE(last);
+    EXPECT_THAT(declarations + absl::Substitute(R"(
+fn f(x: Outer) -> bool {
+  match x { Outer::Wrap(Inner::Bit(false)) => false, $0 => true }
+}
+)",
+                                                last),
+                TypecheckSucceeds(::testing::_));
+    EXPECT_THAT(declarations + absl::Substitute(R"(
+fn f(x: Outer) -> bool { match x { $0 => true } }
+)",
+                                                last),
+                TypecheckFails(HasSubstr("Match patterns are not exhaustive")));
+  }
+  for (const std::string_view patterns :
+       {"LAST | Outer::Wrap(Inner::Bit(true))",
+        "Outer::Wrap(Inner::Bit(true)) | LAST"}) {
+    SCOPED_TRACE(patterns);
+    EXPECT_THAT(declarations + absl::Substitute(R"(
+fn f(x: Outer) -> bool { match x { $0 => true, _ => false } }
+)",
+                                                patterns),
+                TypecheckFails(HasSubstr("Exact-duplicate pattern match")));
+  }
+}
+
+TEST(TypecheckV2Test, SumMatchRejectsRuntimeValueAsFinalFallback) {
+  EXPECT_THAT(R"(
+enum E { A, B(bool) }
+fn f(x: E, value: E) -> bool {
+  match x { E::A => true, E::B(_) => true, value => false }
+}
+)",
+              TypecheckFails(HasSubstr("must end with a single pattern")));
+}
+
+TEST(TypecheckV2Test, SumMatchDistinguishesLocalConstantFromFoldedLet) {
+  const std::string program = R"(
+enum E { A, B(u1) }
+fn f(x: E) -> bool {
+  $0
+  match x { E::A => false, E::B(u1:0) => false, last => true }
+}
+)";
+  for (const std::string_view binding :
+       {"last = E::B(u1:1);", "(last,) = (E::B(u1:1),);"}) {
+    SCOPED_TRACE(binding);
+    EXPECT_THAT(absl::Substitute(program, absl::StrCat("const ", binding)),
+                TypecheckSucceeds(::testing::_));
+    EXPECT_THAT(absl::Substitute(program, absl::StrCat("let ", binding)),
+                TypecheckFails(HasSubstr("must end with a single pattern")));
+  }
+}
+
+TEST(TypecheckV2Test, SumMatchParametricConstantAsFinalFallback) {
+  EXPECT_THAT(R"(
+enum E { A, B(u1) }
+fn f<C: E>(x: E) -> bool { match x { E::B(_) => false, C => true } }
+fn entry(x: E) -> bool { f<E::A>(x) }
+)",
+              TypecheckSucceeds(::testing::_));
 }
 
 TEST(TypecheckV2Test, SumMatchQualifiedValueConstantWithInvalidArm) {
@@ -2050,7 +2119,8 @@ fn f(x: Option) -> u32 {
 }
 
 TEST(TypecheckV2Test, WildcardAfterSumConstructorCannotPrecedeAnotherArm) {
-  EXPECT_THAT(R"(
+  EXPECT_THAT(
+      R"(
 enum Option {
   None,
   Some(u32),
@@ -2065,9 +2135,8 @@ fn unwrap_or_zero(x: Option) -> u32 {
   }
 }
 )",
-              TypecheckFails(HasSubstr(
-                  "A wildcard arm may only be followed by a final `invalid!` "
-                  "arm.")));
+      TypecheckFails(HasSubstr(
+          "A whole-subject wildcard must be the last ordinary pattern.")));
 }
 
 TEST(TypecheckV2Test, GateRejectsSumWithoutZeroTag) {

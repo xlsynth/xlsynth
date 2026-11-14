@@ -196,9 +196,11 @@ class BytecodeEmitter : public ExprVisitor {
       const ColonRef* colon_ref, const SumType& sum_type);
 
   absl::StatusOr<Bytecode::MatchArmItem> HandlePatternExpr(
-      const PatternTree& pattern, const Type* type = nullptr);
+      const PatternTree& pattern, const Type* type = nullptr,
+      bool in_closed_constructor = false);
   absl::StatusOr<Bytecode::MatchArmItem> HandleSumVariantPayloadPattern(
-      const SumVariantPayloadPattern* pattern, const SumType& sum_type);
+      const SumVariantPayloadPattern* pattern, const SumType& sum_type,
+      bool in_closed_constructor);
 
   absl::Status DestructureLet(const PatternTree& pattern, Type* type);
 

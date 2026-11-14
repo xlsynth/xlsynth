@@ -19,6 +19,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -3859,6 +3860,134 @@ TEST_F(BytecodeInterpreterTest,
                HasSubstr("Semantic sum equality received a malformed value")));
 }
 
+TEST_F(BytecodeInterpreterTest, NamedSumConstantMatchesClosedConstructor) {
+  constexpr std::string_view kProgram = R"(
+enum Inner: u2 { Small(u4) = 0, Big(u8) = 1 }
+enum Outer: u2 { Empty = 0, Wrapped(Inner) = 1 }
+const EMPTY = Outer::Empty;
+const SMALL = Outer::Wrapped(Inner::Small(u4:5));
+fn named(x: Outer) -> u2 {
+  const LOCAL = SMALL;
+  match x { EMPTY => u2:1, LOCAL => u2:2, _ => u2:0 }
+}
+fn projected(x: Outer) -> u2 {
+  const (LOCAL,) = (SMALL,);
+  match x { EMPTY => u2:1, LOCAL => u2:2, _ => u2:0 }
+}
+fn spelled(x: Outer) -> u2 {
+  match x {
+    Outer::Empty => u2:1,
+    Outer::Wrapped(Inner::Small(u4:5)) => u2:2,
+    _ => u2:0,
+  }
+}
+fn folded() -> u2 {
+  const match SMALL { EMPTY => u2:1, SMALL => u2:2, _ => u2:0 }
+}
+)";
+  auto outer = [](int64_t tag, int64_t payload) {
+    return internal::CreateEncodedSumTuple(InterpValue::MakeUBits(2, tag),
+                                           InterpValue::MakeUBits(10, payload));
+  };
+  for (std::string_view function : {"named", "projected", "spelled"}) {
+    SCOPED_TRACE(function);
+    for (auto [input, expected] :
+         {std::pair{outer(0, 0x3ff), 1},     // Empty with inactive payload.
+          std::pair{outer(1, 0x0e5), 2},     // Small(5) with inactive padding.
+          std::pair{outer(1, 0x0e4), 0},     // Small(4).
+          std::pair{outer(1, 0x105), 0},     // Big(5).
+          std::pair{outer(1, 0x3e5), 0}}) {  // Undeclared inner tag.
+      EXPECT_THAT(Interpret(kProgram, function, {input}),
+                  IsOkAndHolds(InterpValue::MakeUBits(2, expected)));
+    }
+    EXPECT_THAT(
+        Interpret(kProgram, function, {outer(3, 0)}),
+        StatusIs(absl::StatusCode::kInternal, HasSubstr("malformed value")));
+  }
+  EXPECT_THAT(Interpret(kProgram, "folded", {}),
+              IsOkAndHolds(InterpValue::MakeUBits(2, 2)));
+}
+
+TEST_F(BytecodeInterpreterTest, ClosedSumPatternWithAggregatePayload) {
+  constexpr std::string_view kProgram = R"(
+enum Inner: u2 { Small(u4) = 0, Big(u8) = 1 }
+struct Fields { items: Inner[2] }
+enum Outer { Wrap((Fields, bool)), Empty }
+const FIVE = Inner::Small(u4:5);
+const PAYLOAD = (Fields { items: [FIVE, FIVE] }, true);
+const EXPECTED = Outer::Wrap(PAYLOAD);
+fn main(x: Inner) -> bool {
+  let value = Outer::Wrap((Fields { items: [FIVE, x] }, true));
+  match value { EXPECTED => true, _ => false }
+}
+fn field(x: Inner) -> bool {
+  let value = Outer::Wrap((Fields { items: [FIVE, x] }, true));
+  match value { Outer::Wrap(PAYLOAD) => true, _ => false }
+}
+)";
+  for (auto [tag, payload, expected] :
+       {std::tuple{0, 0xe5, true}, std::tuple{0, 0xe4, false},
+        std::tuple{3, 0xe5, false}}) {
+    InterpValue inner = internal::CreateEncodedSumTuple(
+        InterpValue::MakeUBits(2, tag), InterpValue::MakeU8(payload));
+    for (std::string_view fn : {"main", "field"}) {
+      SCOPED_TRACE(fn);
+      EXPECT_THAT(Interpret(kProgram, fn, {inner}),
+                  IsOkAndHolds(InterpValue::MakeBool(expected)));
+    }
+  }
+}
+
+TEST_F(BytecodeInterpreterTest,
+       ClosedSumPatternsObserveFieldsInDeclarationOrder) {
+  constexpr std::string_view kProgram = R"(
+enum Code: u1 { Ok = 0 }
+enum Leaf: u1 { Other = 0, Some(Code) = 1 }
+enum Root: u1 { Pair { first: Leaf, second: Leaf } = 0, None = 1 }
+const WANTED = Root::Pair { first: Leaf::Other, second: Leaf::Some(Code::Ok) };
+fn named(x: Root) -> bool {
+  match x { WANTED => true, _ => false }
+}
+fn declared(x: Root) -> bool {
+  match x { Root::Pair { first: Leaf::Other, second: Leaf::Some(Code::Ok) } => true, _ => false }
+}
+fn reversed(x: Root) -> bool {
+  match x { Root::Pair { second: Leaf::Some(Code::Ok), first: Leaf::Other } => true, _ => false }
+}
+fn nested(x: Root) -> bool {
+  match (x, true) {
+    (Root::Pair { second: Leaf::Some(Code::Ok), first: Leaf::Other }, _) => true,
+    _ => false,
+  }
+}
+fn open_pattern(x: Root) -> bool {
+  let expected = Leaf::Other;
+  match x {
+    Root::Pair { second: Leaf::Some(Code::Ok), first: expected } => true,
+    _ => false,
+  }
+}
+)";
+  auto pair = [](int64_t payload) {
+    return internal::CreateEncodedSumTuple(InterpValue::MakeUBits(1, 0),
+                                           InterpValue::MakeUBits(4, payload));
+  };
+  for (std::string_view fn : {"named", "declared", "reversed", "nested"}) {
+    SCOPED_TRACE(fn);
+    EXPECT_THAT(Interpret(kProgram, fn, {pair(0b0010)}),
+                IsOkAndHolds(InterpValue::MakeBool(true)));
+    // The first field misses before the invalid Code in the second is reached.
+    EXPECT_THAT(Interpret(kProgram, fn, {pair(0b1011)}),
+                IsOkAndHolds(InterpValue::MakeBool(false)));
+    EXPECT_THAT(Interpret(kProgram, fn, {pair(0b0011)}),
+                StatusIs(absl::StatusCode::kInternal, HasSubstr("Code")));
+  }
+  // With a runtime reference, the malformed second field is reached before
+  // the first field has a chance to miss.
+  EXPECT_THAT(Interpret(kProgram, "open_pattern", {pair(0b1011)}),
+              StatusIs(absl::StatusCode::kInternal, HasSubstr("Code")));
+}
+
 TEST_F(BytecodeInterpreterTest, SemanticSumEqualityRejectsMalformedInput) {
   constexpr std::string_view kProgram = R"(
 enum Option: u2 {
@@ -3914,46 +4043,58 @@ fn main(first: u32, second: u32) -> u32 {
               ElementsAre("trace of first: 3", "trace of second: 5"));
 }
 
-TEST_F(BytecodeInterpreterTest, SemanticSumWildcardEndsArmAlternatives) {
+TEST_F(BytecodeInterpreterTest, MatchAlternativesStopAtFirstSuccess) {
   constexpr std::string_view kProgram = R"(
 enum Inner: u2 { Small(u4) = 0, Big(u8) = 1 }
 enum Outer: u2 { Empty = 0, Wrapped(Inner) = 1 }
-const EMPTY = Outer::Empty;
-fn wildcard_first(x: Outer) -> bool {
-  match x { _ | EMPTY => true, invalid! => false }
+fn constructor_first(x: Outer, other: Outer) -> bool {
+  match x {
+    Outer::Wrapped(_) | other => { trace_fmt!("group"); true },
+    _ => { trace_fmt!("fallback"); false },
+  }
 }
-fn value_first(x: Outer) -> bool {
-  match x { EMPTY | _ => true, invalid! => false }
+fn value_first(x: Outer, other: Outer) -> bool {
+  match x { other | Outer::Wrapped(_) => true, _ => false }
 }
-fn bare(x: Outer) -> bool {
-  match x { _ => true, invalid! => false }
-}
-fn tuple_root(x: Outer) -> bool {
-  match (x, true) { _ | (EMPTY, _) => true }
+fn tuple_root(x: Outer, other: Outer, skip: bool) -> bool {
+  match (x, skip) { (_, true) | (other, _) => true, _ => false }
 }
 )";
   auto outer = [](int64_t tag, int64_t payload) {
     return internal::CreateEncodedSumTuple(InterpValue::MakeUBits(2, tag),
                                            InterpValue::MakeUBits(10, payload));
   };
+  const InterpValue empty = outer(0, 0);
+  const InterpValue wrapped = outer(1, 0x005);
   const InterpValue invalid_nested = outer(1, 0x3e5);  // Inner tag 3.
   const auto malformed =
       StatusIs(absl::StatusCode::kInternal,
                HasSubstr("Semantic sum observer received a malformed value"));
-  for (std::string_view function : {"wildcard_first", "value_first", "bare"}) {
+  for (std::string_view function : {"constructor_first", "value_first"}) {
     SCOPED_TRACE(function);
-    EXPECT_THAT(Interpret(kProgram, function, {outer(1, 0x005)}),
-                IsOkAndHolds(InterpValue::MakeBool(true)));
-    EXPECT_THAT(Interpret(kProgram, function, {outer(3, 0)}), malformed);
+    EXPECT_THAT(Interpret(kProgram, function, {outer(3, 0), empty}), malformed);
   }
-  for (std::string_view function : {"wildcard_first", "bare"}) {
-    SCOPED_TRACE(function);
-    EXPECT_THAT(Interpret(kProgram, function, {invalid_nested}),
-                IsOkAndHolds(InterpValue::MakeBool(true)));
-  }
-  EXPECT_THAT(Interpret(kProgram, "value_first", {invalid_nested}), malformed);
-  // Tuple matches keep their existing eager alternative evaluation.
-  EXPECT_THAT(Interpret(kProgram, "tuple_root", {invalid_nested}), malformed);
+  auto check_trace = [&](const InterpValue& x, const InterpValue& other,
+                         bool selected) {
+    DslxInterpreterEvents events;
+    EXPECT_THAT(Interpret(kProgram, "constructor_first", {x, other},
+                          BytecodeInterpreterOptions(), nullptr, &events),
+                IsOkAndHolds(InterpValue::MakeBool(selected)));
+    EXPECT_THAT(events.GetTraceMessageStrings(),
+                ElementsAre(selected ? "group" : "fallback"));
+  };
+  check_trace(invalid_nested, empty, true);  // First, skipping equality.
+  check_trace(empty, empty, true);           // Second only.
+  check_trace(wrapped, wrapped, true);       // Both.
+  check_trace(empty, wrapped, false);        // Neither.
+  EXPECT_THAT(Interpret(kProgram, "value_first", {invalid_nested, empty}),
+              malformed);
+  EXPECT_THAT(Interpret(kProgram, "tuple_root",
+                        {invalid_nested, empty, InterpValue::MakeBool(true)}),
+              IsOkAndHolds(InterpValue::MakeBool(true)));
+  EXPECT_THAT(Interpret(kProgram, "tuple_root",
+                        {invalid_nested, empty, InterpValue::MakeBool(false)}),
+              malformed);
 }
 
 // Negative test: Malformed tags report errors before normal or invalid raw arms.

@@ -196,6 +196,24 @@ class TypeAnnotationDependencyChecker : public AstNodeRecursiveVisitor {
 };
 }  // namespace
 
+bool IsConstantPatternReference(const NameRef& ref) {
+  const AstNode* definer = ref.GetDefiner();
+  if (definer == nullptr && !ref.IsBuiltin()) {
+    // Parametrics, destructured local consts, and cloned declarations can
+    // have only a lexical link from the name back to its binding.
+    definer = ToAstNode(ref.name_def())->parent();
+    while (dynamic_cast<const TuplePattern*>(definer) != nullptr) {
+      definer = definer->parent();
+    }
+  }
+  if (IsOneOf<const ConstantDef, const ParametricBinding, const UseTreeEntry>(
+          definer)) {
+    return true;
+  }
+  const auto* binding = dynamic_cast<const Let*>(definer);
+  return binding != nullptr && binding->is_const();
+}
+
 absl::Status ForEachSumPayloadSubpattern(
     const SumVariantPayloadPattern& pattern, const SumVariant& variant,
     absl::FunctionRef<absl::Status(const PatternTree&, int64_t)> visit) {

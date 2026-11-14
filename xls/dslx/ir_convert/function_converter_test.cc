@@ -15,9 +15,11 @@
 #include "xls/dslx/ir_convert/function_converter.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
@@ -40,6 +42,7 @@
 #include "xls/dslx/ir_convert/test_utils.h"
 #include "xls/dslx/parse_and_typecheck.h"
 #include "xls/dslx/type_system/parametric_env.h"
+#include "xls/dslx/virtualizable_file_system.h"
 #include "xls/interpreter/function_interpreter.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/clone_package.h"
@@ -687,6 +690,55 @@ fn f() -> imported::Option {
   EXPECT_EQ(package_data.ir_to_dslx.size(), 1);
 }
 
+TEST(FunctionConverterTest, MatchesUseImportedComputedSumConstant) {
+  constexpr std::string_view kValues = R"(
+pub enum E: u2 { Empty = 0, Bit(bool) = 1, }
+fn make(value: bool) -> E { E::Bit(value) }
+pub const LAST = make(false);
+)";
+  constexpr std::string_view kProgram = R"(#![feature(use_syntax)]
+use values::E;
+use values::LAST;
+
+fn probe(x: E) -> (u4, u4) {
+  let selected = match x { LAST => u4:7, _ => u4:3, invalid! => u4:9 };
+  let fallback = match x {
+    E::Empty => u4:2, E::Bit(true) => u4:3, LAST => u4:7,
+  };
+  (selected, fallback)
+}
+)";
+  absl::flat_hash_map<std::filesystem::path, std::string> files = {
+      {"/values.x", std::string(kValues)}};
+  ImportData import_data = CreateImportDataForTest(
+      std::make_unique<FakeFilesystem>(std::move(files), /*cwd=*/"/"));
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+  PackageConversionData package = MakeConversionData("test_module_package");
+  XLS_ASSERT_OK(ConvertOneFunctionIntoPackage(tm.module, "probe", &import_data,
+                                              /*parametric_env=*/nullptr,
+                                              ConvertOptions(), &package));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * probe, package.package->GetFunction(
+                                                      "__test_module__probe"));
+  struct Case {
+    uint64_t tag;
+    bool payload;
+    uint64_t selected;
+    uint64_t fallback;
+  };
+  constexpr Case kCases[] = {
+      {1, false, 7, 7}, {1, true, 3, 3}, {0, false, 3, 2}, {3, false, 9, 7}};
+  for (const Case& c : kCases) {
+    const Value x = Value::Tuple(
+        {Value(UBits(c.tag, 2)), Value::Tuple({Value::Bool(c.payload)})});
+    XLS_ASSERT_OK_AND_ASSIGN(auto result, InterpretFunction(probe, {x}));
+    EXPECT_EQ(result.value, Value::Tuple({Value(UBits(c.selected, 4)),
+                                          Value(UBits(c.fallback, 4))}))
+        << x;
+  }
+}
+
 TEST(FunctionConverterTest, LowersSemanticSumAsSharedPayloadSlot) {
   constexpr std::string_view kProgram = R"(
 enum Message: u3 {
@@ -973,7 +1025,7 @@ enum Outer: u2 { Wrap(Inner) = 0, Unit = 1, }
 
 fn f(x: Outer, y: Outer) -> u6 {
   match x {
-    y => { trace_fmt!("equal"); u6:4 },
+    y | Outer::Wrap(Inner::B(Leaf::Yes())) => { trace_fmt!("group"); u6:4 },
     Outer::Wrap(Inner::A) => { trace_fmt!("A"); u6:1 },
     Outer::Wrap(Inner::B(_)) => { trace_fmt!("B"); u6:2 },
     _ => { trace_fmt!("wildcard"); u6:3 },
@@ -1000,7 +1052,9 @@ fn f(x: Outer, y: Outer) -> u6 {
     std::string_view trace;
   };
   for (const Case& c : std::vector<Case>{
-           {0, 0b0111, true, 4, "equal"},           // First ordinary arm wins.
+           {0, 0b0111, true, 4, "group"},           // First alternative.
+           {0, 0b0000, false, 4, "group"},          // Second alternative.
+           {0, 0b0000, true, 4, "group"},           // Both alternatives match.
            {0, 0b0111, false, 1, "A"},              // A with dirty padding.
            {0, 0b0010, false, 2, "B"},              // B with an invalid leaf.
            {0, 0b1011, false, 3, "wildcard"},       // Invalid inner tag.

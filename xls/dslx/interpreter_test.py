@@ -701,8 +701,8 @@ class InterpreterTest(test_base.TestCase):
     fn f(x: u1) -> u1 {
       match x {
         u1:0..u1:1 => u1:0,
-        _ => u1:1,
-        u1:1 => u1:1,  // redundant
+        u1:1 => u1:1,
+        _ => u1:1,  // redundant
       }
     }
     """

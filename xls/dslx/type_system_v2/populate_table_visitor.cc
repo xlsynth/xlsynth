@@ -693,6 +693,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
     absl::flat_hash_map<std::string, const MatchArm*> seen_arms;
     absl::flat_hash_map<std::string, Span> seen_patterns;
     absl::flat_hash_map<const NameDef*, Span> seen_enum_members;
+    bool saw_wildcard = false;
     for (MatchArm* arm : node->arms()) {
       // Identify syntactically identical match arms.
       std::string patterns_string = PatternsToString(arm);
@@ -729,6 +730,13 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
               GetPatternSpan(pattern), it->second, it->first,
               MatchPatternOverlapKind::kExactDuplicate, file_table_);
         }
+        if (saw_wildcard && !std::holds_alternative<InvalidPattern*>(pattern)) {
+          return TypeInferenceErrorStatus(
+              GetPatternSpan(pattern), nullptr,
+              "A whole-subject wildcard must be the last ordinary pattern.",
+              file_table_);
+        }
+        saw_wildcard = IsWildcardLeaf(pattern);
         if (const auto* colon_ref = std::get_if<ColonRef*>(&pattern);
             colon_ref != nullptr) {
           XLS_ASSIGN_OR_RETURN(std::optional<const NameDef*> enum_member,

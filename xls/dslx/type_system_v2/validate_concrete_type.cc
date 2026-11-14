@@ -120,13 +120,18 @@ bool HasOnlySumCatchAllPatterns(const Match& match) {
 }
 
 bool IsValidMalformedSumFallbackPattern(const PatternTree& pattern,
-                                        const InferenceTable& table) {
+                                        const InferenceTable& table,
+                                        const TypeInfo& type_info) {
   if (IsWildcardLeaf(pattern) ||
       std::holds_alternative<SumVariantPayloadPattern*>(pattern)) {
     return true;
-  } else if (std::holds_alternative<ColonRef*>(pattern)) {
-    std::optional<const AstNode*> target =
-        table.GetColonRefTarget(std::get<ColonRef*>(pattern));
+  } else if (const auto* ref = std::get_if<NameRef*>(&pattern)) {
+    return IsConstantPatternReference(**ref);
+  } else if (const auto* ref = std::get_if<ColonRef*>(&pattern)) {
+    if (type_info.IsKnownConstExpr(*ref)) {
+      return true;
+    }
+    std::optional<const AstNode*> target = table.GetColonRefTarget(*ref);
     return target.has_value() &&
            (*target)->kind() == AstNodeKind::kSumVariant &&
            absl::down_cast<const SumVariant*>(*target)->is_unit();
@@ -481,27 +486,11 @@ class TypeValidator : public AstNodeVisitorWithDefault {
     Type* matched = const_cast<Type*>(*matched_type);
     MatchArm* malformed_fallback_arm = nullptr;
     if (const auto* matched_sum = dynamic_cast<const SumType*>(*matched_type)) {
-      // This ordering rule is sum-only, even when no invalid! arm is present.
-      // Population already ensures that invalid! is a single final pattern.
-      bool saw_wildcard_arm = false;
-      for (const MatchArm* arm : node->arms()) {
-        if (saw_wildcard_arm && !IsInvalidPattern(arm->patterns().front())) {
-          return TypeInferenceErrorStatus(
-              arm->GetPatternSpan(), *matched_type,
-              "A wildcard arm may only be followed by a final `invalid!` arm.",
-              file_table_);
-        } else {
-          for (const PatternTree& pattern : arm->patterns()) {
-            saw_wildcard_arm = saw_wildcard_arm || IsWildcardLeaf(pattern);
-          }
-        }
-      }
-
       if (!HasInvalidPattern(*node)) {
         MatchArm* fallback_arm = node->arms().back();
         if (fallback_arm->patterns().size() != 1 ||
             !IsValidMalformedSumFallbackPattern(fallback_arm->patterns()[0],
-                                                table_)) {
+                                                table_, ti_)) {
           malformed_fallback_arm = fallback_arm;
         }
       }
@@ -554,8 +543,8 @@ class TypeValidator : public AstNodeVisitorWithDefault {
 
     if (malformed_fallback_arm != nullptr) {
       std::string message =
-          "A sum match without `invalid!` must end with `_` or one "
-          "constructor pattern.";
+          "A sum match without `invalid!` must end with a single pattern: "
+          "`_`, a constructor pattern, or a named compile-time constant.";
       if (!exhaustiveness_checker.IsExhaustive()) {
         std::optional<std::string> sample =
             exhaustiveness_checker.FormatSimplestUncoveredValue();

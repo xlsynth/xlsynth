@@ -473,16 +473,17 @@ absl::StatusOr<Bytecode::SlotIndex> Bytecode::MatchArmItem::slot_index() const {
   return std::get<SlotIndex>(data_.value());
 }
 
-absl::StatusOr<std::vector<Bytecode::MatchArmItem>>
+absl::StatusOr<absl::Span<const Bytecode::MatchArmItem>>
 Bytecode::MatchArmItem::tuple_elements() const {
   if (!data_.has_value()) {
     return absl::InvalidArgumentError("MatchArmItem does not hold data.");
   }
   if (!std::holds_alternative<std::vector<MatchArmItem>>(data_.value())) {
-    return absl::InvalidArgumentError("Bytecode data is not a SlotIndex.");
+    return absl::InvalidArgumentError("Bytecode data is not a tuple pattern.");
   }
 
-  return std::get<std::vector<MatchArmItem>>(data_.value());
+  return absl::MakeConstSpan(
+      std::get<std::vector<MatchArmItem>>(data_.value()));
 }
 
 std::string Bytecode::MatchArmItem::ToString() const {
