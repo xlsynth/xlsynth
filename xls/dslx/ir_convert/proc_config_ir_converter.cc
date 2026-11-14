@@ -22,6 +22,7 @@
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "absl/types/variant.h"
@@ -81,14 +82,18 @@ absl::Status ProcConfigIrConverter::Finalize() {
   XLS_RET_CHECK(f_->proc().has_value());
   Proc* p = f_->proc().value();
   if (final_tuple_ == nullptr) {
-    XLS_RET_CHECK(p->members().empty());
+    if (!p->members().empty()) {
+      return absl::UnimplementedError(
+          "Proc config with members must return a literal tuple.");
+    }
     return absl::OkStatus();
   }
 
   XLS_RET_CHECK_EQ(p->members().size(), final_tuple_->members().size());
   for (int i = 0; i < p->members().size(); i++) {
     ProcMember* member = p->members()[i];
-    ProcConfigValue value = node_to_ir_.at(final_tuple_->members()[i]);
+    XLS_ASSIGN_OR_RETURN(ProcConfigValue value,
+                         GetConfigValue(final_tuple_->members()[i]));
     proc_data_->id_to_members.at(proc_id_)[member->identifier()] = value;
     std::optional<ChannelOrArray> channel_or_array =
         ProcConfigValueToChannelOrArray(value);
@@ -127,7 +132,12 @@ absl::Status ProcConfigIrConverter::HandleStatementBlock(
   VLOG(4) << "ProcConfigIrConverter::HandleStatementBlock: " << node->ToString()
           << " : " << node->span().ToString(file_table());
   for (const Statement* statement : node->statements()) {
+    // Only the block's result can provide the tuple of proc members.
+    final_tuple_ = nullptr;
     XLS_RETURN_IF_ERROR(statement->Accept(this));
+  }
+  if (node->trailing_semi()) {
+    final_tuple_ = nullptr;
   }
   return absl::OkStatus();
 }
@@ -191,6 +201,16 @@ absl::Status ProcConfigIrConverter::HandleInvocation(const Invocation* node) {
   return absl::OkStatus();
 }
 
+absl::StatusOr<ProcConfigValue> ProcConfigIrConverter::GetConfigValue(
+    const Expr* expr) const {
+  auto it = node_to_ir_.find(expr);
+  if (it == node_to_ir_.end()) {
+    return absl::UnimplementedError(absl::StrCat(
+        "Unsupported expression for proc config value: ", expr->ToString()));
+  }
+  return it->second;
+}
+
 absl::Status ProcConfigIrConverter::HandleLet(const Let* node) {
   VLOG(4) << "ProcConfigIrConverter::HandleLet : " << node->ToString();
   XLS_RETURN_IF_ERROR(node->rhs()->Accept(this));
@@ -220,12 +240,7 @@ absl::Status ProcConfigIrConverter::HandleLet(const Let* node) {
 
     // A leaf on the LHS of a Let will always be a NameDef.
     NameDef* def = std::get<NameDef*>(node->pattern());
-    if (!node_to_ir_.contains(node->rhs())) {
-      return absl::InternalError(
-          absl::StrCat("Let RHS not evaluated as constexpr: ", def->ToString(),
-                       " : ", node->rhs()->ToString()));
-    }
-    ProcConfigValue value = node_to_ir_.at(node->rhs());
+    XLS_ASSIGN_OR_RETURN(ProcConfigValue value, GetConfigValue(node->rhs()));
     std::optional<ChannelOrArray> channel_or_array =
         ProcConfigValueToChannelOrArray(value);
     if (channel_or_array.has_value()) {
@@ -243,8 +258,19 @@ absl::Status ProcConfigIrConverter::HandleMatch(const Match* node) {
   if (node->IsConst()) {
     XLS_ASSIGN_OR_RETURN(uint32_t arm_id,
                          type_info_->GetArmSelectionResult(node));
-    MatchArm* arm = node->arms()[arm_id];
-    XLS_RETURN_IF_ERROR(arm->expr()->Accept(this));
+    const Expr* result = node->arms()[arm_id]->expr();
+    XLS_RETURN_IF_ERROR(result->Accept(this));
+    while (const auto* block = dynamic_cast<const StatementBlock*>(result)) {
+      if (block->trailing_semi()) {
+        return absl::OkStatus();
+      }
+      result = std::get<Expr*>(block->statements().back()->wrapped());
+    }
+    // A literal tuple of proc members is consumed by Finalize(). Other
+    // expressions can forward any config value the selected arm produced.
+    if (auto it = node_to_ir_.find(result); it != node_to_ir_.end()) {
+      node_to_ir_[node] = ProcConfigValue(it->second);
+    }
   }
 
   return absl::OkStatus();
@@ -255,6 +281,12 @@ absl::Status ProcConfigIrConverter::HandleNameRef(const NameRef* node) {
   const NameDef* name_def = std::get<const NameDef*>(node->name_def());
   auto iter = node_to_ir_.find(name_def);
   if (iter == node_to_ir_.end()) {
+    if (dynamic_cast<const MatchArm*>(name_def->definer()) != nullptr) {
+      XLS_ASSIGN_OR_RETURN(InterpValue binding,
+                           type_info_->GetConstExpr(name_def));
+      XLS_ASSIGN_OR_RETURN(node_to_ir_[node], binding.ConvertToIr());
+      return absl::OkStatus();
+    }
     return absl::InvalidArgumentError(absl::StrCat(
         "Could not find converted value for node \"", node->ToString(), "\"."));
   }
@@ -307,7 +339,8 @@ absl::Status ProcConfigIrConverter::HandleSpawn(const Spawn* node) {
   ProcId new_id = proc_id_factory_.CreateProcId(proc_id_, p);
   for (const auto& arg : node->config()->args()) {
     XLS_RETURN_IF_ERROR(arg->Accept(this));
-    config_args.push_back(node_to_ir_.at(arg));
+    XLS_ASSIGN_OR_RETURN(ProcConfigValue value, GetConfigValue(arg));
+    config_args.push_back(value);
   }
   proc_data_->id_to_config_args[new_id] = config_args;
 

@@ -1177,6 +1177,76 @@ fn f(x: Message, y: Message) -> bool {
   EXPECT_EQ(unequal.value, Value(UBits(/*value=*/0, /*bit_count=*/1)));
 }
 
+TEST(FunctionConverterTest, ConstMatchBindsNestedPayloadInBytecodeAndIr) {
+  constexpr std::string_view kProgram = R"(
+enum Inner: u2 { Pair { left: u4, right: u4 } = 0 }
+enum Outer: u2 { Wrap(Inner) = 0, Unit = 1 }
+fn pair<R: u4>(x: u4) -> u4 {
+  const X = Outer::Wrap(Inner::Pair { left: u4:11, right: R });
+  const match X {
+    Outer::Wrap(Inner::Pair { right: n, left: n }) => n + x,
+    _ => u4:0,
+  }
+}
+fn f(x: u4) -> (u4, u4) { (pair<u4:11>(x), pair<u4:3>(x)) }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f,
+                           tm.module->GetMemberOrError<Function>("f"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto bytecode,
+      BytecodeEmitter::Emit(&import_data, tm.type_info, *f, ParametricEnv{}));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      InterpValue interpreted,
+      BytecodeInterpreter::Interpret(&import_data, bytecode.get(),
+                                     {InterpValue::MakeUBits(4, 2)}));
+  const Value expected =
+      Value::Tuple({Value(UBits(13, 4)), Value(UBits(0, 4))});
+  EXPECT_THAT(interpreted.ConvertToIr(),
+              ::absl_testing::IsOkAndHolds(expected));
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto package,
+      ConvertModuleToPackage(tm.module, &import_data, ConvertOptions()));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir,
+                           package.package->GetFunction("__test_module__f"));
+  XLS_ASSERT_OK_AND_ASSIGN(auto result,
+                           InterpretFunction(ir, {Value(UBits(2, 4))}));
+  EXPECT_EQ(result.value, expected);
+}
+
+TEST(FunctionConverterTest, ConstMatchBindsAggregateContainingEmptyArray) {
+  constexpr std::string_view kProgram = R"(
+enum E { V((u4[0], u4)) }
+const X = E::V((u4[0]:[], u4:11));
+fn f() -> (u4[0], u4) {
+  const match X { E::V(p) => p }
+}
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule tm,
+                           ParseAndTypecheck(kProgram, "test_module.x",
+                                             "test_module", &import_data));
+  PackageConversionData package = MakeConversionData("test_module_package");
+  XLS_ASSERT_OK(ConvertOneFunctionIntoPackage(tm.module, "f", &import_data,
+                                              /*parametric_env=*/nullptr,
+                                              ConvertOptions(), &package));
+  XLS_ASSERT_OK_AND_ASSIGN(xls::Function * ir,
+                           package.package->GetFunction("__test_module__f"));
+  EXPECT_EQ(ir->return_type()->ToString(), "(bits[4][0], bits[4])");
+  // The JIT uses the declared type for the empty array, which occupies no
+  // bytes.
+  XLS_ASSERT_OK_AND_ASSIGN(auto jit, FunctionJit::Create(ir));
+  ASSERT_EQ(jit->GetReturnTypeSize(), 1);
+  uint8_t result = 0;
+  InterpreterEvents events;
+  XLS_ASSERT_OK(jit->RunWithViews({}, absl::MakeSpan(&result, 1), &events));
+  EXPECT_EQ(result, 11);
+}
+
 TEST(FunctionConverterTest, NamedPayloadPatternsProjectDeclaredSlices) {
   constexpr std::string_view kProgram = R"(
 enum Inner: u2 { Pair { marker: (u2, u1), left: u4, right: u4 } = 0 }

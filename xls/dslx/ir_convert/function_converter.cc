@@ -1418,10 +1418,52 @@ absl::Status FunctionConverter::HandleBuiltinWideningCast(
   return absl::OkStatus();
 }
 
+// A Value literal cannot describe an empty array's element type. When a
+// binding contains one, construct the aggregate from its declared IR type.
+static absl::StatusOr<BValue> BuildTypedConstant(BuilderBase& builder,
+                                                 const InterpValue& binding,
+                                                 xls::Type* type,
+                                                 const SourceInfo& loc) {
+  if (!type->IsTuple() && !type->IsArray()) {
+    XLS_ASSIGN_OR_RETURN(Value value, binding.ConvertToIr());
+    return builder.Literal(value, loc);
+  }
+  const auto& members = binding.GetValuesOrDie();
+  std::vector<BValue> elements;
+  elements.reserve(members.size());
+  for (int64_t i = 0; i < members.size(); ++i) {
+    xls::Type* member_type = type->IsTuple()
+                                 ? type->AsTupleOrDie()->element_type(i)
+                                 : type->AsArrayOrDie()->element_type();
+    XLS_ASSIGN_OR_RETURN(BValue element, BuildTypedConstant(builder, members[i],
+                                                            member_type, loc));
+    elements.push_back(element);
+  }
+  if (type->IsTuple()) {
+    return builder.Tuple(elements, loc);
+  }
+  return builder.Array(elements, type->AsArrayOrDie()->element_type(), loc);
+}
+
 absl::Status FunctionConverter::HandleConstMatch(const Match* node) {
   XLS_ASSIGN_OR_RETURN(uint32_t arm_id,
                        current_type_info_->GetArmSelectionResult(node));
   const MatchArm* arm = node->arms()[arm_id];
+  for (const NameDef* name : GetPatternNameDefs(arm->patterns().front())) {
+    XLS_ASSIGN_OR_RETURN(InterpValue binding,
+                         current_type_info_->GetConstExpr(name));
+    absl::StatusOr<Value> literal = binding.ConvertToIr();
+    if (absl::IsUnimplemented(literal.status())) {
+      XLS_ASSIGN_OR_RETURN(xls::Type * type, ResolveTypeToIr(name));
+      XLS_ASSIGN_OR_RETURN(BValue value,
+                           BuildTypedConstant(*function_builder_, binding, type,
+                                              ToSourceInfo(name->span())));
+      SetNodeToIr(name, value);
+    } else {
+      XLS_RETURN_IF_ERROR(literal.status());
+      DefConst(name, *literal);
+    }
+  }
   XLS_RETURN_IF_ERROR(VisitAndPropagateIrValue(arm->expr(), node));
   return absl::OkStatus();
 }
