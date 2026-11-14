@@ -767,8 +767,13 @@ VerilogFunction::VerilogFunction(std::string_view name, DataType* result_type,
 
 LogicRef* VerilogFunction::AddArgument(std::string_view name, DataType* type,
                                        const SourceInfo& loc) {
-  argument_defs_.push_back(file()->Make<RegDef>(loc, name, type));
-  return file()->Make<LogicRef>(loc, argument_defs_.back());
+  Def* def;
+  if (type->IsUserDefined()) {
+    def = file()->Make<Def>(loc, name, DataKind::kUser, type);
+  } else {
+    def = file()->Make<RegDef>(loc, name, type);
+  }
+  return AddArgument(def, loc);
 }
 
 LogicRef* VerilogFunction::AddArgument(Def* def, const SourceInfo& loc) {
@@ -788,6 +793,7 @@ std::string VerilogFunction::Emit(LineInfo* line_info) const {
   std::string return_type =
       return_value_def_->data_type()->EmitWithIdentifier(line_info, name());
   if (return_value_def_->data_type()->IsScalar() &&
+      !return_value_def_->data_type()->IsUserDefined() &&
       file()->use_system_verilog()) {
     // Preface the return type with "logic", so there's always a type
     // provided.
@@ -1062,6 +1068,20 @@ TypedefType* VerilogPackageSection::AddStructTypedef(
     std::string_view name, absl::Span<Def*> struct_members,
     const SourceInfo& loc) {
   return AddStructTypedef(name, file()->Make<Struct>(loc, struct_members), loc);
+}
+
+TypedefType* VerilogPackageSection::AddUnionTypedef(std::string_view name,
+                                                    Union* union_data_type,
+                                                    const SourceInfo& loc) {
+  Typedef* def = Add<Typedef>(
+      loc, file()->Make<Def>(loc, name, DataKind::kUser, union_data_type));
+  return file()->Make<TypedefType>(loc, def);
+}
+
+TypedefType* VerilogPackageSection::AddUnionTypedef(
+    std::string_view name, absl::Span<Def*> union_members,
+    const SourceInfo& loc) {
+  return AddUnionTypedef(name, file()->Make<Union>(loc, union_members), loc);
 }
 
 ParameterRef* VerilogPackageSection::AddParameter(std::string_view name,
@@ -1869,17 +1889,84 @@ absl::StatusOr<int64_t> Struct::FlatBitCountAsInt64() const {
   return result;
 }
 
-std::string Struct::Emit(LineInfo* line_info) const {
-  LineInfoStart(line_info, this);
-  std::string result = "struct packed {\n";
+namespace {
+
+// Nested unions perform this check themselves when their width is computed.
+bool HasUnpackedTypeOutsideUnion(const DataType* type) {
+  if (dynamic_cast<const UnpackedArrayType*>(type) != nullptr) {
+    return true;
+  } else if (const auto* alias =
+                 dynamic_cast<const UserDefinedAliasType*>(type);
+             alias != nullptr) {
+    return HasUnpackedTypeOutsideUnion(alias->BaseType());
+  } else if (const auto* array = dynamic_cast<const PackedArrayType*>(type);
+             array != nullptr) {
+    return HasUnpackedTypeOutsideUnion(array->element_type());
+  } else if (const auto* record = dynamic_cast<const Struct*>(type);
+             record != nullptr) {
+    return std::any_of(
+        record->members().begin(), record->members().end(),
+        [](const Def* member) {
+          return HasUnpackedTypeOutsideUnion(member->data_type());
+        });
+  } else {
+    return false;
+  }
+}
+
+}  // namespace
+
+absl::StatusOr<int64_t> Union::FlatBitCountAsInt64() const {
+  if (members_.empty()) {
+    return absl::InvalidArgumentError("A packed union must have a member.");
+  }
+  std::optional<int64_t> bit_count;
+  for (const Def* member : members_) {
+    if (HasUnpackedTypeOutsideUnion(member->data_type())) {
+      return absl::InvalidArgumentError(
+          absl::StrFormat("Packed union member '%s' contains an unpacked type.",
+                          member->GetName()));
+    }
+    XLS_ASSIGN_OR_RETURN(int64_t member_bit_count,
+                         member->data_type()->FlatBitCountAsInt64());
+    if (!bit_count.has_value()) {
+      bit_count = member_bit_count;
+    } else if (member_bit_count != *bit_count) {
+      return absl::InvalidArgumentError(absl::StrFormat(
+          "Packed union members must have the same width; '%s' has %d bits, "
+          "but '%s' has %d bits.",
+          members_.front()->GetName(), *bit_count, member->GetName(),
+          member_bit_count));
+    }
+  }
+  return *bit_count;
+}
+
+namespace {
+
+std::string EmitPackedAggregate(const VastNode* node, std::string_view kind,
+                                absl::Span<Def* const> members,
+                                LineInfo* line_info) {
+  LineInfoStart(line_info, node);
+  std::string result = absl::StrCat(kind, " packed {\n");
   LineInfoIncrease(line_info, 1);
-  for (const Def* next : members_) {
-    LineInfoIncrease(line_info, 1);
+  for (const Def* next : members) {
     absl::StrAppend(&result, Indent(next->Emit(line_info)), "\n");
+    LineInfoIncrease(line_info, 1);
   }
   absl::StrAppend(&result, "}");
-  LineInfoEnd(line_info, this);
+  LineInfoEnd(line_info, node);
   return result;
+}
+
+}  // namespace
+
+std::string Struct::Emit(LineInfo* line_info) const {
+  return EmitPackedAggregate(this, "struct", members_, line_info);
+}
+
+std::string Union::Emit(LineInfo* line_info) const {
+  return EmitPackedAggregate(this, "union", members_, line_info);
 }
 
 std::string LocalParamItem::Emit(LineInfo* line_info) const {
