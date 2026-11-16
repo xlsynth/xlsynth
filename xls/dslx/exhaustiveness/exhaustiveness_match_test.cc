@@ -1076,7 +1076,7 @@ TEST(ExhaustivenessMatchTest, NonExhaustiveTuple) {
 TEST(ExhaustivenessMatchTest, RedundantPattern) {
   constexpr std::string_view kMatch = R"(fn main(x: u4) -> u32 {
   match x {
-    _ => u32:0,
+    _value => u32:0,
     u4:5 => u32:1,
   }
 })";
@@ -1145,7 +1145,7 @@ TEST(ExhaustivenessMatchTest, MultipleRedundantPatterns) {
   constexpr std::string_view kMatch = R"(
 fn main(x: u4) -> u32 {
   match x {
-    _ => u32:0,
+    _value => u32:0,
     u4:1 => u32:10,
     u4:2 => u32:20,
   }
@@ -1243,7 +1243,7 @@ TEST(ExhaustivenessMatchTest, MiddleCatchAllRedundantSuffix) {
   constexpr std::string_view kMatch = R"(fn main(x: u4) -> u32 {
     match x {
       u4:0 => u32:10,
-      _ => u32:20,  // catch-all in the middle: makes the match exhaustive here
+      _value => u32:20,  // The binding covers all remaining values.
       u4:1 => u32:30,  // redundant
       u4:2 => u32:40,  // redundant
       u4:3 => u32:50,  // redundant

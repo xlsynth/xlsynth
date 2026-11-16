@@ -1330,7 +1330,8 @@ fn f(x: Option) -> u8 {
 }
 
 TEST(TypecheckV2Test, WildcardMayOnlyBeFollowedByInvalidPattern) {
-  EXPECT_THAT(R"(
+  EXPECT_THAT(
+      R"(
 enum Option {
   None,
   Some(u8),
@@ -1343,9 +1344,8 @@ fn f(x: Option) -> u8 {
   }
 }
 )",
-              TypecheckFails(HasSubstr(
-                  "A wildcard arm may only be followed by a final `invalid!` "
-                  "arm.")));
+      TypecheckFails(HasSubstr(
+          "A whole-subject wildcard must be the last ordinary pattern.")));
 }
 
 TEST(TypecheckV2Test, WildcardWithoutInvalidPatternCannotPrecedeSumArm) {
@@ -1363,7 +1363,7 @@ fn f(x: Option) -> u8 {
 }
 )",
         TypecheckFails(HasSubstr(
-            "A wildcard arm may only be followed by a final `invalid!` arm.")));
+            "A whole-subject wildcard must be the last ordinary pattern.")));
   }
 }
 
@@ -1372,7 +1372,7 @@ TEST(TypecheckV2Test, WildcardAlternativeMayBeFollowedByFinalInvalidPattern) {
 enum Option { None, Some(u8) }
 fn f(x: Option) -> u8 {
   match x {
-    _ | Option::None => u8:0,
+    Option::None | _ => u8:0,
     invalid! => u8:1,
   }
 }
@@ -2050,7 +2050,8 @@ fn f(x: Option) -> u32 {
 }
 
 TEST(TypecheckV2Test, WildcardAfterSumConstructorCannotPrecedeAnotherArm) {
-  EXPECT_THAT(R"(
+  EXPECT_THAT(
+      R"(
 enum Option {
   None,
   Some(u32),
@@ -2065,9 +2066,8 @@ fn unwrap_or_zero(x: Option) -> u32 {
   }
 }
 )",
-              TypecheckFails(HasSubstr(
-                  "A wildcard arm may only be followed by a final `invalid!` "
-                  "arm.")));
+      TypecheckFails(HasSubstr(
+          "A whole-subject wildcard must be the last ordinary pattern.")));
 }
 
 TEST(TypecheckV2Test, GateRejectsSumWithoutZeroTag) {
