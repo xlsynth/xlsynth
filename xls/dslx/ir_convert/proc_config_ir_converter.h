@@ -20,6 +20,7 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/types/variant.h"
 #include "xls/common/visitor.h"
 #include "xls/dslx/frontend/ast.h"
@@ -104,6 +105,8 @@ class ProcConfigIrConverter : public AstNodeVisitorWithDefault {
   const FileTable& file_table() const { return import_data_->file_table(); }
 
  private:
+  absl::StatusOr<ProcConfigValue> GetConfigValue(const Expr* expr) const;
+
   Function* f_;
   TypeInfo* type_info_;
   ImportData* import_data_;
@@ -117,8 +120,7 @@ class ProcConfigIrConverter : public AstNodeVisitorWithDefault {
 
   absl::flat_hash_map<const AstNode*, ProcConfigValue> node_to_ir_;
 
-  // Stores the last tuple created in this Function. Used to destructure any
-  // output to match with Proc members.
+  // The literal tuple returned by the config body, if present.
   const XlsTuple* final_tuple_;
 };
 

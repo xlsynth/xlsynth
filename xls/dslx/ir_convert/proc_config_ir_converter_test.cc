@@ -70,17 +70,23 @@ absl::Status ParseAndAcceptWithConverter(std::string_view module_text,
   channel_scope.EnterFunctionContext(tm.type_info, bindings);
   ProcConfigIrConverter converter(f, tm.type_info, &import_data, &proc_data,
                                   &channel_scope, bindings, proc_id);
-  return f->Accept(&converter);
+  XLS_RETURN_IF_ERROR(f->Accept(&converter));
+  return converter.Finalize();
 }
 
 TEST(ProcConfigIrConverterTest, BasicConversion) {
   constexpr std::string_view kModule = R"(
+enum E { V(u32) }
+const X = E::V(u32:11);
 proc test_proc {
   c: chan<u32> in;
   x: u32;
   init { u32: 0 }
   config(c: chan<u32> in, ham_sandwich: u32) {
-    (c, ham_sandwich)
+    const match true {
+      true => (c, const match X { E::V(n) => { n } }),
+      false => (c, ham_sandwich),
+    }
   }
   next(y: u32) {
     let y = y + x;
@@ -111,7 +117,98 @@ proc main {
   ProcId proc_id;
   proc_data.id_to_config_args[proc_id].push_back(&channel);
   proc_data.id_to_config_args[proc_id].push_back(Value(UBits(8, 32)));
-  XLS_EXPECT_OK(ParseAndAcceptWithConverter(kModule, conv, proc_id, proc_data));
+  XLS_ASSERT_OK(ParseAndAcceptWithConverter(kModule, conv, proc_id, proc_data));
+  EXPECT_EQ(proc_data.id_to_members.at(proc_id).at("c"),
+            ProcConfigValue(&channel));
+  EXPECT_EQ(proc_data.id_to_members.at(proc_id).at("x"),
+            ProcConfigValue(Value(UBits(11, 32))));
+}
+
+TEST(ProcConfigIrConverterTest, ConstMatchPayloadBindingInSpawnArgument) {
+  constexpr std::string_view kModule = R"(
+enum Pair { Fields { left: u4, right: u4, empty: u8[0] } }
+const X = Pair::Fields { left: u4:3, right: u4:11, empty: u8[0]:[] };
+proc Child {
+  x: u4;
+  config(x: u4) { (x,) }
+  init { () }
+  next(_: ()) {}
+}
+proc test_proc {
+  config() {
+    let a = const match X {
+      Pair::Fields { right: n, left: m, empty: _unused } => {
+        spawn Child(n);
+        let alias = m;
+        spawn Child(alias);
+        m
+      },
+    };
+    spawn Child(a);
+    spawn Child(const match X {
+      Pair::Fields { right: n, left: _, empty: _ } => n,
+    });
+    ()
+  }
+  init { () }
+  next(_: ()) {}
+}
+)";
+  PackageConversionData conv = MakeConversionData("the_package");
+  ProcConversionData proc_data;
+  XLS_ASSERT_OK(
+      ParseAndAcceptWithConverter(kModule, conv, ProcId(), proc_data));
+  ASSERT_EQ(proc_data.id_to_config_args.size(), 4);
+  constexpr int kExpected[] = {11, 3, 3, 11};
+  for (const auto& [id, args] : proc_data.id_to_config_args) {
+    const int index = id.proc_instance_stack.back().second;
+    ASSERT_GE(index, 0);
+    ASSERT_LT(index, 4);
+    EXPECT_THAT(args, ::testing::ElementsAre(
+                          ProcConfigValue(Value(UBits(kExpected[index], 4)))));
+  }
+}
+
+TEST(ProcConfigIrConverterTest, DiscardedTupleCannotSupplyProcMembers) {
+  constexpr std::string_view kModule = R"(
+enum E { V((u4,)) }
+const X = E::V((u4:11,));
+proc test_proc {
+  x: u4;
+  config() {
+    (u4:7,);
+    const match X { E::V(values) => values }
+  }
+  init { u4:0 }
+  next(_: u4) { x }
+}
+)";
+  PackageConversionData conv = MakeConversionData("the_package");
+  ProcConversionData proc_data;
+  EXPECT_THAT(ParseAndAcceptWithConverter(kModule, conv, ProcId(), proc_data),
+              StatusIs(absl::StatusCode::kUnimplemented,
+                       HasSubstr("must return a literal tuple")));
+}
+
+TEST(ProcConfigIrConverterTest, ArrayLiteralIsUnsupportedAsSpawnArgument) {
+  constexpr std::string_view kModule = R"(
+proc Child {
+  config(values: u4[2]) { () }
+  init { () }
+  next(_: ()) { () }
+}
+proc test_proc {
+  config() { spawn Child([u4:3, u4:11]); () }
+  init { () }
+  next(_: ()) { () }
+}
+)";
+  PackageConversionData conv = MakeConversionData("the_package");
+  ProcConversionData proc_data;
+  EXPECT_THAT(
+      ParseAndAcceptWithConverter(kModule, conv, ProcId(), proc_data),
+      StatusIs(absl::StatusCode::kUnimplemented,
+               HasSubstr("Unsupported expression for proc config value")));
 }
 
 TEST(ProcConfigIrConverterTest, CatchesMissingArgMap) {
