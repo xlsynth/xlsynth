@@ -12,8 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstddef>
 #include <memory>
 #include <optional>
+#include <string>
+#include <string_view>
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -33,6 +36,7 @@
 #include "xls/scheduling/scheduling_options.h"
 #include "xls/simulation/module_testbench.h"
 #include "xls/simulation/module_testbench_thread.h"
+#include "xls/simulation/verilog_simulator.h"
 #include "xls/simulation/verilog_test_base.h"
 
 namespace xls {
@@ -103,6 +107,98 @@ TEST_P(TraceTest, CombinationalSimpleTrace) {
   // Fail to find the third trace output because cond did not change.
   EXPECT_THAT(tb->Run(), StatusIs(absl::StatusCode::kNotFound,
                                   HasSubstr("This is a simple trace.")));
+}
+
+// Verifies: Conditional RTL traces emit exactly one line per enabled event.
+// Catches: Extra lines, partial messages, and output while tracing is disabled.
+TEST_P(TraceTest, CombinationalConditionalTraceEmitsOneLine) {
+  constexpr std::string_view kConditionalTraceText = R"(
+package ConditionalTrace
+top fn main(tkn: token, cond: bits[1], outer: bits[1], inner: bits[1], value: bits[8]) -> token {
+  ret trace.1: token = trace(tkn, cond, format="prefix{?} outer{?} {}{/}{/} suffix", data_operands=[outer, inner, value], id=1)
+}
+)";
+  // Keep the measured output free of testbench monitors. Mark each condition
+  // change so disabled output cannot substitute for a missing enabled trace.
+  constexpr char kTestbench[] = R"(
+module testbench;
+  reg cond;
+  reg outer;
+  reg inner;
+  reg [7:0] value;
+  main dut(.cond(cond), .outer(outer), .inner(inner), .value(value));
+  initial begin
+    $display("TRACE_TEST_BEGIN");
+    cond = 0;
+    outer = 1;
+    inner = 1;
+    value = 8'd142;
+    #1;
+    $display("TRACE_ENABLED");
+    cond = 1;
+    #1;
+    $display("TRACE_DISABLED");
+    cond = 0;
+    outer = 0;
+    #1;
+    $display("TRACE_ENABLED");
+    cond = 1;
+    #1;
+    $display("TRACE_DISABLED");
+    cond = 0;
+    outer = 1;
+    inner = 0;
+    #1;
+    $display("TRACE_ENABLED");
+    cond = 1;
+    #1;
+    $display("TRACE_DISABLED");
+    cond = 0;
+    inner = 1;
+    value = 8'd143;
+    #1;
+    $display("TRACE_TEST_END");
+    $finish;
+  end
+endmodule
+)";
+  for (bool use_system_verilog : {false, true}) {
+    SCOPED_TRACE(use_system_verilog ? "SystemVerilog" : "Verilog");
+    XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Package> package,
+                             Parser::ParsePackage(kConditionalTraceText));
+    ASSERT_TRUE(package->GetTop().has_value());
+    CodegenOptions options;
+    options.use_system_verilog(use_system_verilog);
+    XLS_ASSERT_OK_AND_ASSIGN(
+        auto result,
+        GenerateCombinationalModule(package->GetTop().value(), options));
+    EXPECT_THAT(result.verilog_text, HasSubstr("$write("));
+    EXPECT_THAT(result.verilog_text, HasSubstr("$display(\"\")"));
+
+    if (use_system_verilog == UseSystemVerilog()) {
+      XLS_ASSERT_OK_AND_ASSIGN(
+          auto stdout_stderr,
+          GetSimulator()->Run(result.verilog_text + kTestbench, GetFileType()));
+      std::string_view output = stdout_stderr.first;
+      constexpr std::string_view kBegin = "TRACE_TEST_BEGIN\n";
+      constexpr std::string_view kEnd = "TRACE_TEST_END\n";
+      const std::size_t begin = output.find(kBegin);
+      ASSERT_NE(begin, std::string_view::npos) << output;
+      output.remove_prefix(begin + kBegin.size());
+      const std::size_t end = output.find(kEnd);
+      ASSERT_NE(end, std::string_view::npos) << output;
+      EXPECT_EQ(output.substr(0, end),
+                "TRACE_ENABLED\n"
+                "prefix outer 142 suffix\n"
+                "TRACE_DISABLED\n"
+                "TRACE_ENABLED\n"
+                "prefix suffix\n"
+                "TRACE_DISABLED\n"
+                "TRACE_ENABLED\n"
+                "prefix outer suffix\n"
+                "TRACE_DISABLED\n");
+    }
+  }
 }
 
 // This is just a basic test to ensure that traces in clocked modules generate
