@@ -1722,6 +1722,21 @@ hardware both return `0b1011`. Change only the inner tag to the undeclared
 payload `0b0010` returns `0b0010`. Source interpretation reports an error for
 both inputs with the undeclared tag.
 
+For a single constructor case, `if let` provides the equivalent conditional
+form. Its pattern must be a semantic-sum constructor, and its `else` branch is
+required:
+
+```dslx
+enum Message {
+    Idle,
+    Request(u8),
+}
+
+fn maybe_request(message: Message) -> u8 {
+    if let Message::Request(value) = message { value } else { u8:0 }
+}
+```
+
 We can also `match` on ranges of values using the "range" syntax:
 
 ```dslx

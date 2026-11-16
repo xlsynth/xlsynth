@@ -3727,6 +3727,9 @@ fn unwrap(x: Outer) -> Message {
 fn ignore(x: Outer) -> bool {
   match x { Outer::Wrapped(_) => true, Outer::Wide(_) => false }
 }
+fn bind_if(x: Outer) -> Message {
+  if let Outer::Wrapped(v) = x { v } else { Message::Small(u4:0) }
+}
 fn tuple_bind(x: Outer) -> Message {
   match (x, u1:0) {
     (Outer::Wrapped(v), _) => v,
@@ -3787,7 +3790,7 @@ TEST_F(BytecodeInterpreterTest, SemanticSumTransportPreservesInheritedBits) {
     // ten-bit inner representation, including an unobserved tag, stays intact.
     EXPECT_THAT(Interpret(kTransparentSumProgram, "wrap", {incoming}),
                 IsOkAndHolds(wrapped));
-    for (std::string_view function : {"unwrap", "tuple_bind"}) {
+    for (std::string_view function : {"unwrap", "bind_if", "tuple_bind"}) {
       SCOPED_TRACE(function);
       EXPECT_THAT(Interpret(kTransparentSumProgram, function, {wrapped}),
                   IsOkAndHolds(incoming));
@@ -3971,6 +3974,9 @@ enum Shell: u1 { Empty = 0, Wrap(Outer) = 1 }
 fn matched(x: Outer) -> bool {
   match x { Outer::Empty => false, Outer::Wrapped(_) => true }
 }
+fn conditional(x: Outer) -> bool {
+  if let Outer::Empty = x { false } else { true }
+}
 fn tuple_pattern(x: Outer) -> bool {
   match (x, u1:0) { (Outer::Empty, _) => false, _ => true }
 }
@@ -3982,7 +3988,7 @@ fn nested_pattern(x: Outer) -> bool {
       {InterpValue::MakeUBits(1, 1),
        InterpValue::MakeTuple({InterpValue::MakeUBits(10, 0x3e5)})});
   for (std::string_view function :
-       {"matched", "tuple_pattern", "nested_pattern"}) {
+       {"matched", "conditional", "tuple_pattern", "nested_pattern"}) {
     SCOPED_TRACE(function);
     EXPECT_THAT(Interpret(kProgram, function, {wrapped}),
                 IsOkAndHolds(InterpValue::MakeBool(true)));
@@ -4552,6 +4558,103 @@ fn doomed() -> Option {
               StatusIs(absl::StatusCode::kInternal,
                        AllOf(HasSubstr("<semantic sum value omitted>"),
                              Not(HasSubstr("u32:42")))));
+}
+
+TEST_F(BytecodeInterpreterTest, SemanticSumChainedIfLetUsesDistinctSumTypes) {
+  constexpr std::string_view kProgram = R"(
+enum First {
+  Missing,
+  Found(u32),
+}
+
+enum Second {
+  Absent,
+  Present(u32),
+}
+
+fn choose(first: First, second: Second) -> u32 {
+  if let First::Found(value) = first {
+    value
+  } else if let Second::Present(value) = second {
+    value
+  } else {
+    u32:0
+  }
+}
+
+fn main() -> (u32, u32, u32) {
+  (
+    choose(First::Found(u32:7), Second::Present(u32:9)),
+    choose(First::Missing, Second::Present(u32:9)),
+    choose(First::Missing, Second::Absent)
+  )
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue result, Interpret(kProgram, "main", {}));
+  XLS_ASSERT_OK_AND_ASSIGN(const std::vector<InterpValue>* values,
+                           result.GetValues());
+  EXPECT_THAT(*values,
+              ElementsAre(InterpValue::MakeU32(7), InterpValue::MakeU32(9),
+                          InterpValue::MakeU32(0)));
+}
+
+TEST_F(BytecodeInterpreterTest,
+       SemanticSumIfLetChecksOnlyTheRootTagForValidity) {
+  constexpr std::string_view kProgram = R"(
+enum Option: u2 {
+  None = 0,
+  Some(u32) = 1,
+}
+
+enum Wrapped: u1 { Empty = 0, Item(Option) = 1 }
+
+fn root(x: Option) -> u32 {
+  if let Option::Some(v) = x { v } else { u32:0 }
+}
+fn nested(x: Wrapped) -> u32 {
+  if let Wrapped::Item(Option::Some(v)) = x { v } else { u32:0 }
+}
+)";
+  InterpValue malformed = InterpValue::MakeTuple(
+      {InterpValue::MakeUBits(/*bit_count=*/2, /*value=*/3),
+       InterpValue::MakeTuple(
+           {InterpValue::MakeUBits(/*bit_count=*/32, /*value=*/7)})});
+  EXPECT_THAT(
+      Interpret(kProgram, "root", {malformed}),
+      StatusIs(absl::StatusCode::kInternal,
+               HasSubstr("Semantic sum observer received a malformed value")));
+  // Item carries the same Option wire image; only the nested comparison misses.
+  const InterpValue wrapped = internal::CreateEncodedSumTuple(
+      InterpValue::MakeUBits(1, 1),
+      InterpValue::MakeUBits(34, (int64_t{3} << 32) | 7));
+  EXPECT_THAT(Interpret(kProgram, "nested", {wrapped}),
+              IsOkAndHolds(InterpValue::MakeU32(0)));
+}
+
+TEST_F(BytecodeInterpreterTest, IfLetLoweringPreservesLocalConstMatchPattern) {
+  constexpr std::string_view kProgram = R"(
+enum Inner: u2 { Small(u4) = 0, Big(u8) = 1 }
+enum E: u2 { A = 0, B(Inner) = 1 }
+
+fn contains_if_let(x: E) -> bool {
+  if let E::B(_) = x { true } else { false }
+}
+
+fn main(x: E) -> bool {
+  const LAST = E::A;
+  match x { LAST => true, _ => false }
+}
+)";
+  // Lowering the unrelated if let clones the module. LAST still denotes the
+  // constructor A, so an input tagged B misses without observing its child.
+  const InterpValue malformed_child = internal::CreateEncodedSumTuple(
+      InterpValue::MakeUBits(2, 1), InterpValue::MakeUBits(10, 0x3e5));
+  EXPECT_THAT(Interpret(kProgram, "main", {malformed_child}),
+              IsOkAndHolds(InterpValue::MakeBool(false)));
+  const InterpValue a = internal::CreateEncodedSumTuple(
+      InterpValue::MakeUBits(2, 0), InterpValue::MakeUBits(10, 0x3ff));
+  EXPECT_THAT(Interpret(kProgram, "main", {a}),
+              IsOkAndHolds(InterpValue::MakeBool(true)));
 }
 
 TEST_F(BytecodeInterpreterTest, ZeroMacroSemanticSumUsesZeroDiscriminant) {
