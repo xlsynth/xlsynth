@@ -524,6 +524,35 @@ TEST_F(InferenceTableTest, Clone) {
   EXPECT_EQ(table_->GetTypeVariable(cloned_add_node->rhs()), t0);
 }
 
+TEST_F(InferenceTableTest, ClonePreservesFlagsWithoutChangingReplacements) {
+  const TypeAnnotation* formal = CreateU32Annotation(*module_, Span::Fake());
+  table_->SetAnnotationFlag(formal, TypeInferenceFlag::kFormalMemberType);
+  TypeAnnotation* replacement = CreateU32Annotation(*module_, Span::Fake());
+
+  // A semantic replacement can reuse a declaration annotation. Its flags
+  // describe that declaration, not the constraint being replaced.
+  XLS_ASSERT_OK_AND_ASSIGN(
+      AstNode * substituted,
+      table_->Clone(formal,
+                    [&](const AstNode* node, Module*,
+                        const absl::flat_hash_map<const AstNode*, AstNode*>&)
+                        -> absl::StatusOr<std::optional<AstNode*>> {
+                      if (node == formal) {
+                        return replacement;
+                      } else {
+                        return std::nullopt;
+                      }
+                    }));
+  EXPECT_EQ(substituted, replacement);
+  EXPECT_EQ(table_->GetAnnotationFlag(replacement), TypeInferenceFlag::kNone);
+
+  XLS_ASSERT_OK_AND_ASSIGN(AstNode * cloned,
+                           table_->Clone(formal, &NoopCloneReplacer));
+  EXPECT_NE(cloned, formal);
+  EXPECT_EQ(table_->GetAnnotationFlag(absl::down_cast<TypeAnnotation*>(cloned)),
+            TypeInferenceFlag::kFormalMemberType);
+}
+
 TEST_F(InferenceTableTest,
        NamedBindingUsesDeclarationSlotsAndSourceErrorOrder) {
   ParseAndInitModuleAndTable(R"(

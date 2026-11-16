@@ -449,7 +449,7 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
                              /*pre_unified_type=*/
                              std::nullopt,
                              filter_param_type_annotations
-                                 ? TypeAnnotationFilter::FilterParamTypes()
+                                 ? TypeAnnotationFilter::FilterArgumentParamTypes()
                                  : TypeAnnotationFilter::None()));
       }
     }
@@ -3208,7 +3208,7 @@ class InferenceTableConverterImpl : public InferenceTableConverter,
       // just the independent annotations(s) for the purposes of solving for the
       // variable.
       TypeAnnotationFilter filter =
-          TypeAnnotationFilter::FilterParamTypes().Chain(
+          TypeAnnotationFilter::FilterArgumentParamTypes().Chain(
               TypeAnnotationFilter::FilterRefsToUnknownParametrics(
                   actual_arg_ti)
                   .Chain(
