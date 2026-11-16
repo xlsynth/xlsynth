@@ -481,22 +481,6 @@ class TypeValidator : public AstNodeVisitorWithDefault {
     Type* matched = const_cast<Type*>(*matched_type);
     MatchArm* malformed_fallback_arm = nullptr;
     if (const auto* matched_sum = dynamic_cast<const SumType*>(*matched_type)) {
-      // This ordering rule is sum-only, even when no invalid! arm is present.
-      // Population already ensures that invalid! is a single final pattern.
-      bool saw_wildcard_arm = false;
-      for (const MatchArm* arm : node->arms()) {
-        if (saw_wildcard_arm && !IsInvalidPattern(arm->patterns().front())) {
-          return TypeInferenceErrorStatus(
-              arm->GetPatternSpan(), *matched_type,
-              "A wildcard arm may only be followed by a final `invalid!` arm.",
-              file_table_);
-        } else {
-          for (const PatternTree& pattern : arm->patterns()) {
-            saw_wildcard_arm = saw_wildcard_arm || IsWildcardLeaf(pattern);
-          }
-        }
-      }
-
       if (!HasInvalidPattern(*node)) {
         MatchArm* fallback_arm = node->arms().back();
         if (fallback_arm->patterns().size() != 1 ||
