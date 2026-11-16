@@ -2142,22 +2142,19 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
     VLOG(5) << absl::StreamFormat("Matcher is leaf: %s (%s)",
                                   matcher_node->ToString(),
                                   matcher_node->GetNodeTypeName());
-    auto equality = [&](const BValue& to_match) -> absl::StatusOr<BValue> {
+    auto equality = [&](BValue to_match,
+                        const SourceInfo& loc) -> absl::StatusOr<BValue> {
       if (!TypeContainsSemanticSum(matched_type)) {
-        return Def(matcher_node, [&](const SourceInfo& loc) {
-          return function_builder_->Eq(to_match, matched_value);
-        });
+        return function_builder_->Eq(to_match, matched_value, loc);
       }
-      XLS_ASSIGN_OR_RETURN(
-          BValue result, BuildEqByType(matched_type, to_match, matched_value,
-                                       ToSourceInfo(GetPatternSpan(matcher))));
-      SetNodeToIr(matcher_node, result);
-      return result;
+      return BuildEqByType(matched_type, to_match, matched_value, loc);
     };
     auto equality_for_leaf = [&]() -> absl::StatusOr<BValue> {
       XLS_RETURN_IF_ERROR(Visit(matcher_node));
       XLS_ASSIGN_OR_RETURN(BValue to_match, Use(matcher_node));
-      return equality(to_match);
+      return DefWithStatus(matcher_node, [&](const SourceInfo& loc) {
+        return equality(to_match, loc);
+      });
     };
     auto root_tag_is_valid = [&]() -> absl::StatusOr<BValue> {
       SourceInfo loc = ToSourceInfo(GetPatternSpan(matcher));
@@ -2248,11 +2245,10 @@ absl::StatusOr<BValue> FunctionConverter::HandleMatcher(
                                                 : lt(matched_value, limit));
             },
             [&](NameRef* n) -> absl::StatusOr<BValue> {
-              // Comparing for equivalence to a (referenced) name.
-              const auto* name_def = std::get<const NameDef*>(n->name_def());
-              XLS_ASSIGN_OR_RETURN(BValue to_match, Use(name_def));
-              XLS_ASSIGN_OR_RETURN(BValue result, equality(to_match));
-              XLS_RETURN_IF_ERROR(DefAlias(name_def, n));
+              XLS_RETURN_IF_ERROR(HandleNameRef(n));
+              XLS_ASSIGN_OR_RETURN(BValue to_match, Use(n));
+              XLS_ASSIGN_OR_RETURN(BValue result,
+                                   equality(to_match, ToSourceInfo(n->span())));
               if (is_match_root && matched_type.IsSum()) {
                 // Two runtime values can compare equal even when both root
                 // tags are invalid. Such a subject goes to the fallback.

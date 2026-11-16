@@ -38,6 +38,10 @@
 
 namespace xls::dslx {
 
+// Whether a value-pattern name denotes a constant declaration or parametric
+// value. A let-bound value can fold at compile time and still match by equality.
+bool IsConstantPatternReference(const NameRef& ref);
+
 // Visits the immediate members of a typechecked constructor pattern in written
 // order, so bindings precede their uses. The index identifies the member in
 // the variant declaration, regardless of where its name appears in the pattern.
