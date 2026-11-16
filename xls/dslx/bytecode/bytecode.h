@@ -266,7 +266,8 @@ class Bytecode {
     static MatchArmItem MakeRange(InterpValue start, InterpValue limit);
     // The borrowed type must outlive the bytecode. variant_index is declaration
     // order, not the semantic discriminant. Supply one item per declared
-    // payload member, including wildcards, in pattern source order.
+    // payload member, including wildcards, in observation order (declaration
+    // order for fully specified values, written order for open patterns).
     static MatchArmItem MakeSum(
         const SumType* sum_type, int64_t variant_index,
         std::vector<SumPayloadPatternItem> payload_items);
@@ -302,7 +303,7 @@ class Bytecode {
     absl::StatusOr<SlotIndex> slot_index() const;
     absl::StatusOr<RangeData> range() const;
     absl::StatusOr<const SumMatchData*> sum_match_data() const;
-    absl::StatusOr<std::vector<MatchArmItem>> tuple_elements() const;
+    absl::StatusOr<absl::Span<const MatchArmItem>> tuple_elements() const;
     Kind kind() const { return kind_; }
     const Type* value_type() const { return value_type_; }
 

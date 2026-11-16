@@ -1159,10 +1159,7 @@ fn f(value: u2) -> u32 {
 
 TEST(TypecheckV2Test, MatchUseImportedSumConstantsPreserveTheirValues) {
   constexpr std::string_view kImported = R"(
-pub enum Option {
-  None,
-  Some(u1),
-}
+pub enum Option: u2 { Some(u1) = 1 }
 pub const FIRST = Option::Some(u1:1);
 pub const SECOND = Option::Some(u1:0);
 )";
@@ -1173,7 +1170,6 @@ fn f() -> u32 {
   match FIRST {
     FIRST => u32:0,
     SECOND => u32:1,
-    _ => u32:2,
   }
 }
 )";
