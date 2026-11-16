@@ -334,6 +334,68 @@ TEST(AstGeneratorMultiTest, GeneratesValidProcsWithRandomState) {
   }
 }
 
+TEST(AstGeneratorMultiTest, GeneratesRequiredSumTypesInProcs) {
+  FileTable file_table;
+  std::mt19937_64 rng{0};
+  AstGeneratorOptions options;
+  options.generate_proc = true;
+  options.require_sum_type = true;
+  constexpr int64_t kNumSamples = 8;
+  for (int64_t i = 0; i < kNumSamples; ++i) {
+    AstGenerator g(options, rng, file_table);
+    LOG(INFO) << "Generating required-sum proc sample: " << i;
+    std::string module_name = absl::StrFormat("sum_proc_sample_%d", i);
+    XLS_ASSERT_OK_AND_ASSIGN(AnnotatedModule module,
+                             g.Generate("main", module_name));
+
+    std::string text = module.module->ToString();
+    EXPECT_THAT(text, ContainsRegex(R"(enum x[0-9]+( : [us][0-9]+)? \{)"))
+        << text;
+    EXPECT_THAT(text, ContainsRegex(R"(proc main)")) << text;
+    EXPECT_THAT(text, ContainsRegex(R"(recv\()")) << text;
+    XLS_ASSERT_OK(ParseAndTypecheck<Proc>(text, module_name)) << text;
+  }
+}
+
+TEST(AstGeneratorMultiTest, RequiredProcSumFitsAggregateWidth) {
+  AstGeneratorOptions options;
+  options.generate_proc = true;
+  options.require_sum_type = true;
+  options.max_width_bits_types = 8;
+  for (int64_t budget : {1, 2, 3, 4, 11}) {
+    options.max_width_aggregate_types = budget;
+    for (uint64_t seed : {0, 1}) {
+      SCOPED_TRACE(
+          absl::StrFormat("aggregate width %d, seed %d", budget, seed));
+      FileTable file_table;
+      std::mt19937_64 rng{seed};
+      AstGenerator generator(options, rng, file_table);
+      XLS_ASSERT_OK_AND_ASSIGN(AnnotatedModule generated,
+                               generator.Generate("main", "sample"));
+      auto import_data = CreateImportDataForTest();
+      XLS_ASSERT_OK_AND_ASSIGN(
+          TypecheckedModule parsed,
+          ParseAndTypecheck(generated.module->ToString(), "sample.x", "sample",
+                            &import_data));
+      const std::vector<SumDef*> sums = parsed.module->GetSumDefs();
+      ASSERT_EQ(sums.size(), 1);
+      XLS_ASSERT_OK_AND_ASSIGN(Type * type,
+                               parsed.type_info->GetItemOrError(sums.front()));
+      ASSERT_TRUE(type->IsMeta());
+      XLS_ASSERT_OK_AND_ASSIGN(TypeDim width,
+                               type->AsMeta().wrapped()->GetTotalBitCount());
+      XLS_ASSERT_OK_AND_ASSIGN(int64_t bits, width.GetAsInt64());
+      if (budget == 1) {
+        EXPECT_EQ(bits, 0);
+        EXPECT_EQ(sums[0]->variants().size(), 1);
+      } else {
+        EXPECT_GE(bits, 2);
+        EXPECT_LE(bits, budget);
+      }
+    }
+  }
+}
+
 // Helper function that is used in a TEST_P so we can shard the work.
 static void TestRepeatable(uint64_t seed) {
   FileTable file_table;
@@ -515,6 +577,15 @@ TEST(AstGeneratorOptionsTest, ImportedTypesOptionRoundTripsIndependently) {
       EXPECT_EQ(decoded.emit_imported_types, emit_imported_types);
     }
   }
+}
+
+TEST(AstGeneratorOptionsTest, AllowsRequiredSumTypesInProcs) {
+  AstGeneratorOptions options;
+  options.generate_proc = true;
+  options.require_sum_type = true;
+
+  XLS_ASSERT_OK(options.Validate());
+  XLS_ASSERT_OK(AstGeneratorOptions::FromProto(options.ToProto()));
 }
 
 TEST(AstGeneratorOptionsTest, ImportedTypesPermitNarrowBudgetsAndProcs) {
