@@ -52,6 +52,10 @@ class NameUniquer {
     return *this;
   }
 
+  // Returns an independent snapshot, including the next numeric suffix after
+  // identifiers have been released.
+  NameUniquer Clone() const;
+
   // Return a sanitized unique name which starts with the given (sanitized)
   // prefix. Names are uniqued by adding a numeric suffix if necessary separated
   // from the given prefix by "separator_". For example,
