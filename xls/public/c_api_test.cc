@@ -2175,6 +2175,7 @@ struct Box<N: u32> {
 }
 
 type Box8 = Box<u32:8>;
+type Pair = (Box8, u8);
 )";
   const char* additional_search_paths[] = {};
 
@@ -2198,7 +2199,7 @@ type Box8 = Box<u32:8>;
 
   xls_dslx_module* module = xls_dslx_typechecked_module_get_module(tm);
   xls_dslx_type_info* type_info = xls_dslx_typechecked_module_get_type_info(tm);
-  ASSERT_EQ(xls_dslx_module_get_type_definition_count(module), 2);
+  ASSERT_EQ(xls_dslx_module_get_type_definition_count(module), 3);
 
   xls_dslx_struct_def* box_struct =
       xls_dslx_module_get_type_definition_as_struct_def(module, 0);
@@ -2264,6 +2265,20 @@ type Box8 = Box<u32:8>;
   int64_t value_bit_count = 0;
   ASSERT_TRUE(xls_dslx_type_dim_get_as_int64(size, &error, &value_bit_count));
   EXPECT_EQ(value_bit_count, 8);
+
+  auto* pair_alias =
+      xls_dslx_module_get_type_definition_as_type_alias(module, 2);
+  const auto* pair = xls_dslx_type_info_get_type_type_annotation(
+      type_info, xls_dslx_type_alias_get_type_annotation(pair_alias));
+  ASSERT_TRUE(xls_dslx_type_is_tuple(pair));
+  ASSERT_EQ(xls_dslx_type_tuple_get_member_count(pair), 2);
+  const auto* first = xls_dslx_type_tuple_get_member_type(pair, 0);
+  ASSERT_TRUE(xls_dslx_type_is_struct(first));
+  auto* definition = xls_dslx_type_get_struct_def(first);
+  EXPECT_EQ(definition, box_struct);
+  EXPECT_EQ(xls_dslx_struct_def_get_module(definition), module);
+  EXPECT_FALSE(
+      xls_dslx_type_is_struct(xls_dslx_type_tuple_get_member_type(pair, 1)));
 }
 
 TEST(XlsCApiTest, DslxInspectImportModuleMember) {

@@ -551,6 +551,8 @@ char* xls_dslx_constant_def_to_string(struct xls_dslx_constant_def*);
 // Note: the return value is owned by the caller and must be freed via
 // `xls_c_str_free`.
 char* xls_dslx_struct_def_get_identifier(struct xls_dslx_struct_def*);
+struct xls_dslx_module* xls_dslx_struct_def_get_module(
+    struct xls_dslx_struct_def*);
 
 bool xls_dslx_struct_def_is_parametric(struct xls_dslx_struct_def*);
 int64_t xls_dslx_struct_def_get_parametric_binding_count(
@@ -801,6 +803,12 @@ bool xls_dslx_type_is_bits_like(struct xls_dslx_type*,
 bool xls_dslx_type_is_enum(const struct xls_dslx_type*);
 
 bool xls_dslx_type_is_struct(const struct xls_dslx_type*);
+bool xls_dslx_type_is_tuple(const struct xls_dslx_type*);
+
+// Precondition: xls_dslx_type_is_tuple, with index in [0, member_count).
+int64_t xls_dslx_type_tuple_get_member_count(const struct xls_dslx_type*);
+const struct xls_dslx_type* xls_dslx_type_tuple_get_member_type(
+    const struct xls_dslx_type* type, int64_t index);
 
 bool xls_dslx_type_is_array(const struct xls_dslx_type*);
 
@@ -816,7 +824,8 @@ const struct xls_dslx_type* xls_dslx_type_struct_get_member_type(
 struct xls_dslx_enum_def* xls_dslx_type_get_enum_def(struct xls_dslx_type*);
 
 // Precondition: xls_dslx_type_is_struct
-struct xls_dslx_struct_def* xls_dslx_type_get_struct_def(struct xls_dslx_type*);
+struct xls_dslx_struct_def* xls_dslx_type_get_struct_def(
+    const struct xls_dslx_type*);
 
 // Precondition: xls_dslx_type_is_array
 struct xls_dslx_type* xls_dslx_type_array_get_element_type(
