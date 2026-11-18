@@ -18,9 +18,12 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/casts.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -75,6 +78,47 @@ bool ContainsIoObject(const Type& type) {
         return true;
       }
     }
+  }
+  return false;
+}
+
+bool SupportsEquality(
+    const Type& type, const ImportData& import_data,
+    absl::flat_hash_set<const std::vector<SumTypeVariant>*>& checked_sums) {
+  if (IsBitsLike(type) || type.IsEnum()) {
+    return true;
+  }
+  if (type.IsArray()) {
+    return SupportsEquality(type.AsArray().element_type(), import_data,
+                            checked_sums);
+  }
+  if (type.IsSum()) {
+    const auto& variants = type.AsSum().variants();
+    // Sum clones share their immutable variants. Check repeated descriptions
+    // only once, including when a constructor has two copies of a nested sum.
+    if (checked_sums.insert(&variants).second) {
+      for (const SumTypeVariant& variant : variants) {
+        for (int64_t i = 0; i < variant.size(); ++i) {
+          if (!SupportsEquality(variant.GetMemberType(i), import_data,
+                                checked_sums)) {
+            return false;
+          }
+        }
+      }
+    }
+    return true;
+  }
+  auto member_supports_equality = [&](const std::unique_ptr<Type>& member) {
+    return SupportsEquality(*member, import_data, checked_sums);
+  };
+  if (type.IsTuple()) {
+    return absl::c_all_of(type.AsTuple().members(), member_supports_equality);
+  }
+  if (type.IsStruct()) {
+    const StructType& struct_type = type.AsStruct();
+    return !IsBuiltinIoObjectDef(&struct_type.nominal_type()) &&
+           !IsProcDefStateType(type, import_data) &&
+           absl::c_all_of(struct_type.members(), member_supports_equality);
   }
   return false;
 }
@@ -191,12 +235,14 @@ class TypeValidator : public AstNodeVisitorWithDefault {
 
   absl::Status HandleBinop(const Binop* binop) override {
     const BinopKind kind = binop->binop_kind();
-    if (GetBinopComparisonKinds().contains(kind) && kind != BinopKind::kEq &&
-        kind != BinopKind::kNe) {
+    if (GetBinopComparisonKinds().contains(kind)) {
       // Both operands have the same type, while the result is always bool.
       XLS_ASSIGN_OR_RETURN(const Type* operand_type,
                            ti_.GetItemOrError(binop->lhs()));
-      if (!IsBitsLike(*operand_type)) {
+      if (kind == BinopKind::kEq || kind == BinopKind::kNe) {
+        XLS_RETURN_IF_ERROR(ValidateEqualityOperand(
+            binop->op_span(), BinopKindFormat(kind), *operand_type));
+      } else if (!IsBitsLike(*operand_type)) {
         return TypeInferenceErrorStatus(
             binop->op_span(), nullptr,
             absl::StrFormat(
@@ -266,6 +312,8 @@ class TypeValidator : public AstNodeVisitorWithDefault {
         absl::Status (TypeValidator::*)(const Invocation&, const FunctionType&);
     static const auto* builtin_validators =
         new absl::flat_hash_map<std::string_view, BuiltinValidator>{
+            {"assert_eq", &TypeValidator::ValidateEqualityAssertion},
+            {"assert_ne", &TypeValidator::ValidateEqualityAssertion},
             {"cover!", &TypeValidator::ValidateCoverInvocation},
             {"decode", &TypeValidator::ValidateDecodeInvocation},
             {"gate!", &TypeValidator::ValidateGateInvocation},
@@ -731,6 +779,27 @@ class TypeValidator : public AstNodeVisitorWithDefault {
       return ValidateArrayIndex(*index, lhs_type, rhs_type, ti_, file_table_);
     }
     return absl::OkStatus();
+  }
+
+  absl::Status ValidateEqualityOperand(const Span& span,
+                                       std::string_view operation,
+                                       const Type& operand_type) {
+    absl::flat_hash_set<const std::vector<SumTypeVariant>*> checked_sums;
+    if (SupportsEquality(operand_type, import_data_, checked_sums)) {
+      return absl::OkStatus();
+    }
+    return TypeInferenceErrorStatus(
+        span, nullptr,
+        absl::StrFormat("'%s' requires operands that support equality, got %s.",
+                        operation, operand_type.ToString()),
+        file_table_);
+  }
+
+  absl::Status ValidateEqualityAssertion(const Invocation& invocation,
+                                         const FunctionType& signature) {
+    return ValidateEqualityOperand(invocation.callee()->span(),
+                                   invocation.callee()->ToString(),
+                                   *signature.params().front());
   }
 
   absl::Status ValidateCoverInvocation(const Invocation& invocation,
