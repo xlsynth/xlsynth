@@ -1368,9 +1368,16 @@ shift-right (logical).
 ### Comparison Expressions
 
 Comparison expressions require operands of the same type and return `bool`
-(`bits[1]`). Ordering operators (`<`, `<=`, `>`, `>=`) require bits-typed
-operands. To order numeric enum values, cast both operands to the enum's
-underlying integer type.
+(`bits[1]`). Equality operators (`==`, `!=`) and the `assert_eq` and `assert_ne`
+builtins support bits and enums. They also support arrays, tuples, and ordinary
+structs when the element type or every member type supports equality,
+recursively. Semantic sums support equality when every variant's payload
+members support equality. Comparing two sum values checks their tags and the
+active variant's payload.
+
+Ordering operators (`<`, `<=`, `>`, `>=`) require bits-typed operands. To
+order numeric enum values, cast both operands to the enum's underlying integer
+type.
 
 -   equal (`==`)
 -   not-equal (`!=`)
