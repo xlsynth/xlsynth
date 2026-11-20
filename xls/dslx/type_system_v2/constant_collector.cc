@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -663,7 +664,12 @@ class Visitor : public AstNodeVisitorWithDefault {
     if (ti_->IsSumConstructor(invocation)) {
       // Sum constructors have no function body to collect constants from.
       return absl::OkStatus();
-    } else if (!IsBuiltinFn(invocation->callee())) {
+    }
+    // Builtins such as array_size compute their constexpr result from the
+    // call signature. Use the builtin name even for a specialized mapper.
+    std::optional<std::string_view> builtin =
+        GetBuiltinFnName(invocation->callee());
+    if (!builtin.has_value()) {
       std::optional<const Function*> f =
           table_.GetCalleeInCallerContext(invocation, parametric_context_);
       XLS_RET_CHECK(f.has_value());
@@ -711,13 +717,11 @@ class Visitor : public AstNodeVisitorWithDefault {
       return absl::OkStatus();
     }
 
-    NameRef* callee_nameref = absl::down_cast<NameRef*>(invocation->callee());
     std::optional<const Type*> callee_type = ti_->GetItem(invocation->callee());
     if (callee_type.has_value()) {
       const auto& function_type = (*callee_type)->AsFunction();
       XLS_RETURN_IF_ERROR(NoteBuiltinInvocationConstExpr(
-          callee_nameref->identifier(), invocation, function_type, ti_,
-          &import_data_));
+          *builtin, invocation, function_type, ti_, &import_data_));
       std::optional<InterpValue> value = ti_->GetConstExprOption(invocation);
       if (value.has_value()) {
         trace_.SetResult(*value);
