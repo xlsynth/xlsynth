@@ -63,6 +63,9 @@ struct VerilogExportOptions {
   // requests must come from the same ImportData so shared imports retain one
   // nominal declaration identity.
   std::vector<std::pair<Module*, TypeInfo*>> roots;
+  // Override nominal source-owner spellings in public specialization names.
+  // Compiler module identities continue to define semantic equality.
+  std::map<const AstNode*, std::string> public_nominal_owners;
 };
 
 // Exports the complete ordered request set as one SystemVerilog package or

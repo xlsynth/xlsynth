@@ -35,6 +35,46 @@ for order in forward reverse; do
   grep -Eq 'typedef .* B;' "${output}"
 done
 
+# Overlapping import roots can give one source both `shared` and `pkg.shared`
+# spellings. Explicit selection must use the imported nominal declaration.
+mkdir -p "${fixture}/pkg"
+printf '%s\n' '#![feature(generics)]' \
+  'pub enum Box<T: type> { Empty, Item(T) }' \
+  'pub type ByteBox = Box<u8>;' >"${fixture}/pkg/shared.x"
+printf '%s\n' '#![feature(generics)]' 'import pkg.shared;' \
+  'pub type Imported = shared::ByteBox;' >"${fixture}/pkg/client.x"
+output="${TEST_TMPDIR}/overlapping_roots.sv"
+(cd "${fixture}" && "${translator}" --package_name=multi --namespace=multi \
+  --dslx_path=pkg --output_file="${output}" pkg/shared.x pkg/client.x)
+direct="$(sed -n 's/^[[:space:]]*typedef \([^ ]*\) ByteBox;/\1/p' "${output}")"
+imported="$(sed -n 's/^[[:space:]]*typedef \([^ ]*\) Imported;/\1/p' "${output}")"
+[[ -n "${direct}" && "${direct}" == "${imported}" ]]
+[[ "$(grep -Ec '^  } .*_tag_t;$' "${output}")" == 1 ]]
+
+# A single explicit root keeps its historical basename in hashed public names.
+printf '%s\n' '#![feature(generics)]' \
+  'pub enum Hashed<N: uN[256]> { Empty, Item(u8) }' \
+  'pub type Concrete = Hashed<uN[256]:1>;' >"${fixture}/pkg/types.x"
+output="${TEST_TMPDIR}/single_hashed.sv"
+(cd "${fixture}" && "${translator}" --namespace=single \
+  --output_file="${output}" pkg/types.x)
+grep -Fq 'typedef Hashed__h46a5a0e92adad9a46ead0801aa4490047d635e88f83c3021a840481b172c472e Concrete;' "${output}"
+
+# A projected explicit owner must stay distinct from an imported-only owner.
+mkdir -p "${fixture}/other"
+printf '%s\n' 'pub struct Thing { value: u8 }' >"${fixture}/pkg/types.x"
+printf '%s\n' 'pub struct Thing { value: u16 }' >"${fixture}/other/types.x"
+printf '%s\n' '#![feature(generics)]' 'import pkg.types as pkg_types;' \
+  'import types as other_types;' 'enum Outer<T: type> { Item(T) }' \
+  'pub type P = Outer<pkg_types::Thing>;' \
+  'pub type Q = Outer<other_types::Thing>;' >"${fixture}/client.x"
+output="${TEST_TMPDIR}/distinct_nominal_owners.sv"
+(cd "${fixture}" && "${translator}" --package_name=multi --dslx_path=other \
+  --output_file="${output}" pkg/types.x client.x)
+p="$(sed -n 's/^[[:space:]]*typedef \([^ ]*\) P;/\1/p' "${output}")"
+q="$(sed -n 's/^[[:space:]]*typedef \([^ ]*\) Q;/\1/p' "${output}")"
+[[ -n "${p}" && -n "${q}" && "${p}" != "${q}" ]]
+
 # A cached import and a different explicit file with its basename remain distinct.
 printf '%s\n' 'pub type Left = u8;' >"${fixture}/one/shared.x"
 printf '%s\n' 'pub type Right = u16;' >"${fixture}/two/shared.x"

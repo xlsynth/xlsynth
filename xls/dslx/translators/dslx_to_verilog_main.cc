@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -192,6 +193,7 @@ struct ExplicitInput {
   std::string_view path;
   std::filesystem::path absolute;
   std::optional<std::string> module_name;
+  std::optional<std::string> public_module_name;
 };
 
 // Prefers the import name with the fewest components, then lexical order.
@@ -216,12 +218,13 @@ absl::StatusOr<std::vector<ExplicitInput>> GetExplicitInputs(
       XLS_ASSIGN_OR_RETURN(absolute, SourceFileIdentity(path, cwd));
     }
     known_paths.insert(absolute);
-    inputs.push_back({path, std::move(absolute), std::nullopt});
+    inputs.push_back({path, std::move(absolute), std::nullopt, std::nullopt});
   }
   for (ExplicitInput& input : inputs) {
     if (input.path == "/dev/stdin") {
       // Keep stdin outside named imports and the standalone "$_" namespace.
       input.module_name = "_$stdin";
+      input.public_module_name = input.module_name;
       continue;
     }
 
@@ -277,6 +280,7 @@ absl::StatusOr<std::vector<ExplicitInput>> GetExplicitInputs(
     if (IsImportIdentifier(basename, import_data.file_table())) {
       XLS_RETURN_IF_ERROR(try_name(std::move(basename)));
     }
+    input.public_module_name = input.module_name;
   }
 
   for (ExplicitInput& input : inputs) {
@@ -304,6 +308,164 @@ absl::StatusOr<std::vector<ExplicitInput>> GetExplicitInputs(
     }
   }
   return inputs;
+}
+
+using ModuleAndType = std::pair<Module*, TypeInfo*>;
+
+struct SelectedModules {
+  std::vector<ModuleAndType> modules;
+  std::map<Module*, const ExplicitInput*> explicit_sources;
+};
+
+// An input path is not a source-level module spelling. If another root imports
+// that file, use the compiler's already-typechecked declaration for the
+// explicit export too. Overlapping search roots can otherwise give the same
+// input a second nominal sum identity. Distinct source-level imports remain
+// distinct as defined by the DSLX compiler; this only selects which one an
+// explicit path adds.
+absl::StatusOr<SelectedModules> SelectExplicitModules(
+    absl::Span<const ExplicitInput> inputs,
+    absl::Span<const ModuleAndType> parsed_inputs, ImportData& import_data) {
+  if (inputs.size() != parsed_inputs.size()) {
+    return absl::InternalError(
+        "Explicit inputs and typechecked modules differ");
+  }
+  XLS_ASSIGN_OR_RETURN(std::filesystem::path cwd,
+                       import_data.vfs().GetCurrentDirectory());
+  using ModulesByName = std::map<std::string, ModuleAndType>;
+  std::map<std::filesystem::path, ModulesByName> imported_by_path;
+  std::vector<ModuleAndType> pending(parsed_inputs.begin(),
+                                     parsed_inputs.end());
+  std::set<Module*> visited;
+  std::set<Module*> resolved_imports;
+  while (!pending.empty()) {
+    auto [module, type_info] = pending.back();
+    pending.pop_back();
+    if (!visited.insert(module).second) {
+      continue;
+    }
+    for (const auto& [subject, imported] : type_info->GetRootImports()) {
+      pending.emplace_back(imported.module, imported.type_info);
+      if (resolved_imports.insert(imported.module).second) {
+        XLS_ASSIGN_OR_RETURN(ImportTokens tokens,
+                             ImportTokens::FromString(imported.module->name()));
+        std::filesystem::path importing_path = module->fs_path().value_or(
+            std::filesystem::path(inputs.front().path));
+        XLS_ASSIGN_OR_RETURN(std::filesystem::path resolved,
+                             FindImportFilesystemPath(
+                                 tokens, importing_path.string(), import_data));
+        XLS_ASSIGN_OR_RETURN(std::filesystem::path identity,
+                             SourceFileIdentity(resolved, cwd));
+        imported_by_path[identity].emplace(
+            imported.module->name(),
+            ModuleAndType{imported.module, imported.type_info});
+      }
+    }
+  }
+
+  std::map<std::filesystem::path, ModulesByName> explicit_by_path;
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    explicit_by_path[inputs[i].absolute].emplace(parsed_inputs[i].first->name(),
+                                                 parsed_inputs[i]);
+  }
+  auto preferred_module = [](const ModulesByName& modules) -> ModuleAndType {
+    return std::min_element(modules.begin(), modules.end(),
+                            [](const auto& a, const auto& b) {
+                              return PreferModuleName(a.first, b.first);
+                            })
+        ->second;
+  };
+  std::map<std::filesystem::path, const ExplicitInput*> sources_by_path;
+  for (const ExplicitInput& input : inputs) {
+    auto [entry, inserted] = sources_by_path.emplace(input.absolute, &input);
+    if (!inserted && input.public_module_name.has_value() &&
+        (!entry->second->public_module_name.has_value() ||
+         PreferModuleName(*input.public_module_name,
+                          *entry->second->public_module_name))) {
+      entry->second = &input;
+    }
+  }
+
+  SelectedModules result;
+  std::set<std::filesystem::path> selected_paths;
+  for (const ExplicitInput& input : inputs) {
+    if (!selected_paths.insert(input.absolute).second) {
+      continue;
+    }
+    const ExplicitInput* source = sources_by_path.at(input.absolute);
+    const ModulesByName& explicit_modules = explicit_by_path.at(input.absolute);
+    auto imported = imported_by_path.find(input.absolute);
+    ModuleAndType selected;
+    if (imported == imported_by_path.end()) {
+      selected = preferred_module(explicit_modules);
+    } else if (source->public_module_name.has_value() &&
+               imported->second.contains(*source->public_module_name)) {
+      selected = imported->second.at(*source->public_module_name);
+    } else {
+      selected = preferred_module(imported->second);
+    }
+    result.modules.push_back(selected);
+    result.explicit_sources.emplace(selected.first, source);
+  }
+  return result;
+}
+
+bool IsNominalDefinition(const AstNode* node) {
+  return dynamic_cast<const SumDef*>(node) != nullptr ||
+         dynamic_cast<const StructDef*>(node) != nullptr ||
+         dynamic_cast<const EnumDef*>(node) != nullptr ||
+         dynamic_cast<const ProcDef*>(node) != nullptr;
+}
+
+// Before the CLI shared ImportData, each explicit file's basename was its
+// nominal owner. Preserve that spelling when it identifies one declaration.
+absl::StatusOr<std::map<const AstNode*, std::string>> GetLegacyNominalOwners(
+    const SelectedModules& selected) {
+  using Key = std::pair<AstNodeKind, std::pair<std::string, std::string>>;
+  std::map<const AstNode*, std::string> result;
+  for (const auto& [module, input] : selected.explicit_sources) {
+    XLS_ASSIGN_OR_RETURN(std::string basename, PathToName(input->path));
+    for (const TypeDefinition& definition : module->GetTypeDefinitions()) {
+      AstNode* node = TypeDefinitionToAstNode(definition);
+      if (IsNominalDefinition(node)) {
+        result.emplace(node, basename);
+      }
+    }
+  }
+  std::map<Key, std::set<const AstNode*>> identities;
+  std::map<const AstNode*, Key> projections;
+  std::set<Module*> visited;
+  std::vector<ModuleAndType> pending = selected.modules;
+  while (!pending.empty()) {
+    auto [module, type_info] = pending.back();
+    pending.pop_back();
+    if (!visited.insert(module).second) {
+      continue;
+    }
+    for (const TypeDefinition& definition : module->GetTypeDefinitions()) {
+      AstNode* node = TypeDefinitionToAstNode(definition);
+      if (!IsNominalDefinition(node)) {
+        continue;
+      }
+      AnyNameDef name = TypeDefinitionGetNameDef(definition);
+      std::string identifier = absl::visit(
+          [](const auto* value) { return value->identifier(); }, name);
+      identities[{node->kind(), {node->owner()->name(), identifier}}].insert(
+          node);
+      if (auto owner = result.find(node); owner != result.end()) {
+        Key key{node->kind(), {owner->second, identifier}};
+        identities[key].insert(node);
+        projections.emplace(node, std::move(key));
+      }
+    }
+    for (const auto& [subject, imported] : type_info->GetRootImports()) {
+      pending.emplace_back(imported.module, imported.type_info);
+    }
+  }
+  std::erase_if(result, [&](const auto& entry) {
+    return identities.at(projections.at(entry.first)).size() != 1;
+  });
+  return result;
 }
 
 absl::Status RealMain(absl::Span<const std::string_view> paths) {
@@ -384,8 +546,11 @@ absl::Status RealMain(absl::Span<const std::string_view> paths) {
     XLS_ASSIGN_OR_RETURN(ModuleInfo * module, import_data.Get(tokens));
     parsed_inputs.emplace_back(&module->module(), module->type_info());
   }
+  XLS_ASSIGN_OR_RETURN(
+      SelectedModules selected,
+      SelectExplicitModules(inputs, parsed_inputs, import_data));
   std::vector<VerilogExportRequest> exports;
-  for (const auto& [module, type_info] : parsed_inputs) {
+  for (const auto& [module, type_info] : selected.modules) {
     for (const auto& def : module->GetTypeDefinitions()) {
       // Ignore private type definitions and proc definitions.
       XLS_ASSIGN_OR_RETURN(const TypeInfo::TypeSource type_definition_source,
@@ -404,9 +569,13 @@ absl::Status RealMain(absl::Span<const std::string_view> paths) {
       exports.push_back({def, std::nullopt});
     }
   }
-  XLS_ASSIGN_OR_RETURN(std::string package,
-                       ExportDslxTypesToVerilog(absl::GetFlag(FLAGS_namespace),
-                                                &import_data, exports));
+  VerilogExportOptions options;
+  XLS_ASSIGN_OR_RETURN(options.public_nominal_owners,
+                       GetLegacyNominalOwners(selected));
+  XLS_ASSIGN_OR_RETURN(
+      std::string package,
+      ExportDslxTypesToVerilog(absl::GetFlag(FLAGS_namespace), &import_data,
+                               exports, options));
   std::string output;
   // Build lint waivers.
   for (std::string_view waiver : absl::GetFlag(FLAGS_lint_waivers)) {

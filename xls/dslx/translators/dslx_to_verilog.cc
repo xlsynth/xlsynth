@@ -447,6 +447,14 @@ absl::StatusOr<std::string> ExportDslxTypesToVerilog(
     TypeInfo* type_info;
   };
   DslxTypeToVerilogManager manager(package_name);
+  if (!options.public_nominal_owners.empty()) {
+    manager.sum_identities_.SetPublicNominalOwner(
+        [owners = options.public_nominal_owners](
+            const AstNode& node) -> std::string_view {
+          auto entry = owners.find(&node);
+          return entry == owners.end() ? node.owner()->name() : entry->second;
+        });
+  }
   std::vector<ResolvedExport> resolved;
   resolved.reserve(requests.size());
   for (const VerilogExportRequest& request : requests) {

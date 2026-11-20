@@ -167,6 +167,44 @@ fn negative(a: Signed<s8:-1>) -> Signed<s8:-1> { a }
   EXPECT_EQ(negative_name, "__value_3a_5_3a_s8_3a__2d_1");
 }
 
+TEST(VerilogSumNamingTest, PublicNominalOwnersDoNotChangeSemanticIdentity) {
+  constexpr std::string_view kDslx = R"(#![feature(generics)]
+enum Hashed<N: uN[256]> { Item(u8) }
+fn fixture(a: Hashed<uN[256]:1>) { () }
+)";
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto one, ParseAndTypecheck(kDslx, "one.x", "one", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto two, ParseAndTypecheck(kDslx, "two.x", "two", &import_data));
+  XLS_ASSERT_OK_AND_ASSIGN(FunctionType * one_types,
+                           one.type_info->GetItemAs<FunctionType>(
+                               *one.module->GetFunction("fixture")));
+  XLS_ASSERT_OK_AND_ASSIGN(FunctionType * two_types,
+                           two.type_info->GetItemAs<FunctionType>(
+                               *two.module->GetFunction("fixture")));
+  IdentityBuilder projected;
+  projected.SetPublicNominalOwner(
+      [](const AstNode&) -> std::string_view { return "source"; });
+  IdentityBuilder original;
+  const SumType& one_sum = one_types->params()[0]->AsSum();
+  const SumType& two_sum = two_types->params()[0]->AsSum();
+  XLS_ASSERT_OK_AND_ASSIGN(std::string original_one,
+                           original.TypeIdentity(one_sum));
+  XLS_ASSERT_OK_AND_ASSIGN(std::string mapped_one,
+                           projected.TypeIdentity(one_sum));
+  XLS_ASSERT_OK_AND_ASSIGN(std::string mapped_two,
+                           projected.TypeIdentity(two_sum));
+  EXPECT_NE(original_one, mapped_two);
+  EXPECT_EQ(original_one, mapped_one);
+  XLS_ASSERT_OK_AND_ASSIGN(std::string public_one,
+                           projected.SpecializationName(one_sum));
+  XLS_ASSERT_OK_AND_ASSIGN(std::string public_two,
+                           projected.SpecializationName(two_sum));
+  EXPECT_EQ(public_one, public_two);
+  EXPECT_TRUE(public_one.starts_with("__h"));
+}
+
 // Verifies: equivalent DSLX bit spellings keep their familiar numeric suffix.
 // Catches: changing from u8 to uN[8], xN, or a type alias producing a hash.
 TEST(VerilogSumNamingTest, NumericBindingSpellingsKeepReadableSuffixes) {
