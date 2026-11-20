@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <string_view>
 
 #include "absl/status/statusor.h"
 #include "xls/dslx/frontend/ast.h"
@@ -32,6 +33,15 @@ namespace xls::dslx {
 using TypecheckModuleFn =
     std::function<absl::StatusOr<std::unique_ptr<ModuleInfo>>(
         std::unique_ptr<Module>, std::filesystem::path path)>;
+
+// Returns the file that normal import resolution selects for `subject`, without
+// reading, typechecking, or caching it. The result is the filesystem access
+// path, not the logical source or diagnostic path, and is not necessarily
+// absolute. Returns NotFound if no file matches. `importing_path` supplies
+// diagnostics.
+absl::StatusOr<std::filesystem::path> FindImportFilesystemPath(
+    const ImportTokens& subject, std::string_view importing_path,
+    ImportData& import_data);
 
 // Imports the module identified (globally) by `subject`.
 //

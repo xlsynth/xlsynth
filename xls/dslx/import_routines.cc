@@ -179,6 +179,20 @@ static absl::StatusOr<DslxPath> FindExistingPath(
       vfs.GetCurrentDirectory().value(), stdlib_path));
 }
 
+absl::StatusOr<std::filesystem::path> FindImportFilesystemPath(
+    const ImportTokens& subject, std::string_view importing_path,
+    ImportData& import_data) {
+  FileTable& file_table = import_data.file_table();
+  Fileno fileno = file_table.GetOrCreate(importing_path);
+  Span import_span(Pos(fileno, 0, 0), Pos(fileno, 0, 0));
+  XLS_ASSIGN_OR_RETURN(
+      DslxPath path,
+      FindExistingPath(subject, import_data.stdlib_path(),
+                       import_data.additional_search_paths(), import_span,
+                       file_table, import_data.vfs()));
+  return path.filesystem_path;
+}
+
 static absl::StatusOr<std::unique_ptr<ModuleInfo>> DslxPathToModuleInfo(
     const TypecheckModuleFn& ftypecheck, ImportData* import_data,
     const ImportTokens& subject, const DslxPath& dslx_path, const Span& span,

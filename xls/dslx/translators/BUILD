@@ -154,10 +154,15 @@ cc_binary(
         "//xls/dslx:command_line_utils",
         "//xls/dslx:create_import_data",
         "//xls/dslx:import_data",
+        "//xls/dslx:import_routines",
         "//xls/dslx:parse_and_typecheck",
         "//xls/dslx:virtualizable_file_system",
         "//xls/dslx:warning_kind",
         "//xls/dslx/frontend:ast",
+        "//xls/dslx/frontend:module",
+        "//xls/dslx/frontend:pos",
+        "//xls/dslx/frontend:scanner",
+        "//xls/dslx/frontend:token",
         "//xls/dslx/ir_convert:ir_converter_options_flags",
         "//xls/dslx/ir_convert:ir_converter_options_flags_cc_proto",
         "//xls/dslx/type_system:type",
@@ -165,6 +170,7 @@ cc_binary(
         "@abseil-cpp//absl/flags:flag",
         "@abseil-cpp//absl/log",
         "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",
         "@abseil-cpp//absl/strings:str_format",
         "@abseil-cpp//absl/types:span",
@@ -262,6 +268,13 @@ diff_test(
     name = "dslx_to_verilog_main_semantic_sum_test",
     file1 = "testdata/semantic_sum_pkg.sv",
     file2 = ":semantic_sum_pkg.sv",
+)
+
+sh_test(
+    name = "dslx_to_verilog_main_multifile_sum_test",
+    srcs = ["testdata/multifile_sum.sh"],
+    args = ["$(rootpath :dslx_to_verilog_main)"],
+    data = [":dslx_to_verilog_main"],
 )
 
 # Exercise the actual generated package and DSLX RTL in normal CI using the
