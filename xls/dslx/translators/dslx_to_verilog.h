@@ -17,7 +17,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -42,119 +41,65 @@
 
 namespace xls::dslx {
 
-// Converts DSLX types to SystemVerilog types in a single package. A DSLX sum
-// declaration and its concrete parametric arguments identify one generated
-// family: its packed envelope, tag, payload views, and helper functions.
-// Aliases refer to that envelope; they do not generate a second family.
-// Repeating an alias for the same family is harmless; requesting an existing
-// package name for a different family returns an error instead of renaming it.
+struct VerilogFunctionParamExport {
+  Function* function;
+  std::string param_name;
+};
+
+struct VerilogFunctionOutputExport {
+  Function* function;
+};
+
+struct VerilogExportRequest {
+  std::variant<TypeDefinition, VerilogFunctionParamExport,
+               VerilogFunctionOutputExport>
+      source;
+  std::optional<std::string> verilog_type_name;
+};
+
+struct VerilogExportOptions {
+  // Additional typechecked graph roots and their corresponding root TypeInfo.
+  // Requests automatically contribute their owning modules. All roots and
+  // requests must come from the same ImportData so shared imports retain one
+  // nominal declaration identity.
+  std::vector<std::pair<Module*, TypeInfo*>> roots;
+};
+
+// Exports the complete ordered request set as one SystemVerilog package or
+// returns an error. Keep the typechecked modules and import_data alive for the
+// call. Options may prepare additional roots together. Request roots are
+// otherwise prepared in request order before their first export.
 //
-// For sum exports, AddTypeFor* treats a supplied verilog_type_name as fixed
-// after SystemVerilog identifier sanitization. An inferred nonparametric sum
-// normally uses its DSLX declaration name; colliding declarations are
-// module-qualified when their modules are prepared together, and concrete sum
-// specializations have distinct names. A DSLX alias of a sum exported as a
-// definition uses its declared alias. Fixed aliases for ordinary function
-// parameters and outputs can also conflict with names planned for actual
-// SystemVerilog sum declarations or their generated companions, even before
-// they are emitted. A fixed-name conflict returns an error without changing
-// the emitted package.
+// This is a breaking C++ API change. Replace DslxTypeToVerilogManager::Create,
+// AddTypeFor*, and Emit with a collection of VerilogExportRequest values and
+// one ExportDslxTypesToVerilog call.
 //
-// Ordinary struct fields and enum literals retain their standalone spelling
-// unless an emitted sum reuses the declaration. Reused struct fields are legal
-// and distinct within their struct; enum literals in a reused declaration avoid
-// package collisions. Same-valued enum alternatives used by a sum retain their
-// names as typed package constants. A separately generated signed companion
-// does not by itself alter ordinary spellings or emit the ordinary declaration.
+// For example, pass {{definition, std::nullopt},
+// {VerilogFunctionOutputExport{function}, "Result"}} as the requests. A
+// supplied sum name is fixed after SystemVerilog identifier sanitization.
+// Repeated aliases for one nominal family are allowed, while conflicting fixed
+// names return an error. An ordinary definition's requested name may be
+// uniquified. An ordinary parameter or output name is fixed and a collision
+// with a sum symbol returns an error. Anonymous function types infer a
+// function-based typedef name.
+absl::StatusOr<std::string> ExportDslxTypesToVerilog(
+    std::string_view package_name, ImportData* import_data,
+    absl::Span<const VerilogExportRequest> requests,
+    const VerilogExportOptions& options = {});
+
+// Private implementation state for a single batch export.
 class DslxTypeToVerilogManager {
- public:
-  // Creates an instance of this manager.
-  //
-  // package_name will be the name of the Verilog package created via Emit().
-  inline static absl::StatusOr<DslxTypeToVerilogManager> Create(
-      std::string_view package_name,
-      verilog::FileType verilog_type = verilog::FileType::kSystemVerilog) {
-    if (verilog_type != verilog::FileType::kSystemVerilog) {
-      return absl::UnimplementedError(
-          "Verilog file type should be SystemVerilog for DslxTypeToVerilog "
-          "conversion");
-    }
-
-    return DslxTypeToVerilogManager(package_name);
-  }
-
-  // Adds a typedef for the type associated with function func's parameter
-  // param_name to the VerilogFile.
-  //
-  // If verilog_type_name is omitted, anonymous types use
-  // <function_name>_<parameter_name>_t and type references normally use their
-  // DSLX name. A supplied name is fixed even for an ordinary type. If it
-  // conflicts with a name planned for an actual SystemVerilog sum declaration
-  // or its generated companion, the call returns an error without changing the
-  // emitted package. See the class comment for sum naming.
-  //
-  // Note: func should already be type-checked and type information should be
-  // contained in import_data.
-  absl::Status AddTypeForFunctionParam(
-      dslx::Function* func, dslx::ImportData* import_data,
-      std::string_view param_name,
-      std::optional<std::string_view> verilog_type_name = std::nullopt);
-
-  // Adds a typedef for the type associated with function func's output to
-  // the VerilogFile.
-  //
-  // If verilog_type_name is omitted, anonymous types use <function_name>_out_t
-  // and type references normally use their DSLX name. A supplied name is fixed
-  // even for an ordinary type. If it conflicts with a name planned for an
-  // actual SystemVerilog sum declaration or its generated companion, the call
-  // returns an error without changing the emitted package. See the class
-  // comment for sum naming.
-  //
-  // Note: func should already be type-checked and type information should
-  // be contained in import_data.
-  absl::Status AddTypeForFunctionOutput(
-      dslx::Function* func, dslx::ImportData* import_data,
-      std::optional<std::string_view> verilog_type_name = std::nullopt);
-
-  // Adds a typedef for a type definition to the VerilogFile.
-  //
-  // If verilog_type_name is omitted, the typedef normally uses the DSLX
-  // definition's name, including source type aliases. Ordinary type overrides
-  // may be uniquified; see the class comment for fixed sum aliases.
-  //
-  // Note: def should already be type-checked and type information should be
-  // contained in import_data.
-  absl::Status AddTypeForTypeDefinition(
-      const dslx::TypeDefinition& def, dslx::ImportData* import_data,
-      std::optional<std::string_view> verilog_type_name = std::nullopt);
-
-  // Registers root modules and their transitive imports without emitting
-  // exports. When a package has multiple independent roots, call this with all
-  // of them before any AddTypeFor* operation. The complete graph lets the
-  // manager reserve ordinary type and enum-member names and module-qualify
-  // colliding inferred sum names independently of root input order. Unambiguous
-  // nonparametric sum names normally stay bare. AddTypeFor* prepares a single
-  // root on demand; roots registered separately or after adding exports do not
-  // have the order-independent naming guarantee.
-  //
-  // Each pair must contain a typechecked module and its root TypeInfo. The
-  // manager borrows them; keep the modules and their owning ImportData alive
-  // until all exports have been added. Use one ImportData for roots that can
-  // reach the same source module, so its declarations each have one identity.
+ private:
+  friend absl::StatusOr<std::string> ExportDslxTypesToVerilog(
+      std::string_view package_name, ImportData* import_data,
+      absl::Span<const VerilogExportRequest> requests,
+      const VerilogExportOptions& options);
   void PrepareForModules(
       absl::Span<const std::pair<Module*, TypeInfo*>> modules);
 
-  // Emits added DSLX types as a verilog package.
-  std::string Emit() const { return file_->Emit(); }
-
- private:
   friend class DslxTypeToVerilogManagerTestPeer;
 
   explicit DslxTypeToVerilogManager(std::string_view package_name);
-
-  // An explicit alias must be honored or rejected. An inferred spelling may
-  // yield to the canonical name of the generated family.
-  enum class TypeNameOrigin { kInferred, kExplicit };
 
   // Adds a typedef for the type associated with type_annotation to the
   // VerilogFile.
@@ -163,10 +108,9 @@ class DslxTypeToVerilogManager {
   // should be contained in import_data.
   absl::Status AddTypeToVerilogPackage(Type* type,
                                        TypeAnnotation* type_annotation,
-                                       TypeInfo* type_info,
                                        ImportData* import_data,
                                        std::string_view typedef_identifier,
-                                       TypeNameOrigin name_origin);
+                                       bool sum_alias);
 
   // Adds a typedef for the type associated with type_definition to the
   // VerilogFile.
@@ -177,20 +121,7 @@ class DslxTypeToVerilogManager {
                                        const TypeDefinition& type_definition,
                                        ImportData* import_data,
                                        std::string_view typedef_identifier,
-                                       TypeNameOrigin name_origin);
-  absl::Status AddTypeToVerilogPackageInternal(
-      Type* type, TypeAnnotation* type_annotation, TypeInfo* type_info,
-      ImportData* import_data, std::string_view typedef_identifier,
-      TypeNameOrigin name_origin);
-  absl::Status AddTypeToVerilogPackageInternal(
-      Type* type, const TypeDefinition& type_definition,
-      ImportData* import_data, std::string_view typedef_identifier,
-      TypeNameOrigin name_origin);
-  // Makes payload graph facts visible to later exports only after this one
-  // succeeds; recursive family emission can still reuse them within the
-  // request.
-  absl::Status WithSumPayloadGraphs(const std::function<absl::Status()>& add);
-
+                                       bool sum_alias);
   // Get Array Bounds and base type.
   //
   // Ordering of the vector is outer-most bound to inner-most. For
@@ -209,7 +140,7 @@ class DslxTypeToVerilogManager {
   absl::StatusOr<verilog::DataType*> TypeDefinitionToVastType(
       const TypeDefinition& type_definition, ImportData* import_data,
       std::optional<std::string_view> identifier = std::nullopt,
-      TypeNameOrigin name_origin = TypeNameOrigin::kInferred);
+      std::optional<bool> sum_alias = std::nullopt);
 
   // Cached state for one source sum declaration and concrete parametric
   // argument set. The cloned type retains the nominal source declaration. The
@@ -226,56 +157,22 @@ class DslxTypeToVerilogManager {
     absl::flat_hash_map<std::string, verilog::DataType*> structs;
     absl::flat_hash_map<int64_t, verilog::DataType*> signed_array_elements;
   };
-  enum class SumNameState { kNoSums, kAllEmitted, kHasUnemitted };
 
-  // Prepares one root and its imports on demand for the AddTypeFor* entry
-  // points.
-  void PrepareSumNames(Module* module, TypeInfo* type_info);
   const SumFamily* FindSumFamily(const SumType& sum) const;
-  SumNameState GetSumNameState(const Type& type) const;
   using SumSpecializationOwners =
       absl::flat_hash_map<const SumDef*, std::map<std::string, std::string>>;
-  struct SumSpecializationClaim {
-    std::string suffix;
-    bool inserted = false;
-  };
-  // Reports newly inserted ownership so emission can undo only its own claim.
-  absl::StatusOr<SumSpecializationClaim> ClaimSumSpecialization(
-      const SumType& sum, std::string_view family,
-      SumSpecializationOwners& owners);
-  absl::Status PlanSumFamilyNames(
-      const SumType& sum, std::string_view specialization,
-      int64_t payload_width, SumFamily& family,
-      const std::function<std::string(std::string_view)>& allocate);
-  absl::Status CheckOrdinaryTypeName(const Type& type,
-                                     const TypeAnnotation* annotation,
-                                     ImportData* import_data,
-                                     std::string_view name);
-  using ExportRoot = std::variant<const SumType*, const TypeAnnotation*,
-                                  const TypeDefinition*>;
-  // Checks all name changes in emission order before a new sum or an ordinary
-  // export containing one can alter package declarations or caches.
-  absl::Status CheckExportNames(const Type& type, ExportRoot root,
-                                ImportData* import_data,
-                                std::optional<std::string_view> requested_name);
-  absl::Status CheckDirectSumNames(
-      const SumType& sum, ImportData* import_data,
-      std::optional<std::string_view> requested_alias = std::nullopt);
-  // Recognizes canonical families whose already-reserved names and simple new
-  // dependencies cannot reject or reproject an existing package declaration.
-  bool CanAddDirectSumWithoutNameChanges(const SumType& sum) const;
-  struct OrdinaryDefinitionNames {
-    NameUniquer& uniquer;
-    std::set<std::string>& allocated;
-    std::set<std::string>& ephemeral;
-    std::set<const AstNode*>& source_named;
-  };
+  absl::StatusOr<std::string> ClaimSumSpecialization(const SumType& sum,
+                                                     std::string_view family);
+  absl::Status PlanSumFamilyNames(const SumType& sum,
+                                  std::string_view specialization,
+                                  int64_t payload_width, SumFamily& family);
+  absl::Status CheckOrdinaryTypeName(std::string_view name) const;
   // An absent result reuses a cached declaration, but may reserve an invisible
-  // ordinary name. Callers still own emitted names, enum updates, and rollback.
+  // ordinary name.
   absl::StatusOr<std::optional<std::string>> ReserveOrdinaryDefinitionName(
       const AstNode& node, std::optional<std::string_view> declared_name,
       std::string_view requested_name, bool already_converted,
-      bool is_sum_payload, OrdinaryDefinitionNames names) const;
+      bool is_sum_payload);
   std::string OrdinaryTypeNameCandidate(const AstNode& node,
                                         std::string_view identifier,
                                         bool is_sum_payload,
@@ -298,7 +195,7 @@ class DslxTypeToVerilogManager {
   };
   absl::StatusOr<std::vector<const AstNode*>> CollectSumPayloadNominals(
       const SumType& sum, const std::set<const AstNode*>& known,
-      const SumPayloadGraphs* in_progress, SumPayloadGraphs& additions,
+      SumPayloadGraphs& additions,
       std::set<const EnumDef*>* signed_enums = nullptr) const;
 
   // Marks ordinary structs/enums reused by this sum for legal spelling and
@@ -314,8 +211,7 @@ class DslxTypeToVerilogManager {
 
   // Returns the canonical packed envelope, emitting its family once. Referenced
   // sum families are emitted first; recursive family construction returns an
-  // error instead of exposing an unfinished envelope. Public entry points check
-  // all name dependencies before a new family changes existing declarations.
+  // error instead of exposing an unfinished envelope.
   absl::StatusOr<verilog::DataType*> SumToVastType(const SumType& sum,
                                                    ImportData* import_data);
 
@@ -389,7 +285,7 @@ class DslxTypeToVerilogManager {
     absl::flat_hash_map<const EnumDef*, std::vector<std::string>> members;
     std::set<std::string> projected;
   };
-  // Computes the same enum projections for scratch validation and emission.
+  // Computes enum member projections for emission.
   absl::StatusOr<OrdinaryEnumNames> PlanOrdinaryEnumNames(
       const absl::flat_hash_map<const EnumDef*, bool>& projections,
       const std::set<std::string>& ordinary_names,
@@ -422,7 +318,6 @@ class DslxTypeToVerilogManager {
   std::set<std::string> ephemeral_ordinary_type_names_;
   // Reuses semantic fingerprints across every family emitted into this package.
   verilog_sum::IdentityBuilder sum_identities_;
-  // Source modules already scanned for declarations and ordinary names.
   std::set<const Module*> prepared_sum_modules_;
   // Potential ordinary typedef and enum-member names found during module
   // preparation that generated names must avoid, regardless of export order.
@@ -465,7 +360,6 @@ class DslxTypeToVerilogManager {
   std::set<const AstNode*> sum_payload_nominals_;
   // Sum dependency graphs whose reachable ordinary nominals were all marked.
   SumPayloadGraphs sum_payload_graphs_;
-  std::optional<SumPayloadGraphs> pending_sum_payload_graphs_;
   // Ordinary declarations exported under their own source typedef name.
   std::set<const AstNode*> ordinary_source_named_types_;
   // The base name reserved for each source sum, shared by its specializations.

@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -125,17 +126,22 @@ absl::Status RealMain(absl::Span<const std::string_view> paths) {
         "path to know where to resolve the entry function");
   }
 
-  XLS_ASSIGN_OR_RETURN(
-      DslxTypeToVerilogManager type_to_verilog,
-      DslxTypeToVerilogManager::Create(absl::GetFlag(FLAGS_namespace)));
-
+  ImportData import_data(CreateImportData(dslx_stdlib_path, dslx_paths,
+                                          enabled_warnings,
+                                          std::make_unique<RealFilesystem>()));
+  std::vector<VerilogExportRequest> exports;
+  std::set<std::string> module_names;
   for (std::string_view path : paths) {
-    ImportData import_data(
-        CreateImportData(dslx_stdlib_path, dslx_paths, enabled_warnings,
-                         std::make_unique<RealFilesystem>()));
     XLS_ASSIGN_OR_RETURN(std::string text,
                          import_data.vfs().GetFileContents(path));
     XLS_ASSIGN_OR_RETURN(std::string module_name, PathToName(path));
+    const std::string base_name = module_name;
+    int suffix = 0;
+    // '$' cannot occur in a DSLX import identifier, so duplicate explicit
+    // basenames cannot collide with a source-level import cache entry.
+    while (!module_names.insert(module_name).second) {
+      module_name = absl::StrCat(base_name, "$", ++suffix);
+    }
     XLS_ASSIGN_OR_RETURN(
         TypecheckedModule tm,
         ParseAndTypecheck(text, path, module_name, &import_data, {}));
@@ -159,16 +165,18 @@ absl::Status RealMain(absl::Span<const std::string_view> paths) {
 
       VLOG(3) << absl::StreamFormat("Converting definition %s to Verilog",
                                     def_node->ToInlineString());
-      XLS_RETURN_IF_ERROR(
-          type_to_verilog.AddTypeForTypeDefinition(def, &import_data));
+      exports.push_back({def, std::nullopt});
     }
   }
+  XLS_ASSIGN_OR_RETURN(std::string package,
+                       ExportDslxTypesToVerilog(absl::GetFlag(FLAGS_namespace),
+                                                &import_data, exports));
   std::string output;
   // Build lint waivers.
   for (std::string_view waiver : absl::GetFlag(FLAGS_lint_waivers)) {
     absl::StrAppend(&output, "// verilog_lint: waive-start ", waiver, "\n");
   }
-  absl::StrAppend(&output, type_to_verilog.Emit());
+  absl::StrAppend(&output, package);
   for (std::string_view waiver : absl::GetFlag(FLAGS_lint_waivers)) {
     absl::StrAppend(&output, "// verilog_lint: waive-end ", waiver, "\n");
   }
