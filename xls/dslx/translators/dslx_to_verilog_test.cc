@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -47,30 +48,8 @@ namespace xls::dslx {
 
 class DslxTypeToVerilogManagerTestPeer {
  public:
-  static bool CanAddWithoutNameChanges(const DslxTypeToVerilogManager& manager,
-                                       const SumType& sum) {
-    return manager.CanAddDirectSumWithoutNameChanges(sum);
-  }
-
-  static bool HasCommittedGraph(const DslxTypeToVerilogManager& manager,
-                                const SumType& sum) {
-    return manager.sum_payload_graphs_.Contains(sum);
-  }
-
-  static absl::Status MarkThenReject(DslxTypeToVerilogManager& manager,
-                                     const SumType& sum) {
-    return manager.WithSumPayloadGraphs([&] {
-      absl::Status status = manager.MarkSumPayloadNominals(
-          sum, /*newly_emitted_names_displace_enum_members=*/false);
-      if (status.ok()) {
-        return absl::InvalidArgumentError("later emission rejected");
-      } else {
-        return status;
-      }
-    });
-  }
-
-  static void AddProjectedMemberNameScopes(DslxTypeToVerilogManager& manager) {
+  static std::string ProjectedMemberNameScopes() {
+    DslxTypeToVerilogManager manager("test_pkg");
     verilog::DataType* scalar = manager.MakeBits(1);
     verilog::DataType* token = manager.AddNamedType("Token", scalar);
     verilog::DataType* positional = manager.AddNamedType("index_0", scalar);
@@ -113,25 +92,12 @@ class DslxTypeToVerilogManagerTestPeer {
         manager.MakeMember("tuples", array(record(nested)))};
     manager.ProjectOrdinarySumStructMemberNames(ordinary);
     manager.AddNamedType("Ordinary", record(ordinary));
+    return manager.file_->Emit();
   }
 
-  static verilog::TypedefType* NamedType(DslxTypeToVerilogManager& manager,
-                                         AstNode* definition) {
-    return dynamic_cast<verilog::TypedefType*>(
-        manager.converted_types_.at(definition));
-  }
-
-  static void ProjectEnumValues(DslxTypeToVerilogManager& manager,
-                                verilog::Enum* enumeration,
-                                verilog::DataType* named) {
-    auto* aliases =
-        manager.top_pkg_->Add<verilog::VerilogPackageSection>(SourceInfo());
-    manager.ProjectSumEnumValues(enumeration, named, aliases);
-  }
-
-  static absl::Status AddProjectedPayloadTypes(
-      DslxTypeToVerilogManager& manager, const SumType& sum,
-      ImportData* import_data) {
+  static absl::StatusOr<std::string> ProjectedPayloadTypes(
+      const SumType& sum, ImportData* import_data) {
+    DslxTypeToVerilogManager manager("test_pkg");
     DslxTypeToVerilogManager::SumFamily family;
     family.type = sum.CloneToUnique();
     family.name = "Projection";
@@ -150,11 +116,73 @@ class DslxTypeToVerilogManagerTestPeer {
         manager.AddNamedType(variant.variant().identifier(), *type);
       }
     }
-    return absl::OkStatus();
+    return manager.file_->Emit();
   }
 };
 
 namespace {
+
+// Collects the selected requests and exercises the public batch API only when
+// a test asks for the resulting package.
+class BatchExportCollector {
+ public:
+  explicit BatchExportCollector(std::string_view package_name)
+      : package_name_(package_name) {}
+
+  void PrepareForModules(std::vector<std::pair<Module*, TypeInfo*>> roots) {
+    options_.roots = std::move(roots);
+    package_.reset();
+  }
+
+  void AddTypeForTypeDefinition(
+      const TypeDefinition& definition, ImportData* import_data,
+      std::optional<std::string_view> name = std::nullopt) {
+    Add({definition, CopyName(name)}, import_data);
+  }
+
+  void AddTypeForFunctionParam(
+      Function* function, ImportData* import_data, std::string_view param_name,
+      std::optional<std::string_view> name = std::nullopt) {
+    Add({VerilogFunctionParamExport{function, std::string(param_name)},
+         CopyName(name)},
+        import_data);
+  }
+
+  void AddTypeForFunctionOutput(
+      Function* function, ImportData* import_data,
+      std::optional<std::string_view> name = std::nullopt) {
+    Add({VerilogFunctionOutputExport{function}, CopyName(name)}, import_data);
+  }
+
+  const std::string& Emit() const {
+    if (!package_.has_value()) {
+      auto result = ExportDslxTypesToVerilog(package_name_, import_data_,
+                                             requests_, options_);
+      EXPECT_TRUE(result.ok()) << result.status();
+      package_ = result.ok() ? *std::move(result) : std::string();
+    }
+    return *package_;
+  }
+
+ private:
+  static std::optional<std::string> CopyName(
+      std::optional<std::string_view> name) {
+    return name.has_value() ? std::optional<std::string>(*name) : std::nullopt;
+  }
+
+  void Add(VerilogExportRequest request, ImportData* import_data) {
+    EXPECT_TRUE(import_data_ == nullptr || import_data_ == import_data);
+    import_data_ = import_data;
+    requests_.push_back(std::move(request));
+    package_.reset();
+  }
+
+  std::string package_name_;
+  ImportData* import_data_ = nullptr;
+  std::vector<VerilogExportRequest> requests_;
+  VerilogExportOptions options_;
+  mutable std::optional<std::string> package_;
+};
 
 constexpr std::string_view kTestdataPath = "xls/dslx/translators/testdata";
 
@@ -193,6 +221,170 @@ class DslxToVerilogTest : public ::testing::Test {
   }
 };
 
+TEST_F(DslxToVerilogTest, BatchRejectsTokenBearingValueArguments) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(R"(#![feature(generics)]
+struct V { t: token }
+enum Marker<A: V> { Empty, Only(u1) }
+const FIRST = V { t: token() };
+pub type One = Marker<FIRST>;
+enum TypeMarker<T: type> { Empty, Only(u1) }
+pub type TokenType = TypeMarker<token>;
+)",
+                        "test.x", "test", &import_data, nullptr));
+  const std::vector<VerilogExportRequest> supported = {
+      {tm.module->GetTypeDefinition("TokenType").value(), std::nullopt}};
+  EXPECT_TRUE(
+      ExportDslxTypesToVerilog("test_pkg", &import_data, supported).ok());
+  const std::vector<VerilogExportRequest> rejected = {
+      {tm.module->GetTypeDefinition("One").value(), std::nullopt}};
+  auto result = ExportDslxTypesToVerilog("test_pkg", &import_data, rejected);
+  ASSERT_FALSE(result.ok());
+  EXPECT_NE(result.status().message().find("value argument contains a token"),
+            std::string_view::npos);
+}
+
+TEST_F(DslxToVerilogTest,
+       BatchRejectsAliasesConflictingWithOrdinaryDependencies) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(R"(
+struct Slot { value: u8 }
+enum Seed { Empty, Value(Slot) }
+enum Inner { Empty, Item(u8) }
+enum Code: u1 { TOKEN = 0 }
+fn ordinary(x: (Inner, Code)) -> (Inner, Code) { x }
+)",
+                        "test.x", "test", &import_data, nullptr));
+  TypeDefinition seed = tm.module->GetTypeDefinition("Seed").value();
+  Function* ordinary = tm.module->GetFunction("ordinary").value();
+  const std::vector<VerilogExportRequest> payload_conflict = {{seed, "Slot"}};
+  EXPECT_FALSE(
+      ExportDslxTypesToVerilog("test_pkg", &import_data, payload_conflict)
+          .ok());
+  const std::vector<VerilogExportRequest> enum_conflict = {
+      {seed, "TOKEN"}, {VerilogFunctionOutputExport{ordinary}, "TupleOut"}};
+  EXPECT_FALSE(
+      ExportDslxTypesToVerilog("test_pkg", &import_data, enum_conflict).ok());
+}
+
+TEST_F(DslxToVerilogTest, BatchChecksAliasesAgainstNewGenericDependencies) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(R"(#![feature(generics)]
+enum Message<N: u32> { Empty, Item(uN[N]) }
+type Batch = Message<u32:16>[2];
+struct Existing { field: Message<u32:8> }
+fn existing(value: Existing) -> Existing { value }
+fn array(value: Batch) -> Batch { value }
+fn wide(value: Message<u32:16>) -> Message<u32:16> { value }
+)",
+                        "test.x", "test", &import_data, nullptr));
+  Function* existing = tm.module->GetFunction("existing").value();
+  Function* array = tm.module->GetFunction("array").value();
+  Function* wide = tm.module->GetFunction("wide").value();
+  const std::vector<VerilogExportRequest> probe = {
+      {VerilogFunctionOutputExport{wide}, "Concrete"}};
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string probe_package,
+      ExportDslxTypesToVerilog("test_pkg", &import_data, probe));
+  std::string canonical;
+  ASSERT_TRUE(RE2::PartialMatch(probe_package, R"(typedef ([^ ]+) Concrete;)",
+                                &canonical));
+  const std::vector<VerilogExportRequest> allowed = {
+      {VerilogFunctionOutputExport{existing}, "First"},
+      {VerilogFunctionParamExport{existing, "value"}, "Second"},
+      {VerilogFunctionOutputExport{array}, "Allowed"},
+      {VerilogFunctionOutputExport{wide}, "Pinned"}};
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string package,
+      ExportDslxTypesToVerilog("test_pkg", &import_data, allowed));
+  for (std::string_view alias : {"First", "Second", "Allowed", "Pinned"}) {
+    EXPECT_EQ(CountOccurrences(package, absl::StrCat(" ", alias, ";")), 1);
+  }
+  EXPECT_EQ(CountOccurrences(package, "} " + canonical + ";"), 1);
+  const std::vector<VerilogExportRequest> array_conflict = {
+      {VerilogFunctionOutputExport{array}, canonical}};
+  EXPECT_FALSE(
+      ExportDslxTypesToVerilog("test_pkg", &import_data, array_conflict).ok());
+  for (const std::string& alias : {std::string("Pinned"), canonical}) {
+    auto rejected = allowed;
+    rejected.push_back({VerilogFunctionOutputExport{existing}, alias});
+    EXPECT_FALSE(
+        ExportDslxTypesToVerilog("test_pkg", &import_data, rejected).ok());
+  }
+}
+
+TEST_F(DslxToVerilogTest,
+       DynamicSumNamesPreserveUnemittedOrdinaryReservations) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(R"(#![feature(generics)]
+type Message__value_3a_5_3a_u32_3a_8 = u8;
+enum Message<N: u32> { Empty, Item(uN[N]) }
+fn concrete(value: Message<u32:8>) -> Message<u32:8> { value }
+)",
+                        "test.x", "test", &import_data, nullptr));
+  const std::string ordinary_name = "Message__value_3a_5_3a_u32_3a_8";
+  const std::string family = ordinary_name + "__2";
+  const std::string tag = family + "_tag_t";
+  TypeDefinition ordinary = tm.module->GetTypeDefinition(ordinary_name).value();
+  const std::vector<VerilogExportRequest> requests = {
+      {ordinary, std::nullopt},
+      {ordinary, std::nullopt},
+      {ordinary, tag},
+      {VerilogFunctionOutputExport{tm.module->GetFunction("concrete").value()},
+       "Output"}};
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string package,
+      ExportDslxTypesToVerilog("test_pkg", &import_data, requests));
+  EXPECT_EQ(CountOccurrences(package, "} " + family + ";"), 1);
+  EXPECT_EQ(CountOccurrences(package, "} " + tag + "__1;"), 1);
+  EXPECT_EQ(CountOccurrences(package, " " + tag + "__1 tag;"), 1);
+  EXPECT_EQ(CountOccurrences(package, "typedef " + family + " Output;"), 1);
+}
+
+TEST_F(DslxToVerilogTest, BatchRejectsSanitizedEnumAndFunctionAliasCollisions) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(R"(
+type Taken = u1;
+enum Code: u1 { byte = 0 }
+enum Seed { Empty, Item(u1) }
+enum Carrier { Value(Code) }
+fn identity(value: Seed) -> Seed { value }
+fn ordinary(value: (u8, Carrier)) -> (u8, Carrier) { value }
+)",
+                        "test.x", "test", &import_data, nullptr));
+  TypeDefinition seed = tm.module->GetTypeDefinition("Seed").value();
+  TypeDefinition taken = tm.module->GetTypeDefinition("Taken").value();
+  Function* identity = tm.module->GetFunction("identity").value();
+  Function* ordinary = tm.module->GetFunction("ordinary").value();
+  const std::vector<VerilogExportRequest> enum_conflict = {
+      {seed, "byte_"}, {VerilogFunctionOutputExport{ordinary}, "Output"}};
+  auto enum_result =
+      ExportDslxTypesToVerilog("test_pkg", &import_data, enum_conflict);
+  ASSERT_FALSE(enum_result.ok());
+  EXPECT_NE(enum_result.status().message().find("byte_"),
+            std::string_view::npos);
+  for (const VerilogExportRequest& request :
+       {VerilogExportRequest{VerilogFunctionParamExport{identity, "value"},
+                             "Taken"},
+        VerilogExportRequest{VerilogFunctionOutputExport{identity}, "Taken"}}) {
+    const std::vector<VerilogExportRequest> requests = {{taken, std::nullopt},
+                                                        request};
+    auto result = ExportDslxTypesToVerilog("test_pkg", &import_data, requests);
+    ASSERT_FALSE(result.ok());
+    EXPECT_NE(result.status().message().find("Taken"), std::string_view::npos);
+  }
+}
+
 TEST_F(DslxToVerilogTest, BasicTypesInFunctions) {
   constexpr std::string_view program =
       R"(
@@ -225,18 +417,17 @@ fn add_point_elements(p : Point, o : Option, v : u5, a : Point[3], b: u34[5], c:
                               &import_data, nullptr));
 
   // Create package, add function types, and check output
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector type_to_verilog("test_pkg");
 
   Function* func = tm.module->GetFunction("add_point_elements").value();
 
   for (Param* p : func->params()) {
-    XLS_ASSERT_OK(type_to_verilog.AddTypeForFunctionParam(
-        func, &import_data, p->name_def()->identifier()));
+    type_to_verilog.AddTypeForFunctionParam(func, &import_data,
+                                            p->name_def()->identifier());
   }
 
-  XLS_ASSERT_OK(type_to_verilog.AddTypeForFunctionOutput(
-      func, &import_data, "user_defined_output_type_t"));
+  type_to_verilog.AddTypeForFunctionOutput(func, &import_data,
+                                           "user_defined_output_type_t");
 
   ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
 }
@@ -267,11 +458,10 @@ type AliasType1 = Point[1];
                               &import_data, nullptr));
 
   // Create package, add function types, and check output
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector type_to_verilog("test_pkg");
 
   for (const TypeDefinition& def : tm.module->GetTypeDefinitions()) {
-    XLS_ASSERT_OK(type_to_verilog.AddTypeForTypeDefinition(def, &import_data));
+    type_to_verilog.AddTypeForTypeDefinition(def, &import_data);
   }
 
   ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
@@ -299,23 +489,20 @@ fn identity(x: Outer) -> Outer { x }
   // even if the first request is an alias with an unrelated public name.
   for (bool direct_first : {false, true}) {
     SCOPED_TRACE(direct_first);
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
+    BatchExportCollector type_to_verilog("test_pkg");
     if (direct_first) {
-      XLS_ASSERT_OK(type_to_verilog.AddTypeForTypeDefinition(definitions[1],
-                                                             &import_data));
+      type_to_verilog.AddTypeForTypeDefinition(definitions[1], &import_data);
     } else {
-      XLS_ASSERT_OK(type_to_verilog.AddTypeForFunctionOutput(
-          function, &import_data, "output_t"));
+      type_to_verilog.AddTypeForFunctionOutput(function, &import_data,
+                                               "output_t");
     }
-    XLS_ASSERT_OK(type_to_verilog.AddTypeForFunctionParam(
-        function, &import_data, "x", "input_t"));
+    type_to_verilog.AddTypeForFunctionParam(function, &import_data, "x",
+                                            "input_t");
     if (direct_first) {
-      XLS_ASSERT_OK(type_to_verilog.AddTypeForFunctionOutput(
-          function, &import_data, "output_t"));
+      type_to_verilog.AddTypeForFunctionOutput(function, &import_data,
+                                               "output_t");
     } else {
-      XLS_ASSERT_OK(type_to_verilog.AddTypeForTypeDefinition(definitions[1],
-                                                             &import_data));
+      type_to_verilog.AddTypeForTypeDefinition(definitions[1], &import_data);
     }
 
     const std::string emitted = type_to_verilog.Emit();
@@ -358,11 +545,9 @@ pub enum Collision {
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                         nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector type_to_verilog("test_pkg");
   for (const TypeDefinition& definition : tm.module->GetTypeDefinitions()) {
-    XLS_ASSERT_OK(
-        type_to_verilog.AddTypeForTypeDefinition(definition, &import_data));
+    type_to_verilog.AddTypeForTypeDefinition(definition, &import_data);
   }
 
   const std::string emitted = type_to_verilog.Emit();
@@ -409,10 +594,9 @@ TEST_F(DslxToVerilogTest, SumUnionMembersPreserveShadowedViewTypes) {
         TypecheckedModule tm,
         ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                           nullptr));
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-        tm.module->GetTypeDefinitions().front(), &import_data));
+    BatchExportCollector manager("test_pkg");
+    manager.AddTypeForTypeDefinition(tm.module->GetTypeDefinitions().front(),
+                                     &import_data);
     const std::string emitted = manager.Emit();
     std::string members;
     ASSERT_TRUE(RE2::PartialMatch(
@@ -467,26 +651,21 @@ pub enum Direct { Item((u8, index_0)) }
 
   for (bool export_ordinary_first : {false, true}) {
     SCOPED_TRACE(export_ordinary_first);
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
+    BatchExportCollector manager("test_pkg");
     if (export_ordinary_first) {
-      XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-          tm.module->GetTypeDefinition("index_0").value(), &import_data));
-      XLS_ASSERT_OK(
-          manager.AddTypeForTypeDefinition(holder_type, &import_data));
-      XLS_ASSERT_OK(
-          manager.AddTypeForTypeDefinition(standalone_type, &import_data));
+      manager.AddTypeForTypeDefinition(
+          tm.module->GetTypeDefinition("index_0").value(), &import_data);
+      manager.AddTypeForTypeDefinition(holder_type, &import_data);
+      manager.AddTypeForTypeDefinition(standalone_type, &import_data);
       const std::string ordinary = declaration(manager.Emit(), "Holder");
       EXPECT_EQ(CountOccurrences(ordinary, "test_pkg::index_0"), 0) << ordinary;
       EXPECT_EQ(CountOccurrences(ordinary, "index_0 index_1;"), 2) << ordinary;
     }
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-        tm.module->GetTypeDefinition("E").value(), &import_data));
+    manager.AddTypeForTypeDefinition(tm.module->GetTypeDefinition("E").value(),
+                                     &import_data);
     if (!export_ordinary_first) {
-      XLS_ASSERT_OK(
-          manager.AddTypeForTypeDefinition(holder_type, &import_data));
-      XLS_ASSERT_OK(
-          manager.AddTypeForTypeDefinition(standalone_type, &import_data));
+      manager.AddTypeForTypeDefinition(holder_type, &import_data);
+      manager.AddTypeForTypeDefinition(standalone_type, &import_data);
     }
 
     const std::string emitted = manager.Emit();
@@ -506,8 +685,8 @@ pub enum Direct { Item((u8, index_0)) }
         standalone, R"(logic \[7:0\] index_0;\s+index_0 index_1;)"))
         << standalone;
 
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-        tm.module->GetTypeDefinition("Direct").value(), &import_data));
+    manager.AddTypeForTypeDefinition(
+        tm.module->GetTypeDefinition("Direct").value(), &import_data);
     const std::string direct =
         declaration(manager.Emit(), "Direct_item_view_t");
     EXPECT_TRUE(RE2::PartialMatch(
@@ -535,11 +714,9 @@ pub enum Second { None, Error(SignedCode) }
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                         nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector type_to_verilog("test_pkg");
   for (const TypeDefinition& definition : tm.module->GetTypeDefinitions()) {
-    XLS_ASSERT_OK(
-        type_to_verilog.AddTypeForTypeDefinition(definition, &import_data));
+    type_to_verilog.AddTypeForTypeDefinition(definition, &import_data);
   }
 
   const std::string emitted = type_to_verilog.Emit();
@@ -591,10 +768,9 @@ void CheckPrivateSameValuedPayloadEnum(std::string_view program,
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                         nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Message").value(), &import_data));
+  BatchExportCollector manager("test_pkg");
+  manager.AddTypeForTypeDefinition(
+      tm.module->GetTypeDefinition("Message").value(), &import_data);
   const std::string emitted = manager.Emit();
   ::testing::Test::RecordProperty("generated_systemverilog", emitted);
   const std::string prefix = is_signed ? "Message_E_enum_" : "";
@@ -659,15 +835,14 @@ pub enum Second { None, Value(E) }
                           nullptr));
     for (bool sum_first : {false, true}) {
       SCOPED_TRACE(sum_first);
-      XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                               DslxTypeToVerilogManager::Create("test_pkg"));
+      BatchExportCollector manager("test_pkg");
       for (std::string_view name :
            sum_first ? std::vector<std::string_view>{"Message", "Second", "E",
                                                      "EAlias"}
                      : std::vector<std::string_view>{"E", "EAlias", "Message",
                                                      "Second"}) {
-        XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-            tm.module->GetTypeDefinition(name).value(), &import_data));
+        manager.AddTypeForTypeDefinition(
+            tm.module->GetTypeDefinition(name).value(), &import_data);
       }
       const std::string emitted = manager.Emit();
       const std::string bits = is_signed ? "2'h3" : "2'h0";
@@ -722,19 +897,16 @@ fn identity(value: u1) -> u1 { value }
   Function* identity = tm.module->GetFunction("identity").value();
   for (bool sum_first : {false, true}) {
     SCOPED_TRACE(sum_first);
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
+    BatchExportCollector manager("test_pkg");
     if (sum_first) {
-      XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-          tm.module->GetTypeDefinitions().back(), &import_data));
+      manager.AddTypeForTypeDefinition(tm.module->GetTypeDefinitions().back(),
+                                       &import_data);
     }
-    XLS_ASSERT_OK(
-        manager.AddTypeForFunctionParam(identity, &import_data, "value", "A"));
-    XLS_ASSERT_OK(
-        manager.AddTypeForFunctionParam(identity, &import_data, "value", "B"));
+    manager.AddTypeForFunctionParam(identity, &import_data, "value", "A");
+    manager.AddTypeForFunctionParam(identity, &import_data, "value", "B");
     if (!sum_first) {
-      XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-          tm.module->GetTypeDefinitions().back(), &import_data));
+      manager.AddTypeForTypeDefinition(tm.module->GetTypeDefinitions().back(),
+                                       &import_data);
     }
     const std::string emitted = manager.Emit();
     EXPECT_NE(emitted.find("E_A = 2'h0"), std::string::npos) << emitted;
@@ -760,14 +932,13 @@ pub enum Message { None, Value(u2) }
                         nullptr));
   for (bool sum_first : {false, true}) {
     SCOPED_TRACE(sum_first);
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
+    BatchExportCollector manager("test_pkg");
     for (std::string_view name :
          sum_first
              ? std::vector<std::string_view>{"Message", "Unsigned", "Signed"}
              : std::vector<std::string_view>{"Unsigned", "Signed", "Message"}) {
-      XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-          tm.module->GetTypeDefinition(name).value(), &import_data));
+      manager.AddTypeForTypeDefinition(
+          tm.module->GetTypeDefinition(name).value(), &import_data);
     }
     const std::string emitted = manager.Emit();
     EXPECT_TRUE(RE2::PartialMatch(
@@ -801,14 +972,13 @@ pub enum Symbols: u1 { Message_tag_Item = 0 }
                         nullptr));
   for (bool sums_first : {false, true}) {
     SCOPED_TRACE(sums_first);
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
+    BatchExportCollector manager("test_pkg");
     std::vector<TypeDefinition> definitions = tm.module->GetTypeDefinitions();
     if (!sums_first) {
       std::reverse(definitions.begin(), definitions.end());
     }
     for (const TypeDefinition& definition : definitions) {
-      XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(definition, &import_data));
+      manager.AddTypeForTypeDefinition(definition, &import_data);
     }
     const std::string emitted = manager.Emit();
     EXPECT_NE(emitted.find("} Message_tag_t__1;"), std::string::npos)
@@ -841,11 +1011,9 @@ pub enum ExplicitSingleton: u3 { Only(u8) = 5 }
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                         nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector type_to_verilog("test_pkg");
   for (const TypeDefinition& definition : tm.module->GetTypeDefinitions()) {
-    XLS_ASSERT_OK(
-        type_to_verilog.AddTypeForTypeDefinition(definition, &import_data));
+    type_to_verilog.AddTypeForTypeDefinition(definition, &import_data);
   }
 
   const std::string emitted = type_to_verilog.Emit();
@@ -901,12 +1069,11 @@ pub type Right = b::Duplicate;
   std::pair<std::string, std::string> forward_aliases;
   for (bool reverse : {false, true}) {
     SCOPED_TRACE(reverse);
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
-    XLS_ASSERT_OK(type_to_verilog.AddTypeForTypeDefinition(
-        definitions[reverse ? 1 : 0], &import_data));
-    XLS_ASSERT_OK(type_to_verilog.AddTypeForTypeDefinition(
-        definitions[reverse ? 0 : 1], &import_data));
+    BatchExportCollector type_to_verilog("test_pkg");
+    type_to_verilog.AddTypeForTypeDefinition(definitions[reverse ? 1 : 0],
+                                             &import_data);
+    type_to_verilog.AddTypeForTypeDefinition(definitions[reverse ? 0 : 1],
+                                             &import_data);
     const std::string emitted = type_to_verilog.Emit();
     constexpr std::string_view suffix = "_tag_t;";
     std::set<std::string> families;
@@ -946,101 +1113,73 @@ pub type Right = b::Duplicate;
   }
 }
 
-// Verifies: Explicit source spellings name an alias when sums are qualified.
-// Catches: Treating an explicitly requested spelling as an omitted name.
+// Sum qualifier policy changes whether an empty, colliding module contributes
+// a qualifier collision. Ordinary payload names still use the whole graph.
 TEST_F(DslxToVerilogTest, ExplicitImportedSumSourceNameIsUsedOrRejected) {
-  constexpr std::string_view program = R"(
-import a;
-import b;
-pub type Left = a::Duplicate;
-pub type Right = b::Duplicate;
-)";
-  absl::flat_hash_map<std::filesystem::path, std::string> files;
-  files[std::filesystem::path("/a.x")] = R"(
-pub enum Duplicate { Empty, Item(u8) }
-pub fn identity(value: Duplicate) -> Duplicate { value }
-)";
-  files[std::filesystem::path("/b.x")] = R"(
-pub enum Duplicate { Empty, Item(u16) }
-pub fn identity(value: Duplicate) -> Duplicate { value }
-)";
+  absl::flat_hash_map<std::filesystem::path, std::string> files = {
+      {"/a.x", R"(pub enum Duplicate { Empty, Item(u8) }
+pub fn identity(value: Duplicate) -> Duplicate { value })"},
+      {"/b.x", R"(pub enum Duplicate { Empty, Item(u16) }
+pub fn identity(value: Duplicate) -> Duplicate { value })"}};
   auto vfs =
       std::make_unique<FakeFilesystem>(files, std::filesystem::path("/"));
   ImportData import_data = CreateImportDataForTest(std::move(vfs));
   XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
-                        nullptr));
+      TypecheckedModule client,
+      ParseAndTypecheck("import a; import b; pub type Left = a::Duplicate; "
+                        "pub type Right = b::Duplicate;",
+                        "client.x", "client", &import_data, nullptr));
   XLS_ASSERT_OK_AND_ASSIGN(ModuleInfo * a,
                            import_data.Get(ImportTokens({"a"})));
   XLS_ASSERT_OK_AND_ASSIGN(ModuleInfo * b,
                            import_data.Get(ImportTokens({"b"})));
-
-  enum class Export { kDefinition, kParameter, kOutput };
-  for (Export entry :
-       {Export::kDefinition, Export::kParameter, Export::kOutput}) {
-    SCOPED_TRACE(static_cast<int>(entry));
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
-    manager.PrepareForModules({{tm.module, tm.type_info}});
-    auto add = [&](Module* module, std::optional<std::string_view> alias) {
-      if (entry == Export::kDefinition) {
-        return manager.AddTypeForTypeDefinition(
-            module->GetTypeDefinitions().front(), &import_data, alias);
-      } else if (entry == Export::kParameter) {
-        return manager.AddTypeForFunctionParam(
-            module->GetFunction("identity").value(), &import_data, "value",
-            alias);
-      } else {
-        return manager.AddTypeForFunctionOutput(
-            module->GetFunction("identity").value(), &import_data, alias);
+  VerilogExportOptions options;
+  options.roots = {{client.module, client.type_info}};
+  for (int entry = 0; entry < 3; ++entry) {
+    SCOPED_TRACE(entry);
+    auto request = [&](Module* module, std::optional<std::string> alias) {
+      if (entry == 0) {
+        return VerilogExportRequest{
+            module->GetTypeDefinition("Duplicate").value(), std::move(alias)};
       }
+      Function* identity = module->GetFunction("identity").value();
+      if (entry == 1) {
+        return VerilogExportRequest{
+            VerilogFunctionParamExport{identity, "value"}, std::move(alias)};
+      }
+      return VerilogExportRequest{VerilogFunctionOutputExport{identity},
+                                  std::move(alias)};
     };
-
-    XLS_ASSERT_OK(add(&a->module(), std::nullopt));
-    XLS_ASSERT_OK(add(&b->module(), std::nullopt));
-    const std::string canonical = manager.Emit();
-    EXPECT_EQ(CountOccurrences(canonical, "} a_Duplicate;"), 1);
-    EXPECT_EQ(CountOccurrences(canonical, "} b_Duplicate;"), 1);
-    EXPECT_EQ(CountOccurrences(canonical, " Duplicate;"), 0);
-
-    XLS_ASSERT_OK(add(&a->module(), "Duplicate"));
-    XLS_ASSERT_OK(add(&a->module(), "Duplicate"));
-    const std::string aliased = manager.Emit();
-    EXPECT_EQ(CountOccurrences(aliased, "typedef a_Duplicate Duplicate;"), 1)
-        << aliased;
-    EXPECT_EQ(CountOccurrences(aliased, "} a_Duplicate;"), 1);
-    EXPECT_EQ(CountOccurrences(aliased, "} b_Duplicate;"), 1);
-
-    const auto conflict = add(&b->module(), "Duplicate");
-    EXPECT_FALSE(conflict.ok()) << conflict;
-    EXPECT_NE(conflict.message().find("Duplicate"), std::string_view::npos)
-        << conflict;
-    EXPECT_EQ(manager.Emit(), aliased);
-
-    XLS_ASSERT_OK(add(&a->module(), ""));
-    EXPECT_EQ(CountOccurrences(manager.Emit(), "typedef a_Duplicate _;"), 1);
-
-    if (entry == Export::kDefinition) {
-      XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-          tm.module->GetTypeDefinition("Left").value(), &import_data));
-      XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-          tm.module->GetTypeDefinition("Right").value(), &import_data));
-      const std::string source_aliases = manager.Emit();
-      EXPECT_EQ(CountOccurrences(source_aliases, "typedef a_Duplicate Left;"),
-                1)
-          << source_aliases;
-      EXPECT_EQ(CountOccurrences(source_aliases, "typedef b_Duplicate Right;"),
-                1)
-          << source_aliases;
-      EXPECT_EQ(CountOccurrences(source_aliases, "} a_Duplicate;"), 1);
-      EXPECT_EQ(CountOccurrences(source_aliases, "} b_Duplicate;"), 1);
+    std::vector<VerilogExportRequest> requests = {
+        request(&a->module(), std::nullopt),
+        request(&b->module(), std::nullopt), request(&a->module(), "Duplicate"),
+        request(&a->module(), "Duplicate"), request(&a->module(), "")};
+    if (entry == 0) {
+      requests.push_back(
+          {client.module->GetTypeDefinition("Left").value(), std::nullopt});
+      requests.push_back(
+          {client.module->GetTypeDefinition("Right").value(), std::nullopt});
     }
+    XLS_ASSERT_OK_AND_ASSIGN(
+        std::string package,
+        ExportDslxTypesToVerilog("test_pkg", &import_data, requests, options));
+    EXPECT_EQ(CountOccurrences(package, "} a_Duplicate;"), 1);
+    EXPECT_EQ(CountOccurrences(package, "} b_Duplicate;"), 1);
+    EXPECT_EQ(CountOccurrences(package, "typedef a_Duplicate Duplicate;"), 1);
+    EXPECT_EQ(CountOccurrences(package, "typedef a_Duplicate _;"), 1);
+    if (entry == 0) {
+      EXPECT_EQ(CountOccurrences(package, "typedef a_Duplicate Left;"), 1);
+      EXPECT_EQ(CountOccurrences(package, "typedef b_Duplicate Right;"), 1);
+    }
+    requests.push_back(request(&b->module(), "Duplicate"));
+    auto conflict =
+        ExportDslxTypesToVerilog("test_pkg", &import_data, requests, options);
+    ASSERT_FALSE(conflict.ok());
+    EXPECT_NE(conflict.status().message().find("Duplicate"),
+              std::string_view::npos);
   }
 }
 
-// Verifies: Concrete sum types get distinct names regardless of export order.
-// Catches: Names tied to export order or repeated exports creating new types.
 TEST_F(DslxToVerilogTest, ConcreteSumSpecializationsKeepNamesAcrossEntryOrder) {
   constexpr std::string_view program = R"(#![feature(generics)]
 enum Option<N: u32> { None, Some(uN[N]) }
@@ -1057,11 +1196,9 @@ fn wide(value: Option<u32:16>) -> Option<u32:16> { value }
   std::pair<std::string, std::string> expected;
   for (bool narrow_first : {true, false}) {
     SCOPED_TRACE(narrow_first);
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
+    BatchExportCollector manager("test_pkg");
     auto add = [&](Function* function, std::string_view alias) {
-      XLS_EXPECT_OK(manager.AddTypeForFunctionParam(function, &import_data,
-                                                    "value", alias));
+      manager.AddTypeForFunctionParam(function, &import_data, "value", alias);
     };
     if (narrow_first) {
       add(narrow, "Narrow");
@@ -1070,8 +1207,7 @@ fn wide(value: Option<u32:16>) -> Option<u32:16> { value }
       add(wide, "Wide");
       add(narrow, "Narrow");
     }
-    XLS_ASSERT_OK(
-        manager.AddTypeForFunctionOutput(narrow, &import_data, "Again"));
+    manager.AddTypeForFunctionOutput(narrow, &import_data, "Again");
     const std::string emitted = manager.Emit();
     std::pair<std::string, std::string> actual;
     std::string repeated;
@@ -1110,12 +1246,11 @@ pub type TupleTwo = Box<(Phantom<u32:2>, u1)>;
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                         nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector manager("test_pkg");
   for (std::string_view alias : {"One", "Two", "TupleOne", "TupleTwo"}) {
     XLS_ASSERT_OK_AND_ASSIGN(TypeDefinition definition,
                              tm.module->GetTypeDefinition(alias));
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(definition, &import_data));
+    manager.AddTypeForTypeDefinition(definition, &import_data);
   }
   const std::string emitted = manager.Emit();
   std::set<std::string> families;
@@ -1143,12 +1278,11 @@ pub type Send = Marker<chan<u8> out>;
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                         nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector manager("test_pkg");
   for (std::string_view alias : {"Receive", "Send"}) {
     XLS_ASSERT_OK_AND_ASSIGN(TypeDefinition definition,
                              tm.module->GetTypeDefinition(alias));
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(definition, &import_data));
+    manager.AddTypeForTypeDefinition(definition, &import_data);
   }
   const std::string emitted = manager.Emit();
   std::string receive_family;
@@ -1202,15 +1336,14 @@ pub type OtherType = Marker<GenericType>;
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                         nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector manager("test_pkg");
   std::vector<std::string> families;
   for (std::string_view alias :
        {"First", "Repeated", "Other", "Nested", "Binding", "Defaulted",
         "OtherValue", "OtherType"}) {
     XLS_ASSERT_OK_AND_ASSIGN(TypeDefinition definition,
                              tm.module->GetTypeDefinition(alias));
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(definition, &import_data));
+    manager.AddTypeForTypeDefinition(definition, &import_data);
     std::string family;
     ASSERT_TRUE(RE2::PartialMatch(
         manager.Emit(),
@@ -1229,50 +1362,6 @@ pub type OtherType = Marker<GenericType>;
             1);
 }
 
-// Negative test: Opaque tokens in a value argument must not produce names that
-// depend on a process address or merge distinct compiler specializations.
-TEST_F(DslxToVerilogTest, SumNamesRejectTokenBearingValueArguments) {
-  constexpr std::string_view program = R"(#![feature(generics)]
-struct V { t: token }
-enum Marker<A: V> { Empty, Only(u1) }
-const FIRST = V { t: token() };
-const SECOND = V { t: token() };
-pub type One = Marker<FIRST>;
-pub type Two = Marker<SECOND>;
-enum TypeMarker<T: type> { Empty, Only(u1) }
-pub type TokenType = TypeMarker<token>;
-pub type Ordinary = u8;
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
-                        nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK_AND_ASSIGN(TypeDefinition ordinary,
-                           tm.module->GetTypeDefinition("Ordinary"));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(ordinary, &import_data));
-  XLS_ASSERT_OK_AND_ASSIGN(TypeDefinition token_type,
-                           tm.module->GetTypeDefinition("TokenType"));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(token_type, &import_data));
-  const std::string before = manager.Emit();
-  EXPECT_TRUE(RE2::PartialMatch(
-      before, R"(typedef [A-Za-z_][A-Za-z_0-9]* TokenType;)"));
-  for (std::string_view alias : {"One", "Two"}) {
-    XLS_ASSERT_OK_AND_ASSIGN(TypeDefinition definition,
-                             tm.module->GetTypeDefinition(alias));
-    const auto status =
-        manager.AddTypeForTypeDefinition(definition, &import_data);
-    EXPECT_FALSE(status.ok());
-    EXPECT_NE(status.message().find("value argument contains a token"),
-              std::string_view::npos);
-    EXPECT_EQ(manager.Emit(), before);
-  }
-}
-
-// Verifies: Equal aggregate values name the same sum in isolation and together.
-// Catches: A stored range, its empty bounds, or alias order changing the API.
 TEST_F(DslxToVerilogTest, SumNamesCanonicalizeEqualAggregateValues) {
   constexpr std::string_view kPreamble = R"(#![feature(generics)]
 struct Values { xs: u32[2] }
@@ -1328,12 +1417,11 @@ const ONE = Values { xs: u32:1..u32:1 };
         ParseAndTypecheck(
             std::string(test_case.preamble) + test_case.aliases_source,
             "test_module.x", "test_module", &import_data, nullptr));
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
+    BatchExportCollector manager("test_pkg");
     for (std::string_view alias : test_case.aliases) {
       XLS_ASSERT_OK_AND_ASSIGN(TypeDefinition definition,
                                tm.module->GetTypeDefinition(alias));
-      XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(definition, &import_data));
+      manager.AddTypeForTypeDefinition(definition, &import_data);
     }
     const std::string emitted = manager.Emit();
     for (std::string_view alias : test_case.aliases) {
@@ -1348,6 +1436,22 @@ const ONE = Values { xs: u32:1..u32:1 };
       EXPECT_EQ(CountOccurrences(emitted, "} " + family + "_tag_t;"), 1);
     }
   }
+}
+
+TEST_F(DslxToVerilogTest, ImplicitUnitFunctionOutputReturnsError) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck("fn done() { () }", "test_module.x", "test_module",
+                        &import_data, nullptr));
+  Function* done = tm.module->GetFunction("done").value();
+  const std::vector<VerilogExportRequest> requests = {
+      {VerilogFunctionOutputExport{done}, std::nullopt}};
+  auto result = ExportDslxTypesToVerilog("test_pkg", &import_data, requests);
+  ASSERT_FALSE(result.ok());
+  EXPECT_EQ(result.status().code(), absl::StatusCode::kUnimplemented);
+  EXPECT_EQ(result.status().message(),
+            "Zero sized interface type () not supported.");
 }
 
 // Verifies: Reusing nested types keeps identifiers and the package manageable.
@@ -1369,11 +1473,10 @@ type A0 = u8;
         TypecheckedModule tm,
         ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                           nullptr));
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
+    BatchExportCollector manager("test_pkg");
     XLS_ASSERT_OK_AND_ASSIGN(TypeDefinition definition,
                              tm.module->GetTypeDefinition("Out"));
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(definition, &import_data));
+    manager.AddTypeForTypeDefinition(definition, &import_data);
     const std::string emitted = manager.Emit();
     ASSERT_TRUE(
         RE2::PartialMatch(emitted, R"(typedef [A-Za-z_][A-Za-z_0-9]* Out;)"));
@@ -1406,10 +1509,9 @@ pub enum Matrix { Unsigned(u8[2][3]), Signed(s8[2][3]) }
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                         nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinitions().front(), &import_data));
+  BatchExportCollector manager("test_pkg");
+  manager.AddTypeForTypeDefinition(tm.module->GetTypeDefinitions().front(),
+                                   &import_data);
   const std::string emitted = manager.Emit();
   EXPECT_NE(emitted.find("logic [2:0][1:0][7:0] value;"), std::string::npos)
       << emitted;
@@ -1439,10 +1541,9 @@ pub enum Message { Named(Record), Keyword(Keywords), L(Left), R(Right) }
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                         nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinitions().back(), &import_data));
+  BatchExportCollector manager("test_pkg");
+  manager.AddTypeForTypeDefinition(tm.module->GetTypeDefinitions().back(),
+                                   &import_data);
   const std::string emitted = manager.Emit();
   EXPECT_NE(emitted.find("logic [7:0] byte_;"), std::string::npos) << emitted;
   EXPECT_NE(emitted.find("logic [7:0] wire_;"), std::string::npos) << emitted;
@@ -1469,26 +1570,20 @@ fn identity(value: u1) -> u1 { value }
         TypecheckedModule tm,
         ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                           nullptr));
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
+    BatchExportCollector manager("test_pkg");
     const std::vector<TypeDefinition> definitions =
         tm.module->GetTypeDefinitions();
     ASSERT_EQ(definitions.size(), 3);
     if (independent_sum_first) {
-      XLS_ASSERT_OK(
-          manager.AddTypeForTypeDefinition(definitions[2], &import_data));
+      manager.AddTypeForTypeDefinition(definitions[2], &import_data);
     }
-    XLS_ASSERT_OK(
-        manager.AddTypeForTypeDefinition(definitions[1], &import_data));
+    manager.AddTypeForTypeDefinition(definitions[1], &import_data);
     ASSERT_TRUE(tm.module->GetFunction("identity").has_value());
     Function* identity = tm.module->GetFunction("identity").value();
-    XLS_ASSERT_OK(manager.AddTypeForFunctionParam(identity, &import_data,
-                                                  "value", "Item"));
-    XLS_ASSERT_OK(manager.AddTypeForFunctionParam(identity, &import_data,
-                                                  "value", "E_Item"));
+    manager.AddTypeForFunctionParam(identity, &import_data, "value", "Item");
+    manager.AddTypeForFunctionParam(identity, &import_data, "value", "E_Item");
     if (!independent_sum_first) {
-      XLS_ASSERT_OK(
-          manager.AddTypeForTypeDefinition(definitions[2], &import_data));
+      manager.AddTypeForTypeDefinition(definitions[2], &import_data);
     }
     const std::string emitted = manager.Emit();
     EXPECT_NE(emitted.find("} E_Item__1;"), std::string::npos) << emitted;
@@ -1512,15 +1607,14 @@ pub enum Message { V(Payload) }
         TypecheckedModule tm,
         ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                           nullptr));
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
+    BatchExportCollector manager("test_pkg");
     const std::vector<TypeDefinition> definitions =
         tm.module->GetTypeDefinitions();
     ASSERT_EQ(definitions.size(), 3);
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-        definitions[sum_first ? 2 : 1], &import_data));
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-        definitions[sum_first ? 1 : 2], &import_data));
+    manager.AddTypeForTypeDefinition(definitions[sum_first ? 2 : 1],
+                                     &import_data);
+    manager.AddTypeForTypeDefinition(definitions[sum_first ? 1 : 2],
+                                     &import_data);
     const std::string emitted = manager.Emit();
     EXPECT_NE(emitted.find("Payload_Common = 1'h0"), std::string::npos)
         << emitted;
@@ -1554,19 +1648,15 @@ pub enum Message { None, Byte(u8) }
         TypecheckedModule tm,
         ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                           nullptr));
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
+    BatchExportCollector manager("test_pkg");
     for (const TypeDefinition& definition : tm.module->GetTypeDefinitions()) {
-      XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(definition, &import_data));
+      manager.AddTypeForTypeDefinition(definition, &import_data);
     }
     Function* first = tm.module->GetFunction("first").value();
     Function* second = tm.module->GetFunction("second").value();
-    XLS_ASSERT_OK(manager.AddTypeForFunctionParam(first, &import_data, "value",
-                                                  "Shared"));
-    XLS_ASSERT_OK(manager.AddTypeForFunctionParam(first, &import_data, "value",
-                                                  "Shared"));
-    XLS_ASSERT_OK(manager.AddTypeForFunctionParam(second, &import_data, "value",
-                                                  "Shared"));
+    manager.AddTypeForFunctionParam(first, &import_data, "value", "Shared");
+    manager.AddTypeForFunctionParam(first, &import_data, "value", "Shared");
+    manager.AddTypeForFunctionParam(second, &import_data, "value", "Shared");
     const std::string emitted = manager.Emit();
     EXPECT_NE(emitted.find("logic [7:0] byte;"), std::string::npos) << emitted;
     EXPECT_NE(emitted.find("wire = 8'h00"), std::string::npos) << emitted;
@@ -1597,14 +1687,13 @@ pub enum Message { None, Pair((Record, Code)[2]) }
                         nullptr));
   for (bool sum_first : {false, true}) {
     SCOPED_TRACE(sum_first);
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
+    BatchExportCollector manager("test_pkg");
     for (std::string_view name :
          sum_first
              ? std::vector<std::string_view>{"Message", "Record", "Code"}
              : std::vector<std::string_view>{"Record", "Code", "Message"}) {
-      XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-          tm.module->GetTypeDefinition(name).value(), &import_data));
+      manager.AddTypeForTypeDefinition(
+          tm.module->GetTypeDefinition(name).value(), &import_data);
     }
     const std::string emitted = manager.Emit();
     EXPECT_NE(emitted.find("logic [7:0] byte_;"), std::string::npos) << emitted;
@@ -1627,13 +1716,12 @@ fn identity(message: Message) -> Message { message }
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                         nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinitions().front(), &import_data));
+  BatchExportCollector manager("test_pkg");
+  manager.AddTypeForTypeDefinition(tm.module->GetTypeDefinitions().front(),
+                                   &import_data);
   std::optional<Function*> function = tm.module->GetFunction("identity");
   ASSERT_TRUE(function.has_value());
-  XLS_ASSERT_OK(manager.AddTypeForFunctionOutput(*function, &import_data));
+  manager.AddTypeForFunctionOutput(*function, &import_data);
   const std::string emitted = manager.Emit();
   EXPECT_NE(emitted.find("logic [7:0] byte_;"), std::string::npos) << emitted;
   EXPECT_EQ(emitted.find("logic [7:0] byte;"), std::string::npos) << emitted;
@@ -1659,10 +1747,9 @@ pub enum A_make_b { Empty, Item(u16) }
         TypecheckedModule tm,
         ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                           nullptr));
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
+    BatchExportCollector manager("test_pkg");
     for (const TypeDefinition& definition : tm.module->GetTypeDefinitions()) {
-      XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(definition, &import_data));
+      manager.AddTypeForTypeDefinition(definition, &import_data);
     }
     const std::string emitted = manager.Emit();
     EXPECT_NE(emitted.find("Message_tag_tag_Item = 2'h1"), std::string::npos)
@@ -1689,40 +1776,6 @@ pub enum A_make_b { Empty, Item(u16) }
   }
 }
 
-// Negative test: aliases that claim generated operations fail without emission.
-TEST_F(DslxToVerilogTest, SumFunctionOutputAliasesCannotClaimOperations) {
-  constexpr std::string_view program = R"(
-pub enum A { Empty, BGetTag(u8) }
-pub enum A_make_b { Empty, Item(u16) }
-fn identity(x: A) -> A { x }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
-                        nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  for (const TypeDefinition& definition : tm.module->GetTypeDefinitions()) {
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(definition, &import_data));
-  }
-  const std::optional<Function*> identity = tm.module->GetFunction("identity");
-  ASSERT_TRUE(identity.has_value());
-  const std::string before = manager.Emit();
-
-  for (std::string_view name : {"A_make_b_get_tag", "A_make_b_get_tag__1"}) {
-    SCOPED_TRACE(name);
-    ASSERT_EQ(CountOccurrences(before, absl::StrCat(" ", name, " (")), 1);
-    const absl::Status status =
-        manager.AddTypeForFunctionOutput(*identity, &import_data, name);
-    EXPECT_FALSE(status.ok()) << status;
-    EXPECT_NE(status.message().find(name), std::string_view::npos) << status;
-    EXPECT_EQ(manager.Emit(), before);
-  }
-}
-
-// Verifies: Signed cast names keep module identity after reordering.
-// Catches: The first visited same-named payload stealing the other's cast type.
 TEST_F(DslxToVerilogTest, SumSignedCompanionsRetainPayloadModuleIdentity) {
   const std::string first = "Left(a::Code) = 1,";
   const std::string second = "Right(b::Code) = 2,";
@@ -1743,10 +1796,9 @@ TEST_F(DslxToVerilogTest, SumSignedCompanionsRetainPayloadModuleIdentity) {
         TypecheckedModule tm,
         ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                           nullptr));
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-        tm.module->GetTypeDefinitions().front(), &import_data));
+    BatchExportCollector manager("test_pkg");
+    manager.AddTypeForTypeDefinition(tm.module->GetTypeDefinitions().front(),
+                                     &import_data);
     const std::string emitted = manager.Emit();
     EXPECT_NE(emitted.find("Message_a_Code_enum_NEG = 8'hff"),
               std::string::npos)
@@ -1763,69 +1815,6 @@ TEST_F(DslxToVerilogTest, SumSignedCompanionsRetainPayloadModuleIdentity) {
   }
 }
 
-// Negative test: a reserved signed-array name rejects aliases without emission.
-TEST_F(DslxToVerilogTest, SumAliasCannotTakeUnemittedSignedArrayCompanion) {
-  constexpr std::string_view program = R"(
-pub enum Message { Empty, Samples(s8[2]) }
-pub enum Other { Empty, Item(u8) }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
-                        nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  manager.PrepareForModules({{tm.module, tm.type_info}});
-  const std::string before = manager.Emit();
-
-  const auto conflict = manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Other").value(), &import_data,
-      "Message_s8_value_t");
-  ASSERT_FALSE(conflict.ok()) << conflict;
-  EXPECT_NE(conflict.message().find("Message_s8_value_t"),
-            std::string_view::npos)
-      << conflict;
-  EXPECT_EQ(manager.Emit(), before);
-
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Message").value(), &import_data));
-  EXPECT_EQ(CountOccurrences(manager.Emit(), "} Message;"), 1);
-}
-
-// Verifies: Repeated aliases work for one sum and report conflicts for another.
-// Catches: Repeating a conflict creating fresh suffixes in the package.
-TEST_F(DslxToVerilogTest, SumConflictingExplicitAliasIsRejectedIdempotently) {
-  constexpr std::string_view program = R"(
-enum First { None, Item(u8) }
-enum Second { None, Item(u16) }
-fn first(value: First) -> First { value }
-fn second(value: Second) -> Second { value }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
-                        nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  Function* first = tm.module->GetFunction("first").value();
-  Function* second = tm.module->GetFunction("second").value();
-  XLS_ASSERT_OK(
-      manager.AddTypeForFunctionParam(first, &import_data, "value", "Same"));
-  XLS_ASSERT_OK(
-      manager.AddTypeForFunctionParam(first, &import_data, "value", "Same"));
-  const auto conflict =
-      manager.AddTypeForFunctionParam(second, &import_data, "value", "Same");
-  EXPECT_FALSE(conflict.ok());
-  const auto repeated =
-      manager.AddTypeForFunctionParam(second, &import_data, "value", "Same");
-  EXPECT_EQ(repeated, conflict);
-  const std::string emitted = manager.Emit();
-  EXPECT_EQ(CountOccurrences(emitted, " Same;"), 1) << emitted;
-  EXPECT_EQ(emitted.find("Same__"), std::string::npos) << emitted;
-}
-
 TEST_F(DslxToVerilogTest, GenericOnlySumDoesNotReserveUnspecializedName) {
   constexpr std::string_view program = R"(#![feature(generics)]
 enum Message<N: u32> { Empty, Item(uN[N]) }
@@ -1839,215 +1828,60 @@ fn concrete(value: Message<u32:8>) -> Message<u32:8> { value }
                         nullptr));
   Function* ordinary = tm.module->GetFunction("ordinary").value();
   Function* concrete = tm.module->GetFunction("concrete").value();
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager probe,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(
-      probe.AddTypeForFunctionOutput(concrete, &import_data, "Concrete"));
+  BatchExportCollector probe("test_pkg");
+  probe.AddTypeForFunctionOutput(concrete, &import_data, "Concrete");
   std::string canonical;
   ASSERT_TRUE(RE2::PartialMatch(probe.Emit(), R"(typedef ([^ ]+) Concrete;)",
                                 &canonical));
   ASSERT_NE(canonical, "Message");
 
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector manager("test_pkg");
   manager.PrepareForModules({{tm.module, tm.type_info}});
-  XLS_ASSERT_OK(
-      manager.AddTypeForFunctionOutput(ordinary, &import_data, "Message"));
-  XLS_ASSERT_OK(
-      manager.AddTypeForFunctionOutput(concrete, &import_data, "Concrete"));
+  manager.AddTypeForFunctionOutput(ordinary, &import_data, "Message");
+  manager.AddTypeForFunctionOutput(concrete, &import_data, "Concrete");
   const std::string emitted = manager.Emit();
   EXPECT_EQ(CountOccurrences(emitted, "typedef logic [7:0] Message;"), 1)
       << emitted;
   EXPECT_EQ(CountOccurrences(emitted, "typedef " + canonical + " Concrete;"), 1)
       << emitted;
   EXPECT_EQ(CountOccurrences(emitted, "} " + canonical + ";"), 1) << emitted;
-  XLS_ASSERT_OK(probe.AddTypeForFunctionParam(ordinary, &import_data, "value",
-                                              "Message"));
+  probe.AddTypeForFunctionParam(ordinary, &import_data, "value", "Message");
   EXPECT_EQ(CountOccurrences(probe.Emit(), "typedef logic [7:0] Message;"), 1)
       << probe.Emit();
 }
 
 TEST_F(DslxToVerilogTest, RealSumSymbolsTakePriorityOverGenericNominalNames) {
-  constexpr std::string_view generic_program = R"(#![feature(generics)]
-enum Message<N: u32> { Empty, Item(uN[N]) }
-fn ordinary(value: u8) -> u8 { value }
-)";
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK_AND_ASSIGN(
       TypecheckedModule generic,
-      ParseAndTypecheck(generic_program, "a.x", "a", &import_data, nullptr));
+      ParseAndTypecheck(R"(#![feature(generics)]
+enum Message<N: u32> { Empty, Item(uN[N]) }
+fn ordinary(value: u8) -> u8 { value }
+)",
+                        "a.x", "a", &import_data, nullptr));
   XLS_ASSERT_OK_AND_ASSIGN(
       TypecheckedModule fixed,
       ParseAndTypecheck("enum Message { Empty, Item(u8) }", "b.x", "b",
                         &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule other,
-      ParseAndTypecheck("enum Other { Empty, Item(u8) }", "other.x", "other",
-                        &import_data, nullptr));
   Function* ordinary = generic.module->GetFunction("ordinary").value();
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  manager.PrepareForModules(
-      {{generic.module, generic.type_info}, {fixed.module, fixed.type_info}});
-  XLS_ASSERT_OK(
-      manager.AddTypeForFunctionOutput(ordinary, &import_data, "a_Message"));
-  const std::string before = manager.Emit();
+  TypeDefinition message = fixed.module->GetTypeDefinition("Message").value();
+  VerilogExportOptions options;
+  options.roots = {{generic.module, generic.type_info},
+                   {fixed.module, fixed.type_info}};
+  const std::vector<VerilogExportRequest> allowed = {
+      {VerilogFunctionOutputExport{ordinary}, "a_Message"},
+      {message, std::nullopt}};
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string package,
+      ExportDslxTypesToVerilog("test_pkg", &import_data, allowed, options));
+  EXPECT_EQ(CountOccurrences(package, "} b_Message;"), 1);
   for (std::string_view symbol : {"b_Message", "b_Message_tag_t"}) {
-    const auto rejected =
-        manager.AddTypeForFunctionOutput(ordinary, &import_data, symbol);
-    EXPECT_FALSE(rejected.ok()) << rejected;
-    EXPECT_EQ(manager.Emit(), before);
-  }
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      fixed.module->GetTypeDefinition("Message").value(), &import_data));
-  EXPECT_EQ(CountOccurrences(manager.Emit(), "} b_Message;"), 1)
-      << manager.Emit();
-
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager aliased,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(aliased.AddTypeForTypeDefinition(
-      other.module->GetTypeDefinition("Other").value(), &import_data,
-      "Message"));
-  aliased.PrepareForModules({{generic.module, generic.type_info}});
-  const std::string before_conflict = aliased.Emit();
-  ASSERT_EQ(CountOccurrences(before_conflict, "typedef Other Message;"), 1)
-      << before_conflict;
-  EXPECT_FALSE(
-      aliased.AddTypeForFunctionOutput(ordinary, &import_data, "Message").ok());
-  EXPECT_EQ(aliased.Emit(), before_conflict);
-}
-
-TEST_F(DslxToVerilogTest,
-       OrdinaryTupleEnumLiteralConflictDoesNotEmitEarlierNestedSum) {
-  constexpr std::string_view program = R"(
-enum Outer { Empty, Item(u16) }
-enum Inner { Empty, Item(u8) }
-enum Code: u1 { TOKEN = 0 }
-fn ordinary(value: (Inner, Code)) -> (Inner, Code) { value }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
-                        nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Outer").value(), &import_data, "TOKEN"));
-  const std::string before = manager.Emit();
-  ASSERT_EQ(CountOccurrences(before, "typedef Outer TOKEN;"), 1) << before;
-  ASSERT_EQ(before.find("} Inner;"), std::string::npos) << before;
-  ASSERT_EQ(before.find("TOKEN ="), std::string::npos) << before;
-  const auto rejected = manager.AddTypeForFunctionOutput(
-      tm.module->GetFunction("ordinary").value(), &import_data, "TupleOut");
-  EXPECT_FALSE(rejected.ok()) << rejected;
-  EXPECT_NE(rejected.message().find("TOKEN"), std::string_view::npos)
-      << rejected;
-  EXPECT_EQ(manager.Emit(), before);
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Inner").value(), &import_data));
-  EXPECT_EQ(CountOccurrences(manager.Emit(), "} Inner;"), 1) << manager.Emit();
-}
-
-TEST_F(DslxToVerilogTest,
-       NamedArrayOfSumRejectsGeneratedSpecializationAliasAtomically) {
-  constexpr std::string_view program = R"(#![feature(generics)]
-enum Message<N: u32> { Empty, Item(uN[N]) }
-pub type Batch = Message<u32:8>[2];
-fn concrete(value: Message<u32:8>) -> Message<u32:8> { value }
-fn nested(value: Batch) -> Batch { value }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
-                        nullptr));
-  Function* nested = tm.module->GetFunction("nested").value();
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager probe,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(probe.AddTypeForFunctionOutput(
-      tm.module->GetFunction("concrete").value(), &import_data, "Concrete"));
-  std::string canonical;
-  ASSERT_TRUE(RE2::PartialMatch(probe.Emit(), R"(typedef ([^ ]+) Concrete;)",
-                                &canonical));
-
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  manager.PrepareForModules({{tm.module, tm.type_info}});
-  const std::string before = manager.Emit();
-  const auto rejected =
-      manager.AddTypeForFunctionOutput(nested, &import_data, canonical);
-  EXPECT_FALSE(rejected.ok()) << rejected;
-  EXPECT_NE(rejected.message().find(canonical), std::string_view::npos)
-      << rejected;
-  EXPECT_EQ(manager.Emit(), before);
-  XLS_ASSERT_OK(
-      manager.AddTypeForFunctionOutput(nested, &import_data, "Allowed"));
-  const std::string allowed = manager.Emit();
-  EXPECT_EQ(CountOccurrences(allowed, "} " + canonical + ";"), 1) << allowed;
-  EXPECT_EQ(CountOccurrences(allowed, " Allowed;"), 1) << allowed;
-}
-
-TEST_F(DslxToVerilogTest,
-       CachedOrdinaryAliasesStillCheckNewDependenciesAndFixedSumNames) {
-  constexpr std::string_view program = R"(#![feature(generics)]
-enum Message<N: u32> { Empty, Item(uN[N]) }
-struct Existing { field: Message<u32:8> }
-type ExistingAlias = Existing;
-struct Later { field: Message<u32:16> }
-fn existing(value: Existing) -> Existing { value }
-fn existing_alias(value: ExistingAlias) -> ExistingAlias { value }
-fn later(value: Later) -> Later { value }
-fn later_sum(value: Message<u32:16>) -> Message<u32:16> { value }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
-                        nullptr));
-  Function* existing = tm.module->GetFunction("existing").value();
-  Function* existing_alias = tm.module->GetFunction("existing_alias").value();
-  Function* later = tm.module->GetFunction("later").value();
-  Function* later_sum = tm.module->GetFunction("later_sum").value();
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager probe,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(
-      probe.AddTypeForFunctionOutput(later_sum, &import_data, "Concrete"));
-  std::string later_name;
-  ASSERT_TRUE(RE2::PartialMatch(probe.Emit(), R"(typedef ([^ ]+) Concrete;)",
-                                &later_name));
-
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  manager.PrepareForModules({{tm.module, tm.type_info}});
-  XLS_ASSERT_OK(
-      manager.AddTypeForFunctionOutput(existing, &import_data, "First"));
-  XLS_ASSERT_OK(manager.AddTypeForFunctionParam(existing, &import_data, "value",
-                                                "Second"));
-  XLS_ASSERT_OK(manager.AddTypeForFunctionOutput(existing_alias, &import_data,
-                                                 "AliasFirst"));
-  XLS_ASSERT_OK(manager.AddTypeForFunctionOutput(existing_alias, &import_data,
-                                                 "AliasSecond"));
-  const std::string before = manager.Emit();
-  for (std::string_view alias :
-       {"First", "Second", "AliasFirst", "AliasSecond"}) {
-    EXPECT_EQ(CountOccurrences(before, " " + std::string(alias) + ";"), 1);
-  }
-  ASSERT_EQ(before.find("} " + later_name + ";"), std::string::npos);
-  EXPECT_FALSE(
-      manager.AddTypeForFunctionOutput(later, &import_data, later_name).ok());
-  EXPECT_EQ(manager.Emit(), before);
-  XLS_ASSERT_OK(
-      manager.AddTypeForFunctionOutput(later, &import_data, "LaterAllowed"));
-  XLS_ASSERT_OK(
-      manager.AddTypeForFunctionOutput(later_sum, &import_data, "Pinned"));
-  const std::string after = manager.Emit();
-  EXPECT_EQ(CountOccurrences(after, "} " + later_name + ";"), 1);
-  for (const std::string& conflict : {std::string("Pinned"), later_name}) {
+    const std::vector<VerilogExportRequest> rejected = {
+        {VerilogFunctionOutputExport{ordinary}, std::string(symbol)},
+        {message, std::nullopt}};
     EXPECT_FALSE(
-        manager.AddTypeForFunctionOutput(existing, &import_data, conflict)
+        ExportDslxTypesToVerilog("test_pkg", &import_data, rejected, options)
             .ok());
-    EXPECT_EQ(manager.Emit(), after);
   }
 }
 
@@ -2065,218 +1899,21 @@ fn ordinary(value: Envelope_tag_t) -> Envelope_tag_t { value }
       TypecheckedModule second,
       ParseAndTypecheck("pub type Envelope_tag_t = u8;", "second.x", "second",
                         &cross_module_imports, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector manager("test_pkg");
   manager.PrepareForModules(
       {{first.module, first.type_info}, {second.module, second.type_info}});
   Function* ordinary = first.module->GetFunction("ordinary").value();
-  XLS_ASSERT_OK(
-      manager.AddTypeForFunctionOutput(ordinary, &cross_module_imports));
+  manager.AddTypeForFunctionOutput(ordinary, &cross_module_imports);
   const std::string ordinary_only = manager.Emit();
-  XLS_ASSERT_OK(
-      manager.AddTypeForFunctionOutput(ordinary, &cross_module_imports));
+  manager.AddTypeForFunctionOutput(ordinary, &cross_module_imports);
   EXPECT_EQ(manager.Emit(), ordinary_only);
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
+  manager.AddTypeForTypeDefinition(
       first.module->GetTypeDefinition("Envelope").value(),
-      &cross_module_imports));
+      &cross_module_imports);
   const std::string emitted = manager.Emit();
   EXPECT_EQ(CountOccurrences(emitted, "typedef logic [7:0] Envelope_tag_t;"), 1)
       << emitted;
   EXPECT_EQ(CountOccurrences(emitted, " Envelope_tag_t;"), 1) << emitted;
-}
-
-TEST_F(DslxToVerilogTest, RejectedOrdinaryFunctionOutputDoesNotEmitNestedSum) {
-  constexpr std::string_view program = R"(
-enum Outer { Empty, Item(u16) }
-enum Inner { Empty, Item(u8) }
-fn ordinary(value: (Inner, u8)) -> (Inner, u8) { value }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
-                        nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Outer").value(), &import_data, "Taken"));
-  const std::string before = manager.Emit();
-  ASSERT_EQ(CountOccurrences(before, "typedef Outer Taken;"), 1) << before;
-  ASSERT_EQ(before.find("} Inner;"), std::string::npos) << before;
-
-  const auto rejected = manager.AddTypeForFunctionOutput(
-      tm.module->GetFunction("ordinary").value(), &import_data, "Taken");
-  EXPECT_FALSE(rejected.ok()) << rejected;
-  EXPECT_NE(rejected.message().find("Taken"), std::string_view::npos)
-      << rejected;
-  EXPECT_EQ(manager.Emit(), before);
-
-  constexpr std::string_view parametric_program = R"(#![feature(generics)]
-enum Message<N: u32> { Empty, Item(uN[N]) }
-fn concrete(value: Message<u32:8>) -> Message<u32:8> { value }
-fn nested(value: (Message<u32:8>, u8)) -> (Message<u32:8>, u8) { value }
-)";
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule parametric,
-      ParseAndTypecheck(parametric_program, "parametric.x", "parametric",
-                        &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager probe,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(probe.AddTypeForFunctionOutput(
-      parametric.module->GetFunction("concrete").value(), &import_data,
-      "Concrete"));
-  std::string canonical;
-  ASSERT_TRUE(RE2::PartialMatch(probe.Emit(), R"(typedef ([^ ]+) Concrete;)",
-                                &canonical));
-
-  Function* nested = parametric.module->GetFunction("nested").value();
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager pristine,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  pristine.PrepareForModules({{parametric.module, parametric.type_info}});
-  XLS_ASSERT_OK(
-      pristine.AddTypeForFunctionOutput(nested, &import_data, "Allowed"));
-  for (const std::string& alias : {canonical, canonical + "_tag_t"}) {
-    SCOPED_TRACE(alias);
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager ordered,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
-    ordered.PrepareForModules({{parametric.module, parametric.type_info}});
-    const std::string before = ordered.Emit();
-    const auto rejected =
-        ordered.AddTypeForFunctionOutput(nested, &import_data, alias);
-    EXPECT_FALSE(rejected.ok()) << rejected;
-    EXPECT_NE(rejected.message().find(alias), std::string_view::npos)
-        << rejected;
-    EXPECT_EQ(ordered.Emit(), before);
-    XLS_ASSERT_OK(
-        ordered.AddTypeForFunctionOutput(nested, &import_data, "Allowed"));
-    EXPECT_EQ(ordered.Emit(), pristine.Emit());
-  }
-
-  constexpr std::string_view crowded_program = R"(#![feature(generics)]
-type Message__value_3a_5_3a_u32_3a_8 = u8;
-enum Message<N: u32> { Empty, Item(uN[N]) }
-fn nested(value: (Message__value_3a_5_3a_u32_3a_8,
-                  Message__value_3a_5_3a_u32_3a_8, Message<u32:8>))
-    -> (Message__value_3a_5_3a_u32_3a_8,
-        Message__value_3a_5_3a_u32_3a_8, Message<u32:8>) { value }
-)";
-  XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule crowded,
-                           ParseAndTypecheck(crowded_program, "crowded.x",
-                                             "crowded", &import_data, nullptr));
-  Function* crowded_nested = crowded.module->GetFunction("nested").value();
-  const std::string crowded_alias = canonical + "__2";
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager crowded_pristine,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(crowded_pristine.AddTypeForFunctionOutput(
-      crowded_nested, &import_data, "Allowed"));
-  ASSERT_EQ(
-      CountOccurrences(crowded_pristine.Emit(), "} " + crowded_alias + ";"), 1)
-      << crowded_pristine.Emit();
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager crowded_rejected,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  crowded_rejected.PrepareForModules({{crowded.module, crowded.type_info}});
-  const std::string crowded_before = crowded_rejected.Emit();
-  const auto rejected_crowded = crowded_rejected.AddTypeForFunctionOutput(
-      crowded_nested, &import_data, crowded_alias);
-  EXPECT_FALSE(rejected_crowded.ok()) << rejected_crowded;
-  EXPECT_EQ(crowded_rejected.Emit(), crowded_before);
-  XLS_ASSERT_OK(crowded_rejected.AddTypeForFunctionOutput(
-      crowded_nested, &import_data, "Allowed"));
-  EXPECT_EQ(crowded_rejected.Emit(), crowded_pristine.Emit());
-}
-
-TEST_F(DslxToVerilogTest,
-       DynamicSumNamesPreserveEarlierUnemittedOrdinaryReservations) {
-  constexpr std::string_view program = R"(#![feature(generics)]
-type Message__value_3a_5_3a_u32_3a_8 = u8;
-enum Message<N: u32> { Empty, Item(uN[N]) }
-enum Other { Empty, Value(u1) }
-fn concrete(value: Message<u32:8>) -> Message<u32:8> { value }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  const std::string ordinary_name = "Message__value_3a_5_3a_u32_3a_8";
-  const TypeDefinition ordinary =
-      tm.module->GetTypeDefinition(ordinary_name).value();
-  const std::string invisible_family = ordinary_name + "__1";
-  const std::string family = ordinary_name + "__2";
-  const std::string invisible_tag = family + "_tag_t";
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(ordinary, &import_data));
-  const std::string before = manager.Emit();
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(ordinary, &import_data));
-  XLS_ASSERT_OK(
-      manager.AddTypeForTypeDefinition(ordinary, &import_data, invisible_tag));
-  ASSERT_EQ(manager.Emit(), before);
-
-  XLS_ASSERT_OK(manager.AddTypeForFunctionOutput(
-      tm.module->GetFunction("concrete").value(), &import_data, "Output"));
-  const std::string after = manager.Emit();
-  EXPECT_EQ(CountOccurrences(after, "} " + family + ";"), 1) << after;
-  EXPECT_EQ(CountOccurrences(after, "} " + invisible_tag + "__1;"), 1) << after;
-  EXPECT_EQ(CountOccurrences(after, " " + invisible_tag + "__1 tag;"), 1)
-      << after;
-  EXPECT_EQ(CountOccurrences(after, "typedef " + family + " Output;"), 1)
-      << after;
-
-  const TypeDefinition other = tm.module->GetTypeDefinition("Other").value();
-  XLS_ASSERT_OK(
-      manager.AddTypeForTypeDefinition(other, &import_data, invisible_family));
-  XLS_ASSERT_OK(
-      manager.AddTypeForTypeDefinition(other, &import_data, invisible_tag));
-  const std::string with_fixed_aliases = manager.Emit();
-  EXPECT_EQ(CountOccurrences(with_fixed_aliases,
-                             "typedef Other " + invisible_family + ";"),
-            1)
-      << with_fixed_aliases;
-  EXPECT_EQ(CountOccurrences(with_fixed_aliases,
-                             "typedef Other " + invisible_tag + ";"),
-            1)
-      << with_fixed_aliases;
-  XLS_ASSERT_OK(
-      manager.AddTypeForTypeDefinition(other, &import_data, invisible_tag));
-  EXPECT_EQ(manager.Emit(), with_fixed_aliases);
-}
-
-TEST_F(DslxToVerilogTest, RejectedOrdinaryAliasDoesNotEmitNestedSumPayload) {
-  constexpr std::string_view program = R"(#![feature(generics)]
-enum Message<N: u32> { Empty, Item(uN[N]) }
-enum Outer { Empty, Item(Message<u32:8>) }
-fn concrete(value: Message<u32:8>) -> Message<u32:8> { value }
-fn nested(value: (Outer, u8)) -> (Outer, u8) { value }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager probe,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(probe.AddTypeForFunctionOutput(
-      tm.module->GetFunction("concrete").value(), &import_data, "Concrete"));
-  std::string canonical;
-  ASSERT_TRUE(RE2::PartialMatch(probe.Emit(), R"(typedef ([^ ]+) Concrete;)",
-                                &canonical));
-  Function* nested = tm.module->GetFunction("nested").value();
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager pristine,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(
-      pristine.AddTypeForFunctionOutput(nested, &import_data, "Allowed"));
-  for (const std::string& alias : {canonical, canonical + "_tag_t"}) {
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
-    manager.PrepareForModules({{tm.module, tm.type_info}});
-    const std::string before = manager.Emit();
-    const auto rejected =
-        manager.AddTypeForFunctionOutput(nested, &import_data, alias);
-    EXPECT_FALSE(rejected.ok()) << rejected;
-    EXPECT_EQ(manager.Emit(), before);
-    XLS_ASSERT_OK(
-        manager.AddTypeForFunctionOutput(nested, &import_data, "Allowed"));
-    EXPECT_EQ(manager.Emit(), pristine.Emit());
-  }
 }
 
 TEST_F(DslxToVerilogTest,
@@ -2300,26 +1937,25 @@ fn generic(value: Message<u32:8>) -> Message<u32:8> { value }
   XLS_ASSERT_OK_AND_ASSIGN(TypecheckedModule second,
                            ParseAndTypecheck(second_program, "second.x",
                                              "second", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector manager("test_pkg");
   manager.PrepareForModules(
       {{first.module, first.type_info}, {second.module, second.type_info}});
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      first.module->GetTypeDefinition(ordinary).value(), &import_data));
+  manager.AddTypeForTypeDefinition(
+      first.module->GetTypeDefinition(ordinary).value(), &import_data);
   Function* plain = second.module->GetFunction("plain").value();
-  XLS_ASSERT_OK(manager.AddTypeForFunctionOutput(plain, &import_data, fixed));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      second.module->GetTypeDefinition(ordinary).value(), &import_data));
+  manager.AddTypeForFunctionOutput(plain, &import_data, fixed);
+  manager.AddTypeForTypeDefinition(
+      second.module->GetTypeDefinition(ordinary).value(), &import_data);
   ASSERT_EQ(CountOccurrences(manager.Emit(), " " + fixed + ";"), 2)
       << manager.Emit();
 
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      second.module->GetTypeDefinition("Carrier").value(), &import_data));
+  manager.AddTypeForTypeDefinition(
+      second.module->GetTypeDefinition("Carrier").value(), &import_data);
   ASSERT_EQ(CountOccurrences(manager.Emit(), " " + fixed + ";"), 1)
       << manager.Emit();
-  XLS_ASSERT_OK(manager.AddTypeForFunctionOutput(
-      second.module->GetFunction("generic").value(), &import_data));
-  XLS_ASSERT_OK(manager.AddTypeForFunctionOutput(plain, &import_data, fixed));
+  manager.AddTypeForFunctionOutput(
+      second.module->GetFunction("generic").value(), &import_data);
+  manager.AddTypeForFunctionOutput(plain, &import_data, fixed);
   const std::string emitted = manager.Emit();
   EXPECT_EQ(CountOccurrences(emitted, "typedef logic [7:0] " + fixed + ";"), 2)
       << emitted;
@@ -2327,224 +1963,43 @@ fn generic(value: Message<u32:8>) -> Message<u32:8> { value }
   EXPECT_EQ(CountOccurrences(emitted, "} " + ordinary + "__2;"), 1) << emitted;
 }
 
-TEST_F(DslxToVerilogTest,
-       KnownOrdinarySumWrappersStillCheckNewSpecializations) {
-  constexpr std::string_view program = R"(#![feature(generics)]
-enum Message<N: u32> { Empty, Item(uN[N]) }
-type Plain = u8;
-fn narrow(value: (Message<u32:8>, u8)) -> (Message<u32:8>, u8) { value }
-fn narrow_sum(value: Message<u32:8>) -> Message<u32:8> { value }
-fn plain(value: (Plain, u8)) -> (Plain, u8) { value }
-fn mixed(value: (Message<u32:8>, Message<u32:16>))
-    -> (Message<u32:8>, Message<u32:16>) { value }
-fn wide(value: Message<u32:16>) -> Message<u32:16> { value }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager probe,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(probe.AddTypeForFunctionOutput(
-      tm.module->GetFunction("wide").value(), &import_data, "Wide"));
-  std::string wide_name;
-  ASSERT_TRUE(
-      RE2::PartialMatch(probe.Emit(), R"(typedef ([^ ]+) Wide;)", &wide_name));
-
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  Function* narrow = tm.module->GetFunction("narrow").value();
-  XLS_ASSERT_OK(manager.AddTypeForFunctionOutput(narrow, &import_data));
-  XLS_ASSERT_OK(manager.AddTypeForFunctionOutput(
-      tm.module->GetFunction("narrow_sum").value(), &import_data, "Unrelated"));
-  for (int i = 0; i < 32; ++i) {
-    XLS_ASSERT_OK(manager.AddTypeForFunctionOutput(
-        narrow, &import_data, absl::StrFormat("Repeated%d", i)));
-  }
-  Function* plain = tm.module->GetFunction("plain").value();
-  for (int i = 0; i < 8; ++i) {
-    XLS_ASSERT_OK(manager.AddTypeForFunctionOutput(
-        plain, &import_data, absl::StrFormat("Plain%d", i)));
-  }
-  const std::string before = manager.Emit();
-  EXPECT_EQ(CountOccurrences(before, " Repeated"), 32) << before;
-  EXPECT_EQ(CountOccurrences(before, "} Plain"), 8) << before;
-  EXPECT_EQ(CountOccurrences(before, "typedef logic [7:0] Plain;"), 1)
-      << before;
-
-  Function* mixed = tm.module->GetFunction("mixed").value();
-  const auto rejected =
-      manager.AddTypeForFunctionOutput(mixed, &import_data, wide_name);
-  EXPECT_FALSE(rejected.ok()) << rejected;
-  EXPECT_EQ(manager.Emit(), before);
-  XLS_ASSERT_OK(manager.AddTypeForFunctionOutput(mixed, &import_data, "Mixed"));
-  EXPECT_EQ(CountOccurrences(manager.Emit(), "} " + wide_name + ";"), 1)
-      << manager.Emit();
-}
-
-TEST_F(DslxToVerilogTest, KnownSumsKeepOrdinaryDependencyAliasChecks) {
-  constexpr std::string_view program = R"(
-enum Message { Empty, Item(u8) }
-type Fresh = u8;
-type Taken = u16;
-fn attempt(value: (Message, Fresh, Taken)) -> (Message, Fresh, Taken) { value }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  const TypeDefinition message =
-      tm.module->GetTypeDefinition("Message").value();
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(message, &import_data));
-  XLS_ASSERT_OK(
-      manager.AddTypeForTypeDefinition(message, &import_data, "Taken"));
-  const std::string before = manager.Emit();
-
-  const auto rejected = manager.AddTypeForFunctionOutput(
-      tm.module->GetFunction("attempt").value(), &import_data, "Attempt");
-  EXPECT_FALSE(rejected.ok()) << rejected;
-  EXPECT_EQ(manager.Emit(), before);
-  EXPECT_EQ(CountOccurrences(manager.Emit(), " Fresh;"), 0) << manager.Emit();
-}
-
 TEST_F(DslxToVerilogTest, IndependentRecordSumsIgnoreUnrelatedPackageNames) {
-  std::string program = R"(
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(R"(
 enum Old: u8 { Anchor = 0 }
 enum Prelude { None, Some(Old) }
 struct Anchor { value: u8 }
 enum Overlap { None, Some(Anchor) }
 struct AliasCollision { value: u8 }
 enum AliasOverlap { None, Some(AliasCollision) }
-)";
-  constexpr int kCount = 8;
-  for (int i = 0; i < kCount; ++i) {
-    program += absl::StrFormat(
-        "struct Record%d { value: u8 }\nenum Item%d { None, Some(Record%d) }\n",
-        i, i, i);
-  }
-  ImportData import_data = CreateImportDataForTest();
+struct Record0 { value: u8 }
+enum Item0 { None, Some(Record0) }
+struct Record1 { value: u8 }
+enum Item1 { None, Some(Record1) }
+)",
+                        "test.x", "test", &import_data, nullptr));
+  auto definition = [&](std::string_view name) {
+    return tm.module->GetTypeDefinition(name).value();
+  };
+  std::vector<VerilogExportRequest> requests = {
+      {definition("Prelude"), "AliasCollision"},
+      {definition("Item0"), std::nullopt},
+      {definition("Item1"), std::nullopt},
+      {definition("Overlap"), std::nullopt}};
   XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  manager.PrepareForModules({{tm.module, tm.type_info}});
-  TypeDefinition prelude = tm.module->GetTypeDefinition("Prelude").value();
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(prelude, &import_data));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(prelude, &import_data,
-                                                 "AliasCollision"));
-
-  for (int i = 0; i < kCount; ++i) {
-    const std::string name = absl::StrFormat("Item%d", i);
-    EXPECT_TRUE(DslxTypeToVerilogManagerTestPeer::CanAddWithoutNameChanges(
-        manager, ConcreteSum(tm, name)));
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-        tm.module->GetTypeDefinition(name).value(), &import_data));
+      std::string package,
+      ExportDslxTypesToVerilog("test_pkg", &import_data, requests));
+  EXPECT_EQ(CountOccurrences(package, "typedef Prelude AliasCollision;"), 1);
+  EXPECT_TRUE(RE2::PartialMatch(package, R"(\n\s+Old_Anchor = 8'h00)"));
+  for (int i = 0; i < 2; ++i) {
+    EXPECT_EQ(CountOccurrences(package, absl::StrFormat("} Record%d;", i)), 1);
+    EXPECT_EQ(CountOccurrences(package, absl::StrFormat("} Item%d;", i)), 1);
   }
-  const std::string independent = manager.Emit();
-  EXPECT_TRUE(RE2::PartialMatch(independent, R"(\n\s+Anchor = 8'h00)"))
-      << independent;
-  EXPECT_EQ(CountOccurrences(independent, "typedef Prelude AliasCollision;"),
-            1);
-  for (int i = 0; i < kCount; ++i) {
-    EXPECT_EQ(CountOccurrences(independent, absl::StrFormat("} Record%d;", i)),
-              1);
-    EXPECT_EQ(CountOccurrences(independent, absl::StrFormat("} Item%d;", i)),
-              1);
-  }
-
-  EXPECT_FALSE(DslxTypeToVerilogManagerTestPeer::CanAddWithoutNameChanges(
-      manager, ConcreteSum(tm, "AliasOverlap")));
-  EXPECT_FALSE(manager
-                   .AddTypeForTypeDefinition(
-                       tm.module->GetTypeDefinition("AliasOverlap").value(),
-                       &import_data)
-                   .ok());
-  EXPECT_EQ(manager.Emit(), independent);
-  EXPECT_FALSE(DslxTypeToVerilogManagerTestPeer::CanAddWithoutNameChanges(
-      manager, ConcreteSum(tm, "Overlap")));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Overlap").value(), &import_data));
-  EXPECT_TRUE(RE2::PartialMatch(manager.Emit(), R"(\n\s+Old_Anchor = 8'h00)"))
-      << manager.Emit();
-}
-
-TEST_F(DslxToVerilogTest, PayloadGraphsCommitPerRequestAndPerSpecialization) {
-  constexpr std::string_view program = R"(#![feature(generics)]
-struct Small { value: u8 }
-struct Large { value: u16 }
-enum Inner<T: type> { None, Some(T) }
-type Narrow = Inner<Small>;
-type Wide = Inner<Large>;
-enum Seed { None, Some(u8) }
-type Taken = u8;
-struct Broken { taken: Taken }
-enum Failing { Pair(Wide, Broken) }
-enum Working { Pair(Narrow, Wide) }
-enum Leaf { None, Some(u8) }
-enum Mid { None, Some(Leaf) }
-enum Top { None, Some(Mid) }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  manager.PrepareForModules({{tm.module, tm.type_info}});
-  const SumType& narrow = ConcreteSum(tm, "Narrow");
-  const SumType& wide = ConcreteSum(tm, "Wide");
-  ASSERT_EQ(&narrow.nominal_type(), &wide.nominal_type());
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Narrow").value(), &import_data));
-  EXPECT_TRUE(
-      DslxTypeToVerilogManagerTestPeer::HasCommittedGraph(manager, narrow));
+  requests.push_back({definition("AliasOverlap"), std::nullopt});
   EXPECT_FALSE(
-      DslxTypeToVerilogManagerTestPeer::HasCommittedGraph(manager, wide));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Seed").value(), &import_data, "Taken"));
-  const std::string before = manager.Emit();
-  TypeDefinition failing = tm.module->GetTypeDefinition("Failing").value();
-  const absl::Status rejected =
-      manager.AddTypeForTypeDefinition(failing, &import_data);
-  ASSERT_FALSE(rejected.ok());
-  EXPECT_EQ(manager.AddTypeForTypeDefinition(failing, &import_data), rejected);
-  EXPECT_EQ(manager.Emit(), before);
-  EXPECT_FALSE(DslxTypeToVerilogManagerTestPeer::HasCommittedGraph(
-      manager, ConcreteSum(tm, "Failing")));
-  EXPECT_FALSE(
-      DslxTypeToVerilogManagerTestPeer::HasCommittedGraph(manager, wide));
-
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Working").value(), &import_data));
-  EXPECT_TRUE(
-      DslxTypeToVerilogManagerTestPeer::HasCommittedGraph(manager, wide));
-  EXPECT_TRUE(DslxTypeToVerilogManagerTestPeer::HasCommittedGraph(
-      manager, ConcreteSum(tm, "Working")));
-  EXPECT_EQ(CountOccurrences(manager.Emit(), "} Small;"), 1);
-  EXPECT_EQ(CountOccurrences(manager.Emit(), "} Large;"), 1);
-
-  // A failure after ordinary marking, during later emission, must also discard
-  // the entire graph batch. A following public export can then commit it.
-  const std::string before_late_failure = manager.Emit();
-  EXPECT_EQ(DslxTypeToVerilogManagerTestPeer::MarkThenReject(
-                manager, ConcreteSum(tm, "Top")),
-            absl::InvalidArgumentError("later emission rejected"));
-  EXPECT_EQ(manager.Emit(), before_late_failure);
-  for (std::string_view name : {"Leaf", "Mid", "Top"}) {
-    EXPECT_FALSE(DslxTypeToVerilogManagerTestPeer::HasCommittedGraph(
-        manager, ConcreteSum(tm, name)));
-  }
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Top").value(), &import_data));
-  for (std::string_view name : {"Leaf", "Mid", "Top"}) {
-    EXPECT_TRUE(DslxTypeToVerilogManagerTestPeer::HasCommittedGraph(
-        manager, ConcreteSum(tm, name)));
-    EXPECT_EQ(CountOccurrences(manager.Emit(), absl::StrFormat("} %s;", name)),
-              1);
-  }
+      ExportDslxTypesToVerilog("test_pkg", &import_data, requests).ok());
 }
 
 TEST_F(DslxToVerilogTest, UnemittedOrdinaryAliasDoesNotBlockSumProjection) {
@@ -2557,24 +2012,22 @@ pub enum Message { None, Pair(Code, byte) }
   XLS_ASSERT_OK_AND_ASSIGN(
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector manager("test_pkg");
   const TypeDefinition record = tm.module->GetTypeDefinition("byte").value();
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(record, &import_data));
+  manager.AddTypeForTypeDefinition(record, &import_data);
   const std::string ordinary_record = manager.Emit();
   ASSERT_EQ(CountOccurrences(ordinary_record, "} byte;"), 1) << ordinary_record;
   ASSERT_EQ(CountOccurrences(ordinary_record, "} byte_;"), 0)
       << ordinary_record;
-  XLS_ASSERT_OK(
-      manager.AddTypeForTypeDefinition(record, &import_data, "byte_"));
+  manager.AddTypeForTypeDefinition(record, &import_data, "byte_");
   ASSERT_EQ(manager.Emit(), ordinary_record);
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Code").value(), &import_data));
+  manager.AddTypeForTypeDefinition(tm.module->GetTypeDefinition("Code").value(),
+                                   &import_data);
   const std::string before = manager.Emit();
   ASSERT_TRUE(RE2::PartialMatch(before, R"(\n\s+wire = 8'h00)")) << before;
 
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Message").value(), &import_data));
+  manager.AddTypeForTypeDefinition(
+      tm.module->GetTypeDefinition("Message").value(), &import_data);
   const std::string after = manager.Emit();
   EXPECT_EQ(CountOccurrences(after, "} byte_;"), 1) << after;
   EXPECT_TRUE(RE2::PartialMatch(after, R"(\n\s+wire_ = 8'h00)")) << after;
@@ -2602,23 +2055,21 @@ pub enum Message { None, Pair(Code, Other, a::Record) }
   XLS_ASSERT_OK_AND_ASSIGN(
       ImportedInfo * imported,
       tm.type_info->GetImportedOrError(tm.module->GetImportByName().at("a")));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Code").value(), &import_data));
+  BatchExportCollector manager("test_pkg");
+  manager.AddTypeForTypeDefinition(tm.module->GetTypeDefinition("Code").value(),
+                                   &import_data);
   const TypeDefinition record =
       imported->module->GetTypeDefinition("Record").value();
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(record, &import_data));
+  manager.AddTypeForTypeDefinition(record, &import_data);
   const std::string before = manager.Emit();
   ASSERT_TRUE(RE2::PartialMatch(before, R"(\n\s+Common = 8'h00)")) << before;
   ASSERT_EQ(CountOccurrences(before, "} Record;"), 1) << before;
   ASSERT_EQ(CountOccurrences(before, "} a_Record;"), 0) << before;
-  XLS_ASSERT_OK(
-      manager.AddTypeForTypeDefinition(record, &import_data, "a_Record"));
+  manager.AddTypeForTypeDefinition(record, &import_data, "a_Record");
   ASSERT_EQ(manager.Emit(), before);
 
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Message").value(), &import_data));
+  manager.AddTypeForTypeDefinition(
+      tm.module->GetTypeDefinition("Message").value(), &import_data);
   const std::string after = manager.Emit();
   EXPECT_TRUE(RE2::PartialMatch(after, R"(\n\s+Code_Common = 8'h00)")) << after;
   EXPECT_TRUE(RE2::PartialMatch(after, R"(\n\s+Other_Common = 8'h00)"))
@@ -2627,146 +2078,35 @@ pub enum Message { None, Pair(Code, Other, a::Record) }
   EXPECT_EQ(CountOccurrences(after, "} Message;"), 1) << after;
 }
 
-TEST_F(DslxToVerilogTest, NestedSumProjectedEnumConflictDoesNotEmitPrelude) {
-  constexpr std::string_view program = R"(
-enum Seed { Empty, Item(u1) }
-type Prelude = u8;
-enum E: u1 { byte = 0 }
-enum Carrier { Value(E) }
-fn ordinary(value: (Prelude, Carrier)) -> (Prelude, Carrier) { value }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Seed").value(), &import_data, "byte_"));
-  const std::string before = manager.Emit();
-  ASSERT_EQ(CountOccurrences(before, "typedef Seed byte_;"), 1) << before;
-  ASSERT_EQ(CountOccurrences(before, " Prelude;"), 0) << before;
-
-  Function* ordinary = tm.module->GetFunction("ordinary").value();
-  const absl::Status expected = absl::InvalidArgumentError(
-      "SystemVerilog alias `byte_` for sum family `Seed` conflicts with an "
-      "existing package symbol");
-  for (int attempt = 0; attempt < 2; ++attempt) {
-    SCOPED_TRACE(attempt);
-    EXPECT_EQ(
-        manager.AddTypeForFunctionOutput(ordinary, &import_data, "Output"),
-        expected);
-    EXPECT_EQ(manager.Emit(), before);
-  }
-}
-
-TEST_F(DslxToVerilogTest, SumAliasConflictingWithNewDependencyIsAtomic) {
-  constexpr std::string_view program = R"(
-struct Slot { value: u8 }
-enum S { Empty, Value(Slot) }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  const TypeDefinition sum = tm.module->GetTypeDefinition("S").value();
-  const std::string before = manager.Emit();
-  const absl::Status expected = absl::InvalidArgumentError(
-      "SystemVerilog alias `Slot` for sum family `S` conflicts with an "
-      "existing package symbol");
-  for (int i = 0; i < 2; ++i) {
-    EXPECT_EQ(manager.AddTypeForTypeDefinition(sum, &import_data, "Slot"),
-              expected);
-    EXPECT_EQ(manager.Emit(), before);
-  }
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(sum, &import_data));
-  const std::string after = manager.Emit();
-  EXPECT_EQ(CountOccurrences(after, "} Slot;"), 1) << after;
-  EXPECT_EQ(CountOccurrences(after, "} S;"), 1) << after;
-}
-
 TEST_F(DslxToVerilogTest, OuterOrdinaryAliasUsesFinalNestedEnumProjection) {
-  constexpr std::string_view program = R"(
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(R"(
 enum Seed { Empty, Item(u1) }
 type Prelude = u8;
 enum E: u1 { Foo = 0 }
 enum Carrier { Value(E) }
 fn ordinary(value: (Prelude, Carrier)) -> (Prelude, Carrier) { value }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinition("Seed").value(), &import_data, "E_Foo"));
-  const std::string before = manager.Emit();
-  const absl::Status expected = absl::InvalidArgumentError(
-      "SystemVerilog alias `E_Foo` for sum family `Seed` conflicts with an "
-      "existing package symbol");
+)",
+                        "test.x", "test", &import_data, nullptr));
+  TypeDefinition seed = tm.module->GetTypeDefinition("Seed").value();
   Function* ordinary = tm.module->GetFunction("ordinary").value();
-  for (int i = 0; i < 2; ++i) {
-    EXPECT_EQ(manager.AddTypeForFunctionOutput(ordinary, &import_data, "Foo"),
-              expected);
-    EXPECT_EQ(manager.Emit(), before);
-  }
-  XLS_ASSERT_OK(
-      manager.AddTypeForFunctionOutput(ordinary, &import_data, "Output"));
-  const std::string after = manager.Emit();
-  EXPECT_EQ(CountOccurrences(after, " Prelude;"), 1) << after;
-  EXPECT_EQ(CountOccurrences(after, "} Carrier;"), 1) << after;
-  EXPECT_TRUE(RE2::PartialMatch(after, R"(\n\s+Foo = 1'h0)")) << after;
-
-  EXPECT_EQ(manager.AddTypeForFunctionOutput(ordinary, &import_data, "Foo"),
-            expected);
-  EXPECT_EQ(manager.Emit(), after);
-}
-
-// Negative test: conflicting sum aliases are rejected without changing output.
-TEST_F(DslxToVerilogTest, RejectedSumFunctionAliasPreservesOrdinaryPackage) {
-  constexpr std::string_view program = R"(
-enum A: u1 { TOKEN = 0 }
-enum B: u1 { TOKEN = 1 }
-pub type Taken = u1;
-enum S { A(A), B(B) }
-fn x(value: S) -> S { value }
-)";
-  ImportData import_data = CreateImportDataForTest();
+  const std::vector<VerilogExportRequest> allowed = {
+      {seed, "E_Foo"}, {VerilogFunctionOutputExport{ordinary}, "Output"}};
   XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
-                        nullptr));
-  const std::vector<TypeDefinition> definitions =
-      tm.module->GetTypeDefinitions();
-  ASSERT_EQ(definitions.size(), 4);
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  for (int i : {0, 2}) {
-    XLS_ASSERT_OK(
-        manager.AddTypeForTypeDefinition(definitions[i], &import_data));
-  }
-  const std::string before = manager.Emit();
-  ASSERT_TRUE(RE2::PartialMatch(before, R"(\n\s+TOKEN = 1'h0)")) << before;
-  ASSERT_TRUE(RE2::PartialMatch(before, R"(typedef logic(?: \[0:0\])? Taken;)"))
-      << before;
-  Function* function = tm.module->GetFunction("x").value();
-  const auto param =
-      manager.AddTypeForFunctionParam(function, &import_data, "value", "Taken");
-  ASSERT_FALSE(param.ok());
-  EXPECT_NE(param.message().find("Taken"), std::string_view::npos) << param;
-  EXPECT_EQ(manager.Emit(), before);
-  const auto output =
-      manager.AddTypeForFunctionOutput(function, &import_data, "Taken");
-  ASSERT_FALSE(output.ok());
-  EXPECT_NE(output.message().find("Taken"), std::string_view::npos) << output;
-  EXPECT_EQ(manager.Emit(), before);
+      std::string package,
+      ExportDslxTypesToVerilog("test_pkg", &import_data, allowed));
+  EXPECT_EQ(CountOccurrences(package, " Prelude;"), 1);
+  EXPECT_EQ(CountOccurrences(package, "} Carrier;"), 1);
+  EXPECT_TRUE(RE2::PartialMatch(package, R"(\n\s+Foo = 1'h0)"));
+  const std::vector<VerilogExportRequest> rejected = {
+      {seed, "E_Foo"}, {VerilogFunctionOutputExport{ordinary}, "Foo"}};
+  auto result = ExportDslxTypesToVerilog("test_pkg", &import_data, rejected);
+  ASSERT_FALSE(result.ok());
+  EXPECT_NE(result.status().message().find("E_Foo"), std::string_view::npos);
 }
 
-// Verifies: Unrelated typedefs do not change source fields or fixed positions.
-// Catches: Root order altering the view, constructor, or getter interface.
 TEST_F(DslxToVerilogTest, SumMembersIgnoreUnrelatedPackageTypedefOrder) {
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK_AND_ASSIGN(
@@ -2781,16 +2121,14 @@ TEST_F(DslxToVerilogTest, SumMembersIgnoreUnrelatedPackageTypedefOrder) {
                         "owner.x", "owner", &import_data, nullptr));
   for (bool owner_first : {false, true}) {
     SCOPED_TRACE(owner_first);
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
+    BatchExportCollector manager("test_pkg");
     manager.PrepareForModules(
         {{other.module, other.type_info}, {owner.module, owner.type_info}});
     for (Module* module :
          (owner_first ? std::vector{owner.module, other.module}
                       : std::vector{other.module, owner.module})) {
       for (const TypeDefinition& definition : module->GetTypeDefinitions()) {
-        XLS_ASSERT_OK(
-            manager.AddTypeForTypeDefinition(definition, &import_data));
+        manager.AddTypeForTypeDefinition(definition, &import_data);
       }
     }
     const std::string emitted = manager.Emit();
@@ -2819,10 +2157,9 @@ pub enum Wide { Empty, One(u1), Full(uN[524288][2]) }
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                         nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector manager("test_pkg");
   for (const TypeDefinition& definition : tm.module->GetTypeDefinitions()) {
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(definition, &import_data));
+    manager.AddTypeForTypeDefinition(definition, &import_data);
   }
   const std::string emitted = manager.Emit();
   for (std::string_view statement : {
@@ -2857,10 +2194,9 @@ pub enum Message {
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                         nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-      tm.module->GetTypeDefinitions().front(), &import_data));
+  BatchExportCollector manager("test_pkg");
+  manager.AddTypeForTypeDefinition(tm.module->GetTypeDefinitions().front(),
+                                   &import_data);
   const std::string emitted = manager.Emit();
   std::string view;
   ASSERT_TRUE(RE2::PartialMatch(
@@ -2916,19 +2252,20 @@ pub struct Wrapper {
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test_module.x", "test_module", &import_data,
                         nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector type_to_verilog("test_pkg");
   const std::vector<TypeDefinition> definitions =
       tm.module->GetTypeDefinitions();
   ASSERT_EQ(definitions.size(), 2);
-  const auto standalone_status =
-      type_to_verilog.AddTypeForTypeDefinition(definitions[0], &import_data);
-  ASSERT_FALSE(standalone_status.ok());
-  EXPECT_NE(standalone_status.message().find("Zero sized interface type"),
-            std::string_view::npos)
-      << standalone_status;
-  XLS_ASSERT_OK(
-      type_to_verilog.AddTypeForTypeDefinition(definitions[1], &import_data));
+  const std::vector<VerilogExportRequest> standalone = {
+      {definitions[0], std::nullopt}};
+  const auto standalone_result =
+      ExportDslxTypesToVerilog("test_pkg", &import_data, standalone);
+  ASSERT_FALSE(standalone_result.ok());
+  EXPECT_NE(
+      standalone_result.status().message().find("Zero sized interface type"),
+      std::string_view::npos)
+      << standalone_result.status();
+  type_to_verilog.AddTypeForTypeDefinition(definitions[1], &import_data);
 
   const std::string emitted = type_to_verilog.Emit();
   EXPECT_EQ(emitted.find("} Marker;"), std::string::npos) << emitted;
@@ -2973,11 +2310,10 @@ struct TopType {
                               &import_data, nullptr));
 
   // Create package, add function types, and check output
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector type_to_verilog("test_pkg");
 
   for (const TypeDefinition& def : tm.module->GetTypeDefinitions()) {
-    XLS_ASSERT_OK(type_to_verilog.AddTypeForTypeDefinition(def, &import_data));
+    type_to_verilog.AddTypeForTypeDefinition(def, &import_data);
   }
 
   ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
@@ -3005,13 +2341,12 @@ fn f() -> NestedType {
                               &import_data, nullptr));
 
   // Create package, add function types, and check output
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector type_to_verilog("test_pkg");
 
   Function* func = tm.module->GetFunction("f").value();
 
-  XLS_ASSERT_OK(type_to_verilog.AddTypeForFunctionOutput(
-      func, &import_data, "user_defined_name_t"));
+  type_to_verilog.AddTypeForFunctionOutput(func, &import_data,
+                                           "user_defined_name_t");
 
   ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
 }
@@ -3037,19 +2372,15 @@ fn f(a : StructType[4][7], b : u32[5][8], c : bits[300][8][9]) -> u32 {
                               &import_data, nullptr));
 
   // Create package, add function types, and check output
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector type_to_verilog("test_pkg");
 
   Function* func = tm.module->GetFunction("f").value();
 
-  XLS_ASSERT_OK(
-      type_to_verilog.AddTypeForFunctionParam(func, &import_data, "a"));
+  type_to_verilog.AddTypeForFunctionParam(func, &import_data, "a");
 
-  XLS_ASSERT_OK(
-      type_to_verilog.AddTypeForFunctionParam(func, &import_data, "b"));
+  type_to_verilog.AddTypeForFunctionParam(func, &import_data, "b");
 
-  XLS_ASSERT_OK(
-      type_to_verilog.AddTypeForFunctionParam(func, &import_data, "c"));
+  type_to_verilog.AddTypeForFunctionParam(func, &import_data, "c");
 
   ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
 }
@@ -3077,15 +2408,12 @@ fn f(a : ArrayOfStructType, b : ArrayOfStructType[2]) -> u32 {
                               &import_data, nullptr));
 
   // Create package, add function types, and check output
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector type_to_verilog("test_pkg");
 
   Function* func = tm.module->GetFunction("f").value();
 
-  XLS_ASSERT_OK(
-      type_to_verilog.AddTypeForFunctionParam(func, &import_data, "a"));
-  XLS_ASSERT_OK(
-      type_to_verilog.AddTypeForFunctionParam(func, &import_data, "b"));
+  type_to_verilog.AddTypeForFunctionParam(func, &import_data, "a");
+  type_to_verilog.AddTypeForFunctionParam(func, &import_data, "b");
 
   ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
 }
@@ -3131,22 +2459,18 @@ pub type ArrayOfStructType = StructType[10];
                               &import_data, nullptr));
 
   // Create package, add function types, and check output
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager type_to_verilog,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
+  BatchExportCollector type_to_verilog("test_pkg");
 
   for (const TypeDefinition& def : tm.module->GetTypeDefinitions()) {
-    XLS_ASSERT_OK(type_to_verilog.AddTypeForTypeDefinition(def, &import_data));
+    type_to_verilog.AddTypeForTypeDefinition(def, &import_data);
   }
 
   ExpectEqualToGoldenFile(GoldenFilePath("vtxt"), type_to_verilog.Emit());
 }
 
 TEST_F(DslxToVerilogTest, PayloadMemberNamesRespectDeclarationOrder) {
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  DslxTypeToVerilogManagerTestPeer::AddProjectedMemberNameScopes(manager);
-
-  const std::string emitted = manager.Emit();
+  const std::string emitted =
+      DslxTypeToVerilogManagerTestPeer::ProjectedMemberNameScopes();
   EXPECT_NE(emitted.find(R"(typedef struct packed {
     logic Token__1;
     Token value;
@@ -3184,58 +2508,6 @@ TEST_F(DslxToVerilogTest, PayloadMemberNamesRespectDeclarationOrder) {
       << emitted;
 }
 
-TEST_F(DslxToVerilogTest, DuplicateOrdinaryEnumValuesKeepTheOriginalEnum) {
-  constexpr std::string_view program = R"(
-enum Ordinary : u2 { FIRST = 0, ALIAS = 0, OTHER = 1 }
-type ExistingUse = Ordinary;
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  const TypeDefinition ordinary =
-      tm.module->GetTypeDefinition("Ordinary").value();
-  const TypeDefinition existing_use =
-      tm.module->GetTypeDefinition("ExistingUse").value();
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(ordinary, &import_data));
-  XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(existing_use, &import_data));
-  verilog::TypedefType* named = DslxTypeToVerilogManagerTestPeer::NamedType(
-      manager, TypeDefinitionToAstNode(ordinary));
-  verilog::TypedefType* consumer = DslxTypeToVerilogManagerTestPeer::NamedType(
-      manager, TypeDefinitionToAstNode(existing_use));
-  ASSERT_NE(named, nullptr);
-  ASSERT_NE(consumer, nullptr);
-  auto* enumeration =
-      dynamic_cast<verilog::Enum*>(named->type_def()->data_type());
-  ASSERT_NE(enumeration, nullptr);
-  ASSERT_EQ(enumeration->members().size(), 3);
-  verilog::EnumMember* first = enumeration->members()[0];
-  verilog::EnumMember* other = enumeration->members()[2];
-  ASSERT_EQ(consumer->type_def()->data_type(), named);
-
-  DslxTypeToVerilogManagerTestPeer::ProjectEnumValues(manager, enumeration,
-                                                      named);
-
-  EXPECT_EQ(named->type_def()->data_type(), enumeration);
-  EXPECT_EQ(consumer->type_def()->data_type(), named);
-  ASSERT_EQ(enumeration->members().size(), 2);
-  EXPECT_EQ(enumeration->members()[0], first);
-  EXPECT_EQ(enumeration->members()[1], other);
-  const std::string emitted = manager.Emit();
-  EXPECT_NE(emitted.find(R"(typedef enum logic [1:0] {
-    FIRST = 2'h0,
-    OTHER = 2'h1
-  } Ordinary;)"),
-            std::string::npos)
-      << emitted;
-  EXPECT_EQ(CountOccurrences(emitted, "parameter Ordinary ALIAS = FIRST;"), 1)
-      << emitted;
-  EXPECT_EQ(CountOccurrences(emitted, "typedef Ordinary ExistingUse;"), 1)
-      << emitted;
-}
-
 TEST_F(DslxToVerilogTest, PayloadProjectionPreservesSignedSelectionsAndTuples) {
   constexpr std::string_view program = R"(
 enum Payload {
@@ -3249,12 +2521,10 @@ enum Payload {
   XLS_ASSERT_OK_AND_ASSIGN(
       TypecheckedModule tm,
       ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  XLS_ASSERT_OK(DslxTypeToVerilogManagerTestPeer::AddProjectedPayloadTypes(
-      manager, ConcreteSum(tm, "Payload"), &import_data));
-
-  const std::string emitted = manager.Emit();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string emitted,
+      DslxTypeToVerilogManagerTestPeer::ProjectedPayloadTypes(
+          ConcreteSum(tm, "Payload"), &import_data));
   EXPECT_EQ(CountOccurrences(emitted, "typedef logic signed Scalar;"), 1)
       << emitted;
   EXPECT_EQ(CountOccurrences(
@@ -3278,61 +2548,6 @@ enum Payload {
       << emitted;
 }
 
-TEST_F(DslxToVerilogTest, OrdinaryWrapperConflictIsAtomicAndRetryable) {
-  constexpr std::string_view program = R"(
-enum Seed { Empty, Item(u1) }
-enum Leaf { Value(u8) }
-type Fresh = u8;
-type Taken = u16;
-struct Payload { fresh: Fresh, taken: Taken }
-enum Inner { Value(Payload) }
-struct Wrapper { inner: Inner }
-struct KnownWrapper { fresh: Fresh, taken: Taken, inner: Leaf }
-)";
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
-  const TypeDefinition seed = tm.module->GetTypeDefinition("Seed").value();
-  const TypeDefinition leaf = tm.module->GetTypeDefinition("Leaf").value();
-  for (const std::string name : {"Inner", "Wrapper", "KnownWrapper"}) {
-    SCOPED_TRACE(name);
-    const TypeDefinition definition =
-        tm.module->GetTypeDefinition(name).value();
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager control,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
-    XLS_ASSERT_OK(control.AddTypeForTypeDefinition(leaf, &import_data));
-    XLS_ASSERT_OK(control.AddTypeForTypeDefinition(seed, &import_data, "Safe"));
-    XLS_ASSERT_OK(control.AddTypeForTypeDefinition(definition, &import_data));
-
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(leaf, &import_data));
-    XLS_ASSERT_OK(
-        manager.AddTypeForTypeDefinition(seed, &import_data, "Taken"));
-    const std::string before = manager.Emit();
-    ASSERT_EQ(CountOccurrences(before, "typedef Seed Taken;"), 1) << before;
-    ASSERT_EQ(CountOccurrences(before, " Fresh;"), 0) << before;
-    std::optional<absl::Status> first_status;
-    // The conflict follows Fresh in the payload. Neither the failed export nor
-    // its retry may leave Fresh or an incomplete sum family in the manager.
-    for (int attempt = 0; attempt < 2; ++attempt) {
-      SCOPED_TRACE(attempt);
-      const absl::Status status =
-          manager.AddTypeForTypeDefinition(definition, &import_data);
-      EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
-      EXPECT_NE(status.message().find("Taken"), std::string_view::npos)
-          << status;
-      if (attempt == 0) {
-        first_status = status;
-      } else {
-        EXPECT_EQ(status, *first_status);
-      }
-      EXPECT_EQ(manager.Emit(), before);
-    }
-  }
-}
-
 TEST_F(DslxToVerilogTest, ConcreteGenericInsideOrdinaryWrapper) {
   constexpr std::string_view program = R"(#![feature(generics)]
 struct Generic<N: u32> { value: uN[N] }
@@ -3346,10 +2561,9 @@ pub enum Wrapped { Value(Wrapper) }
       ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
   for (const std::string name : {"Direct", "Wrapped"}) {
     SCOPED_TRACE(name);
-    XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                             DslxTypeToVerilogManager::Create("test_pkg"));
-    XLS_ASSERT_OK(manager.AddTypeForTypeDefinition(
-        tm.module->GetTypeDefinition(name).value(), &import_data));
+    BatchExportCollector manager("test_pkg");
+    manager.AddTypeForTypeDefinition(tm.module->GetTypeDefinition(name).value(),
+                                     &import_data);
     const std::string emitted = manager.Emit();
     // A wrapper preserves the same concrete field and complete payload width.
     EXPECT_TRUE(RE2::PartialMatch(emitted, R"(logic \[7:0\] value;)"))
@@ -3360,23 +2574,22 @@ pub enum Wrapped { Value(Wrapper) }
 }
 
 TEST_F(DslxToVerilogTest, SignedScalarsNeedNoAdditionalNames) {
-  constexpr std::string_view program = R"(
-struct Record { value: s8 }
-enum Scalar { Value(s8) }
-enum Wrapped { Value(Record) }
-)";
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK_AND_ASSIGN(
       TypecheckedModule tm,
-      ParseAndTypecheck(program, "test.x", "test", &import_data, nullptr));
-  XLS_ASSERT_OK_AND_ASSIGN(DslxTypeToVerilogManager manager,
-                           DslxTypeToVerilogManager::Create("test_pkg"));
-  manager.PrepareForModules({{tm.module, tm.type_info}});
-  EXPECT_TRUE(DslxTypeToVerilogManagerTestPeer::CanAddWithoutNameChanges(
-      manager, ConcreteSum(tm, "Scalar")));
-  // The signed record still needs a companion name and full name validation.
-  EXPECT_FALSE(DslxTypeToVerilogManagerTestPeer::CanAddWithoutNameChanges(
-      manager, ConcreteSum(tm, "Wrapped")));
+      ParseAndTypecheck("struct Record { value: s8 } "
+                        "enum Scalar { Value(s8) } "
+                        "enum Wrapped { Value(Record) }",
+                        "test.x", "test", &import_data, nullptr));
+  const std::vector<VerilogExportRequest> requests = {
+      {tm.module->GetTypeDefinition("Scalar").value(), std::nullopt},
+      {tm.module->GetTypeDefinition("Wrapped").value(), std::nullopt}};
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string package,
+      ExportDslxTypesToVerilog("test_pkg", &import_data, requests));
+  EXPECT_NE(package.find("logic signed [7:0] value;"), std::string::npos);
+  EXPECT_EQ(package.find("Scalar_s8_value_t"), std::string::npos);
+  EXPECT_NE(package.find("Wrapped_Record_value_t"), std::string::npos);
 }
 
 }  // namespace
