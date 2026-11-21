@@ -572,6 +572,7 @@ cc_library(
         "//xls/dslx/frontend:module",
         "//xls/dslx/frontend:pos",
         "//xls/dslx/type_system:deduce_utils",
+        "//xls/dslx/type_system:type_info",
         "//xls/ir:format_strings",
         "@abseil-cpp//absl/algorithm:container",
         "@abseil-cpp//absl/base",
