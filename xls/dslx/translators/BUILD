@@ -146,6 +146,7 @@ cc_binary(
     srcs = ["dslx_to_verilog_main.cc"],
     deps = [
         ":dslx_to_verilog",
+        "//xls/codegen/vast",
         "//xls/common:exit_status",
         "//xls/common:init_xls",
         "//xls/common:visitor",
@@ -273,8 +274,20 @@ diff_test(
 sh_test(
     name = "dslx_to_verilog_main_multifile_sum_test",
     srcs = ["testdata/multifile_sum.sh"],
-    args = ["$(rootpath :dslx_to_verilog_main)"],
-    data = [":dslx_to_verilog_main"],
+    args = [
+        "$(rootpath :dslx_to_verilog_main)",
+        "$(rootpath testdata/sum_input_a.x)",
+        "$(rootpath testdata/sum_input_b.x)",
+        "$(rootpath @com_icarus_iverilog//:iverilog)",
+        "$(rootpath @com_icarus_iverilog//:vvp)",
+    ],
+    data = [
+        ":dslx_to_verilog_main",
+        "testdata/sum_input_a.x",
+        "testdata/sum_input_b.x",
+        "@com_icarus_iverilog//:iverilog",
+        "@com_icarus_iverilog//:vvp",
+    ],
 )
 
 # Exercise the actual generated package and DSLX RTL in normal CI using the

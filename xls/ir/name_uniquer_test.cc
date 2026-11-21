@@ -14,9 +14,9 @@
 
 #include "xls/ir/name_uniquer.h"
 
+#include "absl/status/status_matchers.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "absl/status/status_matchers.h"
 
 namespace xls {
 namespace {
@@ -86,6 +86,43 @@ TEST(NameUniquerTest, ReserveIdentifier) {
   EXPECT_EQ("BOO", uniquer.GetSanitizedUniqueName("BOO"));
   EXPECT_EQ("BOO__1", uniquer.GetSanitizedUniqueName("BOO"));
   EXPECT_EQ("BOO__3", uniquer.GetSanitizedUniqueName("BOO"));
+}
+
+TEST(NameUniquerTest, ReserveExactNumericSpellings) {
+  NameUniquer uniquer("__");
+  EXPECT_THAT(uniquer.ReserveIdentifier("Slot__01"), IsOk());
+  EXPECT_THAT(uniquer.ReserveIdentifier("Slot__1"), IsOk());
+  EXPECT_THAT(uniquer.ReserveIdentifier("Slot__01"), Not(IsOk()));
+  EXPECT_EQ(uniquer.GetSanitizedUniqueName("Slot__01"), "Slot__2");
+  NameUniquer clone = uniquer.Clone();
+  EXPECT_THAT(clone.ReleaseIdentifier("Slot__01"), IsOk());
+  EXPECT_THAT(clone.ReserveIdentifier("Slot__01"), IsOk());
+  EXPECT_THAT(uniquer.ReserveIdentifier("Slot__01"), Not(IsOk()));
+  uniquer.Reset();
+  EXPECT_THAT(uniquer.ReserveIdentifier("Slot__1"), IsOk());
+  EXPECT_THAT(uniquer.ReserveIdentifier("Slot__01"), IsOk());
+  EXPECT_THAT(uniquer.ReserveIdentifier("__01"), IsOk());
+  EXPECT_THAT(uniquer.ReserveIdentifier("__1"), IsOk());
+  EXPECT_EQ(uniquer.GetSanitizedUniqueName("__01"), "name__1");
+}
+
+TEST(NameUniquerTest, ReleaseNumericNameWithNestedPrefixTracker) {
+  NameUniquer uniquer("__");
+  EXPECT_THAT(uniquer.ReserveIdentifier("Slot__1__2"), IsOk());
+  EXPECT_THAT(uniquer.ReserveIdentifier("Slot__1"), IsOk());
+  EXPECT_THAT(uniquer.ReleaseIdentifier("Slot__1"), IsOk());
+  EXPECT_EQ(uniquer.GetSanitizedUniqueName("Slot__1"), "Slot__1");
+}
+
+TEST(NameUniquerTest, ReleaseRequiresExactNumericSpelling) {
+  NameUniquer uniquer("__");
+  EXPECT_THAT(uniquer.ReserveIdentifier("Slot__1"), IsOk());
+  EXPECT_THAT(uniquer.ReleaseIdentifier("Slot__01"), Not(IsOk()));
+  EXPECT_EQ(uniquer.GetSanitizedUniqueName("Slot__1"), "Slot__2");
+  EXPECT_THAT(uniquer.ReserveIdentifier("Slot__01"), IsOk());
+  EXPECT_THAT(uniquer.ReleaseIdentifier("Slot__01"), IsOk());
+  EXPECT_THAT(uniquer.ReleaseIdentifier("Slot__01"), Not(IsOk()));
+  EXPECT_THAT(uniquer.ReserveIdentifier("Slot__1"), Not(IsOk()));
 }
 
 TEST(NameUniquerTest, DifferentSeparator) {

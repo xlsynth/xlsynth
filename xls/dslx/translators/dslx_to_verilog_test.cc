@@ -129,8 +129,13 @@ class BatchExportCollector {
   explicit BatchExportCollector(std::string_view package_name)
       : package_name_(package_name) {}
 
-  void PrepareForModules(std::vector<std::pair<Module*, TypeInfo*>> roots) {
+  void PrepareForModules(
+      std::vector<std::pair<Module*, TypeInfo*>> roots,
+      const std::map<const AstNode*, std::string>& owners = {},
+      SumQualifierPolicy policy = SumQualifierPolicy::kWholeModuleGraph) {
     options_.roots = std::move(roots);
+    options_.public_nominal_owners = owners;
+    options_.sum_qualifier_policy = policy;
     package_.reset();
   }
 
@@ -221,6 +226,131 @@ class DslxToVerilogTest : public ::testing::Test {
   }
 };
 
+TEST_F(DslxToVerilogTest, BatchReservesSelectedAliasesBeforeGeneratedNames) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck("enum First { Empty, Item(u8) } "
+                        "enum Second { Empty, Item(u16) }",
+                        "test.x", "test", &import_data, nullptr));
+  TypeDefinition first = tm.module->GetTypeDefinition("First").value();
+  TypeDefinition second = tm.module->GetTypeDefinition("Second").value();
+  for (bool reverse : {false, true}) {
+    std::vector<VerilogExportRequest> requests = {{first, "Second_make_item"},
+                                                  {second, std::nullopt}};
+    if (reverse) {
+      std::reverse(requests.begin(), requests.end());
+    }
+    XLS_ASSERT_OK_AND_ASSIGN(
+        std::string package,
+        ExportDslxTypesToVerilog("test_pkg", &import_data, requests));
+    EXPECT_EQ(CountOccurrences(package, "typedef First Second_make_item;"), 1);
+    EXPECT_NE(package.find("Second_make_item__1 ("), std::string::npos);
+  }
+  const std::vector<VerilogExportRequest> conflicting = {{first, "Fixed"},
+                                                         {second, "Fixed"}};
+  EXPECT_FALSE(
+      ExportDslxTypesToVerilog("test_pkg", &import_data, conflicting).ok());
+}
+
+TEST_F(DslxToVerilogTest, BatchRejectsFunctionAliasTakenByNewDependency) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(R"(#![feature(generics)]
+enum Message<N: u32> { Empty, Item(uN[N]) }
+fn direct(x: Message<u32:8>) -> Message<u32:8> { x }
+fn tuple(x: (Message<u32:8>, u8)) -> (Message<u32:8>, u8) { x }
+)",
+                        "test.x", "test", &import_data, nullptr));
+  Function* direct = tm.module->GetFunction("direct").value();
+  Function* tuple = tm.module->GetFunction("tuple").value();
+  const std::vector<VerilogExportRequest> probe = {
+      {VerilogFunctionOutputExport{direct}, std::nullopt}};
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string package,
+      ExportDslxTypesToVerilog("test_pkg", &import_data, probe));
+  std::string helper;
+  ASSERT_TRUE(RE2::PartialMatch(
+      package, R"(function automatic [^\n]+ ([^ ]+_make_item) \()", &helper));
+  const std::vector<VerilogExportRequest> conflicting = {
+      {VerilogFunctionParamExport{tuple, "x"}, helper}};
+  EXPECT_FALSE(
+      ExportDslxTypesToVerilog("test_pkg", &import_data, conflicting).ok());
+}
+
+TEST_F(DslxToVerilogTest, BatchGenericSameNameAliasKeepsSpecializationName) {
+  absl::flat_hash_map<std::filesystem::path, std::string> files;
+  files["/shared.x"] = R"(#![feature(generics)]
+pub enum Event<N: u32> { Empty, Item(uN[N]) }
+pub fn direct(x: Event<u32:8>) -> Event<u32:8> { x }
+)";
+  auto vfs =
+      std::make_unique<FakeFilesystem>(files, std::filesystem::path("/"));
+  ImportData import_data = CreateImportDataForTest(std::move(vfs));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule client,
+      ParseAndTypecheck(R"(#![feature(generics)]
+import shared;
+pub type Event = shared::Event<u32:8>;
+)",
+                        "client.x", "client", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(ModuleInfo * shared,
+                           import_data.Get(ImportTokens({"shared"})));
+  Function* direct = shared->module().GetFunction("direct").value();
+  const std::vector<VerilogExportRequest> probe = {
+      {VerilogFunctionOutputExport{direct}, "Direct"}};
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string direct_package,
+      ExportDslxTypesToVerilog("test_pkg", &import_data, probe));
+  std::string canonical;
+  ASSERT_TRUE(RE2::PartialMatch(direct_package, R"(typedef ([^ ]+) Direct;)",
+                                &canonical));
+  const std::vector<VerilogExportRequest> aliases = {
+      {client.module->GetTypeDefinition("Event").value(), std::nullopt}};
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string package,
+      ExportDslxTypesToVerilog("test_pkg", &import_data, aliases));
+  EXPECT_EQ(CountOccurrences(package, "typedef " + canonical + " Event;"), 1);
+  EXPECT_EQ(CountOccurrences(package, "} " + canonical + ";"), 1);
+}
+
+TEST_F(DslxToVerilogTest, BatchProtectsSameNameAliasFromQualifiedFamily) {
+  absl::flat_hash_map<std::filesystem::path, std::string> files = {
+      {"/a.x", "pub enum Event { Empty, Item(u8) }"},
+      {"/b.x", "pub enum Event { Empty, Item(u16) }"},
+      {"/c.x", "pub enum a_Event { Empty, Item(u32) }"}};
+  auto vfs =
+      std::make_unique<FakeFilesystem>(files, std::filesystem::path("/"));
+  ImportData import_data = CreateImportDataForTest(std::move(vfs));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule client,
+      ParseAndTypecheck("import a; import b; import c; "
+                        "pub type a_Event = c::a_Event;",
+                        "client.x", "client", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(ModuleInfo * a,
+                           import_data.Get(ImportTokens({"a"})));
+  XLS_ASSERT_OK_AND_ASSIGN(ModuleInfo * b,
+                           import_data.Get(ImportTokens({"b"})));
+  for (bool reverse : {false, true}) {
+    std::vector<VerilogExportRequest> requests = {
+        {a->module().GetTypeDefinition("Event").value(), std::nullopt},
+        {b->module().GetTypeDefinition("Event").value(), std::nullopt},
+        {client.module->GetTypeDefinition("a_Event").value(), std::nullopt}};
+    if (reverse) {
+      std::reverse(requests.begin(), requests.end());
+    }
+    XLS_ASSERT_OK_AND_ASSIGN(
+        std::string package,
+        ExportDslxTypesToVerilog("test_pkg", &import_data, requests));
+    EXPECT_EQ(CountOccurrences(package, "} a_Event;"), 1);
+    EXPECT_EQ(CountOccurrences(package, "} a_Event__1;"), 1);
+    EXPECT_EQ(CountOccurrences(package, "} b_Event;"), 1);
+    EXPECT_NE(package.find("a_Event_make_item ("), std::string::npos);
+    EXPECT_NE(package.find("a_Event__1_make_item ("), std::string::npos);
+  }
+}
+
 TEST_F(DslxToVerilogTest, BatchRejectsTokenBearingValueArguments) {
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK_AND_ASSIGN(
@@ -269,6 +399,29 @@ fn ordinary(x: (Inner, Code)) -> (Inner, Code) { x }
       {seed, "TOKEN"}, {VerilogFunctionOutputExport{ordinary}, "TupleOut"}};
   EXPECT_FALSE(
       ExportDslxTypesToVerilog("test_pkg", &import_data, enum_conflict).ok());
+}
+
+TEST_F(DslxToVerilogTest, SelectedAliasDisplacesSignedArrayCompanion) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck("enum Message { Empty, Samples(s8[2]) } "
+                        "enum Other { Empty, Item(u8) }",
+                        "test.x", "test", &import_data, nullptr));
+  for (bool reverse : {false, true}) {
+    std::vector<VerilogExportRequest> requests = {
+        {tm.module->GetTypeDefinition("Other").value(), "Message_s8_value_t"},
+        {tm.module->GetTypeDefinition("Message").value(), std::nullopt}};
+    if (reverse) {
+      std::reverse(requests.begin(), requests.end());
+    }
+    XLS_ASSERT_OK_AND_ASSIGN(
+        std::string package,
+        ExportDslxTypesToVerilog("test_pkg", &import_data, requests));
+    EXPECT_EQ(CountOccurrences(package, "typedef Other Message_s8_value_t;"),
+              1);
+    EXPECT_NE(package.find("Message_s8_value_t__1"), std::string::npos);
+  }
 }
 
 TEST_F(DslxToVerilogTest, BatchChecksAliasesAgainstNewGenericDependencies) {
@@ -1115,6 +1268,101 @@ pub type Right = b::Duplicate;
 
 // Sum qualifier policy changes whether an empty, colliding module contributes
 // a qualifier collision. Ordinary payload names still use the whole graph.
+TEST_F(DslxToVerilogTest, SumQualifierPolicyIsIndependentOfEmptyOwnerMap) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule first,
+      ParseAndTypecheck("pub struct Record { value: u8 } "
+                        "pub enum Packet { Empty, Item(Record) }",
+                        "first.x", "a.b", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule second,
+      ParseAndTypecheck("pub struct Record { value: u16 } "
+                        "pub enum Packet { Empty, Item(Record) }",
+                        "second.x", "c", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule empty,
+      ParseAndTypecheck("", "empty.x", "a_b", &import_data, nullptr));
+  const std::vector<std::pair<Module*, TypeInfo*>> modules = {
+      {first.module, first.type_info},
+      {second.module, second.type_info},
+      {empty.module, empty.type_info}};
+  BatchExportCollector default_policy("test_pkg");
+  BatchExportCollector empty_owners("test_pkg");
+  BatchExportCollector same_identifier("test_pkg");
+  default_policy.PrepareForModules(modules);
+  empty_owners.PrepareForModules(modules, {});
+  same_identifier.PrepareForModules(modules, {},
+                                    SumQualifierPolicy::kSameIdentifier);
+
+  for (auto [manager, sum_name] : {std::pair{&default_policy, "a_2e_b_Packet"},
+                                   std::pair{&empty_owners, "a_2e_b_Packet"},
+                                   std::pair{&same_identifier, "a_b_Packet"}}) {
+    SCOPED_TRACE(sum_name);
+    for (Module* module : {first.module, second.module}) {
+      manager->AddTypeForTypeDefinition(
+          module->GetTypeDefinition("Packet").value(), &import_data);
+    }
+    const std::string emitted = manager->Emit();
+    EXPECT_EQ(CountOccurrences(emitted, std::string("} ") + sum_name + ";"), 1)
+        << emitted;
+    EXPECT_EQ(CountOccurrences(emitted, "} c_Packet;"), 1) << emitted;
+    EXPECT_EQ(CountOccurrences(emitted, "} a_2e_b_Record;"), 1) << emitted;
+    EXPECT_EQ(CountOccurrences(emitted, "} c_Record;"), 1) << emitted;
+  }
+  EXPECT_EQ(default_policy.Emit(), empty_owners.Emit());
+}
+
+// A public owner can have no compiler qualifier bucket, or collide with a
+// bucket containing a single different compiler owner.
+TEST_F(DslxToVerilogTest, SumQualifierPolicyCombinesPublicAndCompilerOwners) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule first,
+      ParseAndTypecheck("pub enum Packet { Empty, Item(u8) }", "first.x",
+                        "internal", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule second,
+      ParseAndTypecheck("pub enum Packet { Empty, Item(u16) }", "second.x", "c",
+                        &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule empty,
+      ParseAndTypecheck("", "empty.x", "a_b", &import_data, nullptr));
+  const std::vector<std::pair<Module*, TypeInfo*>> modules = {
+      {first.module, first.type_info},
+      {second.module, second.type_info},
+      {empty.module, empty.type_info}};
+  const TypeDefinition first_packet =
+      first.module->GetTypeDefinition("Packet").value();
+  const std::map<const AstNode*, std::string> public_owners = {
+      {TypeDefinitionToAstNode(first_packet), "a.b"}};
+  BatchExportCollector whole_graph("test_pkg");
+  BatchExportCollector same_identifier("test_pkg");
+  BatchExportCollector no_compiler_bucket("test_pkg");
+  whole_graph.PrepareForModules(modules, public_owners,
+                                SumQualifierPolicy::kWholeModuleGraph);
+  same_identifier.PrepareForModules(modules, public_owners,
+                                    SumQualifierPolicy::kSameIdentifier);
+  no_compiler_bucket.PrepareForModules(
+      {{first.module, first.type_info}, {second.module, second.type_info}},
+      public_owners);
+
+  for (auto [manager, sum_name] :
+       {std::pair{&whole_graph, "a_2e_b_Packet"},
+        std::pair{&same_identifier, "a_b_Packet"},
+        std::pair{&no_compiler_bucket, "a_b_Packet"}}) {
+    SCOPED_TRACE(sum_name);
+    manager->AddTypeForTypeDefinition(first_packet, &import_data);
+    manager->AddTypeForTypeDefinition(
+        second.module->GetTypeDefinition("Packet").value(), &import_data);
+    const std::string emitted = manager->Emit();
+    EXPECT_EQ(CountOccurrences(emitted, std::string("} ") + sum_name + ";"), 1)
+        << emitted;
+    EXPECT_EQ(CountOccurrences(emitted, "} c_Packet;"), 1) << emitted;
+    EXPECT_EQ(emitted.find("internal_Packet"), std::string::npos) << emitted;
+  }
+}
+
 TEST_F(DslxToVerilogTest, ExplicitImportedSumSourceNameIsUsedOrRejected) {
   absl::flat_hash_map<std::filesystem::path, std::string> files = {
       {"/a.x", R"(pub enum Duplicate { Empty, Item(u8) }
@@ -1435,6 +1683,31 @@ const ONE = Values { xs: u32:1..u32:1 };
       EXPECT_EQ(family, canonical->second) << alias;
       EXPECT_EQ(CountOccurrences(emitted, "} " + family + "_tag_t;"), 1);
     }
+  }
+}
+
+TEST_F(DslxToVerilogTest, OrdinaryDefinitionYieldsToFixedSumAlias) {
+  ImportData import_data = CreateImportDataForTest();
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck("type Plain = u8; enum Message { Empty, Item(u8) }",
+                        "test_module.x", "test_module", &import_data, nullptr));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeDefinition plain,
+                           tm.module->GetTypeDefinition("Plain"));
+  XLS_ASSERT_OK_AND_ASSIGN(TypeDefinition message,
+                           tm.module->GetTypeDefinition("Message"));
+  for (bool reverse : {false, true}) {
+    SCOPED_TRACE(reverse);
+    std::vector<VerilogExportRequest> requests = {
+        {plain, "Slot"}, {message, "Slot"}};
+    if (reverse) {
+      std::reverse(requests.begin(), requests.end());
+    }
+    XLS_ASSERT_OK_AND_ASSIGN(
+        std::string emitted,
+        ExportDslxTypesToVerilog("test_pkg", &import_data, requests));
+    EXPECT_THAT(emitted, testing::HasSubstr("typedef logic [7:0] Slot__1;"));
+    EXPECT_THAT(emitted, testing::HasSubstr("typedef Message Slot;"));
   }
 }
 
