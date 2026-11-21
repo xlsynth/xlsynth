@@ -20,17 +20,19 @@
 #include <string_view>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/channel_direction.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/pos.h"
+#include "xls/dslx/mangle.h"
 #include "xls/dslx/parse_and_typecheck.h"
+#include "xls/dslx/type_system/type.h"
 #include "xls/dslx/value_format_descriptor.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/format_preference.h"
@@ -40,6 +42,34 @@ namespace xls::dslx {
 namespace {
 
 using ::absl_testing::IsOkAndHolds;
+
+// Verifies: Concrete type references compare by checked identity.
+// Catches: Merged types or type references comparing equal to bits.
+TEST(InterpValueTest, TypeReferencesUseCheckedIdentity) {
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      auto module,
+      ParseModule("fn f(x: u2) -> u2 { x }", "test.x", "test", file_table));
+  XLS_ASSERT_OK_AND_ASSIGN(Function * fn,
+                           module->GetMemberOrError<Function>("f"));
+  const TypeAnnotation* annotation = fn->params()[0]->type_annotation();
+  InterpValue first = MakeCheckedTypeReference(annotation, BitsType::MakeU32());
+  InterpValue first_again =
+      MakeCheckedTypeReference(annotation, BitsType::MakeU32());
+  InterpValue second = MakeCheckedTypeReference(annotation, BitsType::MakeU8());
+  EXPECT_EQ(first, first_again);
+  EXPECT_NE(first, second);
+  EXPECT_FALSE(first.HasBits());
+  InterpValue bits = InterpValue::MakeUBits(16, 0);
+  EXPECT_NE(first, bits);
+  EXPECT_NE(bits, first);
+  EXPECT_THAT(first.GetTypeReferenceSpecializationName(), IsOkAndHolds("u32_"));
+
+  InterpValue unresolved = InterpValue::MakeUnresolvedTypeReference(annotation);
+  EXPECT_TRUE(unresolved.IsUnresolvedTypeReference());
+  EXPECT_NE(unresolved, first);
+  EXPECT_FALSE(unresolved.GetTypeReferenceSpecializationName().ok());
+}
 
 TEST(InterpValueTest, FormatU8) {
   auto ff = InterpValue::MakeUBits(/*bit_count=*/8, /*value=*/0xff);
