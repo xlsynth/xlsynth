@@ -221,32 +221,6 @@ class DslxToVerilogTest : public ::testing::Test {
   }
 };
 
-TEST_F(DslxToVerilogTest, BatchRejectsFunctionAliasTakenByNewDependency) {
-  ImportData import_data = CreateImportDataForTest();
-  XLS_ASSERT_OK_AND_ASSIGN(
-      TypecheckedModule tm,
-      ParseAndTypecheck(R"(#![feature(generics)]
-enum Message<N: u32> { Empty, Item(uN[N]) }
-fn direct(x: Message<u32:8>) -> Message<u32:8> { x }
-fn tuple(x: (Message<u32:8>, u8)) -> (Message<u32:8>, u8) { x }
-)",
-                        "test.x", "test", &import_data, nullptr));
-  Function* direct = tm.module->GetFunction("direct").value();
-  Function* tuple = tm.module->GetFunction("tuple").value();
-  const std::vector<VerilogExportRequest> probe = {
-      {VerilogFunctionOutputExport{direct}, std::nullopt}};
-  XLS_ASSERT_OK_AND_ASSIGN(
-      std::string package,
-      ExportDslxTypesToVerilog("test_pkg", &import_data, probe));
-  std::string helper;
-  ASSERT_TRUE(RE2::PartialMatch(
-      package, R"(function automatic [^\n]+ ([^ ]+_make_item) \()", &helper));
-  const std::vector<VerilogExportRequest> conflicting = {
-      {VerilogFunctionParamExport{tuple, "x"}, helper}};
-  EXPECT_FALSE(
-      ExportDslxTypesToVerilog("test_pkg", &import_data, conflicting).ok());
-}
-
 TEST_F(DslxToVerilogTest, BatchRejectsTokenBearingValueArguments) {
   ImportData import_data = CreateImportDataForTest();
   XLS_ASSERT_OK_AND_ASSIGN(

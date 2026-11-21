@@ -60,6 +60,15 @@ output="${TEST_TMPDIR}/single_hashed.sv"
   --output_file="${output}" pkg/types.x)
 grep -Fq 'typedef Hashed__h46a5a0e92adad9a46ead0801aa4490047d635e88f83c3021a840481b172c472e Concrete;' "${output}"
 
+# Different spellings of the same source must select one stable hash owner.
+ln -s pkg/types.x "${single_fixture}/1a.x"
+ln -s pkg/types.x "${single_fixture}/2b.x"
+(cd "${single_fixture}" && "${translator}" --package_name=single --namespace=single \
+  --output_file="${TEST_TMPDIR}/duplicate_forward.sv" 1a.x 2b.x)
+(cd "${single_fixture}" && "${translator}" --package_name=single --namespace=single \
+  --output_file="${TEST_TMPDIR}/duplicate_reverse.sv" 2b.x 1a.x)
+cmp "${TEST_TMPDIR}/duplicate_forward.sv" "${TEST_TMPDIR}/duplicate_reverse.sv"
+
 # A projected explicit owner must stay distinct from an imported-only owner.
 mkdir -p "${fixture}/other"
 printf '%s\n' 'pub struct Thing { value: u8 }' >"${fixture}/pkg/types.x"

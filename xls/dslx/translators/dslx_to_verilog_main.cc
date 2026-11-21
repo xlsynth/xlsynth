@@ -378,10 +378,13 @@ absl::StatusOr<SelectedModules> SelectExplicitModules(
   std::map<std::filesystem::path, const ExplicitInput*> sources_by_path;
   for (const ExplicitInput& input : inputs) {
     auto [entry, inserted] = sources_by_path.emplace(input.absolute, &input);
-    if (!inserted && input.public_module_name.has_value() &&
-        (!entry->second->public_module_name.has_value() ||
-         PreferModuleName(*input.public_module_name,
-                          *entry->second->public_module_name))) {
+    if (!inserted &&
+        ((input.public_module_name == entry->second->public_module_name &&
+          input.path < entry->second->path) ||
+         (input.public_module_name.has_value() &&
+          (!entry->second->public_module_name.has_value() ||
+           PreferModuleName(*input.public_module_name,
+                            *entry->second->public_module_name))))) {
       entry->second = &input;
     }
   }
