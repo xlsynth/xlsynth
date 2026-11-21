@@ -16,14 +16,19 @@
 #define XLS_DSLX_MANGLE_H_
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 
 #include "absl/container/btree_set.h"
 #include "absl/status/statusor.h"
+#include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/parametric_env.h"
 
 namespace xls::dslx {
+
+class Type;
+class TypeAnnotation;
 
 enum class CallingConvention : uint8_t {
   // The IR converted parameters are identical to the DSL parameters in their
@@ -41,7 +46,17 @@ enum class CallingConvention : uint8_t {
   kProcNext,
 };
 
-// Returns the mangled name of function with the given parametric bindings.
+// Encodes a checked type for use as a specialization argument in an IR name.
+// Equivalent specializations share an encoding. Returns an error for
+// unresolved dimensions or unsupported types or bindings.
+absl::StatusOr<std::string> MangleType(const Type& type);
+
+// Binds an annotation to a checked type, using its specialization identity
+// for comparison and MangleType for naming. The caller owns the annotation.
+InterpValue MakeCheckedTypeReference(const TypeAnnotation* annotation,
+                                     std::unique_ptr<const Type> type);
+
+// Returns the mangled name of a function with the given parametric bindings.
 absl::StatusOr<std::string> MangleDslxName(
     std::string_view module_name, std::string_view function_name,
     CallingConvention convention,
