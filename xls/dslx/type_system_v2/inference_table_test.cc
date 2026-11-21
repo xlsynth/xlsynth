@@ -301,10 +301,10 @@ TEST_F(InferenceTableTest, ParametricSumContextsKeepInstanceBindings) {
   TypeAnnotation* u16 =
       CreateUnOrSnAnnotation(*module_, Span::Fake(), false, 16);
   ParametricEnv byte_env(absl::flat_hash_map<std::string, InterpValue>{
-      {"T", InterpValue::MakeTypeReference(u8)},
+      {"T", InterpValue::MakeUnresolvedTypeReference(u8)},
       {"N", InterpValue::MakeU32(4)}});
   ParametricEnv word_env(absl::flat_hash_map<std::string, InterpValue>{
-      {"T", InterpValue::MakeTypeReference(u16)},
+      {"T", InterpValue::MakeUnresolvedTypeReference(u16)},
       {"N", InterpValue::MakeU32(9)}});
   TypeInfo* byte_type_info = CreateTypeInfo();
   XLS_ASSERT_OK_AND_ASSIGN(
