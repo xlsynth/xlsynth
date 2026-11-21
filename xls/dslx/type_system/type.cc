@@ -25,6 +25,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/algorithm/container.h"
@@ -50,6 +51,7 @@
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/interp_value.h"
+#include "xls/dslx/type_system/type_specialization.h"
 #include "xls/ir/bits_ops.h"
 
 namespace xls::dslx {
@@ -355,7 +357,154 @@ size_t HashSumArgumentType(const Type& type) {
   }
 }
 
+std::optional<BitsLikeProperties> SpecializationBitsLike(const Type& type) {
+  if (auto properties = GetBitsLike(type); properties.has_value()) {
+    return properties;
+  } else if (const auto* constructor =
+                 dynamic_cast<const BitsConstructorType*>(&type)) {
+    return BitsLikeProperties{.is_signed = constructor->is_signed(),
+                              .size = TypeDim::CreateU32(0)};
+  } else {
+    return std::nullopt;
+  }
+}
+
+using type_system_internal::BindingKind;
+using type_system_internal::GetBindingKind;
+using type_system_internal::NominalPart;
+using type_system_internal::SpecializationKind;
+using type_system_internal::SpecializationPart;
+
+bool SameBinding(const InterpValue& lhs, const InterpValue& rhs) {
+  BindingKind kind = GetBindingKind(lhs);
+  return kind != BindingKind::kUnsupported && kind == GetBindingKind(rhs) &&
+         lhs.EqForSpecialization(rhs);
+}
+
+bool SamePart(const SpecializationPart& lhs, const SpecializationPart& rhs) {
+  if (lhs.index() != rhs.index()) {
+    return false;
+  } else if (const auto* child = std::get_if<const Type*>(&lhs)) {
+    return (*child)->IsSameSpecialization(*std::get<const Type*>(rhs));
+  } else if (const auto* binding = std::get_if<const InterpValue*>(&lhs)) {
+    return SameBinding(**binding, *std::get<const InterpValue*>(rhs));
+  } else {
+    return lhs == rhs;
+  }
+}
+
+template <typename Definition>
+NominalPart DescribeNominal(const Definition& def) {
+  return NominalPart{&def, def.owner(), def.identifier()};
+}
+
+void AppendTypes(std::vector<SpecializationPart>& parts,
+                 absl::Span<const std::unique_ptr<Type>> types) {
+  parts.emplace_back(static_cast<int64_t>(types.size()));
+  for (const auto& type : types) {
+    parts.emplace_back(type.get());
+  }
+}
+
+void AppendBindings(
+    std::vector<SpecializationPart>& parts,
+    const absl::flat_hash_map<std::string, InterpValue>& bindings) {
+  std::vector<std::string_view> names;
+  names.reserve(bindings.size());
+  for (const auto& binding : bindings) {
+    names.push_back(binding.first);
+  }
+  absl::c_sort(names);
+  parts.emplace_back(static_cast<int64_t>(names.size()));
+  for (std::string_view name : names) {
+    parts.emplace_back(name);
+    parts.emplace_back(&bindings.at(name));
+  }
+}
+
 }  // namespace
+
+namespace type_system_internal {
+
+BindingKind GetBindingKind(const InterpValue& value) {
+  if (value.IsTypeReference()) {
+    return BindingKind::kType;
+  } else if (value.IsBits() || value.IsEnum()) {
+    return BindingKind::kBits;
+  } else if (value.IsTuple()) {
+    return BindingKind::kTuple;
+  } else if (value.IsArray()) {
+    return BindingKind::kArray;
+  } else {
+    return BindingKind::kUnsupported;
+  }
+}
+
+absl::StatusOr<std::vector<SpecializationPart>> DescribeSpecialization(
+    const Type& type) {
+  std::vector<SpecializationPart> parts;
+  if (auto bits = SpecializationBitsLike(type); bits.has_value()) {
+    XLS_ASSIGN_OR_RETURN(bool is_signed, bits->is_signed.GetAsBool());
+    XLS_ASSIGN_OR_RETURN(int64_t size, bits->size.GetAsInt64());
+    parts = {is_signed ? SpecializationKind::kSignedBits
+                       : SpecializationKind::kUnsignedBits,
+             size};
+  } else if (const auto* nominal = dynamic_cast<const EnumType*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(int64_t size, nominal->size().GetAsInt64());
+    parts = {SpecializationKind::kEnum,
+             DescribeNominal(nominal->nominal_type()),
+             nominal->is_signed() ? SpecializationKind::kSignedBits
+                                  : SpecializationKind::kUnsignedBits,
+             size};
+  } else if (const auto* nominal = dynamic_cast<const StructTypeBase*>(&type)) {
+    parts = {
+        type.IsProc() ? SpecializationKind::kProc : SpecializationKind::kStruct,
+        DescribeNominal(nominal->struct_def_base())};
+    // The declaration and complete bindings determine the concrete members.
+    // Including the members too would visit T twice at each level of Box<T>.
+    AppendBindings(parts, nominal->nominal_type_bindings());
+  } else if (const auto* sum = dynamic_cast<const SumType*>(&type)) {
+    parts = {SpecializationKind::kSum, DescribeNominal(sum->nominal_type()),
+             static_cast<int64_t>(sum->parametric_arguments().size())};
+    for (const SumType::ParametricArgument& argument :
+         sum->parametric_arguments()) {
+      if (const auto* value = std::get_if<InterpValue>(&argument)) {
+        parts.emplace_back(value);
+      } else {
+        parts.emplace_back(SpecializationKind::kTypeBinding);
+        parts.emplace_back(std::get<std::unique_ptr<const Type>>(argument).get());
+      }
+    }
+  } else if (const auto* tuple = dynamic_cast<const TupleType*>(&type)) {
+    parts = {SpecializationKind::kTuple};
+    AppendTypes(parts, tuple->members());
+  } else if (const auto* array = dynamic_cast<const ArrayType*>(&type)) {
+    XLS_ASSIGN_OR_RETURN(int64_t size, array->size().GetAsInt64());
+    parts = {SpecializationKind::kArray, size, &array->element_type()};
+  } else if (const auto* function = dynamic_cast<const FunctionType*>(&type)) {
+    parts = {SpecializationKind::kFunction};
+    AppendTypes(parts, function->params());
+    parts.emplace_back(&function->return_type());
+  } else if (const auto* channel = dynamic_cast<const ChannelType*>(&type)) {
+    parts = {channel->direction() == ChannelDirection::kIn
+                 ? SpecializationKind::kChannelIn
+                 : SpecializationKind::kChannelOut,
+             &channel->payload_type()};
+  } else if (const auto* meta = dynamic_cast<const MetaType*>(&type)) {
+    parts = {SpecializationKind::kMeta, meta->wrapped().get()};
+  } else if (const auto* module = dynamic_cast<const ModuleType*>(&type)) {
+    parts = {SpecializationKind::kModule,
+             NominalPart{nullptr, &module->module(), std::nullopt}};
+  } else if (type.IsToken()) {
+    parts = {SpecializationKind::kToken};
+  } else {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Unsupported specialization type: ", type.GetDebugTypeName()));
+  }
+  return parts;
+}
+
+}  // namespace type_system_internal
 
 Type::~Type() = default;
 
@@ -365,6 +514,18 @@ std::string Type::ToStringInternal(FullyQualify fully_qualify,
   std::string output;
   AppendToStringInternal(fully_qualify, file_table, context, output);
   return output;
+}
+
+bool Type::IsSameSpecialization(const Type& other) const {
+  if (const auto* sum = dynamic_cast<const SumType*>(this)) {
+    const auto* other_sum = dynamic_cast<const SumType*>(&other);
+    if (other_sum != nullptr && &sum->variants() == &other_sum->variants()) {
+      return true;
+    }
+  }
+  auto lhs = type_system_internal::DescribeSpecialization(*this);
+  auto rhs = type_system_internal::DescribeSpecialization(other);
+  return lhs.ok() && rhs.ok() && absl::c_equal(*lhs, *rhs, SamePart);
 }
 
 /* static */ bool Type::Equal(absl::Span<const std::unique_ptr<Type>> a,
@@ -774,14 +935,24 @@ std::unique_ptr<BitsType> BitsType::ToUBits() const {
 StructTypeBase::StructTypeBase(
     std::vector<std::unique_ptr<Type>> members, const StructDefBase& struct_def,
     absl::flat_hash_map<std::string, TypeDim> nominal_type_dims_by_identifier)
-    : members_(std::move(members)),
-      struct_def_base_(struct_def),
-      nominal_type_dims_by_identifier_(
-          std::move(nominal_type_dims_by_identifier)) {
+    : members_(std::move(members)), struct_def_base_(struct_def) {
+  for (const auto& [name, dim] : nominal_type_dims_by_identifier) {
+    explicit_nominal_type_dim_names_.push_back(name);
+    nominal_type_bindings_.emplace(name, dim.value());
+  }
   CHECK_EQ(members_.size(), struct_def_base_.members().size());
   for (const std::unique_ptr<Type>& member_type : members_) {
     CHECK(!member_type->IsMeta()) << *member_type;
   }
+}
+
+absl::flat_hash_map<std::string, TypeDim>
+StructTypeBase::nominal_type_dims_by_identifier() const {
+  absl::flat_hash_map<std::string, TypeDim> dims;
+  for (const std::string& name : explicit_nominal_type_dim_names_) {
+    dims.emplace(name, TypeDim(nominal_type_bindings_.at(name)));
+  }
+  return dims;
 }
 
 bool StructTypeBase::HasEnum() const {
@@ -1074,17 +1245,23 @@ bool SumType::operator==(const Type& other) const {
 }
 
 bool SumType::HasSameParametricArguments(
-    absl::Span<const ParametricArgument> arguments) const {
+    absl::Span<const ParametricArgument> arguments,
+    bool require_same_specialization) const {
   return absl::c_equal(
       parametric_arguments(), arguments,
-      [](const ParametricArgument& lhs, const ParametricArgument& rhs) {
+      [require_same_specialization](const ParametricArgument& lhs,
+                                    const ParametricArgument& rhs) {
         if (lhs.index() != rhs.index()) {
           return false;
         } else if (const auto* value = std::get_if<InterpValue>(&lhs)) {
-          return *value == std::get<InterpValue>(rhs);
+          const auto& other = std::get<InterpValue>(rhs);
+          return *value == other &&
+                 (!require_same_specialization || SameBinding(*value, other));
         } else {
-          return *std::get<std::unique_ptr<const Type>>(lhs) ==
-                 *std::get<std::unique_ptr<const Type>>(rhs);
+          const Type& type = *std::get<std::unique_ptr<const Type>>(lhs);
+          const Type& other = *std::get<std::unique_ptr<const Type>>(rhs);
+          return type == other && (!require_same_specialization ||
+                                   type.IsSameSpecialization(other));
         }
       });
 }
