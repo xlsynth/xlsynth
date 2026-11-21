@@ -550,10 +550,11 @@ class Unifier {
       const InterpValue& v1, const InterpValue& v2, const Span& span) {
     XLS_RET_CHECK(v1.IsTypeReference());
     XLS_RET_CHECK(v2.IsTypeReference());
-    // Type-reference values encode their spelling, which can be the same for
-    // different local aliases. Compare the represented types instead.
     XLS_ASSIGN_OR_RETURN(const TypeAnnotation* t1, v1.GetTypeReference());
     XLS_ASSIGN_OR_RETURN(const TypeAnnotation* t2, v2.GetTypeReference());
+    if (t1 == t2) {
+      return InterpValue::MakeUnresolvedTypeReference(t1);
+    }
     XLS_ASSIGN_OR_RETURN(const AstNode* definition1,
                          GetBareTypeConstructorDefinition(t1, import_data_));
     XLS_ASSIGN_OR_RETURN(const AstNode* definition2,
@@ -561,14 +562,14 @@ class Unifier {
     if (definition1 != nullptr && definition1 == definition2) {
       // A captured constructor such as `type A = S` must remain abstract until
       // applied as `A<N>`. Agreement on its declaration needs no instantiation.
-      return v1;
+      return InterpValue::MakeUnresolvedTypeReference(t1);
     } else {
       XLS_ASSIGN_OR_RETURN(t1, resolve_type_annotation_(t1));
       XLS_ASSIGN_OR_RETURN(t2, resolve_type_annotation_(t2));
       absl::StatusOr<const TypeAnnotation*> unified_annotation =
           UnifyTypeAnnotations({t1, t2}, span);
       if (unified_annotation.ok()) {
-        return InterpValue::MakeTypeReference(*unified_annotation);
+        return InterpValue::MakeUnresolvedTypeReference(*unified_annotation);
       } else {
         return std::nullopt;
       }
@@ -590,7 +591,7 @@ class Unifier {
                                                        table_, file_table_));
       std::optional<InterpValue> value;
       if (std::holds_alternative<TypeAnnotation*>(parametric)) {
-        value = InterpValue::MakeTypeReference(
+        value = InterpValue::MakeUnresolvedTypeReference(
             std::get<TypeAnnotation*>(parametric));
       } else {
         XLS_ASSIGN_OR_RETURN(

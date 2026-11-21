@@ -342,6 +342,7 @@ cc_test(
         "//xls/ir:channel",
         "//xls/ir:ir_matcher",
         "//xls/ir:ir_parser",
+        "//xls/ir:name_uniquer",
         "//xls/ir:value",
         "//xls/passes:inlining_pass",
         "//xls/simulation:default_verilog_simulator",
