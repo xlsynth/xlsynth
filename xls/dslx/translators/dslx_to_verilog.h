@@ -41,6 +41,15 @@
 
 namespace xls::dslx {
 
+enum class SumQualifierPolicy {
+  // Include compiler module names throughout the prepared graph when deciding
+  // whether a sum's public owner needs escaping.
+  kWholeModuleGraph,
+  // Consider owners of declarations with the same sanitized identifier,
+  // excluding aliases to sums, which do not introduce nominal declarations.
+  kSameIdentifier,
+};
+
 struct VerilogFunctionParamExport {
   Function* function;
   std::string param_name;
@@ -63,19 +72,24 @@ struct VerilogExportOptions {
   // requests must come from the same ImportData so shared imports retain one
   // nominal declaration identity.
   std::vector<std::pair<Module*, TypeInfo*>> roots;
-  // Override nominal source-owner spellings in public specialization names.
-  // Compiler module identities continue to define semantic equality.
+  // Override the public module spelling for nominal declaration AST nodes.
+  // This affects sum family qualification and specialization identities.
   std::map<const AstNode*, std::string> public_nominal_owners;
+  // Override public specialization-name owners without changing qualification.
+  std::map<const AstNode*, std::string> public_specialization_owners;
+  SumQualifierPolicy sum_qualifier_policy =
+      SumQualifierPolicy::kWholeModuleGraph;
 };
 
 // Exports the complete ordered request set as one SystemVerilog package or
 // returns an error. Keep the typechecked modules and import_data alive for the
-// call. Options may prepare additional roots together. Request roots are
-// otherwise prepared in request order before their first export.
+// call. Requests contribute their modules to the prepared graph, and options
+// may supply additional roots and public owner spellings.
 //
 // This is a breaking C++ API change. Replace DslxTypeToVerilogManager::Create,
 // AddTypeFor*, and Emit with a collection of VerilogExportRequest values and
-// one ExportDslxTypesToVerilog call.
+// one ExportDslxTypesToVerilog call. Fixed sum aliases are reserved from the
+// complete request set before generated family names are allocated.
 //
 // For example, pass {{definition, std::nullopt},
 // {VerilogFunctionOutputExport{function}, "Result"}} as the requests. A
@@ -98,7 +112,10 @@ class DslxTypeToVerilogManager {
       absl::Span<const VerilogExportRequest> requests,
       const VerilogExportOptions& options);
   void PrepareForModules(
-      absl::Span<const std::pair<Module*, TypeInfo*>> modules);
+      absl::Span<const std::pair<Module*, TypeInfo*>> modules,
+      const std::map<const AstNode*, std::string>& public_nominal_owners,
+      SumQualifierPolicy sum_qualifier_policy,
+      const std::map<const AstNode*, std::string>& specialization_owners = {});
 
   friend class DslxTypeToVerilogManagerTestPeer;
 
@@ -169,6 +186,7 @@ class DslxTypeToVerilogManager {
   absl::Status PlanSumFamilyNames(const SumType& sum,
                                   std::string_view specialization,
                                   int64_t payload_width, SumFamily& family);
+  absl::Status ReserveSumAlias(std::string_view identifier, const SumType& sum);
   absl::Status CheckOrdinaryTypeName(std::string_view name) const;
   // An absent result reuses a cached declaration, but may reserve an invisible
   // ordinary name.
@@ -257,7 +275,9 @@ class DslxTypeToVerilogManager {
 
   // Reserves an available package-level name without colliding with ordinary
   // type or enum-member names.
-  std::string NewSumName(std::string_view identifier);
+  std::string NewSumName(std::string_view identifier,
+                         const SumType* envelope = nullptr,
+                         const SumDef* generic_stem = nullptr);
 
   // Returns the source-qualified stem when another module declares the same
   // source spelling. Unambiguous declarations retain their legacy spelling.
@@ -321,10 +341,16 @@ class DslxTypeToVerilogManager {
   std::set<std::string> ephemeral_ordinary_type_names_;
   // Reuses semantic fingerprints across every family emitted into this package.
   verilog_sum::IdentityBuilder sum_identities_;
-  std::set<const Module*> prepared_sum_modules_;
+  // Separate spellings for public sum names; compiler module identity remains
+  // authoritative for semantic fingerprints and ordinary standalone exports.
+  std::map<const AstNode*, std::string> public_nominal_owners_;
   // Potential ordinary typedef and enum-member names found during module
   // preparation that generated names must avoid, regardless of export order.
   std::set<std::string> legacy_package_names_;
+  // Fixed aliases preclaimed in typedef_name_uniquer_. A matching canonical
+  // envelope or the same nominal sum's generic stem may adopt the claim. Other
+  // generated symbols must avoid it.
+  std::map<std::string, const SumType*> reserved_sum_aliases_;
   // Names actually allocated to package declarations, including generated ones.
   std::set<std::string> allocated_package_names_;
   // Names of emitted canonical sum families that reused enum literals must

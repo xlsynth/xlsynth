@@ -38,6 +38,7 @@
 #include "absl/strings/str_split.h"
 #include "absl/types/span.h"
 #include "absl/types/variant.h"
+#include "xls/codegen/vast/vast.h"
 #include "xls/common/exit_status.h"
 #include "xls/common/file/filesystem.h"
 #include "xls/common/init_xls.h"
@@ -420,10 +421,89 @@ bool IsNominalDefinition(const AstNode* node) {
          dynamic_cast<const ProcDef*>(node) != nullptr;
 }
 
+const SumType* GetConcreteSum(const Type* type) {
+  while (type->IsMeta()) {
+    type = type->AsMeta().wrapped().get();
+  }
+  return type->IsSum() ? &type->AsSum() : nullptr;
+}
+
+// Public standalone sum names need enough of their source path to distinguish
+// actual same-named declarations. A root with no such declaration must not
+// change the generated API, even if it has the same filename. Compiler cache
+// names remain independent: they must distinguish all explicitly parsed files.
+std::map<const AstNode*, std::string> GetPublicNominalOwners(
+    const SelectedModules& selected) {
+  using Paths = std::map<std::filesystem::path, std::vector<std::string>>;
+  std::map<std::string, Paths> declaration_paths;
+  std::map<std::string, Paths> sum_declaration_paths;
+  for (const auto& [module, type_info] : selected.modules) {
+    const ExplicitInput* input = selected.explicit_sources.at(module);
+    for (const TypeDefinition& definition : module->GetTypeDefinitions()) {
+      AnyNameDef name = TypeDefinitionGetNameDef(definition);
+      std::string identifier = absl::visit(
+          [](const auto* value) { return value->identifier(); }, name);
+      std::string sanitized = verilog::SanitizeVerilogIdentifier(identifier);
+      std::vector<std::string> components =
+          StandalonePathComponents(input->absolute);
+      declaration_paths[sanitized].try_emplace(input->absolute, components);
+      AstNode* node = TypeDefinitionToAstNode(definition);
+      std::optional<Type*> type = type_info->GetItem(node);
+      bool is_sum_alias = dynamic_cast<TypeAlias*>(node) != nullptr &&
+                          type.has_value() && GetConcreteSum(*type) != nullptr;
+      if (!is_sum_alias) {
+        sum_declaration_paths[sanitized].try_emplace(input->absolute,
+                                                     std::move(components));
+      }
+    }
+  }
+
+  std::map<const AstNode*, std::string> result;
+  for (const auto& [module, input] : selected.explicit_sources) {
+    for (const TypeDefinition& definition : module->GetTypeDefinitions()) {
+      AstNode* node = TypeDefinitionToAstNode(definition);
+      if (!IsNominalDefinition(node)) {
+        continue;
+      } else if (input->public_module_name.has_value()) {
+        result.emplace(node, *input->public_module_name);
+        continue;
+      }
+      AnyNameDef definition_name = TypeDefinitionGetNameDef(definition);
+      std::string identifier =
+          absl::visit([](const auto* value) { return value->identifier(); },
+                      definition_name);
+      const auto& paths_by_name = dynamic_cast<SumDef*>(node) != nullptr
+                                      ? sum_declaration_paths
+                                      : declaration_paths;
+      const Paths& paths =
+          paths_by_name.at(verilog::SanitizeVerilogIdentifier(identifier));
+      const std::vector<std::string>& components = paths.at(input->absolute);
+      size_t depth = 1;
+      std::string name = StandaloneModuleName(components, depth);
+      auto conflicts = [&](std::string_view candidate) {
+        return std::any_of(paths.begin(), paths.end(), [&](const auto& other) {
+          return other.first != input->absolute &&
+                 StandaloneModuleName(other.second, depth) == candidate;
+        });
+      };
+      while (depth < components.size() && conflicts(name)) {
+        name = StandaloneModuleName(components, ++depth);
+      }
+      if (conflicts(name)) {
+        name = DisambiguateStandaloneFilename(std::move(name), input->absolute);
+      }
+      result.emplace(node, std::move(name));
+    }
+  }
+
+  return result;
+}
+
 // Before the CLI shared ImportData, each explicit file's basename was its
 // nominal owner. Preserve that spelling when it identifies one declaration.
 absl::StatusOr<std::map<const AstNode*, std::string>> GetLegacyNominalOwners(
-    const SelectedModules& selected) {
+    const SelectedModules& selected,
+    const std::map<const AstNode*, std::string>& public_owners) {
   using Key = std::pair<AstNodeKind, std::pair<std::string, std::string>>;
   std::map<const AstNode*, std::string> result;
   for (const auto& [module, input] : selected.explicit_sources) {
@@ -447,14 +527,17 @@ absl::StatusOr<std::map<const AstNode*, std::string>> GetLegacyNominalOwners(
     }
     for (const TypeDefinition& definition : module->GetTypeDefinitions()) {
       AstNode* node = TypeDefinitionToAstNode(definition);
-      if (!IsNominalDefinition(node)) {
-        continue;
-      }
       AnyNameDef name = TypeDefinitionGetNameDef(definition);
       std::string identifier = absl::visit(
           [](const auto* value) { return value->identifier(); }, name);
-      identities[{node->kind(), {node->owner()->name(), identifier}}].insert(
-          node);
+      if (!IsNominalDefinition(node)) {
+        continue;
+      }
+      auto fallback = public_owners.find(node);
+      const std::string& fallback_owner = fallback == public_owners.end()
+                                              ? node->owner()->name()
+                                              : fallback->second;
+      identities[{node->kind(), {fallback_owner, identifier}}].insert(node);
       if (auto owner = result.find(node); owner != result.end()) {
         Key key{node->kind(), {owner->second, identifier}};
         identities[key].insert(node);
@@ -466,7 +549,8 @@ absl::StatusOr<std::map<const AstNode*, std::string>> GetLegacyNominalOwners(
     }
   }
   std::erase_if(result, [&](const auto& entry) {
-    return identities.at(projections.at(entry.first)).size() != 1;
+    const Key& key = projections.at(entry.first);
+    return identities.at(key).size() != 1;
   });
   return result;
 }
@@ -573,8 +657,12 @@ absl::Status RealMain(absl::Span<const std::string_view> paths) {
     }
   }
   VerilogExportOptions options;
-  XLS_ASSIGN_OR_RETURN(options.public_nominal_owners,
-                       GetLegacyNominalOwners(selected));
+  options.roots = selected.modules;
+  options.public_nominal_owners = GetPublicNominalOwners(selected);
+  XLS_ASSIGN_OR_RETURN(
+      options.public_specialization_owners,
+      GetLegacyNominalOwners(selected, options.public_nominal_owners));
+  options.sum_qualifier_policy = SumQualifierPolicy::kSameIdentifier;
   XLS_ASSIGN_OR_RETURN(
       std::string package,
       ExportDslxTypesToVerilog(absl::GetFlag(FLAGS_namespace), &import_data,

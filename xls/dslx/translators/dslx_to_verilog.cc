@@ -169,24 +169,65 @@ std::string ClaimVisibleName(std::string_view identifier, NameUniquer& uniquer,
   return uniquer.GetSanitizedUniqueName(identifier);
 }
 
-std::string AllocateSumName(std::string_view identifier, NameUniquer& uniquer,
-                            const std::set<std::string>& ordinary_source_names,
-                            std::set<std::string>& allocated) {
+bool SameSumTarget(const SumType& a, const SumType& b) {
+  return &a.nominal_type() == &b.nominal_type() &&
+         a.HasSameSpecializationArguments(b.specialization_arguments());
+}
+
+bool IsOwnUnemittedGenericStem(
+    const SumType& sum, const std::string& name,
+    const absl::flat_hash_map<const SumDef*, std::string>& nominal_names,
+    const std::set<std::string>& emitted_names) {
+  const SumDef& nominal = sum.nominal_type();
+  auto stem = nominal_names.find(&nominal);
+  return !nominal.parametric_bindings().empty() &&
+         stem != nominal_names.end() && stem->second == name &&
+         !emitted_names.contains(name);
+}
+
+std::string AllocateSumName(
+    std::string_view identifier, NameUniquer& uniquer,
+    const std::set<std::string>& ordinary_source_names,
+    std::set<std::string>& allocated,
+    const std::map<std::string, const SumType*>& aliases,
+    const SumType* envelope = nullptr, const SumDef* generic_stem = nullptr) {
   std::string base = verilog::SanitizeVerilogIdentifier(identifier);
   std::string candidate = base;
   int64_t suffix = 0;
   while (true) {
     if (!ordinary_source_names.contains(candidate) &&
         !allocated.contains(candidate)) {
+      bool rejected_owned_alias = false;
+      if (envelope != nullptr || generic_stem != nullptr) {
+        NameUniquer unoccupied("__");
+        std::string normalized = unoccupied.GetSanitizedUniqueName(candidate);
+        auto alias = aliases.find(normalized);
+        if (alias != aliases.end() &&
+            ((envelope != nullptr &&
+              SameSumTarget(*alias->second, *envelope)) ||
+             (generic_stem != nullptr &&
+              &alias->second->nominal_type() == generic_stem))) {
+          if (!ordinary_source_names.contains(normalized) &&
+              !allocated.contains(normalized)) {
+            allocated.insert(normalized);
+            return normalized;
+          }
+          // Direct allocation would reject the occupied normalized spelling.
+          // Keep its candidate sequence even though the alias is reserved.
+          rejected_owned_alias = true;
+        }
+      }
       // Generated names follow the legacy allocation sequence, including names
       // reserved by repeated ordinary exports that emitted no declaration.
-      std::string unique = uniquer.GetSanitizedUniqueName(candidate);
-      if (!ordinary_source_names.contains(unique) &&
-          !allocated.contains(unique)) {
-        allocated.insert(unique);
-        return unique;
-      } else {
-        CHECK_OK(uniquer.ReleaseIdentifier(unique));
+      if (!rejected_owned_alias) {
+        std::string unique = uniquer.GetSanitizedUniqueName(candidate);
+        if (!ordinary_source_names.contains(unique) &&
+            !allocated.contains(unique)) {
+          allocated.insert(unique);
+          return unique;
+        } else {
+          CHECK_OK(uniquer.ReleaseIdentifier(unique));
+        }
       }
     }
     candidate = absl::StrCat(base, "__", ++suffix);
@@ -443,20 +484,20 @@ absl::StatusOr<std::string> ExportDslxTypesToVerilog(
     std::variant<TypeDefinition, TypeAnnotation*> source;
     std::string name;
     bool sum_alias;
-    Module* module;
-    TypeInfo* type_info;
   };
   DslxTypeToVerilogManager manager(package_name);
-  if (!options.public_nominal_owners.empty()) {
-    manager.sum_identities_.SetPublicNominalOwner(
-        [owners = options.public_nominal_owners](
-            const AstNode& node) -> std::string_view {
-          auto entry = owners.find(&node);
-          return entry == owners.end() ? node.owner()->name() : entry->second;
-        });
+  std::vector<std::pair<Module*, TypeInfo*>> roots = options.roots;
+  std::set<Module*> root_modules;
+  for (const auto& root : roots) {
+    root_modules.insert(root.first);
   }
   std::vector<ResolvedExport> resolved;
   resolved.reserve(requests.size());
+  auto add_root = [&](Module* module, TypeInfo* info) {
+    if (root_modules.insert(module).second) {
+      roots.emplace_back(module, info);
+    }
+  };
   for (const VerilogExportRequest& request : requests) {
     auto resolve_function =
         [&](Function* function, TypeAnnotation* annotation,
@@ -480,8 +521,8 @@ absl::StatusOr<std::string> ExportDslxTypesToVerilog(
       bool alias = UnboxMetaTypes(type)->IsSum() &&
                    (request.verilog_type_name.has_value() || source_alias ||
                     name != annotation->ToString());
-      return ResolvedExport{type,  annotation,        std::move(name),
-                            alias, function->owner(), info};
+      add_root(function->owner(), info);
+      return ResolvedExport{type, annotation, std::move(name), alias};
     };
     XLS_ASSIGN_OR_RETURN(
         ResolvedExport item,
@@ -513,8 +554,9 @@ absl::StatusOr<std::string> ExportDslxTypesToVerilog(
                                     .nominal_type()
                                     .identifier();
                   }
-                  return ResolvedExport{type,  definition,    std::move(name),
-                                        alias, node->owner(), info};
+                  add_root(node->owner(), info);
+                  return ResolvedExport{type, definition, std::move(name),
+                                        alias};
                 },
                 [&](const VerilogFunctionParamExport& param)
                     -> absl::StatusOr<ResolvedExport> {
@@ -534,12 +576,16 @@ absl::StatusOr<std::string> ExportDslxTypesToVerilog(
                       output.function, output.function->return_type(), "out");
                 }},
             request.source));
+    if (item.sum_alias) {
+      XLS_RETURN_IF_ERROR(manager.ReserveSumAlias(
+          item.name, UnboxMetaTypes(item.type)->AsSum()));
+    }
     resolved.push_back(std::move(item));
   }
-  manager.PrepareForModules(options.roots);
+  manager.PrepareForModules(roots, options.public_nominal_owners,
+                            options.sum_qualifier_policy,
+                            options.public_specialization_owners);
   for (const ResolvedExport& item : resolved) {
-    const std::pair<Module*, TypeInfo*> root = {item.module, item.type_info};
-    manager.PrepareForModules(absl::MakeConstSpan(&root, 1));
     if (const auto* definition = std::get_if<TypeDefinition>(&item.source)) {
       XLS_RETURN_IF_ERROR(manager.AddTypeToVerilogPackage(
           item.type, *definition, import_data, item.name, item.sum_alias));
@@ -553,9 +599,41 @@ absl::StatusOr<std::string> ExportDslxTypesToVerilog(
 }
 
 void DslxTypeToVerilogManager::PrepareForModules(
-    absl::Span<const std::pair<Module*, TypeInfo*>> modules) {
+    absl::Span<const std::pair<Module*, TypeInfo*>> modules,
+    const std::map<const AstNode*, std::string>& public_nominal_owners,
+    SumQualifierPolicy sum_qualifier_policy,
+    const std::map<const AstNode*, std::string>& specialization_owners) {
+  bool public_owners_changed = false;
+  for (const auto& [node, owner] : public_nominal_owners) {
+    if (owner != node->owner()->name()) {
+      public_owners_changed |=
+          public_nominal_owners_.try_emplace(node, owner).second;
+    }
+  }
+  if (public_owners_changed || !specialization_owners.empty()) {
+    auto owners = public_nominal_owners_;
+    for (const auto& [node, owner] : specialization_owners) {
+      owners.insert_or_assign(node, owner);
+    }
+    sum_identities_.SetPublicNominalOwner(
+        [owners = std::move(owners)](const AstNode& node) -> std::string_view {
+          auto entry = owners.find(&node);
+          return entry == owners.end() ? node.owner()->name() : entry->second;
+        });
+  }
+  auto public_owner = [&](const AstNode* node) -> const std::string& {
+    auto entry = public_nominal_owners_.find(node);
+    return dynamic_cast<const SumDef*>(node) == nullptr ||
+                   entry == public_nominal_owners_.end()
+               ? node->owner()->name()
+               : entry->second;
+  };
   std::map<std::string, std::vector<AstNode*>> definitions;
+  std::map<std::string, int64_t> sum_competitors;
+  std::set<const AstNode*> sum_alias_nodes;
   std::map<std::string, std::set<std::string>> module_qualifiers;
+  std::map<std::string, std::map<std::string, std::set<std::string>>>
+      sum_module_qualifiers;
   std::vector<SumDef*> sums;
   std::map<const SumDef*, const SumType*> concrete_sums;
   OrdinaryEnumMemberGroups enum_members;
@@ -565,11 +643,9 @@ void DslxTypeToVerilogManager::PrepareForModules(
   while (!pending.empty()) {
     auto [current, current_info] = pending.back();
     pending.pop_back();
-    if (!visited.insert(current).second ||
-        prepared_sum_modules_.contains(current)) {
+    if (!visited.insert(current).second) {
       continue;
     }
-    prepared_sum_modules_.insert(current);
     module_qualifiers[verilog::SanitizeVerilogIdentifier(current->name())]
         .insert(current->name());
     for (const TypeDefinition& definition : current->GetTypeDefinitions()) {
@@ -579,13 +655,30 @@ void DslxTypeToVerilogManager::PrepareForModules(
           [](const auto* value) { return value->identifier(); }, name);
       std::string sanitized = verilog::SanitizeVerilogIdentifier(identifier);
       definitions[sanitized].push_back(node);
+      const std::string& owner = public_owner(node);
+      bool sum_alias = false;
+      if (dynamic_cast<TypeAlias*>(node) != nullptr) {
+        std::optional<Type*> type = current_info->GetItem(node);
+        sum_alias = type.has_value() && UnboxMetaTypes(*type)->IsSum();
+        if (sum_alias) {
+          sum_alias_nodes.insert(node);
+        }
+      }
+      // A sum alias exports a fixed spelling only when selected. It does not
+      // introduce another nominal sum or compete with its canonical envelope.
+      if (!sum_alias) {
+        ++sum_competitors[sanitized];
+        sum_module_qualifiers[sanitized]
+                             [verilog::SanitizeVerilogIdentifier(owner)]
+                                 .insert(owner);
+      }
       if (auto* sum = dynamic_cast<SumDef*>(node)) {
         sums.push_back(sum);
         std::optional<Type*> type = current_info->GetItem(sum);
         if (type.has_value() && UnboxMetaTypes(*type)->IsSum()) {
           concrete_sums.emplace(sum, &UnboxMetaTypes(*type)->AsSum());
         }
-      } else {
+      } else if (!sum_alias) {
         legacy_name_owners_[sanitized].push_back(node);
         // Function signatures infer this unqualified source spelling even
         // when nominal declarations in multiple modules share the name.
@@ -602,21 +695,35 @@ void DslxTypeToVerilogManager::PrepareForModules(
   }
   for (auto& [name, nodes] : definitions) {
     std::sort(nodes.begin(), nodes.end(),
-              [](const AstNode* a, const AstNode* b) {
-                return a->owner()->name() < b->owner()->name();
+              [&](const AstNode* a, const AstNode* b) {
+                return std::make_pair(public_owner(a), a->owner()->name()) <
+                       std::make_pair(public_owner(b), b->owner()->name());
               });
     for (AstNode* node : nodes) {
-      std::string module =
-          verilog::SanitizeVerilogIdentifier(node->owner()->name());
-      if (module_qualifiers.at(module).size() != 1) {
-        module = EscapeName(node->owner()->name());
+      bool is_sum = dynamic_cast<SumDef*>(node) != nullptr;
+      const std::string& owner = public_owner(node);
+      std::string module = verilog::SanitizeVerilogIdentifier(owner);
+      const auto& qualifiers =
+          is_sum ? sum_module_qualifiers.at(name) : module_qualifiers;
+      bool qualifier_collides = qualifiers.at(module).size() != 1;
+      if (is_sum &&
+          sum_qualifier_policy == SumQualifierPolicy::kWholeModuleGraph) {
+        // An effective public owner need not occur in the compiler graph.
+        // Any different compiler owner in its qualifier bucket also collides.
+        auto graph = module_qualifiers.find(module);
+        qualifier_collides |=
+            graph != module_qualifiers.end() &&
+            (graph->second.size() != 1 || !graph->second.contains(owner));
       }
-      std::string nominal = nodes.size() == 1
-                                ? name
-                                : verilog::SanitizeVerilogIdentifier(
-                                      absl::StrCat(module, "_", name));
+      if (qualifier_collides) {
+        module = EscapeName(owner);
+      }
+      bool unique = is_sum ? sum_competitors.at(name) == 1 : nodes.size() == 1;
+      std::string nominal = unique ? name
+                                   : verilog::SanitizeVerilogIdentifier(
+                                         absl::StrCat(module, "_", name));
       nominal_names_.emplace(node, nominal);
-      if (dynamic_cast<SumDef*>(node) == nullptr) {
+      if (!is_sum && !sum_alias_nodes.contains(node)) {
         legacy_package_names_.insert(nominal);
       }
     }
@@ -648,11 +755,21 @@ void DslxTypeToVerilogManager::PrepareForModules(
     }
   }
 
-  std::sort(sums.begin(), sums.end(), [](const SumDef* a, const SumDef* b) {
-    return SourceName(*a, a->identifier()) < SourceName(*b, b->identifier());
+  std::sort(sums.begin(), sums.end(), [&](const SumDef* a, const SumDef* b) {
+    return std::make_pair(absl::StrCat(public_owner(a), ":", a->identifier()),
+                          SourceName(*a, a->identifier())) <
+           std::make_pair(absl::StrCat(public_owner(b), ":", b->identifier()),
+                          SourceName(*b, b->identifier()));
   });
   for (SumDef* sum : sums) {
-    nominal_sum_names_.emplace(sum, NewSumName(nominal_names_.at(sum)));
+    auto concrete = concrete_sums.find(sum);
+    nominal_sum_names_.emplace(
+        sum, NewSumName(nominal_names_.at(sum),
+                        sum->parametric_bindings().empty() &&
+                                concrete != concrete_sums.end()
+                            ? concrete->second
+                            : nullptr,
+                        sum->parametric_bindings().empty() ? nullptr : sum));
   }
   // Reserve every nonparametric family's public names in source identity order
   // before emitting any family. For example, A's getter and A_get's constructor
@@ -922,6 +1039,13 @@ bool DslxTypeToVerilogManager::IsOrdinaryEnumMemberName(
 
 absl::Status DslxTypeToVerilogManager::CheckOrdinaryNameAgainstSumAliases(
     std::string_view name) const {
+  auto reserved = reserved_sum_aliases_.find(std::string(name));
+  if (reserved != reserved_sum_aliases_.end()) {
+    const SumFamily* family = FindSumFamily(*reserved->second);
+    return SumAliasConflict(
+        name, family == nullptr ? reserved->second->nominal_type().identifier()
+                                : family->name);
+  }
   auto alias = sum_aliases_.find(name);
   if (alias == sum_aliases_.end()) {
     return absl::OkStatus();
@@ -931,6 +1055,22 @@ absl::Status DslxTypeToVerilogManager::CheckOrdinaryNameAgainstSumAliases(
         declaration->type_def()->data_type());
     return SumAliasConflict(name, canonical->type_def()->GetName());
   }
+}
+
+absl::Status DslxTypeToVerilogManager::ReserveSumAlias(
+    std::string_view identifier, const SumType& sum) {
+  std::string name = verilog::SanitizeVerilogIdentifier(identifier);
+  auto known = reserved_sum_aliases_.find(name);
+  if (known != reserved_sum_aliases_.end()) {
+    return SameSumTarget(*known->second, sum)
+               ? absl::OkStatus()
+               : SumAliasConflict(name, sum.nominal_type().identifier());
+  }
+  if (!typedef_name_uniquer_->ReserveIdentifier(name).ok()) {
+    return SumAliasConflict(name, sum.nominal_type().identifier());
+  }
+  reserved_sum_aliases_.emplace(std::move(name), &sum);
+  return absl::OkStatus();
 }
 
 std::string DslxTypeToVerilogManager::NominalName(
@@ -1322,9 +1462,12 @@ DslxTypeToVerilogManager::CompanionNameRequests(const SumType& sum,
   return names;
 }
 
-std::string DslxTypeToVerilogManager::NewSumName(std::string_view identifier) {
+std::string DslxTypeToVerilogManager::NewSumName(std::string_view identifier,
+                                                 const SumType* envelope,
+                                                 const SumDef* generic_stem) {
   return AllocateSumName(identifier, *typedef_name_uniquer_,
-                         legacy_package_names_, allocated_package_names_);
+                         legacy_package_names_, allocated_package_names_,
+                         reserved_sum_aliases_, envelope, generic_stem);
 }
 
 verilog::DataType* DslxTypeToVerilogManager::MakeBits(int64_t width,
@@ -1592,7 +1735,7 @@ absl::Status DslxTypeToVerilogManager::PlanSumFamilyNames(
     const SumType& sum, std::string_view specialization, int64_t payload_width,
     SumFamily& family) {
   if (!specialization.empty()) {
-    family.name = NewSumName(absl::StrCat(family.name, specialization));
+    family.name = NewSumName(absl::StrCat(family.name, specialization), &sum);
   }
   auto static_symbols = nominal_sum_symbols_.find(&sum.nominal_type());
   XLS_ASSIGN_OR_RETURN(auto companions,
@@ -1695,7 +1838,10 @@ absl::StatusOr<verilog::DataType*> DslxTypeToVerilogManager::SumToVastType(
   owner->type = sum.CloneToUnique();
   auto nominal = nominal_sum_names_.find(&sum.nominal_type());
   if (nominal == nominal_sum_names_.end()) {
-    owner->name = NewSumName(sum.nominal_type().identifier());
+    bool generic = !sum.nominal_type().parametric_bindings().empty();
+    owner->name =
+        NewSumName(sum.nominal_type().identifier(), generic ? nullptr : &sum,
+                   generic ? &sum.nominal_type() : nullptr);
     nominal_sum_names_.emplace(&sum.nominal_type(), owner->name);
   } else {
     owner->name = nominal->second;
@@ -1953,15 +2099,16 @@ absl::StatusOr<verilog::DataType*> DslxTypeToVerilogManager::AddSumAlias(
         "cannot use it for `%s`",
         requested, canonical_name));
   } else {
-    if (allocated_package_names_.contains(requested) ||
+    bool invisible_stem = IsOwnUnemittedGenericStem(
+        sum, requested, nominal_sum_names_, emitted_sum_names_);
+    if ((allocated_package_names_.contains(requested) && !invisible_stem) ||
         emitted_ordinary_type_names_.contains(requested) ||
         IsOrdinaryEnumMemberName(requested, source_alias)) {
       return SumAliasConflict(requested, canonical_name);
     }
-    std::string reserved = ClaimVisibleName(requested, *typedef_name_uniquer_,
-                                            ephemeral_ordinary_type_names_);
-    if (reserved != requested) {
-      CHECK_OK(typedef_name_uniquer_->ReleaseIdentifier(reserved));
+    auto reserved = reserved_sum_aliases_.find(requested);
+    if (reserved == reserved_sum_aliases_.end() ||
+        !SameSumTarget(*reserved->second, sum)) {
       return SumAliasConflict(requested, canonical_name);
     }
     allocated_package_names_.insert(requested);

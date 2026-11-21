@@ -71,7 +71,8 @@ class NameUniquer {
   // Allow the name 'sv' to be generated again.
   absl::Status ReleaseIdentifier(std::string_view sv);
 
-  // Mark the name 'sv' as already taken.
+  // Mark the exact spelling 'sv' as already taken. Numeric suffix spellings
+  // such as foo__01 and foo__1 are distinct fixed identifiers.
   absl::Status ReserveIdentifier(std::string_view sv);
 
  private:
